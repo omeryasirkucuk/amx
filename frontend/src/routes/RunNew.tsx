@@ -13,7 +13,9 @@ import AdvancedLLMOverrides, {
   buildOverridesPayload,
   seedFromDefaults,
   type OverrideFormState,
+  type ProfileOption,
 } from "../components/AdvancedLLMOverrides";
+import { useLLMCapabilities } from "../lib/llmCapabilities";
 
 import ScopeTree, { type SchemaPick } from "../components/ScopeTree";
 
@@ -360,6 +362,20 @@ export default function RunNew() {
   const profileDefaults = ctx.data?.llm_profile_defaults ?? null;
   const llmModel = ctx.data?.llm_model ?? null;
   const activeLlmProfile = ctx.data?.active_llm_profile ?? null;
+  // Saved LLM profiles drive the per-run profile picker inside the
+  // Advanced LLM settings block. Without this query the picker row
+  // is hidden (the shared component gates on ``profiles && length > 0``).
+  // Re-Run + Variations modals each fetch this independently with the
+  // same query key, so a TanStack cache hit serves all three mounts.
+  const llmProfilesQ = useQuery({
+    queryKey: ["profiles", "llm"],
+    queryFn: () =>
+      apiFetch<{ profiles: ProfileOption[]; active: string | null }>(
+        "/api/profiles/llm",
+      ),
+    staleTime: 60_000,
+  });
+  const llmProfiles: ProfileOption[] = llmProfilesQ.data?.profiles ?? [];
   // Resolve the live (provider, model) price so the "Cost overrides"
   // section can show the auto-detected LiteLLM/OpenRouter rate as the
   // default badge instead of "—". The profile's stored
@@ -396,6 +412,23 @@ export default function RunNew() {
   // RunNew keeps the bad path out of history altogether.
   const llmReady = !!(
     ctx.data?.llm_provider && ctx.data?.llm_model && ctx.data?.active_llm_profile
+  );
+
+  // When the user swaps profiles via the in-panel picker, capability
+  // gating in the Advanced block must re-resolve against the chosen
+  // (provider, model) — otherwise switching to a non-reasoning model
+  // would leave the thinking_budget row falsely enabled.
+  const pickedLlmProfile = llmProfiles.find(
+    (p) => p.name === overrides.profile,
+  );
+  const effectiveProvider = pickedLlmProfile?.provider ?? llmProvider;
+  const effectiveModel = pickedLlmProfile?.model ?? llmModel;
+  const { supportsThinking, supportsLogprobs } = useLLMCapabilities(
+    effectiveProvider,
+    effectiveModel,
+  );
+  const credentialsMissing = Boolean(
+    pickedLlmProfile && pickedLlmProfile.has_credentials === false,
   );
 
 
@@ -440,6 +473,7 @@ export default function RunNew() {
   const totalPicks = selections.reduce((n, s) => n + s.picks.length, 0);
   const canSubmit =
     llmReady &&
+    !credentialsMissing &&
     selections.every((s) => s.profile && s.database) &&
     totalPicks > 0;
 
@@ -627,7 +661,18 @@ export default function RunNew() {
                 profileName={ctx.data?.active_llm_profile ?? null}
                 livePrice={livePrice.data ?? null}
                 livePriceLoading={livePrice.isFetching}
+                profiles={llmProfiles}
+                supportsThinking={supportsThinking}
+                supportsLogprobs={supportsLogprobs}
+                effectiveModel={effectiveModel}
               />
+              {credentialsMissing && (
+                <p className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-[11px] text-warn">
+                  The selected LLM profile is missing credentials. Open
+                  Settings → LLM → {overrides.profile} to add an API key
+                  before starting the run.
+                </p>
+              )}
               <hr className="border-border" />
               <dl className="grid grid-cols-2 gap-y-1.5 text-xs">
                 <dt className="text-ink-dim">Schemas</dt>

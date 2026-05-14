@@ -93,3 +93,71 @@ class TestAdvancedLLMOverridesBundle:
         button doesn't drift."""
         text = _all_bundle_text()
         assert "Reset to profile defaults" in text
+
+    def test_llm_profile_row_renders_before_temperature(self) -> None:
+        """The LLM profile picker must be the first row of the
+        Generation block — i.e. its label appears earlier in the
+        bundle than ``Temperature``'s label.
+
+        The Vite chunk that owns ``AdvancedLLMOverrides`` renders the
+        rows top-to-bottom in source order, so the label-string offsets
+        in the compiled chunk match render order. A regression that
+        moves the profile picker below Temperature (or drops it
+        entirely from the Generation block) flips this ordering.
+        """
+        adv = sorted(_BUNDLE_ROOT.glob("AdvancedLLMOverrides-*.js"))
+        if not adv:
+            pytest.skip("AdvancedLLMOverrides chunk not present in bundle.")
+        chunk = adv[-1].read_text(encoding="utf-8", errors="ignore")
+        profile_idx = chunk.find("LLM profile")
+        temperature_idx = chunk.find("Temperature")
+        assert profile_idx != -1, (
+            "The ``LLM profile`` row label is missing from the "
+            "AdvancedLLMOverrides chunk. The picker must render "
+            "regardless of caller; check the row is no longer "
+            "gated behind a hide-prop."
+        )
+        assert temperature_idx != -1
+        assert profile_idx < temperature_idx, (
+            f"``LLM profile`` (offset {profile_idx}) renders AFTER "
+            f"``Temperature`` (offset {temperature_idx}) in the "
+            "compiled chunk. The picker must be the first row of "
+            "the Generation block."
+        )
+
+
+class TestRunNewMountsProfilePicker:
+    """RunNew must pass the profiles + capability props to
+    AdvancedLLMOverrides — the shared component's profile row is
+    gated on ``profiles.length > 0`` so omitting the prop silently
+    hides the picker on the New run page."""
+
+    def test_runnew_chunk_fetches_llm_profiles(self) -> None:
+        runnew = sorted(_BUNDLE_ROOT.glob("RunNew-*.js"))
+        if not runnew:
+            pytest.skip("RunNew chunk not present in bundle.")
+        chunk = runnew[-1].read_text(encoding="utf-8", errors="ignore")
+        # The TanStack Query key for the LLM profiles list.
+        assert "/api/profiles/llm" in chunk, (
+            "RunNew must fetch ``/api/profiles/llm`` so the shared "
+            "AdvancedLLMOverrides component can render its profile "
+            "picker row. The picker is gated on a non-empty profiles "
+            "array."
+        )
+
+    def test_runnew_chunk_uses_capabilities_hook(self) -> None:
+        """RunNew must wire ``useLLMCapabilities`` so capability gates
+        re-resolve when the user picks a different profile in the
+        in-panel dropdown."""
+        runnew = sorted(_BUNDLE_ROOT.glob("RunNew-*.js"))
+        if not runnew:
+            pytest.skip("RunNew chunk not present in bundle.")
+        chunk = runnew[-1].read_text(encoding="utf-8", errors="ignore")
+        # The capabilities endpoint is the most reliable anchor — it
+        # appears in the chunk that imports useLLMCapabilities.
+        all_text = _all_bundle_text()
+        assert "/api/llm/capabilities" in all_text, (
+            "Capabilities endpoint missing from the bundle. The "
+            "``useLLMCapabilities`` hook must drive the per-profile "
+            "knob gating on every Advanced LLM settings surface."
+        )
