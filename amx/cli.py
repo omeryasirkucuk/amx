@@ -42,6 +42,7 @@ from amx.cli_support.commands.run import (
 )
 from amx.cli_support.commands.schedule import register_schedule_commands
 from amx.cli_support.commands.search import register_search_commands
+from amx.cli_support.commands.variations import register_variations_command
 from amx.cli_support.root_commands import register_root_commands
 from amx.config import AMXConfig, ConfigSchemaTooNewError
 from amx.storage.factory import init_history_store
@@ -421,6 +422,7 @@ register_analyze_run_command(
 )
 register_analyze_review_command(analyze, log_event=_log_app_event)
 register_rerun_command(main, pass_config=pass_config, log_event=_log_app_event)
+register_variations_command(main, pass_config=pass_config, log_event=_log_app_event)
 register_schedule_commands(analyze, pass_config=pass_config, log_event=_log_app_event)
 register_docs_commands(
     main,

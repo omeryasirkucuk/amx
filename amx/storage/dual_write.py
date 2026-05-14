@@ -83,6 +83,40 @@ class DualWriteHistoryStore:
         # delegate just routes through to the local store.
         return self.local._connect()
 
+    def __getattr__(self, name: str) -> Any:
+        """Fall through to the local SQLite store for read-only /
+        local-only methods that don't have an explicit dual-write
+        forward.
+
+        Re-Run + Variations call into the snapshot lifecycle
+        (``save_rerun_snapshot`` / ``read_rerun_snapshot`` /
+        ``delete_rerun_snapshots_for_job`` / ``next_rerun_seq``),
+        the per-table profile cache (``lookup_run_context_cache`` /
+        ``cache_table_profile``), the descendant tree query
+        (``get_descendant_runs``), and the re-run chain reader
+        (``get_result_chain``). Every one of these is a LOCAL-only
+        concept — snapshots are short-lived and machine-local; the
+        profile cache is keyed by db_profile and stays per-machine;
+        the descendant + chain readers are cheap SQL reads of
+        already-mirrored data. Hard-forwarding each here would just
+        replicate boilerplate, so a fallback that proxies the
+        attribute access to ``self.local`` is the safe default.
+        Methods that DO need dual-write semantics (create_run,
+        save_run_results, finish_run, etc.) are still defined
+        explicitly above — they shadow this fallback by normal
+        attribute resolution. AttributeError still bubbles up if
+        the method is missing on the local store too — which is the
+        right behaviour for a typo.
+
+        Underscored / dunder names are excluded so this doesn't
+        accidentally intercept pickling, copying, or other framework
+        introspection.
+        """
+        if name.startswith("_"):
+            raise AttributeError(f"{self.__class__.__name__!r} has no attribute {name!r}")
+        target = getattr(self.local, name)
+        return target
+
     # ── Outbox housekeeping ───────────────────────────────────────────────
 
     def _ensure_outbox(self) -> None:

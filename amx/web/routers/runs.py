@@ -68,6 +68,19 @@ class LLMOverrides(BaseModel):
     derived :class:`AMXConfig` is scoped to the worker thread.
     """
 
+    profile: str | None = Field(
+        default=None,
+        description=(
+            "Optional saved-profile reference. When set, the named profile "
+            "is swapped in as the base ``LLMConfig`` for this run — its "
+            "``provider`` / ``model`` / ``api_key`` / ``api_base`` bundle "
+            "is loaded atomically (so the right credentials route to the "
+            "right endpoint) and any per-knob overrides on this same "
+            "object layer on top. Unknown names degrade safely: the active "
+            "profile is used and the audit drops the ``profile`` key. The "
+            "saved profile on disk is never mutated."
+        ),
+    )
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=256, le=262_144)
     n_alternatives: int | None = Field(default=None, ge=1, le=5)
@@ -239,9 +252,28 @@ def _apply_llm_overrides(
     applied = overrides.non_null()
     if not applied:
         return cfg, {}
-    derived_llm = dataclasses.replace(cfg.llm, **applied)
+    # Profile swap is resolved first: when the caller picked a saved
+    # profile by name, that profile's full LLMConfig becomes the base
+    # for the derived cfg so ``provider`` / ``model`` / ``api_key`` /
+    # ``api_base`` change together (they have to, otherwise we'd route
+    # the wrong credentials to the wrong endpoint). Per-knob overrides
+    # then layer on top. Unknown profile names degrade safely: we
+    # leave ``cfg.llm`` alone and drop the ``profile`` key from the
+    # audit so callers don't think the swap happened.
+    profile_name = applied.pop("profile", None)
+    base_llm = cfg.llm
+    audit_profile: str | None = None
+    if profile_name and profile_name in cfg.llm_profiles:
+        base_llm = cfg.llm_profiles[profile_name]
+        audit_profile = profile_name
+    if not applied and audit_profile is None:
+        return cfg, {}
+    derived_llm = dataclasses.replace(base_llm, **applied) if applied else base_llm
     derived_cfg = dataclasses.replace(cfg, llm=derived_llm)
-    return derived_cfg, applied
+    audit_out = dict(applied)
+    if audit_profile is not None:
+        audit_out["profile"] = audit_profile
+    return derived_cfg, audit_out
 
 
 class ApplyRequest(BaseModel):

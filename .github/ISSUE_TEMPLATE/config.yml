@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://amxcli.com/
+    about: Installation, quickstart, configuration, supported engines and providers.
+  - name: Quickstart
+    url: https://amxcli.com/getting-started/quickstart/
+    about: Five-minute walkthrough from install to your first reviewed comment.
+  - name: Troubleshooting
+    url: https://amxcli.com/troubleshooting/
+    about: FAQ, diagnostics, and common errors before filing a bug.
+  - name: Changelog
+    url: https://amxcli.com/changelog/
+    about: What changed in each release.

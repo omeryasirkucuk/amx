@@ -1036,20 +1036,52 @@ class Orchestrator:
         suggested_cols = {s.column for s in out if s.column is not None}
         has_table_level = any(s.column is None for s in out)
 
+        # Pad both fallback paths to ``n_alternatives`` so a single-
+        # alternative fallback row doesn't surface as ``A`` only when
+        # the user's profile asked for ``A/B/C``. The duplicated
+        # suggestions are all marked ``source="fallback"``; a reviewer
+        # can pick any slot and use ``Variations`` on the chosen row
+        # to regenerate real alternatives in one click.
+        #
+        # Read ``n_alternatives`` from the LLM provider's bound
+        # ``LLMConfig`` (the Orchestrator stores the provider as
+        # ``self.llm``; its ``.cfg`` is the per-run LLMConfig with
+        # ``n_alternatives``). Defensive fall-back to 1 when the
+        # attribute is missing — keeps the regression test that
+        # passes a bare ``DummyLLM()`` working.
+        llm_cfg = getattr(getattr(self, "llm", None), "cfg", None)
+        n_alts = max(1, int(getattr(llm_cfg, "n_alternatives", 1) or 1))
+
         if not has_table_level:
+            table_fallback_desc = (
+                f"Table {profile.name} contains business data for schema "
+                f"{profile.schema}. Auto-inference missed a reliable table "
+                "description; please review manually."
+            )
             out.append(
                 MetadataSuggestion(
                     schema=profile.schema,
                     table=profile.name,
                     column=None,
-                    suggestions=[
-                        f"Table {profile.name} contains business data for schema {profile.schema}. "
-                        "Auto-inference missed a reliable table description; please review manually."
-                    ],
+                    suggestions=[table_fallback_desc] * n_alts,
                     confidence=Confidence.LOW,
-                    reasoning="Fallback injected because model output had no table-level suggestion.",
+                    reasoning=(
+                        f"Fallback injected — the model produced 0 of the requested "
+                        f"{n_alts} table-level suggestions. The {n_alts} entries "
+                        "above are identical placeholders so a reviewer can still "
+                        "pick one and continue; use ✨ Variations on the chosen "
+                        "row to regenerate real alternatives."
+                    ),
                     source="fallback",
                 )
+            )
+            log.warning(
+                "Fallback injected for %s.%s (table-level): padding to "
+                "n_alternatives=%d. Investigate the agent output for missing "
+                "TABLE_DESCRIPTION lines.",
+                profile.schema,
+                profile.name,
+                n_alts,
             )
 
         for c in profile.columns:
@@ -1065,9 +1097,15 @@ class Orchestrator:
                     schema=profile.schema,
                     table=profile.name,
                     column=c.name,
-                    suggestions=[fallback_desc],
+                    suggestions=[fallback_desc] * n_alts,
                     confidence=Confidence.LOW,
-                    reasoning="Fallback injected because model output had no suggestion for this column.",
+                    reasoning=(
+                        f"Fallback injected — the model produced 0 of the requested "
+                        f"{n_alts} suggestions for column {c.name}. The {n_alts} "
+                        "entries above are identical placeholders so a reviewer can "
+                        "still pick one and continue; use ✨ Variations on the "
+                        "chosen row to regenerate real alternatives."
+                    ),
                     source="fallback",
                 )
             )

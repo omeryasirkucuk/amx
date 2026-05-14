@@ -1214,17 +1214,23 @@ function PerColumnPivot({
   rows: PerColumnRow[];
   runIds: number[];
 }) {
-  // Group by (schema, table, column).
-  const byAsset = new Map<string, Map<number, PerColumnRow>>();
+  // Group by (schema, table, column). Each cell now holds an ordered
+  // list of versions (v1 + any v2/v3+ descendants for that asset
+  // within this run) rather than a single row, so Variations /
+  // Re-Run descendants stack inline under the parent v1 in the same
+  // cell -- mirroring the run-detail page's stacked layout.
+  const byAsset = new Map<string, Map<number, PerColumnRow[]>>();
   const labelByAsset = new Map<string, string>();
   for (const r of rows) {
     const schema = r.schema ?? "";
     const table = r.table ?? "";
     const column = r.column ?? "";
     const key = `${schema}|${table}|${column}`;
-    const inner = byAsset.get(key) ?? new Map<number, PerColumnRow>();
+    const inner = byAsset.get(key) ?? new Map<number, PerColumnRow[]>();
     if (typeof r.run_id === "number") {
-      inner.set(r.run_id, r);
+      const versions = inner.get(r.run_id) ?? [];
+      versions.push(r);
+      inner.set(r.run_id, versions);
     }
     byAsset.set(key, inner);
     if (!labelByAsset.has(key)) {
@@ -1232,6 +1238,18 @@ function PerColumnPivot({
         key,
         [schema, table, column].filter(Boolean).join(".") || "—",
       );
+    }
+  }
+  // Stable per-cell sort: v1 first, then descendants chronologically
+  // (the backend already emits them in that order, but lock it in so
+  // a future server-side reorder cannot reshuffle the UI).
+  for (const inner of byAsset.values()) {
+    for (const versions of inner.values()) {
+      versions.sort((a, b) => {
+        const av = parseInt((a.version_label || "v1").slice(1), 10);
+        const bv = parseInt((b.version_label || "v1").slice(1), 10);
+        return (av || 1) - (bv || 1);
+      });
     }
   }
 
@@ -1246,17 +1264,24 @@ function PerColumnPivot({
   });
 
   // Derive each run's diversity mode from the first non-null
-  // ``alternatives_mode`` seen across its cells. The mode is row-level
-  // in the DB so every cell carries it, but for the pivot header we
-  // show it once next to the run id (per user spec: "tüm run için bir
-  // kere vermek yeterli her kolona yazmaya gerek yok"). Returns
-  // ``null`` for legacy runs that predate PR #441.
+  // ``alternatives_mode`` seen across its v1 cells. The mode is
+  // row-level in the DB so every cell carries it, but for the pivot
+  // header we show it once next to the run id (per user spec: "tüm
+  // run için bir kere vermek yeterli her kolona yazmaya gerek yok").
+  // Descendants are skipped here because the descendant's own mode
+  // can differ from the parent run's mode (a v1 semantic run can
+  // spawn a v2 lexical variation); the header chip describes the
+  // parent run only, and the per-version row gets its own mode chip
+  // inline below. Returns ``null`` for legacy runs that predate
+  // PR #441.
   const modeByRun = new Map<number, "semantic" | "lexical" | null>();
   for (const id of runIds) {
     let resolved: "semantic" | "lexical" | null = null;
     for (const inner of byAsset.values()) {
-      const cell = inner.get(id);
-      const mode = cell?.alternatives_mode ?? null;
+      const versions = inner.get(id);
+      if (!versions || versions.length === 0) continue;
+      const v1 = versions[0];
+      const mode = v1?.alternatives_mode ?? null;
       if (mode === "semantic" || mode === "lexical") {
         resolved = mode;
         break;
@@ -1288,10 +1313,14 @@ function PerColumnPivot({
           // Winner per row: the cell whose run has the highest
           // logprob_score (closer to 0 = more confident). ``null``
           // means no run has a recorded logprob -- in that case
-          // every cell stays plain.
+          // every cell stays plain. Winner comparison uses the v1
+          // row's logprob -- descendants stack inline under v1 in
+          // the same cell and do not compete for the winner ring.
           let bestRunId: number | null = null;
           let bestLogprob: number | null = null;
-          for (const [rid, cell] of cells.entries()) {
+          for (const [rid, versions] of cells.entries()) {
+            const cell = versions[0];
+            if (!cell) continue;
             const lp = cell.logprob_score;
             if (lp == null || !Number.isFinite(lp)) continue;
             if (bestLogprob == null || (lp as number) > bestLogprob) {
@@ -1317,9 +1346,12 @@ function PerColumnPivot({
                 )}
               </td>
               {runIds.map((id) => {
-                const cell = cells.get(id);
+                const versions = cells.get(id) ?? [];
+                const hasContent =
+                  versions.length > 0 &&
+                  (versions[0]?.description?.trim() || "").length > 0;
                 const isWinner =
-                  bestRunId != null && id === bestRunId && cell != null;
+                  bestRunId != null && id === bestRunId && hasContent;
                 return (
                   <td
                     key={id}
@@ -1328,63 +1360,114 @@ function PerColumnPivot({
                       isWinner && "ring-1 ring-inset ring-accent/40 rounded-md",
                     )}
                   >
-                    {cell?.description?.trim() ? (
-                      <div className="space-y-1">
-                        <div className="text-ink">{cell.description}</div>
-                        <div className="flex flex-wrap items-center gap-2 text-[10px]">
-                          {cell.confidence ? (
-                            <ConfidencePill
-                              value={cell.confidence}
-                              score={cell.logprob_score ?? null}
-                            />
-                          ) : null}
-                          <LogprobBadge score={cell.logprob_score ?? null} />
-                          {typeof cell.token_count === "number" &&
-                          cell.token_count > 0 ? (
-                            <span
-                              className="font-mono text-ink-dim"
-                              title="Output tokens for this asset's chosen description."
+                    {hasContent ? (
+                      <div className="space-y-2.5">
+                        {versions.map((cell, vidx) => {
+                          const label = cell.version_label || "v1";
+                          const isDescendant = vidx > 0;
+                          const modeLetter =
+                            cell.alternatives_mode === "semantic"
+                              ? "S"
+                              : cell.alternatives_mode === "lexical"
+                                ? "L"
+                                : null;
+                          const modeTitle =
+                            cell.alternatives_mode === "semantic"
+                              ? "semantic — paraphrase of the seed"
+                              : cell.alternatives_mode === "lexical"
+                                ? "lexical — same vocabulary, distinct candidate meaning"
+                                : "alternatives mode not recorded";
+                          return (
+                            <div
+                              key={`${label}-${vidx}`}
+                              className={
+                                isDescendant
+                                  ? "border-l-2 border-accent/30 pl-2 space-y-1"
+                                  : "space-y-1"
+                              }
                             >
-                              tok {cell.token_count}
-                            </span>
-                          ) : null}
-                        </div>
-                        {/* Stacked DESCRIPTION_2..N so semantic vs
-                            lexical divergence is visible side-by-side.
-                            DESCRIPTION_1 stays the cell headline above
-                            -- by contract it's the single most
-                            defensible answer regardless of mode -- so
-                            we slice the headline off and only render
-                            the remaining alts here. Hidden entirely on
-                            legacy rows that carry no structured
-                            alternatives. */}
-                        {Array.isArray(cell.alternatives) &&
-                        cell.alternatives.length > 1 ? (
-                          <div className="mt-1.5 space-y-0.5 border-t border-surface-border/40 pt-1.5">
-                            {cell.alternatives
-                              .slice(1)
-                              .map((alt, idx) => (
-                                <div
-                                  key={idx}
-                                  className="flex items-start justify-between gap-2 text-[11px] leading-snug"
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className={cn(
+                                    "inline-flex items-center rounded px-1 text-[10px] font-semibold uppercase tracking-wider",
+                                    isDescendant
+                                      ? "bg-accent-soft/40 text-accent"
+                                      : "bg-surface-subtle text-ink-dim",
+                                  )}
+                                  title={
+                                    cell.descendant_kind === "variations"
+                                      ? `${label} — variations (seed: ${cell.seed_alternative_text ?? "—"})`
+                                      : cell.descendant_kind === "rerun"
+                                        ? `${label} — re-run`
+                                        : `${label} — original`
+                                  }
                                 >
-                                  <div className="min-w-0 flex-1">
-                                    <span className="mr-1.5 inline-block w-3 text-[10px] text-ink-dim">
-                                      {String.fromCharCode(66 + idx)}
-                                    </span>
-                                    <span className="text-ink-muted">
-                                      {alt.text}
-                                    </span>
-                                  </div>
-                                  <AltScoreBadge
-                                    band={alt.band ?? null}
-                                    score={alt.score ?? null}
-                                    signal={alt.signal ?? null}
+                                  {label}
+                                </span>
+                                {isDescendant && modeLetter ? (
+                                  <span
+                                    title={modeTitle}
+                                    className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded bg-surface-subtle px-1 text-[10px] font-semibold text-ink-muted"
+                                  >
+                                    {modeLetter}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="text-ink">
+                                {cell.description}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2 text-[10px]">
+                                {cell.confidence ? (
+                                  <ConfidencePill
+                                    value={cell.confidence}
+                                    score={cell.logprob_score ?? null}
                                   />
+                                ) : null}
+                                <LogprobBadge score={cell.logprob_score ?? null} />
+                                {typeof cell.token_count === "number" &&
+                                cell.token_count > 0 ? (
+                                  <span
+                                    className="font-mono text-ink-dim"
+                                    title="Output tokens for this asset's chosen description."
+                                  >
+                                    tok {cell.token_count}
+                                  </span>
+                                ) : null}
+                              </div>
+                              {/* DESCRIPTION_2..N stacked under each
+                                  version's headline so semantic /
+                                  lexical divergence stays visible
+                                  per-version, not just per-run. */}
+                              {Array.isArray(cell.alternatives) &&
+                              cell.alternatives.length > 1 ? (
+                                <div className="mt-1 space-y-0.5 border-t border-surface-border/40 pt-1">
+                                  {cell.alternatives
+                                    .slice(1)
+                                    .map((alt, idx) => (
+                                      <div
+                                        key={idx}
+                                        className="flex items-start justify-between gap-2 text-[11px] leading-snug"
+                                      >
+                                        <div className="min-w-0 flex-1">
+                                          <span className="mr-1.5 inline-block w-3 text-[10px] text-ink-dim">
+                                            {String.fromCharCode(66 + idx)}
+                                          </span>
+                                          <span className="text-ink-muted">
+                                            {alt.text}
+                                          </span>
+                                        </div>
+                                        <AltScoreBadge
+                                          band={alt.band ?? null}
+                                          score={alt.score ?? null}
+                                          signal={alt.signal ?? null}
+                                        />
+                                      </div>
+                                    ))}
                                 </div>
-                              ))}
-                          </div>
-                        ) : null}
+                              ) : null}
+                            </div>
+                          );
+                        })}
                       </div>
                     ) : (
                       <span className="text-ink-dim">—</span>

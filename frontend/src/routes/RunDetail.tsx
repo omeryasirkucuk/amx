@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity as ActivityIcon, Loader2, PauseCircle, Pin, PinOff, PlayCircle, RefreshCw, SkipForward, Timer } from "lucide-react";
+import { Activity as ActivityIcon, Loader2, PauseCircle, Pin, PinOff, PlayCircle, RefreshCw, SkipForward, Sparkles, Timer } from "lucide-react";
 
 import type { StructuredAlternative } from "../lib/api";
 import { apiFetch, api } from "../lib/api";
@@ -19,6 +19,7 @@ import StatusPill from "../components/StatusPill";
 import AlternativesModeBadge from "../components/ui/AlternativesModeBadge";
 import { ConfidencePill, LogprobBadge } from "../components/ui/InsightBadges";
 import RerunDialog from "../components/RerunDialog";
+import VariationsDialog from "../components/VariationsDialog";
 import ResultsFilterBar, {
   type GroupKey,
   type ReviewPreset,
@@ -88,6 +89,73 @@ interface RunDetailPayload {
       buffer is lost (e.g. Studio restart mid-run) still shows real
       progress instead of "Waiting for the worker to begin…". */
   current_step_label?: string | null;
+  /** Captured by the executor when a worker fails. Drives the
+   *  failure-banner on the results tab so a 0.0s failed Re-Run /
+   *  Variations submit doesn't render as the generic "no per-column
+   *  suggestions" empty state. */
+  error_text?: string | null;
+  /** Re-Run + Variations children carry a lineage breadcrumb so
+   *  the page header can show "From run #N · seed: …" without an
+   *  extra fetch. Populated server-side by ``history.get_run`` from
+   *  ``settings_json.parent_run_id`` (+ the first run_results row's
+   *  ``seed_alternative_*`` for Variations). Null for original runs. */
+  lineage?: {
+    parent_run_id: number;
+    kind: "variations" | "rerun";
+    seed_alternative_id?: string | null;
+    seed_alternative_text?: string | null;
+  } | null;
+}
+
+/** Inline lineage chip rendered under the status row when this run
+ *  is a Variations or Re-Run child. Clickable → navigates back to
+ *  the parent run. The seed text is truncated to 60 chars so it fits
+ *  on one row without crowding out the other chips. */
+function LineageChip({
+  lineage,
+}: {
+  lineage: NonNullable<RunDetailPayload["lineage"]>;
+}) {
+  const seedText = (lineage.seed_alternative_text ?? "").trim();
+  const truncated =
+    seedText.length > 60 ? `${seedText.slice(0, 60)}…` : seedText;
+  // ``seed_alternative_id`` is the string ``"{parent_result_id}:{idx}"``;
+  // surface the letter (A/B/C…) by decoding the index suffix.
+  const altLetter = (() => {
+    const id = lineage.seed_alternative_id ?? "";
+    const colon = id.lastIndexOf(":");
+    if (colon === -1) return null;
+    const idx = Number(id.slice(colon + 1));
+    if (!Number.isFinite(idx)) return null;
+    return String.fromCharCode(65 + idx);
+  })();
+  return (
+    <Link
+      to={`/runs/${lineage.parent_run_id}`}
+      title="Navigate to the parent run that produced the seed alternative"
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-subtle/40 px-2.5 py-0.5 font-mono text-[10.5px] text-ink-muted hover:border-accent/40 hover:bg-accent-soft/30 hover:text-ink",
+      )}
+    >
+      <span className="text-ink-dim">
+        {lineage.kind === "variations" ? "From run" : "Re-run of run"}
+      </span>
+      <span className="text-accent">#{lineage.parent_run_id}</span>
+      {lineage.kind === "variations" && altLetter && (
+        <>
+          <span className="text-ink-dim">· seed:</span>
+          <span className="rounded bg-accent/15 px-1 text-[10px] font-semibold text-accent">
+            {altLetter}
+          </span>
+        </>
+      )}
+      {lineage.kind === "variations" && truncated && (
+        <span className="max-w-[28rem] truncate text-ink-dim">
+          "{truncated}"
+        </span>
+      )}
+    </Link>
+  );
 }
 
 /** PR C (citation chain): machine-readable provenance for a
@@ -171,12 +239,82 @@ interface ResultRow {
    *  the column shipped — the review UI treats both as "mode not
    *  recorded" and hides the badge. */
   alternatives_mode?: "semantic" | "lexical" | null;
+  /** Under-production audit — populated when the LLM (or parser)
+   *  returned fewer alternatives than the active profile asked for.
+   *  Drives the inline ⚠ chip on the version chip; ``null`` on the
+   *  success path so absence is meaningful. */
+  production_warning?: string | null;
 }
 
 interface ResultsResponse {
   run_id: number;
   results: ResultRow[];
   count: number;
+  /** Inline lineage tree — populated when the query string carries
+   *  ``include_descendants=true``. Each entry is one child run that
+   *  was either Re-Run from this row or generated as a seeded
+   *  Variations descendant. ``version_label`` is computed
+   *  server-side (v2 / v3 / …) so labels stay stable across reloads. */
+  descendants?: DescendantRunEntry[];
+  has_descendants?: boolean;
+}
+
+interface DescendantRunEntry {
+  run_id: number;
+  kind: "variations" | "rerun";
+  /** ``"{parent_result_id}:{alt_index}"`` for variations; null on
+   *  Re-Run descendants which have no per-alternative seed. */
+  seed_alternative_id: string | null;
+  /** Verbatim text of the seed alternative, captured at submit
+   *  time so the group header survives a parent-row rewrite. */
+  seed_alternative_text?: string | null;
+  mode: string | null;
+  model: string | null;
+  provider: string | null;
+  /** Confidence signal active when this descendant ran
+   *  (``self_consistency`` / ``logprob`` / ``judge`` / ``self_decl``
+   *  / ``none``). Surfaces in the version-group header so the user
+   *  understands which badge type to expect on this version's
+   *  alternative rows. Null on legacy / non-LLM rows. */
+  confidence_signal?: string | null;
+  /** ``analysis_runs.status`` — drives the refresh-safe
+   *  ``Generating variations…`` indicator. When the page mounts
+   *  after a refresh during execution, ``running`` here keeps the
+   *  spinner alive until the SSE terminal event arrives. */
+  status?: string | null;
+  /** SSE job id for descendants whose worker thread is still in
+   *  the live job registry. Drives mount-time SSE re-subscription
+   *  so a refresh during execution doesn't drop the stream. Null
+   *  for descendants that already exited (or that started in a
+   *  previous process and have no live worker to attach to). */
+  live_job_id?: string | null;
+  depth: number;
+  over_max_depth: boolean;
+  version_label: string;
+  rows: ResultRow[];
+}
+
+/** Per-asset version metadata threaded into each ``ResultRowItem``
+ *  when the row is part of a multi-version asset stack. Drives the
+ *  version chip in the row header + the optional seed-provenance
+ *  banner. ``versionLabel`` is computed PER ASSET (v1 on the direct
+ *  row; v2/v3/… on descendant rows in chronological order within
+ *  this same asset) — independent of any global descendant counter. */
+interface VersionInfo {
+  versionLabel: string;
+  kind: "original" | "variations" | "rerun";
+  runId: number;
+  mode: string | null;
+  model: string | null;
+  seedAlternativeId: string | null;
+  seedAlternativeText: string | null;
+  /** Active confidence signal for this version (e.g.
+   *  ``self_consistency``). Surfaces in the version-group banner so
+   *  badge-type differences between versions are immediately
+   *  understandable to the reviewer. Null on v1 (the original run's
+   *  signal is already visible via row-level badges) and on
+   *  descendant rows that didn't carry signal info. */
+  confidenceSignal: string | null;
 }
 
 type Tab = "summary" | "results" | "scope" | "settings";
@@ -1550,7 +1688,7 @@ function PersistedRunView({ runId }: { runId: number }) {
     // navigate to the new run id to see the regenerated suggestions.
     queryFn: () =>
       apiFetch<ResultsResponse>(
-        `/api/history/runs/${runId}/results?include_history=true`,
+        `/api/history/runs/${runId}/results?include_history=true&include_descendants=true`,
       ),
     enabled: tab === "results",
     // Tail the results table while live so partial output streams in
@@ -1662,6 +1800,9 @@ function PersistedRunView({ runId }: { runId: number }) {
                 {run.data.llm_model ?? "—"}
               </span>
               <RunHeaderTokenCost run={run.data} />
+              {run.data.lineage && (
+                <LineageChip lineage={run.data.lineage} />
+              )}
               <RunHeaderScope run={run.data} />
               <RunHeaderRagBadge run={run.data} />
               <RunHeaderCodeBadge run={run.data} />
@@ -1725,11 +1866,27 @@ function PersistedRunView({ runId }: { runId: number }) {
           <SummaryTab run={run.data} />
         </TabPanel>
         <TabPanel value="results">
+          {results.data?.has_descendants && (
+            <p className="mb-3 text-[11px] text-ink-dim">
+              Showing {results.data.count} original ·{" "}
+              {results.data.descendants?.length ?? 0}{" "}
+              {(results.data.descendants?.length ?? 0) === 1
+                ? "variation / re-run"
+                : "variations / re-runs"}
+              . Each version below is independently collapsible — fall
+              back to v1 at any time by collapsing the newer ones.
+            </p>
+          )}
           <ResultsTab
             runId={runId}
             loading={results.isLoading}
             rows={results.data?.results ?? []}
             error={results.error as Error | undefined}
+            descendants={results.data?.descendants ?? []}
+            runStatus={(run.data?.status as string | undefined) ?? null}
+            runErrorText={
+              (run.data?.error_text as string | undefined) ?? null
+            }
             scope={{
               db_profile: run.data?.db_profile ?? null,
               database: run.data?.database ?? null,
@@ -2025,17 +2182,122 @@ interface PendingResponseLite {
   count: number;
 }
 
+/** Empty-state surface when a run finished with ``status="failed"``.
+ *
+ *  Surfaces the persisted ``analysis_runs.error_text`` (set by the
+ *  executor when a worker fails) so the user doesn't have to ssh
+ *  into the host and tail the Studio log to figure out why a 0.0s
+ *  Re-Run or Variations submit produced no rows. Includes a
+ *  "Copy traceback" button — the persisted message is often the
+ *  first line of an exception chain, so the user can paste it
+ *  into a bug report or grep for it in their own logs.
+ */
+function FailedRunCard({ errorText }: { errorText: string }) {
+  const [open, setOpen] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const onCopy = () => {
+    void navigator.clipboard.writeText(errorText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <Card>
+      <CardHeader title="Run failed" />
+      <CardBody>
+        <p className="text-sm text-ink-muted">
+          The worker stopped before producing any per-column
+          suggestions. The error below was captured on the run row
+          (``analysis_runs.error_text``).
+        </p>
+        <div className="mt-3 rounded-md border border-critical/30 bg-critical-soft/20 px-3 py-2 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-critical hover:underline"
+            >
+              {open ? "Hide error details" : "View error details"}
+            </button>
+            <button
+              type="button"
+              onClick={onCopy}
+              className="rounded border border-critical/40 px-2 py-0.5 text-[10px] uppercase tracking-wider text-critical hover:bg-critical-soft/40"
+            >
+              {copied ? "Copied" : "Copy traceback"}
+            </button>
+          </div>
+          {open && (
+            <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-ink p-2 font-mono text-[11px] text-bg">
+              {errorText}
+            </pre>
+          )}
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
+
+/** Mount-time hydrated SSE subscriber. One instance per descendant
+ *  whose worker is still alive on page load. Renders nothing — it
+ *  exists purely to keep the SSE stream attached after a refresh
+ *  during execution. When the worker emits a terminal event
+ *  (``job.done`` / ``job.failed`` / ``job.cancelled``), the
+ *  ``onTerminal`` callback fires and the parent refetches the
+ *  results query so the spinner disappears + new alternatives fold
+ *  in. Stale workers (started in a previous process and orphaned)
+ *  come back with ``live_job_id = null`` and never reach this
+ *  component — the ``status === "running"`` indicator stays on
+ *  until a future poll surfaces a terminal state. */
+function DescendantStreamSubscriber({
+  jobId,
+  onTerminal,
+}: {
+  jobId: string;
+  onTerminal: () => void;
+}) {
+  const sse = useEventSource({
+    path: `/api/runs/${encodeURIComponent(jobId)}/events`,
+    enabled: true,
+  });
+  useEffect(() => {
+    const terminal = sse.events.find(
+      (e) =>
+        e.type === "job.done" ||
+        e.type === "job.failed" ||
+        e.type === "job.cancelled",
+    );
+    if (terminal) onTerminal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sse.events]);
+  return null;
+}
+
 function ResultsTab({
   runId,
   loading,
   rows,
   error,
+  descendants,
+  runStatus,
+  runErrorText,
   scope,
 }: {
   runId: number;
   loading: boolean;
   rows: ResultRow[];
   error?: Error;
+  /** Variations / Re-Run children of this run. Each entry is a
+   *  child run group rendered as a collapsible card below the v1
+   *  results so the user can fall back to v1 by collapsing. */
+  descendants: DescendantRunEntry[];
+  /** Run-level status from analysis_runs.status. When ``failed`` the
+   *  empty state surfaces the persisted error instead of the generic
+   *  "no per-column suggestions" copy. */
+  runStatus: string | null;
+  /** analysis_runs.error_text — populated by the executor when a
+   *  worker fails. Drives the failure-banner expandable. */
+  runErrorText: string | null;
   scope: {
     db_profile: string | null;
     database: string | null;
@@ -2108,6 +2370,171 @@ function ResultsTab({
     }
     return m;
   }, [pending.data]);
+
+  // Map asset key (schema|table|column) → the result_id currently
+  // holding the pending pick for that asset. Drives the per-row
+  // cross-version lock in ``ResultRowItem``: when an asset has
+  // multiple versions (v1 + v2/v3 stacked inline), only the version
+  // whose row holds the pending entry stays clickable; the rest of
+  // that asset's rows render their alternatives non-clickable so the
+  // user can't queue two competing descriptions for the same column
+  // and have an arbitrary one win at Apply time.
+  const pendingAssetHolderByKey = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of pending.data?.pending ?? []) {
+      if (p.result_id == null) continue;
+      const key = `${p.schema}.${p.table}.${p.column ?? "__table__"}`;
+      m.set(key, p.result_id);
+    }
+    return m;
+  }, [pending.data]);
+
+  // Per-asset version index. Joins each descendant row to its v1
+  // counterpart by ``(schema, table, column)``, sorts within each
+  // asset chronologically, and assigns ``v2`` / ``v3`` / … labels
+  // PER-ASSET rather than globally. Two assets with their own
+  // independent variation chains both produce v2 on the first
+  // variation — the fact that other assets in the same parent run
+  // also have variations is irrelevant to this asset's version
+  // counter. (The previous global numbering surfaced v3 on an
+  // asset's first variation just because two earlier variations
+  // existed for other assets — confusing and wrong.)
+  //
+  // Also builds the descendants-by-v1 list so the rendering
+  // pipeline can splice descendant ``ResultRow``s into the main
+  // flow immediately after their v1 counterpart. Each descendant
+  // then renders as a full ``ResultRowItem`` (same component as
+  // v1) so clicks, SC badges, ✨ triggers, and applied/skipped
+  // state all work identically — no separate read-only variant.
+  const { descendantsByV1Id, versionInfoByRowId } = useMemo(() => {
+    const v1IdByAssetKey = new Map<string, number>();
+    for (const r of rows) {
+      const key = `${r.schema_name}.${r.table_name}.${r.column_name ?? "__table__"}`;
+      if (r.id != null) v1IdByAssetKey.set(key, r.id);
+    }
+    type DescPair = { row: ResultRow; entry: DescendantRunEntry };
+    const pairsByAssetKey = new Map<string, DescPair[]>();
+    for (const entry of descendants) {
+      for (const dr of entry.rows ?? []) {
+        const key = `${dr.schema_name}.${dr.table_name}.${dr.column_name ?? "__table__"}`;
+        if (!v1IdByAssetKey.has(key)) continue;
+        const arr = pairsByAssetKey.get(key) ?? [];
+        arr.push({ row: dr, entry });
+        pairsByAssetKey.set(key, arr);
+      }
+    }
+    const rowsByV1: Map<number, ResultRow[]> = new Map();
+    const labels: Map<number, VersionInfo> = new Map();
+    for (const [key, pairs] of pairsByAssetKey.entries()) {
+      const v1Id = v1IdByAssetKey.get(key);
+      if (v1Id == null) continue;
+      // Sort chronologically by descendant run id (ascending). The
+      // backend emits descendants in run-id order, but sort here
+      // defensively so the labels stay stable if the API ever changes.
+      pairs.sort((a, b) => (a.entry.run_id ?? 0) - (b.entry.run_id ?? 0));
+      const rowList: ResultRow[] = [];
+      pairs.forEach((p, i) => {
+        rowList.push(p.row);
+        if (p.row.id != null) {
+          labels.set(p.row.id, {
+            versionLabel: `v${i + 2}`,
+            kind: p.entry.kind,
+            runId: p.entry.run_id,
+            mode: p.entry.mode,
+            model: p.entry.model,
+            seedAlternativeId: p.entry.seed_alternative_id,
+            seedAlternativeText: p.entry.seed_alternative_text ?? null,
+            confidenceSignal: p.entry.confidence_signal ?? null,
+          });
+        }
+      });
+      rowsByV1.set(v1Id, rowList);
+    }
+    // Tag every v1 row whose asset has descendants with an explicit
+    // ``v1 — original`` versionInfo so the user sees an equal-weight
+    // label on v1 instead of the absence-of-chip implying "v1".
+    for (const [, v1Id] of v1IdByAssetKey.entries()) {
+      if (rowsByV1.has(v1Id)) {
+        labels.set(v1Id, {
+          versionLabel: "v1",
+          kind: "original",
+          runId: 0,
+          mode: null,
+          model: null,
+          seedAlternativeId: null,
+          seedAlternativeText: null,
+          confidenceSignal: null,
+        });
+      }
+    }
+    return { descendantsByV1Id: rowsByV1, versionInfoByRowId: labels };
+  }, [rows, descendants]);
+
+  // Refresh-safe in-flight indicator. For every descendant whose
+  // ``analysis_runs.status === "running"`` AND whose rows[] match a
+  // v1 asset on this page, record its kind + seed alt index + SSE
+  // job id under the v1 row id. The map drives:
+  //   1. The ``Generating variations…`` indicator restoration after
+  //      a refresh during execution (status=running alone is enough).
+  //   2. The per-alternative ✨ spinner restoration (seed alt idx
+  //      drives which letter to spin).
+  //   3. The SSE re-subscription so terminal events still flip the
+  //      UI when they arrive — ``DescendantStreamSubscriber`` below.
+  const liveDescendants = useMemo(() => {
+    const out = new Map<
+      number,
+      Array<{
+        kind: "variations" | "rerun";
+        seedAltIdx: number | null;
+        jobId: string | null;
+        runId: number;
+      }>
+    >();
+    const v1IdByAssetKey = new Map<string, number>();
+    for (const r of rows) {
+      const key = `${r.schema_name}.${r.table_name}.${r.column_name ?? "__table__"}`;
+      if (r.id != null) v1IdByAssetKey.set(key, r.id);
+    }
+    for (const desc of descendants) {
+      const isRunning =
+        desc.status === "running" || desc.status === "queued";
+      if (!isRunning) continue;
+      const seedAltIdx = (() => {
+        const id = desc.seed_alternative_id ?? "";
+        const colon = id.lastIndexOf(":");
+        if (colon === -1) return null;
+        const idx = Number(id.slice(colon + 1));
+        return Number.isFinite(idx) ? idx : null;
+      })();
+      for (const dr of desc.rows ?? []) {
+        const key = `${dr.schema_name}.${dr.table_name}.${dr.column_name ?? "__table__"}`;
+        const v1Id = v1IdByAssetKey.get(key);
+        if (v1Id == null) continue;
+        const arr = out.get(v1Id) ?? [];
+        arr.push({
+          kind: desc.kind,
+          seedAltIdx,
+          jobId: desc.live_job_id ?? null,
+          runId: desc.run_id,
+        });
+        out.set(v1Id, arr);
+      }
+    }
+    return out;
+  }, [rows, descendants]);
+
+  const onDescendantTerminal = useCallback(() => {
+    // Terminal SSE event for a descendant we re-subscribed to on
+    // mount. Refresh the results query so the next render sees
+    // ``status`` flipped to success/failed/partial and the
+    // ``Generating variations…`` indicator disappears, with the
+    // new alternatives folded in via the existing descendants
+    // splice path. Pending + recent-runs queries refresh too so
+    // the apply pipeline picks up the new alternatives.
+    queryClient.invalidateQueries({ queryKey: ["run-results"] });
+    queryClient.invalidateQueries({ queryKey: ["pending"] });
+    queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
+  }, [queryClient]);
 
   const queueApply = useMutation({
     mutationFn: () => {
@@ -2382,19 +2809,40 @@ function ResultsTab({
     };
   }, [rows, filterQuery, pendingByResultId]);
 
+  // Expand the filtered v1 list with each row's descendants spliced
+  // in immediately after their parent. The pagination + grouping
+  // below then iterates the expanded list, so v1 + v2/v3/… for the
+  // same asset always render adjacent — each as its own
+  // ``ResultRowItem`` with full click-to-apply / SC badge / ✨
+  // trigger parity. Filtering still operates on v1 only above
+  // (otherwise filtering by status would surface a descendant whose
+  // v1 was filtered out, breaking the v1/v2 stack semantics).
+  const expandedFilteredRows = useMemo(() => {
+    const out: ResultRow[] = [];
+    for (const r of filteredRows) {
+      out.push(r);
+      if (r.id != null) {
+        for (const dr of descendantsByV1Id.get(r.id) ?? []) {
+          out.push(dr);
+        }
+      }
+    }
+    return out;
+  }, [filteredRows, descendantsByV1Id]);
+
   // PR B — paginate the FLAT filtered list (page slicing happens before
   // grouping so a 50-row page may surface partial groups; that's
   // intentional, otherwise group-by-table on a wide schema would push
   // the page count above what the pagination controls advertise).
   const pageCount = Math.max(
     1,
-    Math.ceil(filteredRows.length / RESULTS_PAGE_SIZE),
+    Math.ceil(expandedFilteredRows.length / RESULTS_PAGE_SIZE),
   );
   const effectivePage = Math.min(currentPage, pageCount);
   const pagedRows = useMemo(() => {
     const start = (effectivePage - 1) * RESULTS_PAGE_SIZE;
-    return filteredRows.slice(start, start + RESULTS_PAGE_SIZE);
-  }, [filteredRows, effectivePage]);
+    return expandedFilteredRows.slice(start, start + RESULTS_PAGE_SIZE);
+  }, [expandedFilteredRows, effectivePage]);
 
   const grouped = useMemo(() => {
     // When ``Group`` is ``Table`` we honour the historical sort-within-
@@ -2526,12 +2974,26 @@ function ResultsTab({
     );
   }
   if (rows.length === 0) {
+    // Failed runs surface the persisted exception so the user doesn't
+    // have to ssh into the host and tail the studio log. Legitimate
+    // empty cases (missing-only filter dropped everything, scope was
+    // empty) keep the existing generic copy.
+    const isFailure = runStatus === "failed";
+    const trimmedError = (runErrorText ?? "").trim();
+    if (isFailure) {
+      return (
+        <FailedRunCard
+          errorText={trimmedError || "Worker reported no error message."}
+        />
+      );
+    }
     return (
       <Card>
         <CardBody className="text-sm text-ink-dim">
-          This run produced no per-column suggestions. (Run failed before
-          generating alternatives, or the missing-only filter dropped every
-          asset.)
+          This run produced no per-column suggestions. (The
+          missing-only filter dropped every asset, or the scope was
+          empty.) For executor failures, check the run's status —
+          failed runs surface the underlying error here.
         </CardBody>
       </Card>
     );
@@ -2542,10 +3004,30 @@ function ResultsTab({
   // Apply will overwrite the live comment for those, so they must
   // contribute to the CTA's count or the button stays disabled
   // ("Queue empty -- all applied") even though work is queued.
-  const queuedCount = rows.reduce(
-    (n, r) => n + (r.id != null && pendingByResultId.has(r.id) ? 1 : 0),
-    0,
-  );
+  //
+  // Descendant rows (v2/v3 from Re-Run / Variations) live in
+  // ``descendantsByV1Id`` and are spliced into the rendering
+  // pipeline separately from ``rows``. A pending entry on a
+  // descendant row must still tally here -- otherwise the user
+  // clicks an alternative on v2, the row's badge flips to
+  // ``accepted`` with ✓, but the page header keeps reading
+  // "0 queued" and the Apply CTA stays "Nothing to apply" because
+  // a reduce over ``rows`` alone never sees the v2 entry.
+  // Plain expression -- NOT a hook -- because three early returns
+  // above (loading, error, rows.length===0) would otherwise create a
+  // rules-of-hooks violation (React error #310: rendered fewer
+  // hooks than expected). The work is O(rows + descendants +
+  // pending) and runs once per render of a non-empty results
+  // surface; cheap enough without memoisation.
+  const queuedIds = new Set<number>();
+  for (const r of rows) if (r.id != null) queuedIds.add(r.id);
+  for (const drs of descendantsByV1Id.values()) {
+    for (const dr of drs) if (dr.id != null) queuedIds.add(dr.id);
+  }
+  let queuedCount = 0;
+  for (const id of pendingByResultId.keys()) {
+    if (queuedIds.has(id)) queuedCount += 1;
+  }
   // Applied & untouched: the row has a live-DB comment AND no
   // pending revision queued. Used for the "X applied" tally next to
   // the Apply CTA so it reflects committed work, not work currently
@@ -2574,6 +3056,24 @@ function ResultsTab({
 
   return (
     <div className="space-y-3">
+      {/* Mount-time SSE re-subscription. For every descendant whose
+          worker is still alive, a hidden subscriber tails the SSE
+          stream and invalidates the results query on terminal
+          events. After a page refresh during execution this
+          restores the ``Generating variations…`` indicator + the
+          per-alternative ✨ spinner + auto-flips the UI when the
+          worker finishes — no manual navigation required. */}
+      {Array.from(liveDescendants.entries()).flatMap(([v1Id, list]) =>
+        list
+          .filter((d): d is typeof d & { jobId: string } => !!d.jobId)
+          .map((d) => (
+            <DescendantStreamSubscriber
+              key={`${v1Id}-${d.runId}`}
+              jobId={d.jobId}
+              onTerminal={onDescendantTerminal}
+            />
+          )),
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-ink-muted">
           Run #{runId} produced <span className="font-mono">{rows.length}</span>{" "}
@@ -2937,12 +3437,29 @@ function ResultsTab({
               {tableRows.map((r) => {
                 const pendingEntry =
                   r.id != null ? pendingByResultId.get(r.id) : undefined;
+                // Cross-version lock: if a different row for the same
+                // asset (schema|table|column) currently holds the
+                // pending pick, this row's alternatives go non-
+                // clickable. ``r.id`` is the row's own id; the holder
+                // for this asset key may be this same row (no lock)
+                // or a sibling version (lock with that version's
+                // label so the tooltip can point the user there).
+                const assetKey = `${r.schema_name}.${r.table_name}.${r.column_name ?? "__table__"}`;
+                const holderRowId = pendingAssetHolderByKey.get(assetKey);
+                const lockedByOtherVersion =
+                  holderRowId != null && holderRowId !== r.id
+                    ? {
+                        versionLabel:
+                          versionInfoByRowId.get(holderRowId)?.versionLabel ?? "v1",
+                      }
+                    : null;
                 return (
                   <ResultRowItem
                     key={r.id}
                     row={r}
                     dbProfile={scope.db_profile}
                     pendingEntry={pendingEntry}
+                    lockedByOtherVersion={lockedByOtherVersion}
                     pickAlternative={(description) => {
                       if (!pendingEntry) return;
                       patchPending.mutate({ idx: pendingEntry.idx, description });
@@ -2980,6 +3497,19 @@ function ResultsTab({
                     }
                     onToggleReviewSelected={toggleReviewSelected}
                     isKeynavFocused={r.id != null && keynavFocusId === r.id}
+                    versionInfo={
+                      r.id != null
+                        ? (versionInfoByRowId.get(r.id) ?? null)
+                        : null
+                    }
+                    hydratedRunningKinds={
+                      r.id != null
+                        ? (liveDescendants.get(r.id) ?? []).map((d) => ({
+                            kind: d.kind,
+                            seedAltIdx: d.seedAltIdx,
+                          }))
+                        : []
+                    }
                   />
                 );
               })}
@@ -2996,9 +3526,19 @@ function ResultsTab({
           pageSize={RESULTS_PAGE_SIZE}
         />
       )}
+      {/* The per-asset ``VersionGroupsSection`` inside each
+        ``ResultRowItem`` now renders v1 + v2/v3 stacked inline. The
+        previous run-wide ``DescendantsPanel`` is intentionally
+        dropped — it duplicated the same data on a panel below the
+        results table with no per-asset context, and a user looking
+        at the country row had to scroll past the entire results
+        list to compare v1 vs v2. The component definition below
+        stays in the file (now unused but retained) until a
+        follow-up cleanup pass. */}
     </div>
   );
 }
+
 
 /** PR B — paginated controls under the results list. Renders a
  * 7-slot Prev/page-tokens/Next bar with elided middle when the
@@ -3261,6 +3801,9 @@ function ResultRowItemImpl({
   isReviewSelected = false,
   onToggleReviewSelected,
   isKeynavFocused = false,
+  versionInfo = null,
+  hydratedRunningKinds = [],
+  lockedByOtherVersion = null,
 }: {
   row: ResultRow;
   /** Active DB profile — keys the pinned-cells localStorage bucket
@@ -3286,15 +3829,44 @@ function ResultRowItemImpl({
   onToggleReviewSelected?: (id: number) => void;
   /** PR B — when true the row gets an outline ring; driven by ``j/k`` nav. */
   isKeynavFocused?: boolean;
+  /** Per-asset version metadata. When set, the row's header carries
+   *  a version chip (``v1`` / ``v2`` / …) + a seed-provenance banner
+   *  (for variations) or a re-run banner (for re-runs). When null,
+   *  the row renders as a stand-alone v1 with no version chrome —
+   *  same as the historical shape for runs without descendants. */
+  versionInfo?: VersionInfo | null;
+  /** Refresh-safe hydrated busy state — each entry is one
+   *  descendant whose worker is still in flight for THIS asset.
+   *  After a page reload during execution, this state comes from
+   *  the descendants endpoint's ``status === "running"`` field and
+   *  drives the ``Generating variations…`` indicator + the
+   *  per-alternative ✨ spinner exactly as the original-session
+   *  local state would. */
+  hydratedRunningKinds?: Array<{
+    kind: "variations" | "rerun";
+    seedAltIdx: number | null;
+  }>;
+  /** Mutual exclusion across asset versions. When the same asset
+   *  (schema/table/column) has an active pending entry on a DIFFERENT
+   *  row -- typically a sibling version (v1 vs v2/v3) -- this row's
+   *  alternative buttons go non-clickable so the user can't queue
+   *  two competing descriptions for the same column at once. The
+   *  ``versionLabel`` here names the version that holds the lock so
+   *  the tooltip can point the user at where to deselect first. */
+  lockedByOtherVersion?: { versionLabel: string } | null;
 }) {
   // When the row was fetched with ``include_history=true`` and a
   // re-run produced a v2/v3+ version, surface the latest entry's
-  // suggestions in place. Without this swap, the user had to
-  // navigate to the new run's detail page to see the regenerated
-  // alternatives — defeating the point of an inline Re-Run icon.
-  // ``displayRow`` keeps the original ``id`` (+ pending bookkeeping)
-  // but prefers the latest chain entry's content fields.
+  // suggestions in place — ONLY when this row is rendering as a
+  // stand-alone v1 with no descendants stacked alongside. With the
+  // v1+v2 stacked layout the descendants now render as their own
+  // ``ResultRowItem`` instances next to this one, so swapping the
+  // alternatives in place would duplicate v2's content under v1's
+  // header and leave the user with no way to see the original
+  // alternatives. Keep the legacy in-place swap for runs without
+  // descendants so the old re-run-chain UX still works.
   const latestChainEntry = (() => {
+    if (versionInfo != null) return null;
     const chain = row.history;
     if (!Array.isArray(chain) || chain.length === 0) return null;
     // chain is ordered by rerun_seq ASC; last entry is newest.
@@ -3375,6 +3947,67 @@ function ResultRowItemImpl({
   const { push: pushToast } = useToast();
   const [rerunOpen, setRerunOpen] = useState(false);
   const [rerunJobId, setRerunJobId] = useState<string | null>(null);
+  const [variationsState, setVariationsState] = useState<{
+    altIndex: number;
+    altText: string;
+    altLetter: string;
+  } | null>(null);
+  const [variationsJobId, setVariationsJobId] = useState<string | null>(null);
+  const variationsSse = useEventSource({
+    path: variationsJobId
+      ? `/api/runs/${encodeURIComponent(variationsJobId)}/events`
+      : "",
+    enabled: !!variationsJobId,
+  });
+  useEffect(() => {
+    if (!variationsJobId) return;
+    const terminal = variationsSse.events.find(
+      (e) => e.type === "job.done" || e.type === "job.failed" || e.type === "job.cancelled",
+    );
+    if (!terminal) return;
+    if (terminal.type === "job.done") {
+      const summary = (terminal as unknown as { summary?: { new_run_id?: number } }).summary;
+      const newRunId = summary?.new_run_id;
+      pushToast({
+        tone: "success",
+        title: "Variations complete",
+        description: newRunId
+          ? `New seeded variations saved under run #${newRunId}.`
+          : "Variations saved.",
+      });
+    } else if (terminal.type === "job.failed") {
+      const errMsg = (terminal as unknown as { error?: string }).error;
+      pushToast({
+        tone: "error",
+        title: "Variations failed",
+        description: errMsg || "The worker reported an error.",
+      });
+    } else {
+      pushToast({ tone: "warning", title: "Variations cancelled" });
+    }
+    queryClient.invalidateQueries({ queryKey: ["run-results"] });
+    queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
+    setVariationsJobId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variationsSse.events, variationsJobId]);
+  // OR the post-submit local job id (current session) with the
+  // hydrated descendants payload (refresh-safe). Either signal
+  // renders the ``Generating variations…`` inline status + the
+  // per-alternative ✨ spinner. When the SSE subscriber emits a
+  // terminal event the descendants query refetches; ``status``
+  // flips off ``running``; this OR resolves false; spinner clears.
+  const hydratedVariationKinds = hydratedRunningKinds.filter(
+    (d) => d.kind === "variations",
+  );
+  const variationsBusy =
+    (!!variationsJobId && !variationsSse.closed) ||
+    hydratedVariationKinds.length > 0;
+  // Per-alternative spinner refinement (use only the seed letter to
+  // spin instead of every alt) is a follow-up — the current
+  // ``variationsBusy`` boolean spins every alt's ✨, which is the
+  // pre-existing behaviour and survives the hydration patch. The
+  // important fix here is that ``variationsBusy`` itself resolves
+  // true after a refresh, not just on the local submit path.
   const rerunSse = useEventSource({
     path: rerunJobId ? `/api/runs/${encodeURIComponent(rerunJobId)}/events` : "",
     enabled: !!rerunJobId,
@@ -3421,7 +4054,9 @@ function ResultRowItemImpl({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rerunSse.events, rerunJobId]);
 
-  const rerunBusy = !!rerunJobId && !rerunSse.closed;
+  const rerunBusy =
+    (!!rerunJobId && !rerunSse.closed) ||
+    hydratedRunningKinds.some((d) => d.kind === "rerun");
   const rerunLabel = (() => {
     const parts: string[] = [];
     if (row.schema_name) parts.push(row.schema_name);
@@ -3525,7 +4160,49 @@ function ResultRowItemImpl({
         <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
         <LogprobBadge score={row.logprob_score} />
         {chosenStructured && <ConfidenceBadge alt={chosenStructured} />}
-        {rerunSeq > 0 && (
+        {/* Per-asset version chip — shown ONLY when the row is part
+            of a multi-version asset stack (v1+v2). For stand-alone
+            v1 rows with no descendants, no chip renders (same as the
+            historical layout). The descendant rows get the same chip
+            with v2/v3/… so the user perceives v1 and v2 as equal-
+            weight option sets rather than v1 + a debug panel. */}
+        {versionInfo != null && (
+          <span
+            title={
+              versionInfo.kind === "original"
+                ? "Original alternatives for this asset"
+                : versionInfo.kind === "variations"
+                  ? `Variations · run #${versionInfo.runId}`
+                  : `Re-Run · run #${versionInfo.runId}`
+            }
+          >
+            <Badge tone="info">{versionInfo.versionLabel}</Badge>
+          </span>
+        )}
+        {/* Under-production warning chip — surfaces when the LLM (or
+            the parser) returned fewer alternatives than the active
+            profile's n_alternatives. Hover for the two possible
+            causes (LLM under-produced vs. parser strict-mode dropped
+            one). Hidden on the success path so it's a clear signal
+            when present, not visual noise on every row. */}
+        {row.production_warning && (
+          <span
+            title={
+              `${row.production_warning}. Two possible causes: (1) the LLM ` +
+              "genuinely returned fewer blocks than requested, or (2) the " +
+              "output parser dropped a malformed block silently. Check the " +
+              "backend studio.log for the raw response if the count keeps " +
+              "missing the requested N."
+            }
+          >
+            <Badge tone="warning">⚠ {row.production_warning}</Badge>
+          </span>
+        )}
+        {/* Legacy in-place swap chip — only kept for runs without
+            descendants where ``include_history=true`` brought back
+            an older re-run chain. Hidden when versionInfo is set
+            because the new chip above replaces it. */}
+        {versionInfo == null && rerunSeq > 0 && (
           <span
             title={
               displayRow.user_instructions
@@ -3580,12 +4257,87 @@ function ResultRowItemImpl({
           )}
         </span>
       </div>
+      {/* Provenance banner — surfaces under the header for descendant
+          rows so the user knows AT A GLANCE which alternative seeded
+          this version + which run produced it. Hidden on v1
+          (versionInfo.kind === "original") and on rows with no
+          version chrome at all. */}
+      {versionInfo != null &&
+        versionInfo.kind !== "original" && (
+          <div className="mt-1.5 inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-border bg-surface-subtle/30 px-2.5 py-1 text-[10.5px] text-ink-dim">
+            <span className="text-ink-muted">
+              {versionInfo.kind === "variations"
+                ? (() => {
+                    const id = versionInfo.seedAlternativeId ?? "";
+                    const colon = id.lastIndexOf(":");
+                    const idx = Number(id.slice(colon + 1));
+                    const letter = Number.isFinite(idx)
+                      ? String.fromCharCode(65 + idx)
+                      : "?";
+                    return `variations of ${letter}`;
+                  })()
+                : "re-run"}
+            </span>
+            <Link
+              to={`/runs/${versionInfo.runId}`}
+              className="font-mono text-accent hover:underline"
+              title="Open this version on its own detail page"
+            >
+              run #{versionInfo.runId}
+            </Link>
+            {versionInfo.mode && (
+              <span>· {versionInfo.mode}</span>
+            )}
+            {versionInfo.confidenceSignal && (
+              <span
+                className="font-mono"
+                title={
+                  "Confidence signal active when this version ran. " +
+                  "Badge types between v1 and vN can legitimately differ; " +
+                  "the badge type on each row matches the signal active " +
+                  "when that row was produced."
+                }
+              >
+                · {versionInfo.confidenceSignal}
+              </span>
+            )}
+            {versionInfo.model && (
+              <span className="font-mono">· {versionInfo.model}</span>
+            )}
+            {versionInfo.seedAlternativeText && (
+              <span className="block w-full italic">
+                Seed:{" "}
+                <span className="font-mono not-italic text-ink-muted">
+                  "{versionInfo.seedAlternativeText}"
+                </span>
+              </span>
+            )}
+          </div>
+        )}
       <RerunDialog
         open={rerunOpen}
         onClose={() => setRerunOpen(false)}
         targets={[{ resultId: row.id, label: rerunLabel }]}
         onSubmitted={(jobId) => setRerunJobId(jobId)}
       />
+      {variationsState && (
+        <VariationsDialog
+          open={true}
+          onClose={() => setVariationsState(null)}
+          originalRunId={row.run_id}
+          resultId={row.id}
+          alternativeIndex={variationsState.altIndex}
+          seedText={variationsState.altText}
+          seedLetter={variationsState.altLetter}
+          initialMode={
+            displayRow.alternatives_mode === "lexical" ? "lexical" : "semantic"
+          }
+          onSubmitted={(jobId) => {
+            setVariationsJobId(jobId);
+            setVariationsState(null);
+          }}
+        />
+      )}
       {editable && (
         <div className="mt-2 rounded-md border border-border bg-surface-subtle/30 px-2.5 py-1.5 text-xs">
           <div className="mb-0.5 text-[10px] uppercase tracking-wider text-ink-dim">
@@ -3621,7 +4373,16 @@ function ResultRowItemImpl({
             // and ``isAppliedClean`` rows stay non-toggleable because the
             // description is already on disk in the live DB.
             const canDeselect = editable && isChosen && !applied;
-            const clickable = canPick || canRestore || canDeselect;
+            // Cross-version lock: if a sibling version of this asset
+            // already holds a pending pick, every alternative in THIS
+            // row becomes non-clickable until the user clears the
+            // sibling's selection. Matches the user's mental model
+            // that only one description per column can be queued at
+            // a time -- the apply step would otherwise write two
+            // competing comments for the same column with last-write-
+            // wins semantics that are invisible from the SPA.
+            const clickable =
+              (canPick || canRestore || canDeselect) && !lockedByOtherVersion;
             return (
               <button
                 key={`${row.id}-${idx}`}
@@ -3633,19 +4394,21 @@ function ResultRowItemImpl({
                 }}
                 disabled={!clickable || isMutating}
                 title={
-                  isAppliedClean
-                    ? isChosen
-                      ? "Currently applied to the live database."
-                      : "Click to queue this alternative as a revision -- the next Apply overwrites the live comment."
-                    : applied
+                  lockedByOtherVersion
+                    ? `Locked: this asset already has a selection on ${lockedByOtherVersion.versionLabel}. Deselect it there first to pick from this version.`
+                    : isAppliedClean
                       ? isChosen
-                        ? "Pending revision uses this alternative -- Apply to overwrite the live comment."
-                        : "Make this the queued revision (does not write to the database until Apply)."
-                      : skipped
-                        ? "Click to restore this row to the pending queue with this alternative chosen."
-                        : isChosen
-                          ? "Click again to deselect — sends the row back to the unreviewed queue."
-                          : "Make this the chosen alternative"
+                        ? "Currently applied to the live database."
+                        : "Click to queue this alternative as a revision -- the next Apply overwrites the live comment."
+                      : applied
+                        ? isChosen
+                          ? "Pending revision uses this alternative -- Apply to overwrite the live comment."
+                          : "Make this the queued revision (does not write to the database until Apply)."
+                        : skipped
+                          ? "Click to restore this row to the pending queue with this alternative chosen."
+                          : isChosen
+                            ? "Click again to deselect — sends the row back to the unreviewed queue."
+                            : "Make this the chosen alternative"
                 }
                 className={cn(
                   "flex w-full items-start gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors duration-fast",
@@ -3674,6 +4437,47 @@ function ResultRowItemImpl({
                     <ConfidenceBadge alt={structuredAlt} />
                   ) : null;
                 })()}
+                {visible.length >= 2 && (() => {
+                  // While the variations worker is in flight, the same
+                  // ✨ slot reads as a spinner so the row's user sees
+                  // that *this* alternative is the one being varied
+                  // around — hiding the button would tell them nothing.
+                  // The inline "Generating variations…" status below
+                  // the row covers row-agnostic context. We click-disable
+                  // the button so a stray click doesn't fire a second
+                  // worker against the same seed.
+                  if (variationsBusy) {
+                    return (
+                      <span
+                        title="Generating variations…"
+                        className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-accent"
+                      >
+                        <Loader2 size={11} className="animate-spin" />
+                      </span>
+                    );
+                  }
+                  return (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const letter = isChosen
+                          ? "✓"
+                          : String.fromCharCode(65 + idx);
+                        setVariationsState({
+                          altIndex: idx,
+                          altText: alt,
+                          altLetter: letter === "✓" ? "★" : letter,
+                        });
+                      }}
+                      title="Generate variations from this alternative"
+                      className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-dim hover:bg-surface-subtle hover:text-accent"
+                      aria-label="Generate variations from this alternative"
+                    >
+                      <Sparkles size={11} />
+                    </button>
+                  );
+                })()}
               </button>
             );
           })
@@ -3689,10 +4493,18 @@ function ResultRowItemImpl({
             then Apply to overwrite the live comment.
           </p>
         )}
+        {variationsBusy && (
+          <p className="px-1 text-[10.5px] text-accent inline-flex items-center gap-1">
+            <Loader2 size={10} className="animate-spin" aria-hidden />
+            Generating variations… results will appear here and in /history
+            when done.
+          </p>
+        )}
       </div>
     </li>
   );
 }
+
 
 // Public name kept the same so import sites and inspector traces are
 // unaffected by the memo wrapping. Default shallow prop equality

@@ -67,11 +67,15 @@ def list_recent_runs(
     cmd_filter = None if (command or "").strip().lower() in {"", "all"} else command
     rows = _store().list_recent_runs(limit=limit, command_filter=cmd_filter)
     # Build a {run_id: job_id} index in O(active jobs) so the per-row
-    # lookup below is O(1). Apply / rerun jobs are skipped — only the
-    # primary "run" worker maps to an analyze.run / rerun row id.
+    # lookup below is O(1). ``apply`` jobs don't carry a run_id and
+    # are skipped; ``run``, ``rerun``, and ``variations`` jobs each
+    # map to an analysis_runs row id and must surface live progress
+    # so the Studio's per-row Cancel control + the run-detail
+    # subscriber both work for in-flight Re-Run / Variations jobs.
+    _LIVE_JOB_KINDS = {"run", "rerun", "variations"}
     live_by_run_id: dict[int, str] = {}
     for job in jobs.list():
-        if job.kind != "run":
+        if job.kind not in _LIVE_JOB_KINDS:
             continue
         if job.status not in ("queued", "running"):
             continue
@@ -108,7 +112,11 @@ def get_run(
         )
     live_job_id: str | None = None
     for job in jobs.list():
-        if job.kind == "run" and job.run_id == run_id and job.status in ("queued", "running"):
+        if (
+            job.kind in ("run", "rerun", "variations")
+            and job.run_id == run_id
+            and job.status in ("queued", "running")
+        ):
             live_job_id = job.id
             break
     row = dict(row)
@@ -123,12 +131,39 @@ def get_run(
             row["database"] = settings.get("database") or None
         if row.get("catalog") in (None, ""):
             row["catalog"] = settings.get("catalog") or None
+
+    # Lineage chip — surface the parent run id (for Variations + Re-Run
+    # children) so the Studio header can render ``From run #N · seed:
+    # …`` without an extra fetch. Variations capture the seed text on
+    # the first run_results row; we read it lazily to avoid bloating
+    # this hot endpoint on runs that have no descendants.
+    lineage: dict[str, Any] = {}
+    if isinstance(settings, dict):
+        parent = settings.get("parent_run_id")
+        if isinstance(parent, int) and parent > 0:
+            lineage["parent_run_id"] = parent
+            trigger = settings.get("trigger") or ""
+            lineage["kind"] = "variations" if str(trigger) == "variations" else "rerun"
+            # For Variations, surface the seed text + id from any
+            # row in this run (they all share the same seed). For
+            # Re-Run there is no per-alternative seed so both fields
+            # stay null.
+            if lineage["kind"] == "variations":
+                first = _store().get_run_results(run_id)
+                for r in first or []:
+                    if r.get("seed_alternative_id"):
+                        lineage["seed_alternative_id"] = r["seed_alternative_id"]
+                        lineage["seed_alternative_text"] = r.get("seed_alternative_text")
+                        break
+    if lineage:
+        row["lineage"] = lineage
     return row
 
 
 @router.get("/runs/{run_id}/results")
 def get_run_results(
     run_id: int,
+    jobs: JobRegistry = Depends(get_jobs),
     unevaluated_only: bool = Query(default=False),
     include_history: bool = Query(
         default=False,
@@ -136,6 +171,17 @@ def get_run_results(
             "When true, attach the full re-run chain (original + every "
             "child re-run row) to each result under ``history``. Used by "
             "the Studio history drawer to render v1/v2/v3 side-by-side."
+        ),
+    ),
+    include_descendants: bool = Query(
+        default=False,
+        description=(
+            "When true, fetch the descendant Variations + Re-Run runs "
+            "and return them under ``descendants`` so the run-detail "
+            "page can render them inline (Variations nested under the "
+            "seed alternative; Re-Run as sibling groups). Variations "
+            "recurse up to three levels deep; rows beyond carry "
+            "``over_max_depth: true``. Re-Run descend one level only."
         ),
     ),
 ) -> dict[str, Any]:
@@ -150,7 +196,41 @@ def get_run_results(
                 row["history"] = store.get_result_chain(int(row["id"]))
             except Exception:
                 row["history"] = []
-    return {"run_id": run_id, "results": rows, "count": len(rows)}
+    payload: dict[str, Any] = {"run_id": run_id, "results": rows, "count": len(rows)}
+    if include_descendants:
+        try:
+            descendants = store.get_descendant_runs(int(run_id))
+        except Exception:
+            descendants = []
+        # ``version_label`` is computed server-side so the labels are
+        # stable across page reloads and the frontend doesn't need to
+        # re-sort. v1 = the direct run; v2..vN = descendants in
+        # collection order. Each descendant carries its own label so
+        # the inline rendering can group v1 + v2/v3 side-by-side.
+        for idx, entry in enumerate(descendants, start=2):
+            entry["version_label"] = f"v{idx}"
+        # ``live_job_id`` per descendant — used by the Studio's
+        # mount-time SSE hydration to re-subscribe after a page
+        # refresh during execution. Without it, the
+        # ``Generating variations…`` indicator only lives in
+        # client memory and a reload silently wipes it. Builds the
+        # same {run_id: job_id} index the recent-runs list uses.
+        live_by_run_id: dict[int, str] = {}
+        for job in jobs.list():
+            if job.kind not in ("run", "rerun", "variations"):
+                continue
+            if job.status not in ("queued", "running"):
+                continue
+            if job.run_id is None:
+                continue
+            live_by_run_id[int(job.run_id)] = job.id
+        for entry in descendants:
+            entry["live_job_id"] = live_by_run_id.get(int(entry["run_id"]))
+        payload["descendants"] = descendants
+        # Convenience flag — frontend uses this to decide whether to
+        # bother rendering the descendants section.
+        payload["has_descendants"] = bool(descendants)
+    return payload
 
 
 @router.get("/results/{result_id}/history")

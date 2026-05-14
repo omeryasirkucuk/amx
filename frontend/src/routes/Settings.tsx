@@ -45,6 +45,9 @@ interface LlmProfileSummary {
   provider: string;
   model: string;
   is_active: boolean;
+  /** Lazily resolved on the backend — keyring lookups are cached. See
+   *  ``amx.web.routers.profiles._check_credentials_cached``. */
+  has_credentials?: boolean;
 }
 
 interface DocProfile {
