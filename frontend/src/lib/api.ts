@@ -341,6 +341,15 @@ export interface RecentRunsResponse {
   command_filter: string | null;
   runs: RunRow[];
   count: number;
+  /**
+   * Global count of runs whose status is ``ready_for_review`` or
+   * ``applied_partial`` — i.e. runs that still have unreviewed result
+   * rows. Computed against the full ``analysis_runs`` table on the
+   * server so the Studio Landing chip is honest regardless of the
+   * recent-feed window. Optional for forward-compatibility with older
+   * API revisions.
+   */
+  pending_review_total?: number;
 }
 
 export interface ApplyEvent {
