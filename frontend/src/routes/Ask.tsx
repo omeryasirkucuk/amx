@@ -204,6 +204,8 @@ export default function Ask() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
     },
+    // Errors render via the inline toast above; skip the global one.
+    meta: { silentError: true },
   });
   const pendingDeleteSession =
     pendingDeleteSessionId == null
@@ -247,6 +249,8 @@ export default function Ask() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
     },
+    // Errors render via the inline toast above; skip the global one.
+    meta: { silentError: true },
   });
 
   // The chat panel is "empty" when the user has no loaded session AND

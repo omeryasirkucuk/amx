@@ -1,10 +1,16 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  MutationCache,
+  QueryCache,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 
 import App from "./App";
 import { captureTokenFromUrl, consumeDeeplink } from "./lib/auth";
+import { publishQueryError } from "./lib/queryErrorBus";
 import "./styles/index.css";
 
 // Capture the bearer token before the React tree mounts so the very
@@ -97,6 +103,11 @@ window.addEventListener("unhandledrejection", (event) => {
 // dashboard refreshes). 30s is short enough that a /sync run reflects
 // quickly, long enough that scrubbing doesn't hammer the local
 // uvicorn.
+// QueryCache + MutationCache surface every failure that wasn't opted
+// out via `meta: { silentError: true }` through the global toast
+// listener (see `<QueryErrorListener />` in App.tsx). Routes that
+// already render an inline error banner (Audit, Ask, RunsCompare cell
+// deep-dives) keep that flag set so the toast doesn't duplicate.
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -105,6 +116,24 @@ const queryClient = new QueryClient({
       retry: 1,
     },
   },
+  queryCache: new QueryCache({
+    onError: (error, query) => {
+      if (query.meta?.silentError) return;
+      publishQueryError({
+        error,
+        source: "query",
+        scope: Array.isArray(query.queryKey)
+          ? query.queryKey.map((k) => String(k)).join(":")
+          : String(query.queryKey),
+      });
+    },
+  }),
+  mutationCache: new MutationCache({
+    onError: (error, _variables, _context, mutation) => {
+      if (mutation.meta?.silentError) return;
+      publishQueryError({ error, source: "mutation" });
+    },
+  }),
 });
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

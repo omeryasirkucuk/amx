@@ -26,7 +26,7 @@ import { getStoredToken } from "../lib/auth";
 import { cn } from "../lib/cn";
 import { humanizeDelta } from "../lib/humanizeDelta";
 import { invalidateAfterDbProfileMutation } from "../lib/profileMutations";
-import { AlertDialog, InfoHint, Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
+import { AlertDialog, InfoHint, RouteState, Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
 import { StyleReferenceCard } from "../components/StyleReferenceCard";
 
 type Tab = "db" | "llm" | "docs" | "code";
@@ -173,6 +173,7 @@ function DbProfilesSection() {
         "/api/profiles/db",
       ),
     retry: false,
+    meta: { silentError: true },
   });
 
   // DB profile activation was retired in 0.13: every defined profile
@@ -224,7 +225,17 @@ function DbProfilesSection() {
         />
         <CardBody className="p-0">
           {profiles.isLoading ? (
-            <div className="px-5 py-6 text-sm text-ink-dim">Loading…</div>
+            <div className="px-5 py-6">
+              <RouteState status="loading" hideLoadingTitle loadingBlocks={3} />
+            </div>
+          ) : profiles.isError ? (
+            <div className="px-5 py-6">
+              <RouteState
+                status="error"
+                error={profiles.error}
+                onRetry={() => profiles.refetch()}
+              />
+            </div>
           ) : profiles.data?.profiles.length ? (
             <ul className="divide-y divide-surface-border">
               {profiles.data.profiles.map((p) => {
@@ -630,6 +641,7 @@ function LlmProfilesSection() {
         "/api/profiles/llm",
       ),
     retry: false,
+    meta: { silentError: true },
   });
   const activate = useMutation({
     mutationFn: (name: string) =>
@@ -661,7 +673,17 @@ function LlmProfilesSection() {
         />
         <CardBody className="p-0">
           {profiles.isLoading ? (
-            <div className="px-5 py-6 text-sm text-ink-dim">Loading…</div>
+            <div className="px-5 py-6">
+              <RouteState status="loading" hideLoadingTitle loadingBlocks={3} />
+            </div>
+          ) : profiles.isError ? (
+            <div className="px-5 py-6">
+              <RouteState
+                status="error"
+                error={profiles.error}
+                onRetry={() => profiles.refetch()}
+              />
+            </div>
           ) : profiles.data?.profiles.length ? (
             <ul className="divide-y divide-surface-border">
               {profiles.data.profiles.map((p) => (
@@ -1564,6 +1586,7 @@ function DocProfilesSection() {
     queryFn: () =>
       apiFetch<{ profiles: DocProfile[]; active: string | null }>("/api/profiles/docs"),
     retry: false,
+    meta: { silentError: true },
   });
   const activate = useMutation({
     mutationFn: (name: string) =>
@@ -1628,7 +1651,17 @@ function DocProfilesSection() {
         />
         <CardBody className="p-0">
           {profiles.isLoading ? (
-            <div className="px-5 py-6 text-sm text-ink-dim">Loading…</div>
+            <div className="px-5 py-6">
+              <RouteState status="loading" hideLoadingTitle loadingBlocks={3} />
+            </div>
+          ) : profiles.isError ? (
+            <div className="px-5 py-6">
+              <RouteState
+                status="error"
+                error={profiles.error}
+                onRetry={() => profiles.refetch()}
+              />
+            </div>
           ) : profiles.data?.profiles?.length ? (
             <ul className="divide-y divide-surface-border">
               {profiles.data.profiles.map((p) => (
@@ -2496,6 +2529,7 @@ function CodeProfilesSection() {
     queryFn: () =>
       apiFetch<{ profiles: CodeProfile[]; active: string | null }>("/api/profiles/code"),
     retry: false,
+    meta: { silentError: true },
   });
   const activate = useMutation({
     mutationFn: (name: string) =>
@@ -2552,7 +2586,17 @@ function CodeProfilesSection() {
         />
         <CardBody className="p-0">
           {profiles.isLoading ? (
-            <div className="px-5 py-6 text-sm text-ink-dim">Loading…</div>
+            <div className="px-5 py-6">
+              <RouteState status="loading" hideLoadingTitle loadingBlocks={3} />
+            </div>
+          ) : profiles.isError ? (
+            <div className="px-5 py-6">
+              <RouteState
+                status="error"
+                error={profiles.error}
+                onRetry={() => profiles.refetch()}
+              />
+            </div>
           ) : profiles.data?.profiles?.length ? (
             <ul className="divide-y divide-surface-border">
               {profiles.data.profiles.map((p) => (

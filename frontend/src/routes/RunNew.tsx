@@ -83,6 +83,8 @@ function SelectionBlock({
       return apiFetch<{ databases?: string[]; catalogs?: string[] }>(path);
     },
     enabled: Boolean(selection.profile),
+    // Errors render inline as a chip below the select.
+    meta: { silentError: true },
   });
   const options = isCatalog
     ? databasesQ.data?.catalogs ?? []
@@ -166,6 +168,22 @@ function SelectionBlock({
               </option>
             ))}
           </select>
+          {databasesQ.isError && (
+            <span className="mt-1 flex items-center gap-1 text-[11px] text-critical">
+              <span className="truncate">
+                {databasesQ.error instanceof Error
+                  ? databasesQ.error.message
+                  : `Couldn't load ${isCatalog ? "catalogs" : "databases"}.`}
+              </span>
+              <button
+                type="button"
+                onClick={() => databasesQ.refetch()}
+                className="ml-auto rounded border border-critical/40 px-1.5 py-0.5 text-[10px] text-critical hover:bg-critical/10"
+              >
+                Retry
+              </button>
+            </span>
+          )}
         </label>
       </div>
       <div className="mt-3">
