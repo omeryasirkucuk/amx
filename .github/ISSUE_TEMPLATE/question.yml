@@ -1,0 +1,41 @@
+name: Question / Help
+description: Ask a usage question or report something you cannot tell is a bug.
+title: "question: <short description>"
+labels: ["question", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Quick first stops:
+        - [Documentation](https://amxcli.com/)
+        - [Quickstart](https://amxcli.com/getting-started/quickstart/)
+        - [Troubleshooting / FAQ](https://amxcli.com/troubleshooting/)
+
+        If a bug is involved, please use the Bug report template instead — it has fields we need for triage.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to do, and where did you get stuck?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: Commands, config snippets, docs sections you have already consulted.
+
+  - type: input
+    id: amx-version
+    attributes:
+      label: AMX version
+      description: Output of `amx --version` (if relevant).
+      placeholder: 0.14.0
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else worth knowing.

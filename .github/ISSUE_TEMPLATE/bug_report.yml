@@ -1,0 +1,138 @@
+name: Bug report
+description: Something in AMX is broken, crashes, or behaves unexpectedly.
+title: "bug: <short description>"
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. The more reproduction detail you can share, the faster we can land a fix.
+
+        Before filing, please:
+        - Check the [open issues](https://github.com/omeryasirkucuk/amx/issues) to avoid duplicates.
+        - Upgrade to the latest release (`pip install --upgrade amx-cli`) and confirm the bug still reproduces.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A clear, concise description of the bug.
+      placeholder: e.g. `/run sales.orders` crashes with a TypeError after the Profile sub-agent finishes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Exact steps to reproduce, ideally as a numbered list. Include any commands you ran inside the REPL.
+      placeholder: |
+        1. `pip install amx-cli==0.14.0`
+        2. `amx`
+        3. `/setup` ... pick Postgres profile
+        4. `/run sales.orders`
+        5. Observe the traceback below.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / traceback
+      description: |
+        Paste any relevant output. Run with `AMX_LOG_LEVEL=debug` if you can. Redact secrets, connection strings, warehouse IDs, and customer data before pasting.
+      render: shell
+
+  - type: input
+    id: amx-version
+    attributes:
+      label: AMX version
+      description: Output of `amx --version`.
+      placeholder: 0.14.0
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python --version`.
+      placeholder: 3.11.7
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows (WSL)
+        - Windows (native)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Database engine
+      description: The engine the bug reproduces against. Pick `Not applicable` if the bug is engine-independent.
+      options:
+        - Not applicable
+        - PostgreSQL
+        - MySQL
+        - Snowflake
+        - Databricks
+        - BigQuery
+        - Oracle
+        - SQL Server (MSSQL)
+        - Redshift
+        - DuckDB
+        - ClickHouse
+        - SQLite
+        - Other (specify below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: llm-provider
+    attributes:
+      label: LLM provider
+      description: Which provider was active when the bug occurred. Pick `Not applicable` if the bug is provider-independent.
+      options:
+        - Not applicable
+        - Anthropic
+        - OpenAI
+        - Google (Gemini / Vertex)
+        - Azure OpenAI
+        - AWS Bedrock
+        - Ollama (local)
+        - Other (specify below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else worth knowing — non-default config, network setup, custom adapter, recent upgrade, etc.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I redacted secrets, hostnames, and customer data from the logs above.
+          required: true
