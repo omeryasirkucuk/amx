@@ -8,7 +8,6 @@ import {
   Stethoscope,
   Wallet,
   Database,
-  Wrench,
   Users,
 } from "lucide-react";
 
@@ -18,7 +17,7 @@ import StatusPill from "../components/StatusPill";
 import EmptyState from "../components/EmptyState";
 import { api, apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
-import { AlertDialog, Button, InfoHint, useToast } from "../components/ui";
+import { Button, InfoHint, useToast } from "../components/ui";
 
 interface DoctorCheck {
   name: string;
@@ -81,7 +80,6 @@ const SECTIONS: Array<{ id: string; label: string; icon: typeof Stethoscope }> =
   { id: "usage", label: "Token usage", icon: Wallet },
   { id: "catalog", label: "Catalog", icon: Database },
   { id: "history", label: "Team history", icon: Users },
-  { id: "maintenance", label: "Maintenance", icon: Wrench },
 ];
 
 export default function System() {
@@ -119,9 +117,6 @@ export default function System() {
           </section>
           <section id="sys-history" className="scroll-mt-4">
             <HistoryStoreCard />
-          </section>
-          <section id="sys-maintenance" className="scroll-mt-4">
-            <MaintenanceCard />
           </section>
         </div>
       </div>
@@ -643,99 +638,6 @@ function HistoryStoreCard() {
           </div>
         ) : null}
       </CardBody>
-    </Card>
-  );
-}
-
-interface CleanupResult {
-  schemas?: string[];
-  tables_cleared?: number;
-  columns_cleared?: number;
-  warnings?: string[];
-}
-
-function MaintenanceCard() {
-  const toast = useToast();
-  const [result, setResult] = useState<CleanupResult | null>(null);
-  const [confirm, setConfirm] = useState(false);
-
-  const cleanup = useMutation({
-    mutationFn: () =>
-      apiFetch<CleanupResult>("/api/comments/cleanup-placeholders", {
-        method: "POST",
-        body: JSON.stringify({}),
-      }),
-    onSuccess: (data) => {
-      setResult(data);
-      setConfirm(false);
-      toast.push({
-        title: "Cleanup complete",
-        description: `${data.tables_cleared ?? 0} table(s) · ${data.columns_cleared ?? 0} column(s)`,
-        tone: "success",
-      });
-    },
-    onError: (e: Error) => {
-      setConfirm(false);
-      toast.push({
-        title: "Cleanup failed",
-        description: e.message,
-        tone: "error",
-      });
-    },
-  });
-
-  return (
-    <Card>
-      <CardHeader
-        title={
-          <span className="inline-flex items-center gap-2">
-            <Wrench size={16} className="text-accent" />
-            Maintenance
-            <InfoHint text="One-shot ops that don't fit anywhere else. Currently: strip the [inferred by AMX] markers from every COMMENT in the active database without touching the descriptions themselves." />
-          </span>
-        }
-      />
-      <CardBody className="space-y-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <Button
-            variant="primary"
-            size="md"
-            leadingIcon={<Wrench size={14} />}
-            loading={cleanup.isPending}
-            onClick={() => setConfirm(true)}
-          >
-            {cleanup.isPending ? "Cleaning…" : "Cleanup placeholder COMMENTs"}
-          </Button>
-          <span className="text-xs text-ink-dim">
-            Strips <code className="font-mono">[inferred by AMX]</code> markers
-            from live DB COMMENTs.
-          </span>
-        </div>
-        {result && (
-          <div className="rounded-md border border-positive/40 bg-positive-soft px-3 py-2 text-xs text-positive">
-            Cleared {result.tables_cleared ?? 0} table(s) and{" "}
-            {result.columns_cleared ?? 0} column(s) across{" "}
-            {(result.schemas ?? []).length} schema(s).
-            {(result.warnings ?? []).length > 0 && (
-              <ul className="mt-1 space-y-0.5 text-warning">
-                {(result.warnings ?? []).map((w, i) => (
-                  <li key={i}>• {w}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </CardBody>
-      <AlertDialog
-        open={confirm}
-        onClose={() => setConfirm(false)}
-        onConfirm={() => cleanup.mutate()}
-        loading={cleanup.isPending}
-        title="Strip placeholder markers from the live database?"
-        description="This rewrites every COMMENT containing the [inferred by AMX] marker, removing the marker but keeping the surrounding text. The change is permanent."
-        confirmLabel="Run cleanup"
-        tone="primary"
-      />
     </Card>
   );
 }

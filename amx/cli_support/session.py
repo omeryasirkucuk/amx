@@ -28,9 +28,6 @@ from amx.cli_support.commands.db import (
     cmd_cache_stats as _cmd_cache_stats,
 )
 from amx.cli_support.commands.db import (
-    cmd_cleanup_placeholders as _cmd_cleanup_placeholders,
-)
-from amx.cli_support.commands.db import (
     cmd_edit_profile as _cmd_edit_profile,
 )
 from amx.cli_support.commands.db import (
@@ -374,14 +371,6 @@ Commands (in order):
                                    on whether shared mode is on. Power-user shortcuts
                                    also accept a subcommand directly (e.g.
                                    /history-store status).
-
-  Maintenance:
- 15) /cleanup-placeholders [schema]
-                                   Remove auto-inference fallback placeholder strings
-                                   ("Auto-inference missed a reliable description; please
-                                   review manually.") from the live DB. Use this once when
-                                   upgrading from pre-0.6.3 — newer versions never write
-                                   these in the first place.
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -1078,15 +1067,6 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "db", "inspect"):
             return True
         _cmd_inspect(cfg, parts[1:])
-        return True
-    if head == "cleanup-placeholders":
-        # /db cleanup-placeholders [schema] — one-shot cleanup of legacy
-        # ``Auto-inference missed a reliable description; please review
-        # manually.`` placeholder strings written to the live DB by older
-        # /run-apply runs. v0.6.3+ no longer writes them in the first place.
-        if not _require_namespace(head, namespace, "db", "cleanup-placeholders"):
-            return True
-        _cmd_cleanup_placeholders(cfg, parts[1:])
         return True
     if head == "cache-show":
         if not _require_namespace(head, namespace, "db", "cache-show"):
