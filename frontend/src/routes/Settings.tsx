@@ -1089,7 +1089,10 @@ function LlmProfileWizard({
             hint={
               nAlternatives <= 1
                 ? "Has no effect when alternatives per column is 1."
-                : "Semantic = each alternative is a meaningfully different interpretation. Lexical = same meaning, different wording."
+                : // Per Definition 1 (NLP standard): semantic ⇒ same meaning /
+                  // different words; lexical ⇒ shared vocabulary / shifted
+                  // meaning. Do NOT re-invert.
+                  "Semantic = paraphrase the chosen description (same meaning, different wording). Lexical = share core vocabulary while letting the meaning shift through added nuances."
             }
           >
             <div
@@ -1119,8 +1122,8 @@ function LlmProfileWizard({
                     <div className="font-medium capitalize">{mode}</div>
                     <div className="text-[11px] text-ink-dim">
                       {mode === "semantic"
-                        ? "Different MEANINGS (default)"
-                        : "Same meaning, different wording"}
+                        ? "Same meaning, different wording (default)"
+                        : "Shared vocabulary, meaning may shift"}
                     </div>
                   </button>
                 );
