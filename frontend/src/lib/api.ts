@@ -417,6 +417,25 @@ export interface ComparePerColumnRow {
    *  (column shipped in PR #441). Studio surfaces this once per run
    *  column header rather than repeating per cell. */
   alternatives_mode?: AlternativesMode | null;
+  /** Version label within this asset / run cell. ``"v1"`` on the
+   *  parent row; ``"v2"``, ``"v3"``, ... on Re-Run / Variations
+   *  descendants stacked below it. Defaults to ``"v1"`` on legacy
+   *  payloads that predate the descendant unfurl in compare. */
+  version_label?: string;
+  /** Set on descendant rows: the originating ``analysis_runs.id`` of
+   *  the parent run this descendant was generated against. ``null``
+   *  on the v1 row itself. */
+  parent_run_id?: number | null;
+  /** ``"variations"`` | ``"rerun"`` on descendant rows; ``null`` on
+   *  v1. Drives the version chip styling and the seed tooltip. */
+  descendant_kind?: "variations" | "rerun" | null;
+  /** The child run's own ``analysis_runs.id``. The SPA uses this to
+   *  deep-link the version chip into the descendant's run-detail
+   *  page. ``null`` on v1. */
+  descendant_run_id?: number | null;
+  /** Verbatim text of the alternative the user picked as the seed
+   *  (Variations only). ``null`` on Re-Run descendants and v1. */
+  seed_alternative_text?: string | null;
 }
 
 export interface CompareAggregateRow {
