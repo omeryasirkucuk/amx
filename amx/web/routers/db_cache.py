@@ -28,6 +28,10 @@ from amx.storage.cache_ops import (
 
 router = APIRouter(prefix="/api/db/cache", tags=["db-cache"])
 
+_SEARCH_LIMIT_DEFAULT = 50
+_SEARCH_LIMIT_MAX = 200
+_SEARCH_MIN_CHARS = 2
+
 
 class ClearRequest(BaseModel):
     profile: str | None = Field(default=None)
@@ -110,3 +114,62 @@ def clear(body: ClearRequest) -> dict[str, Any]:
         "total": report.total,
         "valid_types": list(CACHE_TYPES),
     }
+
+
+@router.get("/search")
+def search(
+    q: str = Query(..., description="Substring to match (case-insensitive)"),
+    profile: str | None = Query(default=None),
+    limit: int = Query(default=_SEARCH_LIMIT_DEFAULT, ge=1, le=_SEARCH_LIMIT_MAX),
+) -> dict[str, Any]:
+    """Substring search across the persistent catalog cache —
+    schema / table / column names. Powers the Studio sidebar's
+    search box so the user can locate a column by typing its name
+    instead of clicking through every schema to find it.
+
+    Results are scoped to fully-synced profiles only. An unsynced
+    profile contributes nothing (partial catalog rows would mislead).
+    ``profile`` narrows to one profile; omit it to search every
+    synced profile at once.
+
+    A query under two characters returns an empty result set rather
+    than the entire catalog — a one-letter substring would degrade
+    into a near-no-op scan.
+
+    Response shape::
+
+        {
+          "query": "<echoed q>",
+          "truncated": bool,
+          "results": [
+            {"profile", "db_backend", "database",
+             "schema", "table", "column", "match_field"},
+            ...
+          ]
+        }
+
+    ``table`` / ``column`` are ``null`` for higher-level matches;
+    ``match_field`` is one of ``"schema" | "table" | "column"``.
+    Rows are ordered ``schema → table → column`` so a search like
+    ``customer`` surfaces the schema or table that bears the name
+    before the long tail of columns containing the substring.
+    """
+    needle = (q or "").strip()
+    if len(needle) < _SEARCH_MIN_CHARS:
+        return {"query": needle, "truncated": False, "results": []}
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+    except Exception:
+        cat = None
+    if cat is None:
+        return {"query": needle, "truncated": False, "results": []}
+    try:
+        results, truncated = cat.search_entities(needle, db_profile=profile, limit=limit)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Catalog search failed: {exc}",
+        ) from exc
+    return {"query": needle, "truncated": truncated, "results": results}
