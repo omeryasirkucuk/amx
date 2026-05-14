@@ -445,6 +445,52 @@ def _build_progress_callback(job: Job) -> Callable[[ReviewResult, str, int, int,
     return _on_progress
 
 
+def _start_heartbeat_ticker(
+    hs: Any,
+    run_id: int,
+    *,
+    interval_sec: float = 60.0,
+) -> tuple[threading.Event, threading.Thread]:
+    """Keep ``analysis_runs.last_heartbeat_at`` fresh for a live web run.
+
+    The scheduler loop's ``recover_stale_runs`` sweep treats a NULL
+    ``last_heartbeat_at`` as immediately stale, so a Studio run that
+    never beats gets flipped to ``failed`` ~60s after the worker
+    started even though its worker thread is still alive. The first
+    beat fires synchronously before the helper returns so the NULL
+    window is closed by the time the worker proceeds; subsequent beats
+    run on a daemon thread until the caller sets the returned event.
+
+    Mirrors the inline pattern in ``amx/runtime/worker.py`` that
+    protects scheduled runs from the same sweep.
+    """
+    stop = threading.Event()
+
+    def _tick() -> None:
+        while not stop.is_set():
+            try:
+                hs.update_run_heartbeat(run_id)
+            except Exception:  # noqa: BLE001 - never crash the ticker
+                log.exception("web heartbeat ticker failed for run_id=%s", run_id)
+            stop.wait(interval_sec)
+
+    # First beat synchronously so ``recover_stale_runs`` never sees a
+    # NULL ``last_heartbeat_at`` for this row (the load-bearing reason
+    # this helper exists).
+    try:
+        hs.update_run_heartbeat(run_id)
+    except Exception:  # noqa: BLE001
+        log.exception("web heartbeat first beat failed for run_id=%s", run_id)
+
+    thread = threading.Thread(
+        target=_tick,
+        name=f"amx-web-heartbeat-{run_id}",
+        daemon=True,
+    )
+    thread.start()
+    return stop, thread
+
+
 def _run_worker(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     """Drive a headless ``/run`` from AMX Studio.
 
@@ -602,10 +648,12 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         )
 
     run_id: int | None = None
+    heartbeat_stop: threading.Event | None = None
+    heartbeat_thread: threading.Thread | None = None
     hs = history_store()
     if hs is not None:
         try:
-            run_id = hs.create_run(
+            created_run_id: int = hs.create_run(
                 command="analyze.run",
                 mode="batch" if use_batch else "chat",
                 db_backend=effective_backend,
@@ -639,11 +687,16 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                     ),
                 },
             )
+            run_id = created_run_id
             # Bind the persistent run id to the live Job so the run
             # detail page can find this still-running worker by
             # numeric run id (Runs list → click row → /runs/{id}).
-            job.run_id = int(run_id)
-            emit(job.queue, "run.created", {"run_id": int(run_id)})
+            job.run_id = created_run_id
+            emit(job.queue, "run.created", {"run_id": created_run_id})
+            # Close the NULL-heartbeat window before recover_stale_runs
+            # can sweep this freshly-inserted row. The ticker is torn
+            # down at the end of _run_worker_body.
+            heartbeat_stop, heartbeat_thread = _start_heartbeat_ticker(hs, created_run_id)
         except Exception as exc:
             log.warning("Could not persist run history: %s", exc)
 
@@ -1078,6 +1131,14 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                 "job.failed",
                 {"error": final_error_text or "Run failed", "summary": summary},
             )
+
+    # The analysis_runs row is now terminal, so the scheduler sweep
+    # won't touch it whether or not the ticker keeps beating; stop the
+    # daemon thread so it doesn't outlive the worker.
+    if heartbeat_stop is not None:
+        heartbeat_stop.set()
+    if heartbeat_thread is not None:
+        heartbeat_thread.join(timeout=2.0)
 
 
 def _fail_job(job: Job, message: str) -> None:
