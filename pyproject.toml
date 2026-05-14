@@ -134,15 +134,13 @@ quality = [
 ]
 bertscore = [
     "bert-score>=0.3",
-    # Pin transformers above 4.55 so it accepts tokenizers >= 0.22 —
-    # without this floor, an older transformers (e.g. 4.51.x) sticks
-    # around in the user's env after another package upgrades
-    # tokenizers, and pip's resolver flags the mismatch with a noisy
-    # post-install ERROR ("transformers 4.51.3 requires
-    # tokenizers<0.22, but you have tokenizers 0.22.2 which is
-    # incompatible"). The mismatch is harmless at runtime but the
-    # message scares users who think the install actually failed.
-    "transformers>=4.56",
+    # Pin transformers >= 4.57 so it accepts tokenizers >= 0.22 —
+    # transformers 4.56 still capped tokenizers at < 0.22, which made
+    # sentence-transformers fail to load at runtime ("tokenizers >=
+    # 0.21, < 0.22 is required ... found tokenizers == 0.22.2") in any
+    # long-running process that imported transformers via another
+    # path (e.g. chromadb's bundled MiniLM) before sentence-transformers.
+    "transformers>=4.57",
 ]
 cloud-sources = [
     "boto3>=1.34",
@@ -170,7 +168,7 @@ local-embeddings = [
     # resolver mismatch surfaces here when a previously-pinned
     # transformers stays at 4.51.x while tokenizers gets bumped to
     # 0.22.x.
-    "transformers>=4.56",
+    "transformers>=4.57",
 ]
 # ── Database backend extras ───────────────────────────────────────────────
 # Each backend's drivers live in their own extra so the default install
@@ -241,7 +239,7 @@ all = [
     # older transformers (4.51.x, tokenizers<0.22 spec) installed
     # while bert-score / sentence-transformers pull tokenizers 0.22+
     # and the resolver flags the mismatch on every install.
-    "transformers>=4.56",
+    "transformers>=4.57",
     "sentence-transformers>=3.0",
     "boto3>=1.34",
     "google-api-python-client>=2.0",

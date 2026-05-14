@@ -603,6 +603,37 @@ def _record_and_queue(
 
     response["run_id"] = int(run_id)
 
+    # Score the alternatives so the singleshot generate row carries the
+    # same structured ``alternatives_json`` payload that ``/analyze`` runs
+    # produce. Self-consistency needs no LLM context (just embeds the
+    # alternatives); the other signals fall back to ``score=None`` here
+    # because we don't keep the LLM response_text / logprobs on this path.
+    alternative_scores: list[dict] | None = None
+    try:
+        from amx.agents.base import Confidence as _C
+        from amx.agents.base import MetadataSuggestion, apply_confidence_signals
+
+        synthetic = MetadataSuggestion(
+            schema=schema,
+            table=table,
+            column=column,
+            suggestions=list(alternatives),
+            confidence=_C.MEDIUM,
+            reasoning="",
+            source="generate.singleshot",
+        )
+        apply_confidence_signals(
+            suggestions=[synthetic],
+            logprobs_content=None,
+            response_text=None,
+            cfg=cfg.llm,
+            llm=None,
+        )
+        if synthetic.suggestion_scores:
+            alternative_scores = [score.to_json() for score in synthetic.suggestion_scores]
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning("Singleshot confidence scoring failed: %s", exc)
+
     try:
         result_ids = hs.save_run_results(
             run_id,
@@ -615,6 +646,7 @@ def _record_and_queue(
                     "source": "generate.singleshot",
                     "confidence": Confidence.MEDIUM.value,
                     "alternatives": alternatives,
+                    "alternative_scores": alternative_scores,
                     "reasoning": "",
                 }
             ],

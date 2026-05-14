@@ -38,7 +38,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
 
-from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
+from amx.agents.base import (
+    AgentContext,
+    Confidence,
+    MetadataSuggestion,
+    apply_confidence_signals,
+    apply_logprob_confidence,
+)
 from amx.agents.code_agent import CodeAgent
 from amx.agents.profile_agent import ProfileAgent
 from amx.agents.rag_agent import RAGAgent
@@ -489,6 +495,16 @@ def _persist_rerun_row(
         raise RerunContextError("Target row is missing a chain id.")
     rerun_seq = hs.next_rerun_seq(int(chain_root))
 
+    # Carry per-alternative confidence rows so re-run rows render the
+    # same SC / LP / SD / JU badge as the original run. Upstream re-run
+    # executors (``rerun_one_item``) call ``apply_confidence_signals``
+    # before handing the suggestion to this helper, so the attribute is
+    # already populated when present. Falling back to ``None`` is fine —
+    # the storage layer then emits the legacy ``list[str]`` payload.
+    alternative_scores: list[dict] | None = None
+    if getattr(suggestion, "suggestion_scores", None):
+        alternative_scores = [score.to_json() for score in suggestion.suggestion_scores]
+
     row = {
         "schema": suggestion.schema,
         "table": suggestion.table,
@@ -501,6 +517,7 @@ def _persist_rerun_row(
         "model_version": model_name,
         "reasoning": suggestion.reasoning,
         "alternatives": suggestion.suggestions,
+        "alternative_scores": alternative_scores,
         "parent_result_id": int(chain_root),
         "rerun_seq": int(rerun_seq),
         "user_instructions": (user_instructions or "").strip() or None,
@@ -713,6 +730,23 @@ def rerun_items(
                             },
                         )
                     continue
+
+                # Re-run rows must carry the per-alternative confidence
+                # badge just like first-pass rows. The re-run helpers
+                # don't return the underlying LLM response_text /
+                # logprobs, so logprob and self_decl gracefully fall
+                # back to ``score=None``; self_consistency and judge
+                # work end-to-end on the alternatives alone.
+                try:
+                    apply_confidence_signals(
+                        suggestions=[suggestion],
+                        logprobs_content=None,
+                        response_text=None,
+                        cfg=cfg.llm,
+                        llm=llm,
+                    )
+                except Exception as exc:  # pragma: no cover — defensive
+                    log.warning("Rerun confidence scoring failed: %s", exc)
 
                 new_id, rerun_seq = _persist_rerun_row(
                     new_run_id=new_run_id,
