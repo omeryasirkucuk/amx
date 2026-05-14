@@ -126,7 +126,12 @@ export default function TopBar() {
             <ol className="flex items-center gap-1 text-xs text-ink-dim">
               {crumbs.map((c, i) => (
                 <li key={i} className="flex items-center gap-1">
-                  <ChevronRight size={12} className="text-border-strong" />
+                  <ChevronRight
+                    size={14}
+                    strokeWidth={2.5}
+                    className="text-ink-muted"
+                    aria-hidden="true"
+                  />
                   {c.to && i < crumbs.length - 1 ? (
                     <Link
                       to={c.to}
@@ -221,8 +226,15 @@ function buildCrumbs(
     const out: Crumb[] = [{ label: "Browse", to: "/" }];
     const scopeSeg = params.database ?? params.catalog;
     if (params.profile && scopeSeg) {
+      // The profile crumb links back to Landing because there is no
+      // profile-level page in the SPA — ``/db/:profile`` and
+      // ``/cat/:profile`` both redirect to ``/`` (see App.tsx). The
+      // Landing page hosts the sidebar tree, which is the natural
+      // place to pick a different database / catalog under the same
+      // profile, so the redirect is semantic rather than a dead end.
       out.push({
         label: params.profile,
+        to: "/",
       });
       out.push({
         label: scopeSeg,
