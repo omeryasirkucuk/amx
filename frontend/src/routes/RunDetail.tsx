@@ -16,6 +16,7 @@ import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import JobProgress from "../components/JobProgress";
 import StatusPill from "../components/StatusPill";
+import AlternativesModeBadge from "../components/ui/AlternativesModeBadge";
 import { ConfidencePill, LogprobBadge } from "../components/ui/InsightBadges";
 import RerunDialog from "../components/RerunDialog";
 import ResultsFilterBar, {
@@ -672,39 +673,6 @@ function LiveRunStream({ jobId }: { jobId: string }) {
         </CardBody>
       </Card>
     </>
-  );
-}
-
-/** Tiny badge surfacing how this row's alternatives were generated.
- *  Hidden when the value is missing (legacy rows, single-alternative
- *  runs that never recorded the mode). Compact so it sits inline with
- *  the existing confidence + logprob row. */
-function AlternativesModeBadge({
-  mode,
-}: {
-  mode?: "semantic" | "lexical" | null;
-}) {
-  if (mode !== "semantic" && mode !== "lexical") return null;
-  const label = mode === "semantic" ? "Semantic" : "Lexical";
-  const title =
-    mode === "semantic"
-      ? "Alternatives explore different MEANINGS"
-      : "Alternatives are same-meaning phrasing variants";
-  const tone =
-    mode === "semantic"
-      ? "border-accent/40 bg-accent-soft/40 text-accent"
-      : "border-surface-border bg-surface text-ink-muted";
-  return (
-    <span
-      title={title}
-      className={
-        "inline-flex items-center rounded border px-1.5 py-[1px] " +
-        "text-[10px] uppercase tracking-wider " +
-        tone
-      }
-    >
-      {label}
-    </span>
   );
 }
 
