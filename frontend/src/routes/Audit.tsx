@@ -126,6 +126,8 @@ export default function Audit() {
       }),
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
+    // Errors render inline in the audit list — see the EmptyState branch.
+    meta: { silentError: true },
   });
 
   const allEvents = query.data?.events ?? [];

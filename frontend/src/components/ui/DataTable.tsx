@@ -303,9 +303,39 @@ export default function DataTable<T>({
                     colSpan={columns.length}
                     className="px-4 py-10 text-center"
                   >
-                    {emptyState ?? (
-                      <span className="text-sm text-ink-dim">No rows.</span>
-                    )}
+                    {(() => {
+                      const filtersActive =
+                        !!haystack || activeFilter !== "__all";
+                      // Distinguish "no data at all" (use the caller's
+                      // emptyState slot when supplied) from "filter
+                      // eliminated every row" (always show a Clear-
+                      // filters affordance so the user isn't stranded).
+                      if (filtersActive && rows.length > 0) {
+                        return (
+                          <div className="flex flex-col items-center gap-2 text-sm">
+                            <span className="text-ink-muted">
+                              No rows match the active filters.
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setQuery("");
+                                setActiveFilter("__all");
+                                setPage(0);
+                              }}
+                              className="rounded-md border border-border px-2.5 py-1 text-xs text-ink-muted transition-colors duration-fast hover:border-accent/40 hover:text-ink"
+                            >
+                              Clear filters
+                            </button>
+                          </div>
+                        );
+                      }
+                      return (
+                        emptyState ?? (
+                          <span className="text-sm text-ink-dim">No rows.</span>
+                        )
+                      );
+                    })()}
                   </td>
                 </tr>
               ) : (

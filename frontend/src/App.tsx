@@ -1,9 +1,10 @@
 import { lazy, Suspense } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 
 import AppShell from "./components/AppShell";
 import ErrorBoundary from "./components/ErrorBoundary";
 import InstallBanner from "./components/InstallBanner";
+import QueryErrorListener from "./components/QueryErrorListener";
 import { ToastProvider } from "./components/ui";
 
 // Each route is loaded on demand. The user landing on /ask no longer
@@ -53,9 +54,11 @@ export default function App() {
   // the user staring at a blank page. Provider/provider context state
   // is rebuilt on reload — that's intentional, the boundary's reload
   // affordance is what users will reach for.
+  const location = useLocation();
   return (
-    <ErrorBoundary>
+    <ErrorBoundary resetKey={location.pathname}>
       <ToastProvider>
+        <QueryErrorListener />
         <InstallBanner />
         <Suspense fallback={<RouteFallback />}>
           <Routes>

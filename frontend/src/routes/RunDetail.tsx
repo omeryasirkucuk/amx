@@ -34,6 +34,7 @@ import {
   IconButton,
   InlineEditText,
   Kbd,
+  RouteState,
   Tab as TabTrigger,
   TabPanel,
   Tabs,
@@ -876,20 +877,24 @@ function normalizeStructuredAlternatives(raw: unknown): StructuredAlternative[] 
   return out;
 }
 
+// Confidence band classes routed through the design system's status
+// tokens (--positive / --warning / --critical + their soft variants)
+// so future palette tweaks propagate instead of being trapped in raw
+// Tailwind palette numerics.
 const BAND_STYLES: Record<string, { stripe: string; pill: string; label: string }> = {
   HIGH: {
-    stripe: "bg-green-500",
-    pill: "bg-green-100 text-green-800 border-green-300",
+    stripe: "bg-positive",
+    pill: "border border-positive/40 bg-positive-soft text-positive",
     label: "HIGH",
   },
   MED: {
-    stripe: "bg-amber-500",
-    pill: "bg-amber-100 text-amber-800 border-amber-300",
+    stripe: "bg-warning",
+    pill: "border border-warning/40 bg-warning-soft text-warning",
     label: "MED",
   },
   LOW: {
-    stripe: "bg-red-500",
-    pill: "bg-red-100 text-red-800 border-red-300",
+    stripe: "bg-critical",
+    pill: "border border-critical/40 bg-critical-soft text-critical",
     label: "LOW",
   },
 };
@@ -1490,6 +1495,8 @@ function PersistedRunView({ runId }: { runId: number }) {
       const data = query.state.data as RunDetailPayload | undefined;
       return data?.live_job_id ? 3000 : false;
     },
+    // Errors render inline via RouteState below; skip the global toast.
+    meta: { silentError: true },
   });
   const liveJobId = run.data?.live_job_id ?? null;
   const results = useQuery({
@@ -1546,10 +1553,43 @@ function PersistedRunView({ runId }: { runId: number }) {
     },
   });
 
+  if (run.isLoading && !run.data) {
+    return (
+      <>
+        <PageHeader
+          title={`Run #${runId}`}
+          breadcrumbs={[
+            { label: "Runs", to: "/runs" },
+            { label: `#${runId}` },
+          ]}
+        />
+        <RouteState status="loading" hideLoadingTitle loadingBlocks={3} />
+      </>
+    );
+  }
+  if (run.error && !run.data) {
+    return (
+      <>
+        <PageHeader
+          title={`Run #${runId}`}
+          breadcrumbs={[
+            { label: "Runs", to: "/runs" },
+            { label: `#${runId}` },
+          ]}
+        />
+        <RouteState
+          status="error"
+          error={run.error}
+          onRetry={() => run.refetch()}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <PageHeader
-        title={run.data?.command ?? "Loading…"}
+        title={run.data?.command ?? `Run #${runId}`}
         breadcrumbs={[
           { label: "Runs", to: "/runs" },
           { label: `#${runId}` },

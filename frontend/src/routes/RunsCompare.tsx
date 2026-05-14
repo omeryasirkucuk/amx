@@ -15,7 +15,7 @@ import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import Dialog from "../components/ui/Dialog";
-import { useToast } from "../components/ui";
+import { RouteState, useToast } from "../components/ui";
 import {
   ConfidencePill,
   LogprobBadge,
@@ -202,6 +202,8 @@ export default function RunsCompare() {
     // /api/history/runs to offset/limit and page server-side.
     queryFn: () => api.recentRuns(200, "all"),
     retry: false,
+    // Errors render inline via RouteState in the picker body.
+    meta: { silentError: true },
   });
 
   // ``compareableIds(): {ids, droppedAsks}`` filters Ask sessions out
@@ -263,6 +265,8 @@ export default function RunsCompare() {
       });
     },
     onSuccess: () => setViewerOpen(true),
+    // Errors render inline next to the Compare button.
+    meta: { silentError: true },
   });
 
   // Tier 2 — LLM-as-judge tournament. Only fires after the cost-
@@ -291,6 +295,8 @@ export default function RunsCompare() {
       setDeepAnalysisOverride(next);
       setDeepAnalysisConfirmOpen(false);
     },
+    // Errors render inline in the deep-analysis confirmation dialog.
+    meta: { silentError: true },
   });
 
   // Once Tier 2 runs, override the displayed payload without losing
@@ -324,6 +330,8 @@ export default function RunsCompare() {
       a.remove();
       URL.revokeObjectURL(url);
     },
+    // Errors render inline in the compare result dialog footer.
+    meta: { silentError: true },
   });
 
   function toggle(id: number) {
@@ -555,7 +563,21 @@ export default function RunsCompare() {
         </div>
         <CardBody className="p-0">
           {recent.isLoading ? (
-            <div className="px-5 py-6 text-sm text-ink-dim">Loading runs…</div>
+            <div className="px-5 py-6">
+              <RouteState
+                status="loading"
+                hideLoadingTitle
+                loadingBlocks={3}
+              />
+            </div>
+          ) : recent.isError ? (
+            <div className="px-5 py-6">
+              <RouteState
+                status="error"
+                error={recent.error}
+                onRetry={() => recent.refetch()}
+              />
+            </div>
           ) : filteredRows.length ? (
             <ul className="divide-y divide-surface-border">
               {pagedRows.map((row) => {
@@ -1430,6 +1452,8 @@ function CellCompareSection({
         `/api/history/compare/cell?cell=${encodeURIComponent(cellKey)}&runs=${runs.join(",")}`,
       ),
     retry: false,
+    // Errors render inline in the cell card body.
+    meta: { silentError: true },
   });
 
   const isColumnLevel = path.split(".").length === 3;

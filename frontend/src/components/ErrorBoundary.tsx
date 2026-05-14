@@ -5,19 +5,24 @@
 //
 // React still requires class components for error boundaries — there
 // is no hook equivalent. Keep the surface small: catch, log, render
-// a minimal fallback with a "reload" affordance, and offer to copy
-// the error to the clipboard so users can include it in bug reports
-// without us shipping Sentry.
+// a minimal fallback with two recovery affordances — "Try again"
+// (clears the captured error in place; cheap if the throw was
+// transient or scoped to one render) and "Reload page" (hard reset,
+// the right call when the bundle itself is suspect).
 //
-// We deliberately do not retry rendering automatically. A throw
-// usually means a bug or stale build; reloading is the right user
-// action and a hard reload also clears any in-memory state that
-// might have been corrupted before the throw.
+// The boundary also takes an optional ``resetKey``. The router wires
+// the current pathname so navigating away from a broken route clears
+// the error automatically — users don't get stuck on the fallback
+// after they pick a different tab from the sidebar.
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
+  /** When this value changes, the boundary clears its captured error.
+   *  Wire to ``useLocation().pathname`` so a route change resets the
+   *  fallback without forcing a full page reload. */
+  resetKey?: unknown;
 }
 
 interface ErrorBoundaryState {
@@ -39,9 +44,22 @@ export default class ErrorBoundary extends Component<
     // ``console.error`` is intentional here — surfaces the boundary
     // catch in the browser console for the user / dev to inspect, and
     // is the only client-side telemetry sink AMX Studio has today.
-    console.error("AMX Studio crashed:", error, errorInfo);
+    console.error("[amx-studio] crashed:", error, errorInfo);
     this.setState({ errorInfo });
   }
+
+  componentDidUpdate(prevProps: ErrorBoundaryProps): void {
+    if (
+      this.state.error &&
+      prevProps.resetKey !== this.props.resetKey
+    ) {
+      this.setState({ error: null, errorInfo: null });
+    }
+  }
+
+  private handleTryAgain = (): void => {
+    this.setState({ error: null, errorInfo: null });
+  };
 
   private handleReload = (): void => {
     window.location.reload();
@@ -128,11 +146,26 @@ export default class ErrorBoundary extends Component<
           <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
             <button
               type="button"
-              onClick={this.handleReload}
+              onClick={this.handleTryAgain}
               style={{
                 background: "#f5f4f2",
                 color: "#0f0f0e",
                 border: "none",
+                padding: "0.55rem 1rem",
+                borderRadius: "8px",
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              Try again
+            </button>
+            <button
+              type="button"
+              onClick={this.handleReload}
+              style={{
+                background: "transparent",
+                color: "#f5f4f2",
+                border: "1px solid rgba(245,244,242,0.25)",
                 padding: "0.55rem 1rem",
                 borderRadius: "8px",
                 fontWeight: 600,
