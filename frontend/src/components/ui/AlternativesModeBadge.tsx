@@ -3,6 +3,10 @@
  *  column shipped, or single-alternative runs that never had a mode
  *  contract). Compact so it sits inline with the existing confidence +
  *  logprob row on RunDetail or in the run column header on RunsCompare.
+ *
+ *  Per Definition 1 (NLP standard): semantic ⇒ same meaning / different
+ *  words; lexical ⇒ shared vocabulary / shifted meaning. Do NOT
+ *  re-invert.
  */
 export default function AlternativesModeBadge({
   mode,
@@ -13,8 +17,8 @@ export default function AlternativesModeBadge({
   const label = mode === "semantic" ? "Semantic" : "Lexical";
   const title =
     mode === "semantic"
-      ? "Alternatives explore different MEANINGS"
-      : "Alternatives are same-meaning phrasing variants";
+      ? "Alternatives paraphrase the chosen description — same meaning, different wording"
+      : "Alternatives share core vocabulary with the chosen description but may shift meaning";
   const tone =
     mode === "semantic"
       ? "border-accent/40 bg-accent-soft/40 text-accent"

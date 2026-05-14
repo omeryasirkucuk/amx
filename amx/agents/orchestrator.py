@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
+from amx.agents._mode_guardrail import check_mode_consistency
 from amx.agents._prompt_helpers import alternatives_mode_merge_note
 from amx.agents.base import (
     AgentContext,
@@ -1471,6 +1472,24 @@ class Orchestrator:
             )
         except Exception as exc:  # pragma: no cover — defensive
             log.warning("Post-merge confidence scoring failed: %s", exc)
+        # Per-asset guardrail: flag suspected alternatives_mode inversions.
+        # Reads cfg.llm.alternatives_mode + cfg.llm.confidence_signal and
+        # compares the mean SC against the mode's expected band. Diagnostic
+        # is logged via ``check_mode_consistency`` so CI / log aggregation
+        # surfaces it without aborting the run. No-ops when the active
+        # signal is not self_consistency or when fewer than 2 scores
+        # are available for an asset.
+        mode = getattr(self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE)
+        active_signal = getattr(self.llm.cfg, "confidence_signal", None)
+        for s in merged_with_logprob:
+            scores_attr = getattr(s, "suggestion_scores", None) or []
+            sc_scores = [getattr(sc, "score", None) for sc in scores_attr]
+            check_mode_consistency(
+                asset_label=f"{s.schema}.{s.table}.{s.column or '(table)'}",
+                mode=mode,
+                confidence_signal=active_signal,
+                sc_scores=sc_scores,
+            )
         merged.extend(merged_with_logprob)
         return merged
 

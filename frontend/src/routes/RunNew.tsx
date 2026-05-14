@@ -1300,7 +1300,10 @@ function AdvancedLLMOverrides({
 
             <OverrideRow
               label="Alternatives diversity mode"
-              hint="Semantic = each alternative is a meaningfully different interpretation. Lexical = same meaning, different wording. Has no effect when alternatives per column is 1."
+              // Per Definition 1 (NLP standard): semantic ⇒ same meaning /
+              // different words; lexical ⇒ shared vocabulary / shifted
+              // meaning. Do NOT re-invert.
+              hint="Semantic = paraphrase the chosen description (same meaning, different wording). Lexical = share core vocabulary with the chosen description while letting the meaning shift through added nuances. Has no effect when alternatives per column is 1."
               defaultValue={fmt(defaults?.alternatives_mode)}
               changed={diffMap.alternativesMode}
             >

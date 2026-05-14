@@ -189,12 +189,17 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
     except (TypeError, ValueError):
         n_alt_value = int(getattr(defaults, "n_alternatives", 3) or 3)
     if n_alt_value > 1:
+        # Per Definition 1 (NLP standard): semantic ⇒ same meaning /
+        # different words; lexical ⇒ shared vocabulary / shifted
+        # meaning. Do NOT re-invert.
         info(
             "Alternatives diversity mode — what kind of variation across "
             "DESCRIPTION_1..N?\n"
             f"  Choices: {', '.join(ALTERNATIVES_MODE_CHOICES)}\n"
-            "  semantic = different MEANINGS (default);  "
-            "lexical = same meaning, different wording.\n"
+            "  semantic = SAME meaning, different wording — paraphrase "
+            "DESCRIPTION_1 (default);  "
+            "lexical = SHARED vocabulary, meaning may shift through "
+            "added nuances.\n"
             "  Press Enter to keep the default."
         )
         alternatives_mode_raw = ask(
@@ -873,16 +878,18 @@ def cmd_confidence_signal(cfg: AMXConfig, rest: list[str]) -> None:
     )
 
 
+# Per Definition 1 (NLP standard): semantic ⇒ same meaning / different
+# words; lexical ⇒ shared vocabulary / shifted meaning. Do NOT re-invert.
 _ALTERNATIVES_MODE_DESCRIPTIONS: dict[str, str] = {
     "semantic": (
-        "alternatives explore meaningfully different INTERPRETATIONS of "
-        "the column (default — makes the confidence signal informative "
-        "because rankings are over distinct meanings)"
+        "alternatives PARAPHRASE DESCRIPTION_1 — same factual content "
+        "with different wording, synonyms, restructured phrasing; no new "
+        "attributes or nuances may be added or removed (default)"
     ),
     "lexical": (
-        "alternatives express the SAME meaning with different wording — "
-        "use when the interpretation is already certain and only the "
-        "phrasing should vary"
+        "alternatives SHARE CORE VOCABULARY with DESCRIPTION_1 (overlap "
+        "on key tokens) while allowing shifted meaning, added nuances, "
+        "or narrower / broader framings"
     ),
 }
 
@@ -890,9 +897,10 @@ _ALTERNATIVES_MODE_DESCRIPTIONS: dict[str, str] = {
 def cmd_alternatives_mode(cfg: AMXConfig, rest: list[str]) -> None:
     """Show or set the active alternatives diversity mode.
 
-    Controls what kind of variation the LLM is asked to express across
-    ``DESCRIPTION_1..N`` slots: distinct candidate meanings
-    (``semantic``) or same-meaning phrasing variants (``lexical``).
+    Per Definition 1 (NLP standard): ``semantic`` paraphrases
+    DESCRIPTION_1 (same meaning, different surface form); ``lexical``
+    keeps shared vocabulary with DESCRIPTION_1 while allowing the
+    meaning to shift through added nuances or reframing.
     """
     from amx.config import ALTERNATIVES_MODE_CHOICES
 

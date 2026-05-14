@@ -300,12 +300,15 @@ class SQLiteHistoryStore:
                 # citations" with no UI fallout.
                 "ALTER TABLE run_results ADD COLUMN citations_json TEXT",
                 # Diversity mode active when the row's alternatives
-                # were generated. ``semantic`` (default) means the LLM
-                # was instructed to produce meaningfully distinct
-                # interpretations; ``lexical`` means same-meaning
-                # phrasing variants only. Captured row-level (not just
-                # run-level) so a rerun that switches mode shows an
-                # accurate audit per row in the review UI.
+                # were generated, per Definition 1 (NLP standard):
+                # ``semantic`` (default) ⇒ paraphrases of DESCRIPTION_1
+                # (same meaning, different wording); ``lexical`` ⇒
+                # shared vocabulary with DESCRIPTION_1 while allowing the
+                # meaning to drift through added nuances or reframing.
+                # Captured row-level (not just run-level) so a rerun
+                # that switches mode shows an accurate audit per row in
+                # the review UI. NB: rows written before commit ``<sha>``
+                # used the inverted definitions — see CHANGELOG.
                 "ALTER TABLE run_results ADD COLUMN alternatives_mode TEXT",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
@@ -1297,11 +1300,13 @@ class SQLiteHistoryStore:
                             if s.get("citations")
                             else None
                         ),
-                        # ``alternatives_mode`` captures whether this row's
-                        # alternatives were generated for distinct meanings
-                        # (``semantic``) or wording variants (``lexical``).
-                        # ``None`` on legacy / non-LLM rows is treated as
-                        # "not recorded" by the review UI.
+                        # ``alternatives_mode`` captures the diversity mode
+                        # active when this row's alternatives were generated,
+                        # per Definition 1: ``semantic`` ⇒ paraphrases of
+                        # DESCRIPTION_1; ``lexical`` ⇒ shared vocabulary with
+                        # DESCRIPTION_1, meaning may drift. ``None`` on
+                        # legacy / non-LLM rows is treated as "not recorded"
+                        # by the review UI.
                         s.get("alternatives_mode"),
                     ),
                 )
