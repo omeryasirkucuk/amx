@@ -173,12 +173,6 @@ _DB_COMMANDS: tuple[SlashCommand, ...] = (
             "accept a subcommand directly."
         ),
     ),
-    # Maintenance
-    SlashCommand(
-        "/cleanup-placeholders",
-        "db",
-        "Remove auto-inference placeholder comments from live DB (/cleanup-placeholders [schema])",
-    ),
     # Cache management — explicit handles over the SQLite catalog
     # caches (schemas_cache, column_comments_cache, catalog_entities).
     SlashCommand(
