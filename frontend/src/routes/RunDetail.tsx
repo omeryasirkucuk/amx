@@ -3013,18 +3013,21 @@ function ResultsTab({
   // ``accepted`` with ✓, but the page header keeps reading
   // "0 queued" and the Apply CTA stays "Nothing to apply" because
   // a reduce over ``rows`` alone never sees the v2 entry.
-  const queuedCount = useMemo(() => {
-    const ids = new Set<number>();
-    for (const r of rows) if (r.id != null) ids.add(r.id);
-    for (const drs of descendantsByV1Id.values()) {
-      for (const dr of drs) if (dr.id != null) ids.add(dr.id);
-    }
-    let n = 0;
-    for (const id of pendingByResultId.keys()) {
-      if (ids.has(id)) n += 1;
-    }
-    return n;
-  }, [rows, descendantsByV1Id, pendingByResultId]);
+  // Plain expression -- NOT a hook -- because three early returns
+  // above (loading, error, rows.length===0) would otherwise create a
+  // rules-of-hooks violation (React error #310: rendered fewer
+  // hooks than expected). The work is O(rows + descendants +
+  // pending) and runs once per render of a non-empty results
+  // surface; cheap enough without memoisation.
+  const queuedIds = new Set<number>();
+  for (const r of rows) if (r.id != null) queuedIds.add(r.id);
+  for (const drs of descendantsByV1Id.values()) {
+    for (const dr of drs) if (dr.id != null) queuedIds.add(dr.id);
+  }
+  let queuedCount = 0;
+  for (const id of pendingByResultId.keys()) {
+    if (queuedIds.has(id)) queuedCount += 1;
+  }
   // Applied & untouched: the row has a live-DB comment AND no
   // pending revision queued. Used for the "X applied" tally next to
   // the Apply CTA so it reflects committed work, not work currently
