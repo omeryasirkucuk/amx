@@ -983,6 +983,24 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         and pending_count > 0
         and not job.cancel.is_set()
     ):
+        # Record every COMMENT this auto-apply tail writes into
+        # ``apply_events`` so the Audit page surfaces them. Mirrors the
+        # explicit ``_apply_worker`` call below: without these audit
+        # kwargs the auto-apply path stayed silent and the Audit feed
+        # rendered only events triggered through the post-review
+        # "Apply" button.
+        import getpass
+        import socket
+
+        try:
+            applied_by = getpass.getuser()
+        except Exception:
+            applied_by = ""
+        try:
+            hostname = socket.gethostname()
+        except Exception:
+            hostname = ""
+
         try:
             db_for_apply, _, _ = _scoped_connector(
                 cfg, body.db_profile, body.database, body.catalog
@@ -992,6 +1010,11 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                 deferred,
                 on_progress=_build_progress_callback(job),
                 cancel_token=job.cancel,
+                audit_log=hs,
+                audit_profile=str(body.db_profile or getattr(cfg.db, "name", "") or ""),
+                audit_user=applied_by,
+                audit_host=hostname,
+                audit_run_id=run_id,
             )
             try:
                 db_for_apply.close()

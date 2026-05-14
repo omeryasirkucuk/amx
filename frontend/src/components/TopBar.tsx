@@ -6,7 +6,6 @@ import {
   ChevronRight,
   PanelLeft,
   Pin,
-  ScrollText,
   Sparkles,
   History as HistoryIcon,
   Settings as SettingsIcon,
@@ -37,7 +36,9 @@ const navItems = [
     match: ["/runs", "/runs/schedules"],
   },
   { to: "/ask", label: "Ask", icon: Sparkles, match: ["/ask"] },
-  { to: "/audit", label: "Audit", icon: ScrollText, match: ["/audit"] },
+  // Audit moved out of the top bar — it lives on the Runs page header
+  // as a sibling of Schedules / Compare / New run because the apply
+  // trail is a per-run artefact, not a top-level mode.
   { to: "/settings", label: "Settings", icon: SettingsIcon, match: ["/settings"] },
   { to: "/system", label: "System", icon: Activity, match: ["/system"] },
 ];
