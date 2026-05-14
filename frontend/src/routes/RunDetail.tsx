@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity as ActivityIcon, Loader2, PauseCircle, Pin, PinOff, PlayCircle, RefreshCw, SkipForward, Timer } from "lucide-react";
+import { Activity as ActivityIcon, Loader2, PauseCircle, Pin, PinOff, PlayCircle, RefreshCw, SkipForward, Sparkles, Timer } from "lucide-react";
 
 import type { StructuredAlternative } from "../lib/api";
 import { apiFetch, api } from "../lib/api";
@@ -19,6 +19,7 @@ import StatusPill from "../components/StatusPill";
 import AlternativesModeBadge from "../components/ui/AlternativesModeBadge";
 import { ConfidencePill, LogprobBadge } from "../components/ui/InsightBadges";
 import RerunDialog from "../components/RerunDialog";
+import VariationsDialog from "../components/VariationsDialog";
 import ResultsFilterBar, {
   type GroupKey,
   type ReviewPreset,
@@ -3375,6 +3376,50 @@ function ResultRowItemImpl({
   const { push: pushToast } = useToast();
   const [rerunOpen, setRerunOpen] = useState(false);
   const [rerunJobId, setRerunJobId] = useState<string | null>(null);
+  const [variationsState, setVariationsState] = useState<{
+    altIndex: number;
+    altText: string;
+    altLetter: string;
+  } | null>(null);
+  const [variationsJobId, setVariationsJobId] = useState<string | null>(null);
+  const variationsSse = useEventSource({
+    path: variationsJobId
+      ? `/api/runs/${encodeURIComponent(variationsJobId)}/events`
+      : "",
+    enabled: !!variationsJobId,
+  });
+  useEffect(() => {
+    if (!variationsJobId) return;
+    const terminal = variationsSse.events.find(
+      (e) => e.type === "job.done" || e.type === "job.failed" || e.type === "job.cancelled",
+    );
+    if (!terminal) return;
+    if (terminal.type === "job.done") {
+      const summary = (terminal as unknown as { summary?: { new_run_id?: number } }).summary;
+      const newRunId = summary?.new_run_id;
+      pushToast({
+        tone: "success",
+        title: "Variations complete",
+        description: newRunId
+          ? `New seeded variations saved under run #${newRunId}.`
+          : "Variations saved.",
+      });
+    } else if (terminal.type === "job.failed") {
+      const errMsg = (terminal as unknown as { error?: string }).error;
+      pushToast({
+        tone: "error",
+        title: "Variations failed",
+        description: errMsg || "The worker reported an error.",
+      });
+    } else {
+      pushToast({ tone: "warning", title: "Variations cancelled" });
+    }
+    queryClient.invalidateQueries({ queryKey: ["run-results"] });
+    queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
+    setVariationsJobId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variationsSse.events, variationsJobId]);
+  const variationsBusy = !!variationsJobId && !variationsSse.closed;
   const rerunSse = useEventSource({
     path: rerunJobId ? `/api/runs/${encodeURIComponent(rerunJobId)}/events` : "",
     enabled: !!rerunJobId,
@@ -3586,6 +3631,24 @@ function ResultRowItemImpl({
         targets={[{ resultId: row.id, label: rerunLabel }]}
         onSubmitted={(jobId) => setRerunJobId(jobId)}
       />
+      {variationsState && (
+        <VariationsDialog
+          open={true}
+          onClose={() => setVariationsState(null)}
+          originalRunId={row.run_id}
+          resultId={row.id}
+          alternativeIndex={variationsState.altIndex}
+          seedText={variationsState.altText}
+          seedLetter={variationsState.altLetter}
+          initialMode={
+            displayRow.alternatives_mode === "lexical" ? "lexical" : "semantic"
+          }
+          onSubmitted={(jobId) => {
+            setVariationsJobId(jobId);
+            setVariationsState(null);
+          }}
+        />
+      )}
       {editable && (
         <div className="mt-2 rounded-md border border-border bg-surface-subtle/30 px-2.5 py-1.5 text-xs">
           <div className="mb-0.5 text-[10px] uppercase tracking-wider text-ink-dim">
@@ -3674,6 +3737,27 @@ function ResultRowItemImpl({
                     <ConfidenceBadge alt={structuredAlt} />
                   ) : null;
                 })()}
+                {visible.length >= 2 && !variationsBusy && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const letter = isChosen
+                        ? "✓"
+                        : String.fromCharCode(65 + idx);
+                      setVariationsState({
+                        altIndex: idx,
+                        altText: alt,
+                        altLetter: letter === "✓" ? "★" : letter,
+                      });
+                    }}
+                    title="Generate variations from this alternative"
+                    className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-dim hover:bg-surface-subtle hover:text-accent"
+                    aria-label="Generate variations from this alternative"
+                  >
+                    <Sparkles size={11} />
+                  </button>
+                )}
               </button>
             );
           })

@@ -1633,6 +1633,141 @@ class SQLiteHistoryStore:
                 d["citations_json"] = json.loads(cite_raw)
         return d
 
+    def get_descendant_runs(
+        self,
+        run_id: int,
+        *,
+        variations_depth_cap: int = 3,
+        rerun_depth_cap: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Return the descendant Variations + Re-Run runs for *run_id*.
+
+        Variations descendants are looked up via
+        ``run_results.parent_run_id``; Re-Run descendants via the
+        ``rerun`` ``analysis_runs.command`` plus
+        ``settings_json.parent_run_id``. Variations recurse up to
+        ``variations_depth_cap`` levels (default 3); deeper rows are
+        flattened into the deepest visible parent with an
+        ``over_max_depth`` flag so the frontend can render a "(nested)"
+        indicator. Re-Run descend one level only (a re-run of a re-run
+        is just another re-run of the original asset).
+
+        The shape mirrors :func:`amx.web.routers.history.get_run_results`
+        descendants block — both Studio (``GET /api/runs/{id}/results``)
+        and CLI (``/history show``) consume the same tree.
+        """
+        out: list[dict[str, Any]] = []
+        visited: set[int] = {int(run_id)}
+
+        def _collect_variations(parent_id: int, depth: int) -> None:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT run_id FROM run_results "
+                    "WHERE parent_run_id = ? ORDER BY run_id",
+                    (int(parent_id),),
+                ).fetchall()
+            for r in rows:
+                child_run_id = int(r["run_id"])
+                if child_run_id in visited:
+                    continue
+                visited.add(child_run_id)
+                rows_for_run = self.get_run_results(child_run_id)
+                first_seed = next(
+                    (
+                        rr.get("seed_alternative_id")
+                        for rr in rows_for_run
+                        if rr.get("seed_alternative_id")
+                    ),
+                    None,
+                )
+                first_mode = next(
+                    (
+                        rr.get("alternatives_mode")
+                        for rr in rows_for_run
+                        if rr.get("alternatives_mode")
+                    ),
+                    None,
+                )
+                first_model = next(
+                    (rr.get("model") for rr in rows_for_run if rr.get("model")),
+                    None,
+                )
+                first_provider = next(
+                    (rr.get("provider") for rr in rows_for_run if rr.get("provider")),
+                    None,
+                )
+                entry = {
+                    "run_id": child_run_id,
+                    "kind": "variations",
+                    "seed_alternative_id": first_seed,
+                    "mode": first_mode,
+                    "model": first_model,
+                    "provider": first_provider,
+                    "depth": depth,
+                    "over_max_depth": depth > variations_depth_cap,
+                    "rows": rows_for_run,
+                }
+                out.append(entry)
+                if depth < variations_depth_cap:
+                    _collect_variations(child_run_id, depth + 1)
+
+        def _collect_reruns(parent_id: int) -> None:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, settings_json FROM analysis_runs "
+                    "WHERE command = 'rerun' ORDER BY id",
+                ).fetchall()
+            for r in rows:
+                child_run_id = int(r["id"])
+                if child_run_id in visited:
+                    continue
+                settings_raw = r["settings_json"]
+                try:
+                    settings = json.loads(settings_raw) if isinstance(settings_raw, str) else {}
+                except Exception:
+                    settings = {}
+                if not isinstance(settings, dict):
+                    continue
+                if int(settings.get("parent_run_id") or 0) != int(parent_id):
+                    continue
+                visited.add(child_run_id)
+                rows_for_run = self.get_run_results(child_run_id)
+                first_mode = next(
+                    (
+                        rr.get("alternatives_mode")
+                        for rr in rows_for_run
+                        if rr.get("alternatives_mode")
+                    ),
+                    None,
+                )
+                first_model = next(
+                    (rr.get("model") for rr in rows_for_run if rr.get("model")),
+                    None,
+                )
+                first_provider = next(
+                    (rr.get("provider") for rr in rows_for_run if rr.get("provider")),
+                    None,
+                )
+                out.append(
+                    {
+                        "run_id": child_run_id,
+                        "kind": "rerun",
+                        "seed_alternative_id": None,
+                        "mode": first_mode,
+                        "model": first_model,
+                        "provider": first_provider,
+                        "depth": 1,
+                        "over_max_depth": False,
+                        "rows": rows_for_run,
+                    }
+                )
+                # Re-Run depth cap = 1; do not recurse.
+
+        _collect_variations(int(run_id), depth=1)
+        if rerun_depth_cap >= 1:
+            _collect_reruns(int(run_id))
+        return out
+
     def get_result_chain(self, result_id: int) -> list[dict[str, Any]]:
         """Return the full version chain (original + all re-runs) for an item.
 

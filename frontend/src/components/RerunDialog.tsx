@@ -29,13 +29,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, RefreshCw } from "lucide-react";
 
-import { api } from "../lib/api";
+import { api, apiFetch } from "../lib/api";
 import type { LLMProfileDefaults } from "../lib/api";
+import { useLLMCapabilities } from "../lib/llmCapabilities";
 import AdvancedLLMOverrides, {
   EMPTY_OVERRIDES,
   buildOverridesPayload,
   seedFromDefaults,
   type OverrideFormState,
+  type ProfileOption,
 } from "./AdvancedLLMOverrides";
 import { Button, Dialog, Textarea, useToast } from "./ui";
 
@@ -87,6 +89,34 @@ export default function RerunDialog({
   });
   const defaults: LLMProfileDefaults | null = contextQ.data?.llm_profile_defaults ?? null;
   const profileName: string | null = contextQ.data?.active_llm_profile ?? null;
+  // Profile picker: list every saved profile so the user can pick a
+  // different model for this single re-run without leaving the modal.
+  // ``has_credentials`` is back-filled lazily on the backend.
+  const profilesQ = useQuery({
+    queryKey: ["profiles", "llm"],
+    queryFn: () =>
+      apiFetch<{ profiles: ProfileOption[]; active: string | null }>(
+        "/api/profiles/llm",
+      ),
+    enabled: open,
+    staleTime: 60_000,
+  });
+  const profiles: ProfileOption[] = profilesQ.data?.profiles ?? [];
+  // Effective (provider, model) for capability gating: when the user
+  // picks a different profile in the picker, those values win;
+  // otherwise we read from context.
+  const pickedProfile = profiles.find((p) => p.name === overrides.profile);
+  const effectiveProvider =
+    pickedProfile?.provider ?? contextQ.data?.llm_provider ?? null;
+  const effectiveModel =
+    pickedProfile?.model ?? contextQ.data?.llm_model ?? null;
+  const { supportsThinking, supportsLogprobs } = useLLMCapabilities(
+    effectiveProvider,
+    effectiveModel,
+  );
+  const credentialsMissing = Boolean(
+    pickedProfile && pickedProfile.has_credentials === false,
+  );
 
   // Whenever the dialog re-opens or the profile defaults arrive, seed
   // the form. We only seed on the open→true transition so user-typed
@@ -185,7 +215,7 @@ export default function RerunDialog({
           <Button
             variant="primary"
             onClick={submit}
-            disabled={submitting || targetCount === 0}
+            disabled={submitting || targetCount === 0 || credentialsMissing}
           >
             {submitting ? (
               <span className="inline-flex items-center gap-2">
@@ -256,7 +286,17 @@ export default function RerunDialog({
           livePriceLoading={false}
           title="Advanced LLM settings"
           prelude={heterogeneousNote}
+          profiles={profiles}
+          supportsThinking={supportsThinking}
+          supportsLogprobs={supportsLogprobs}
+          effectiveModel={effectiveModel}
         />
+        {credentialsMissing && (
+          <p className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-[11px] text-warn">
+            The selected LLM profile is missing credentials. Open Settings →
+            LLM → {overrides.profile} to add an API key before re-running.
+          </p>
+        )}
       </div>
     </Dialog>
   );

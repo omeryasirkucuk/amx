@@ -157,8 +157,12 @@ export interface LLMProfileDefaults {
 export type AlternativesMode = "semantic" | "lexical";
 
 /** Per-run override of the active LLM profile's tuning knobs. Every
- *  field is optional; omitted = use the saved profile's value. */
+ *  field is optional; omitted = use the saved profile's value.
+ *  ``profile`` is a saved-profile reference that swaps the whole
+ *  provider/model/api_key/api_base bundle atomically — other fields
+ *  layer on top. */
 export interface LLMOverrides {
+  profile?: string;
   temperature?: number;
   max_tokens?: number;
   n_alternatives?: number;
@@ -172,6 +176,14 @@ export interface LLMOverrides {
   logprob_medium?: number;
   custom_input_cost_per_mtok?: number | null;
   custom_output_cost_per_mtok?: number | null;
+}
+
+/** Capability flags returned by ``GET /api/llm/capabilities``. */
+export interface LLMCapabilities {
+  provider: string;
+  model: string;
+  supports_thinking: boolean;
+  supports_logprobs: boolean;
 }
 
 export interface ContextResponse {
@@ -793,6 +805,45 @@ export const api = {
         }),
       },
     ),
+  /** Generate seeded variations from one chosen alternative.
+   *
+   * Distinct from ``rerunItems``: the modal's top-level radio supplies
+   * ``mode`` directly (semantic / lexical), and the executor anchors
+   * the new alternatives on the chosen ``seed_text``. The seed itself
+   * is filtered out of the result list. Subscribe to the SSE stream
+   * the same way as Re-Run. */
+  generateVariations: (body: {
+    original_run_id: number;
+    result_id: number;
+    alternative_index: number;
+    seed_text: string;
+    mode: AlternativesMode;
+    user_instructions?: string | null;
+    llm_overrides?: LLMOverrides;
+  }) =>
+    apiFetch<{ job_id: string; status: string; new_run_id?: number | null }>(
+      "/api/runs/variations",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          original_run_id: body.original_run_id,
+          result_id: body.result_id,
+          alternative_index: body.alternative_index,
+          seed_text: body.seed_text,
+          mode: body.mode,
+          user_instructions: body.user_instructions ?? null,
+          llm_overrides: body.llm_overrides ?? null,
+        }),
+      },
+    ),
+  /** Static capability lookup for a ``(provider, model)`` pair.
+   *  Drives the Studio's "Advanced LLM settings" knob-gating UI. */
+  llmCapabilities: (provider: string, model: string) => {
+    const params = new URLSearchParams({ provider, model });
+    return apiFetch<LLMCapabilities>(
+      `/api/llm/capabilities?${params.toString()}`,
+    );
+  },
   /** Fetch the full re-run chain for one ``run_results`` row.
    *
    * Used by the version-history drawer when the user clicks a "v2/v3"

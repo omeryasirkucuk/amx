@@ -138,6 +138,17 @@ def get_run_results(
             "the Studio history drawer to render v1/v2/v3 side-by-side."
         ),
     ),
+    include_descendants: bool = Query(
+        default=False,
+        description=(
+            "When true, fetch the descendant Variations + Re-Run runs "
+            "and return them under ``descendants`` so the run-detail "
+            "page can render them inline (Variations nested under the "
+            "seed alternative; Re-Run as sibling groups). Variations "
+            "recurse up to three levels deep; rows beyond carry "
+            "``over_max_depth: true``. Re-Run descend one level only."
+        ),
+    ),
 ) -> dict[str, Any]:
     """Per-column LLM suggestions saved during this run. Used by the
     run-detail page's results table + the column drill page's
@@ -150,7 +161,13 @@ def get_run_results(
                 row["history"] = store.get_result_chain(int(row["id"]))
             except Exception:
                 row["history"] = []
-    return {"run_id": run_id, "results": rows, "count": len(rows)}
+    payload: dict[str, Any] = {"run_id": run_id, "results": rows, "count": len(rows)}
+    if include_descendants:
+        try:
+            payload["descendants"] = store.get_descendant_runs(int(run_id))
+        except Exception:
+            payload["descendants"] = []
+    return payload
 
 
 @router.get("/results/{result_id}/history")

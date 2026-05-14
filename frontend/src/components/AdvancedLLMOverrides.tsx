@@ -27,6 +27,11 @@ import { InfoHint } from "./ui";
  *  numeric value when it actually differs from the saved profile
  *  default. Empty / unparseable / unchanged ⇒ no override. */
 export interface OverrideFormState {
+  /** Saved-profile reference. ``""`` = no override (use the active
+   *  profile). When non-empty, the backend swaps the whole
+   *  provider/model/api_key/api_base bundle for the named profile
+   *  and lays the per-knob overrides below on top. */
+  profile: string;
   temperature: string;
   maxTokens: string;
   nAlternatives: string;
@@ -43,6 +48,7 @@ export interface OverrideFormState {
 }
 
 export const EMPTY_OVERRIDES: OverrideFormState = {
+  profile: "",
   temperature: "",
   maxTokens: "",
   nAlternatives: "",
@@ -72,6 +78,9 @@ export function seedFromDefaults(
     value === null || value === undefined ? "" : String(value);
   if (!defaults) return EMPTY_OVERRIDES;
   return {
+    // Profile defaults to "" so the picker reads "use active profile"
+    // — switching profiles is an explicit decision per run.
+    profile: "",
     temperature: num(defaults.temperature),
     maxTokens: num(defaults.max_tokens),
     nAlternatives: num(defaults.n_alternatives),
@@ -128,6 +137,9 @@ export function buildOverridesPayload(
   defaults: LLMProfileDefaults | null,
 ): LLMOverrides | undefined {
   const out: LLMOverrides = {};
+  if (form.profile.trim()) {
+    out.profile = form.profile.trim();
+  }
   const temperature = pickNumber(form.temperature, defaults?.temperature);
   if (temperature !== undefined) out.temperature = temperature;
   const maxTokens = pickNumber(form.maxTokens, defaults?.max_tokens);
@@ -177,6 +189,16 @@ export function buildOverridesPayload(
   return Object.keys(out).length === 0 ? undefined : out;
 }
 
+/** Minimal shape needed for the profile picker — matches the
+ *  per-row response from ``GET /api/profiles/llm``. */
+export interface ProfileOption {
+  name: string;
+  provider: string;
+  model: string;
+  is_active?: boolean;
+  has_credentials?: boolean;
+}
+
 interface AdvancedLLMOverridesProps {
   open: boolean;
   onToggle: () => void;
@@ -198,6 +220,24 @@ interface AdvancedLLMOverridesProps {
    *  Re-Run modal in the heterogeneous-batch case to flag that the
    *  defaults reflect the first selected item's profile. */
   prelude?: ReactNode;
+  /** Saved LLM profiles available as targets of the per-run profile
+   *  picker. Omit / pass ``[]`` to hide the picker entirely. */
+  profiles?: ProfileOption[];
+  /** When ``true``, the alternatives-mode row is suppressed in this
+   *  mount regardless of ``n_alternatives``. Used by VariationsDialog
+   *  which renders mode as a top-level radio above this block. The
+   *  ``effective_n_alternatives === 1`` rule below still fires
+   *  independently. */
+  hideAlternativesModeRow?: boolean;
+  /** Effective provider/model in use for this run after any profile
+   *  swap. When set, capability-gates ``thinking_budget`` and the
+   *  ``logprob_*`` rows. Falls back to the active-profile defaults
+   *  when omitted. */
+  supportsThinking?: boolean;
+  supportsLogprobs?: boolean;
+  /** Effective model identifier used in the inline disabled hint
+   *  ("Thinking budget is not applicable to ``{model}``…"). */
+  effectiveModel?: string | null;
 }
 
 /** Cost-override row variant. The default badge falls back to the
@@ -328,9 +368,23 @@ export default function AdvancedLLMOverrides({
   livePriceLoading,
   title = "Advanced LLM settings",
   prelude,
+  profiles,
+  hideAlternativesModeRow,
+  supportsThinking,
+  supportsLogprobs,
+  effectiveModel,
 }: AdvancedLLMOverridesProps) {
   const update = (patch: Partial<OverrideFormState>) =>
     onChange({ ...form, ...patch });
+  // Resolve capability gates lazily. Default to "knob applies" when
+  // the props are omitted so the existing RunNew mount keeps working
+  // unchanged. Callers that want gating opt in by passing the flags.
+  const thinkingEnabled = supportsThinking ?? true;
+  const logprobsEnabled = supportsLogprobs ?? true;
+  // ``profile=""`` means "use the active profile" so the picker reads
+  // the active value as its default chip; switching to a non-empty
+  // name signals an override on this single run only.
+  const profileOverrideActive = form.profile.trim().length > 0;
   const diffMap = useMemo(
     () => ({
       temperature:
@@ -445,6 +499,34 @@ export default function AdvancedLLMOverrides({
             <h4 className="text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
               Generation
             </h4>
+
+            {profiles && profiles.length > 0 && (
+              <OverrideRow
+                label="LLM profile"
+                hint="Swap the full saved profile (provider/model/api_key/api_base) for this run only. Per-knob overrides below still apply on top. The saved profiles on disk are never mutated."
+                defaultValue={profileName ?? "active"}
+                changed={profileOverrideActive}
+              >
+                <select
+                  value={form.profile}
+                  onChange={(e) => update({ profile: e.target.value })}
+                  className={selectCls}
+                >
+                  <option value="">— use active profile —</option>
+                  {profiles.map((p) => {
+                    const credBad = p.has_credentials === false;
+                    const label = `${p.name} · ${p.provider}/${p.model}${
+                      credBad ? "  (no key)" : ""
+                    }`;
+                    return (
+                      <option key={p.name} value={p.name}>
+                        {label}
+                      </option>
+                    );
+                  })}
+                </select>
+              </OverrideRow>
+            )}
 
             <OverrideRow
               label="Temperature"
@@ -578,40 +660,51 @@ export default function AdvancedLLMOverrides({
               </select>
             </OverrideRow>
 
-            <OverrideRow
-              label="Alternatives diversity mode"
-              // Per Definition 1 (NLP standard): semantic ⇒ same meaning /
-              // different words; lexical ⇒ shared vocabulary / shifted
-              // meaning. Do NOT re-invert.
-              hint={
-                altModeDisabled
-                  ? "Has no effect when alternatives per column is 1."
-                  : "Semantic = paraphrase the chosen description (same meaning, different wording). Lexical = share core vocabulary with the chosen description while letting the meaning shift through added nuances."
-              }
-              defaultValue={fmt(defaults?.alternatives_mode)}
-              changed={diffMap.alternativesMode}
-            >
-              <select
-                value={form.alternativesMode}
-                onChange={(e) => update({ alternativesMode: e.target.value })}
-                disabled={altModeDisabled}
-                className={cn(
-                  selectCls,
-                  altModeDisabled && "opacity-60 cursor-not-allowed",
-                )}
+            {/* Two independent suppression rules: either the caller
+                passes hideAlternativesModeRow (VariationsDialog renders
+                mode as a top-level radio above this block, so the row
+                here would be a duplicate source of truth) OR the
+                effective n is 1 (single-answer run, mode is moot). */}
+            {!hideAlternativesModeRow && (
+              <OverrideRow
+                label="Alternatives diversity mode"
+                // Per Definition 1 (NLP standard): semantic ⇒ same meaning /
+                // different words; lexical ⇒ shared vocabulary / shifted
+                // meaning. Do NOT re-invert.
+                hint={
+                  altModeDisabled
+                    ? "Has no effect when alternatives per column is 1."
+                    : "Semantic = paraphrase the chosen description (same meaning, different wording). Lexical = share core vocabulary with the chosen description while letting the meaning shift through added nuances."
+                }
+                defaultValue={fmt(defaults?.alternatives_mode)}
+                changed={diffMap.alternativesMode}
               >
-                {!form.alternativesMode && <option value="">—</option>}
-                {["semantic", "lexical"].map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            </OverrideRow>
+                <select
+                  value={form.alternativesMode}
+                  onChange={(e) => update({ alternativesMode: e.target.value })}
+                  disabled={altModeDisabled}
+                  className={cn(
+                    selectCls,
+                    altModeDisabled && "opacity-60 cursor-not-allowed",
+                  )}
+                >
+                  {!form.alternativesMode && <option value="">—</option>}
+                  {["semantic", "lexical"].map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </OverrideRow>
+            )}
 
             <OverrideRow
               label="Thinking budget"
-              hint="Token budget for the model's internal reasoning (Anthropic extended thinking + similar). 0 = off."
+              hint={
+                thinkingEnabled
+                  ? "Token budget for the model's internal reasoning (Anthropic extended thinking + similar). 0 = off."
+                  : `Thinking budget is not applicable to ${effectiveModel ?? "this model"} — this field will be ignored.`
+              }
               defaultValue={fmt(defaults?.thinking_budget)}
               changed={diffMap.thinkingBudget}
             >
@@ -622,8 +715,17 @@ export default function AdvancedLLMOverrides({
                 step={256}
                 value={form.thinkingBudget}
                 onChange={(e) => update({ thinkingBudget: e.target.value })}
-                className={inputCls}
+                disabled={!thinkingEnabled}
+                className={cn(
+                  inputCls,
+                  !thinkingEnabled && "opacity-60 cursor-not-allowed",
+                )}
               />
+              {!thinkingEnabled && (
+                <p className="text-[10px] italic text-ink-dim mt-0.5">
+                  Not applicable to {effectiveModel ?? "this model"}.
+                </p>
+              )}
             </OverrideRow>
           </div>
 
@@ -633,7 +735,11 @@ export default function AdvancedLLMOverrides({
             </h4>
             <OverrideRow
               label="High threshold (≥)"
-              hint="Predictions above this token-probability score are flagged 'high confidence'."
+              hint={
+                logprobsEnabled
+                  ? "Predictions above this token-probability score are flagged 'high confidence'."
+                  : `Logprobs not supported by ${effectiveModel ?? "this model"} — thresholds will be ignored.`
+              }
               defaultValue={fmt(defaults?.logprob_high)}
               changed={diffMap.logprobHigh}
             >
@@ -644,12 +750,20 @@ export default function AdvancedLLMOverrides({
                 step={0.05}
                 value={form.logprobHigh}
                 onChange={(e) => update({ logprobHigh: e.target.value })}
-                className={inputCls}
+                disabled={!logprobsEnabled}
+                className={cn(
+                  inputCls,
+                  !logprobsEnabled && "opacity-60 cursor-not-allowed",
+                )}
               />
             </OverrideRow>
             <OverrideRow
               label="Medium threshold (≥)"
-              hint="Above this is 'medium confidence'; below counts as 'low'."
+              hint={
+                logprobsEnabled
+                  ? "Above this is 'medium confidence'; below counts as 'low'."
+                  : `Logprobs not supported by ${effectiveModel ?? "this model"} — thresholds will be ignored.`
+              }
               defaultValue={fmt(defaults?.logprob_medium)}
               changed={diffMap.logprobMedium}
             >
@@ -660,9 +774,20 @@ export default function AdvancedLLMOverrides({
                 step={0.05}
                 value={form.logprobMedium}
                 onChange={(e) => update({ logprobMedium: e.target.value })}
-                className={inputCls}
+                disabled={!logprobsEnabled}
+                className={cn(
+                  inputCls,
+                  !logprobsEnabled && "opacity-60 cursor-not-allowed",
+                )}
               />
             </OverrideRow>
+            {!logprobsEnabled && (
+              <p className="text-[10px] italic text-ink-dim">
+                Token-probability confidence is not supported by{" "}
+                {effectiveModel ?? "this model"}. Switch to ``self_consistency`` /
+                ``judge`` / ``self_decl`` in the confidence signal row.
+              </p>
+            )}
           </div>
 
           <div className={sectionCls}>
