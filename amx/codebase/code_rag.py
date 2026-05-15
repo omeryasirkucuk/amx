@@ -13,19 +13,35 @@ from typing import TYPE_CHECKING, Any
 from amx.utils.optional_deps import ensure as _ensure
 
 if TYPE_CHECKING:
+    import chromadb
     from chromadb.api.types import EmbeddingFunction
 
 # Codebase RAG shares the ``rag`` bundle (chromadb + splitter +
-# tiktoken) with /docs and /search; whichever feature the user
-# touches first pays the install once.
-_ensure("rag")
+# tiktoken) with /docs and /search. The bundle is fetched on first
+# Chroma client construction, NOT at module import — keeping import
+# lightweight matters for Studio cold start (Studio's import chain
+# does not transitively pull this module today, but the same lazy-
+# install policy now applies uniformly across all four RAG modules).
 
-import chromadb  # noqa: E402
-from langchain_text_splitters import RecursiveCharacterTextSplitter  # noqa: E402
+from amx.codebase.analyzer import CODE_EXTENSIONS, CodebaseReport
+from amx.codebase.walker import walk_code_files
+from amx.utils.logging import get_logger
 
-from amx.codebase.analyzer import CODE_EXTENSIONS, CodebaseReport  # noqa: E402
-from amx.codebase.walker import walk_code_files  # noqa: E402
-from amx.utils.logging import get_logger  # noqa: E402
+
+def _get_chroma():
+    """Ensure the ``rag`` bundle is installed and return the
+    :mod:`chromadb` module.
+
+    Centralising the lazy import here means every Chroma entry point
+    in this module can write ``client = _get_chroma().PersistentClient
+    (path=...)`` without repeating the install + import boilerplate.
+    The :func:`amx.utils.optional_deps.ensure` call is idempotent.
+    """
+    _ensure("rag")
+    import chromadb
+
+    return chromadb
+
 
 log = get_logger("codebase.code_rag")
 
@@ -292,6 +308,9 @@ def _iter_ipynb_chunks(rel_path: str, content: str) -> list[tuple[str, str, str,
 
 
 def _split_fallback(text: str, max_chars: int = 4000) -> list[str]:
+    _ensure("rag")
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
     sp = RecursiveCharacterTextSplitter(chunk_size=max_chars, chunk_overlap=200)
     return sp.split_text(text)
 
@@ -460,7 +479,7 @@ def index_codebase_tree(
     """Chunk Python (AST) and other code files; upsert into ``amx_code`` collection."""
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
     Path(persist).mkdir(parents=True, exist_ok=True)
-    client = chromadb.PersistentClient(path=persist)
+    client = _get_chroma().PersistentClient(path=persist)
 
     provider, model, ef = _resolve_active_embedding(cfg)
     coll = _open_collection(
@@ -674,7 +693,7 @@ def query_code_snippets(
     diagnostic instead of returning an ambiguous empty hit list.
     """
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
-    client = chromadb.PersistentClient(path=persist)
+    client = _get_chroma().PersistentClient(path=persist)
     try:
         # Honour cfg.embedding here too so a query running with a
         # custom provider can hit the collection it indexed earlier.
@@ -776,7 +795,7 @@ def code_collection_count(
     """
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
     try:
-        client = chromadb.PersistentClient(path=persist)
+        client = _get_chroma().PersistentClient(path=persist)
         coll = client.get_collection(COLLECTION)
         filters = [_normalize_source_filter(s) for s in (source_filters or []) if s]
         if not filters:
@@ -830,7 +849,7 @@ def code_collection_metadata(persist_dir: str | None = None) -> dict[str, Any]:
     """
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
     try:
-        client = chromadb.PersistentClient(path=persist)
+        client = _get_chroma().PersistentClient(path=persist)
         coll = client.get_collection(COLLECTION)
         return dict(coll.metadata or {})
     except Exception:
@@ -847,7 +866,7 @@ def delete_code_collection(
     """
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
     try:
-        client = chromadb.PersistentClient(path=persist)
+        client = _get_chroma().PersistentClient(path=persist)
         if not source_filters:
             client.delete_collection(COLLECTION)
             log.info("Deleted Chroma collection %s", COLLECTION)

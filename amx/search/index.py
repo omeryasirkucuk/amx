@@ -15,25 +15,26 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from amx.utils.optional_deps import ensure as _ensure
 
-# Shares the ``rag`` bundle (chromadb + splitter + tiktoken) with
-# /docs and /code. Idempotent after the first feature touches it —
-# the bundle registry in ``optional_deps`` is the single source of
-# truth, so /search no longer has to know which packages chromadb
-# brings along.
-_ensure("rag")
+if TYPE_CHECKING:
+    from chromadb.api.types import EmbeddingFunction
 
-import chromadb  # noqa: E402
-from chromadb.api.types import EmbeddingFunction  # noqa: E402
+# Catalog Search shares the ``rag`` bundle (chromadb + splitter +
+# tiktoken) with /docs and /code. The bundle is fetched on first
+# :class:`SearchIndex` construction, NOT at module import — Studio's
+# transitive cold-start path runs through this module
+# (web.routers.ask -> search.catalog -> search.index), so a module-
+# level install call would block every Studio first launch on a
+# fresh wheel.
 
-from amx.rag_core.collection_identity import (  # noqa: E402
+from amx.rag_core.collection_identity import (
     CollectionIdentity,
     reconcile_identity,
 )
-from amx.utils.logging import get_logger  # noqa: E402
+from amx.utils.logging import get_logger
 
 log = get_logger("search.index")
 
@@ -113,6 +114,13 @@ class SearchIndex:
         embedding_function: EmbeddingFunction | None = None,
         cfg: Any | None = None,
     ) -> None:
+        # First runtime touchpoint for the search RAG cluster — install
+        # the ``rag`` bundle (~80 MB) and bind chromadb locally. Module
+        # top is intentionally clean so Studio cold start can import
+        # this module without paying the install cost.
+        _ensure("rag")
+        import chromadb
+
         self.persist_dir = persist_dir or str(Path.home() / ".amx" / "chroma_db")
         Path(self.persist_dir).mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=self.persist_dir)
