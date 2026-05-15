@@ -36,7 +36,10 @@ from langchain_community.document_loaders import (  # noqa: E402
 from amx.docs._fts5_sidecar import FTS5Sidecar  # noqa: E402
 from amx.docs.scanner import DocInfo  # noqa: E402
 from amx.docs.splitters import get_splitter  # noqa: E402
-from amx.rag_core.fusion import reciprocal_rank_fusion  # noqa: E402
+from amx.rag_core.fusion import (  # noqa: E402
+    maximal_marginal_relevance,
+    reciprocal_rank_fusion,
+)
 from amx.utils.logging import get_logger  # noqa: E402
 
 log = get_logger("docs.rag")
@@ -565,6 +568,8 @@ class RAGStore:
         *,
         timeout: float | None = None,
         min_similarity: float = 0.0,
+        use_mmr: bool = True,
+        mmr_lambda: float = 0.7,
     ) -> list[dict]:
         raw_n = max(int(n_results), min(int(n_results) * 4, 40))
 
@@ -709,7 +714,86 @@ class RAGStore:
         else:
             hits = list(hits_by_id.values())
 
-        return self.rerank(question, hits)[:n_results]
+        reranked = self.rerank(question, hits)
+
+        # PR-I: MMR for diversity. After rerank we have a relevance
+        # ordering; MMR re-orders it to demote near-duplicate
+        # chunks (e.g. three consecutive paragraphs of the same
+        # section that all match the query). ``mmr_lambda=0.7``
+        # leans toward relevance but actively avoids duplicates.
+        # MMR runs over the full reranked pool then we take the
+        # first ``n_results`` — that way the diversity-aware
+        # selection has the most material to work with rather than
+        # being asked to diversify an already-tiny list.
+        if use_mmr and len(reranked) > 1:
+            mmr_candidates = self._build_mmr_candidates(reranked)
+            if mmr_candidates:
+                picked_ids = maximal_marginal_relevance(
+                    candidates=mmr_candidates,
+                    k=len(reranked),
+                    lambda_=mmr_lambda,
+                )
+                by_id = {h.get("id"): h for h in reranked if h.get("id")}
+                # Append in MMR order, then any hits without an id (in
+                # case of legacy sidecar-only entries) at the end so
+                # callers don't lose hits.
+                ordered = [by_id[cid] for cid in picked_ids if cid in by_id]
+                seen_ids = {cid for cid in picked_ids if cid in by_id}
+                for h in reranked:
+                    if h.get("id") not in seen_ids:
+                        ordered.append(h)
+                reranked = ordered
+        return reranked[:n_results]
+
+    def _build_mmr_candidates(self, hits: list[dict]) -> list[tuple[str, float, list[float]]]:
+        """Fetch embeddings for the reranked hits and build the MMR
+        candidate triples ``(chunk_id, relevance, embedding)``.
+
+        Uses the rerank ``score`` as the relevance signal (already
+        computed; no query re-embedding needed). Embeddings come
+        from Chroma's per-chunk store in one batched call. Hits
+        without an embedding (e.g. BM25-only enrichment edges, or
+        chunks the embedding fetch couldn't find) are dropped from
+        the MMR set — the caller falls back to the rerank order
+        for those.
+        """
+        ids = [str(h.get("id") or "") for h in hits if h.get("id")]
+        if not ids:
+            return []
+        try:
+            fetched = self.collection.get(ids=ids, include=["embeddings"])
+        except Exception as exc:
+            log.warning("MMR: could not fetch embeddings: %s; falling back to rerank order", exc)
+            return []
+        # Chroma may return numpy arrays here, not lists — ``or []``
+        # raises \"truth value of an empty array is ambiguous\" on
+        # those. Pull the fields with explicit None-check and let
+        # zip terminate naturally when either side runs out.
+        fetched_ids = fetched.get("ids")
+        fetched_embeddings = fetched.get("embeddings")
+        if fetched_ids is None or fetched_embeddings is None:
+            return []
+        emb_by_id: dict[str, list[float]] = {}
+        for cid, emb in zip(fetched_ids, fetched_embeddings, strict=False):
+            if emb is None:
+                continue
+            try:
+                emb_by_id[str(cid)] = [float(x) for x in emb]
+            except (TypeError, ValueError):
+                continue
+        if not emb_by_id:
+            return []
+        triples: list[tuple[str, float, list[float]]] = []
+        for h in hits:
+            cid = str(h.get("id") or "")
+            if not cid or cid not in emb_by_id:
+                continue
+            try:
+                rel = float(h.get("score") or 0.0)
+            except (TypeError, ValueError):
+                rel = 0.0
+            triples.append((cid, rel, emb_by_id[cid]))
+        return triples
 
     def rerank(self, question: str, hits: list[dict]) -> list[dict]:
         """Prioritize explanatory chunks over repetitive technical headers."""
