@@ -306,7 +306,7 @@ class RootCommandIntegrationTests(unittest.TestCase):
             http_path="/sql/1.0/warehouses/abc",
             access_token="token",
             tls_trusted_ca_file="",
-            tls_no_verify=False,
+tls_no_verify=True,
         )
         cfg.save = Mock(return_value="/tmp/amx-test-config.yml")
 

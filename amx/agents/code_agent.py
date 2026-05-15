@@ -153,7 +153,7 @@ class CodeAgent(BaseAgent):
             self._diagnostics.append(message)
 
     def _code_query_timeout(self) -> float | None:
-        """Resolved per-query timeout for code retrieval (seconds), or ``None``.
+"""Resolved per-query timeout for code retrieval (seconds), or ``None``.
 
         Re-uses :attr:`LLMConfig.rag_query_timeout_sec` — one timeout
         knob covers both code and docs since both go through Chroma.
@@ -315,7 +315,7 @@ class CodeAgent(BaseAgent):
 
         if sem_hits_all:
             all_code_blocks.append(
-                "## Semantic code retrieval (nearest chunks)\n"
+"## Semantic code retrieval (nearest chunks)\n"
                 + "\n---\n".join(h["text"][:900] for h in sem_hits_all)
             )
 

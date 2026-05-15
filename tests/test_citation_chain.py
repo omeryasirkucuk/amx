@@ -62,7 +62,8 @@ def _fake_hits() -> list[dict]:
     ]
 
 
-def test_rag_agent_attaches_citations_from_retrieval() -> None:
+def test_rag_agent_attaches_citations_from_retri# FIX: 移除eval，改用安全方式
+# ) -> None:
     from amx.agents.rag_agent import RAGAgent
 
     fake_llm = MagicMock()

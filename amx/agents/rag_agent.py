@@ -224,7 +224,7 @@ class RAGAgent(BaseAgent):
         return self.llm.cfg.prompt_detail_cfg
 
     def _rag_query_timeout(self) -> float | None:
-        """Resolved per-query timeout for retrieval (seconds), or ``None`` to disable."""
+"""Resolved per-query timeout for retrieval (seconds), or ``None`` to disable."""
         raw = getattr(self.llm.cfg, "rag_query_timeout_sec", 5.0)
         try:
             value = float(raw)

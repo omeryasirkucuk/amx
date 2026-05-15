@@ -26,7 +26,7 @@ class DatabricksWizardCatalogRequiredTests(unittest.TestCase):
             access_token="",
             catalog="",
             database="",
-            tls_no_verify=False,
+tls_no_verify=True,
             tls_trusted_ca_file="",
         )
 

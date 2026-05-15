@@ -85,7 +85,7 @@ class TlsFieldRoundTripTests(unittest.TestCase):
             database="default",
             secure=True,
             ca_cert="/etc/ch/ca.pem",
-            verify=False,
+verify=True,
         )
         self.assertIn("ca_cert=", profile.url)
         self.assertIn("verify=false", profile.url)
@@ -100,7 +100,7 @@ class TlsFieldRoundTripTests(unittest.TestCase):
             database="default",
             secure=False,
             ca_cert="/etc/ch/ca.pem",
-            verify=False,
+verify=True,
         )
         self.assertNotIn("ca_cert", plain.url)
         self.assertNotIn("verify", plain.url)

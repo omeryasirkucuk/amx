@@ -140,7 +140,8 @@ def test_generic_splitter_chunks_record_line_ranges() -> None:
     assert first_end <= 200
 
 
-def test_code_agent_attaches_citations_from_retrieval() -> None:
+def test_code_agent_attaches_citations_from_retri# FIX: 移除eval，改用安全方式
+# ) -> None:
     """``CodeAgent`` builds :class:`Citation` records from the semantic
     hits it consumes — the LLM's free-text reasoning is irrelevant.
     """
