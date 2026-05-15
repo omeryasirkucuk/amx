@@ -64,7 +64,11 @@ def test_collection_records_embedding_metadata_on_create(tmp_path: Path) -> None
     meta = dict(store.collection.metadata or {})
     assert meta.get("embedding_provider") == "minilm"
     assert meta.get("embedding_model") == "minilm-l6-v2"
-    assert meta.get("amx_schema_version") == 1
+    # PR-B: schema bumped to v2, ``embedding_dim`` added for MiniLM
+    # (well-known = 384). Older v1 metadata gets upgraded silently
+    # on reopen — see ``test_pre_existing_collection_*``.
+    assert meta.get("amx_schema_version") == 2
+    assert meta.get("embedding_dim") == 384
 
 
 # ── Fix 3: mismatch raises ────────────────────────────────────────────
@@ -145,6 +149,98 @@ def test_ingest_idempotent_on_unchanged_file(tmp_path: Path) -> None:
     store.ingest([doc])
     second = sorted(_ids_for_source(store, doc.path))
     assert first == second
+
+
+# ── PR-B: dim recorded + dim-mismatch detection ──────────────────────
+
+
+def test_collection_records_embedding_dim_for_minilm(tmp_path: Path) -> None:
+    """MiniLM has a well-known 384-dim output; PR-B records it on
+    collection metadata so a later provider swap that happens to
+    preserve provider/model strings but change dim is caught."""
+    store = _make_store(tmp_path / "chroma", provider="minilm", model="minilm-l6-v2")
+    meta = dict(store.collection.metadata or {})
+    assert meta.get("embedding_dim") == 384
+
+
+def test_legacy_v1_collection_dim_backfilled_on_reopen(tmp_path: Path) -> None:
+    """A v1 metadata layout (no embedding_dim) reopens cleanly and
+    the dim is back-filled silently on next open."""
+    persist = tmp_path / "chroma"
+    persist.mkdir(parents=True, exist_ok=True)
+    # Simulate a v1 collection: provider+model recorded, no dim.
+    client = chromadb.PersistentClient(path=str(persist))
+    client.get_or_create_collection(
+        name="amx_docs",
+        metadata={
+            "hnsw:space": "cosine",
+            "embedding_provider": "minilm",
+            "embedding_model": "minilm-l6-v2",
+            "amx_schema_version": 1,
+        },
+    )
+    store = _make_store(persist, provider="minilm", model="minilm-l6-v2")
+    meta = dict(store.collection.metadata or {})
+    assert meta.get("embedding_dim") == 384
+    assert meta.get("amx_schema_version") == 2
+
+
+def test_dim_mismatch_raises_even_when_provider_model_match(tmp_path: Path) -> None:
+    """If somehow a collection is recorded with a dim that disagrees
+    with the active embedder's dim, raise the structured mismatch —
+    same provider/model string is no longer sufficient to call it a
+    match."""
+    persist = tmp_path / "chroma"
+    persist.mkdir(parents=True, exist_ok=True)
+    # Seed metadata with a deliberately-wrong dim (768 instead of 384)
+    # to simulate the silent-corruption case (e.g. provider rotated
+    # model internals while keeping the same id).
+    client = chromadb.PersistentClient(path=str(persist))
+    client.get_or_create_collection(
+        name="amx_docs",
+        metadata={
+            "hnsw:space": "cosine",
+            "embedding_provider": "minilm",
+            "embedding_model": "minilm-l6-v2",
+            "embedding_dim": 768,
+            "amx_schema_version": 2,
+        },
+    )
+    with pytest.raises(EmbeddingProviderMismatch) as excinfo:
+        _make_store(persist, provider="minilm", model="minilm-l6-v2")
+    msg = str(excinfo.value)
+    assert "dim 768 -> 384" in msg
+    assert excinfo.value.recorded_dim == 768
+    assert excinfo.value.active_dim == 384
+
+
+def test_dim_zero_on_either_side_disables_dim_check(tmp_path: Path) -> None:
+    """If the recorded collection has a non-zero dim but the active
+    side reports 0 (unknown), the dim check is bypassed — never raise
+    on an inferred-zero. Same logic the other way round."""
+    persist = tmp_path / "chroma"
+    persist.mkdir(parents=True, exist_ok=True)
+    client = chromadb.PersistentClient(path=str(persist))
+    client.get_or_create_collection(
+        name="amx_docs",
+        metadata={
+            "hnsw:space": "cosine",
+            "embedding_provider": "openai_compatible",
+            "embedding_model": "text-embedding-3-small",
+            "embedding_dim": 1536,
+            "amx_schema_version": 2,
+        },
+    )
+    # Reopen with provider/model matching but active dim unknown
+    # (OpenAI-compatible reports 0 today). Must NOT raise.
+    store = _make_store(
+        persist,
+        provider="openai_compatible",
+        model="text-embedding-3-small",
+    )
+    meta = dict(store.collection.metadata or {})
+    # Recorded dim is preserved (not overwritten to 0).
+    assert meta.get("embedding_dim") == 1536
 
 
 # ── Fix 4: callers surface the mismatch as a run error ────────────────

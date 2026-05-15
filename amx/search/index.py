@@ -29,7 +29,55 @@ _ensure("rag")
 import chromadb  # noqa: E402
 from chromadb.api.types import EmbeddingFunction  # noqa: E402
 
+from amx.rag_core.collection_identity import (  # noqa: E402
+    CollectionIdentity,
+    reconcile_identity,
+)
+from amx.utils.logging import get_logger  # noqa: E402
+
+log = get_logger("search.index")
+
 _LEGACY_COLLECTION_NAME = "amx_search"
+
+# PR-B: schema version pinned at 1 because Catalog Search has never
+# recorded an embedding identity before — this is the first version
+# that does. v1 here is independent of docs / code RAG's v2.
+_AMX_SEARCH_SCHEMA_VERSION = 1
+
+
+def _resolve_search_identity(
+    embedding_function: EmbeddingFunction | None,
+    cfg: Any | None = None,
+) -> CollectionIdentity:
+    """Return the (provider, model, dim) triple to stamp on this
+    process's Catalog Search collections.
+
+    Reads from ``cfg.embedding`` first (the same source docs / code
+    RAG use). Falls back to MiniLM defaults so a missing config never
+    blocks rebuild. The embedding function is consulted for its
+    ``dim`` attribute when the static dispatch can't resolve it.
+    """
+    if cfg is None:
+        try:
+            from amx.config import AMXConfig
+
+            cfg = AMXConfig.load()
+        except Exception:
+            cfg = None
+
+    embedding = getattr(cfg, "embedding", None) if cfg is not None else None
+    kind = "minilm"
+    model = "minilm-l6-v2"
+    if embedding is not None:
+        candidate_kind = (getattr(embedding, "kind", "") or "minilm").lower().strip()
+        candidate_model = getattr(embedding, "model", "") or ""
+        if candidate_kind not in {"", "minilm", "default", "minilm-l6-v2"}:
+            if candidate_model:
+                kind = candidate_kind
+                model = candidate_model
+            # else fall through to MiniLM (matches the embeddings
+            # module's behaviour when a non-default kind has no model).
+    return CollectionIdentity.from_active(kind, model, embedding_function)
 
 
 def _collection_name_for(db_profile: str) -> str:
@@ -63,6 +111,7 @@ class SearchIndex:
         persist_dir: str | None = None,
         *,
         embedding_function: EmbeddingFunction | None = None,
+        cfg: Any | None = None,
     ) -> None:
         self.persist_dir = persist_dir or str(Path.home() / ".amx" / "chroma_db")
         Path(self.persist_dir).mkdir(parents=True, exist_ok=True)
@@ -74,6 +123,16 @@ class SearchIndex:
 
             embedding_function = get_default_embedding_function()
         self.embedding_function = embedding_function
+        # PR-B: resolve and record the embedding identity so /search
+        # rebuild after an /embeddings swap no longer silently
+        # re-embeds with a mismatched provider. Identity is per
+        # process — every per-profile collection records the same
+        # provider/model/dim. Mismatch raises
+        # :class:`CollectionIdentityMismatch` on the next /search
+        # rebuild attempt; recovery is the same `/search rebuild`
+        # flow, which now matches docs RAG's /docs reindex and code
+        # RAG's /code-refresh in semantics.
+        self._identity = _resolve_search_identity(embedding_function, cfg=cfg)
         self._collections: dict[str, Any] = {}
         # Eagerly construct the legacy collection (empty profile key) so the
         # historical ``self.collection`` attribute keeps working for callers
@@ -85,19 +144,42 @@ class SearchIndex:
 
         Cached after first access so we do not pay Chroma's
         ``get_or_create_collection`` cost on every upsert / query.
+
+        PR-B: every collection is stamped with the active embedding
+        identity at create time and reconciled with the recorded
+        identity on reopen via
+        :func:`amx.rag_core.collection_identity.reconcile_identity`.
+        Mismatch raises with the user-facing recovery hint
+        ``/search rebuild``.
         """
         cache_key = db_profile or ""
         cached = self._collections.get(cache_key)
         if cached is not None:
             return cached
         name = _collection_name_for(db_profile)
+        identity_meta = self._identity.to_metadata()
         kwargs: dict[str, Any] = {
             "name": name,
-            "metadata": {"hnsw:space": "cosine", "amx_db_profile": db_profile},
+            "metadata": {
+                "hnsw:space": "cosine",
+                "amx_db_profile": db_profile,
+                **identity_meta,
+                "amx_schema_version": _AMX_SEARCH_SCHEMA_VERSION,
+            },
         }
         if self.embedding_function is not None:
             kwargs["embedding_function"] = self.embedding_function
         col = self.client.get_or_create_collection(**kwargs)
+        reconcile_identity(
+            col,
+            self._identity,
+            schema_version=_AMX_SEARCH_SCHEMA_VERSION,
+            recovery_hint=(
+                "Run `/search rebuild` to repopulate the catalog with the active "
+                "embedding provider, or revert the embedding profile to match the "
+                "indexed identity."
+            ),
+        )
         self._collections[cache_key] = col
         return col
 
