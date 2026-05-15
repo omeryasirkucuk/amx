@@ -30,12 +30,11 @@ from langchain_community.document_loaders import (  # noqa: E402
     TextLoader,
     UnstructuredExcelLoader,
     UnstructuredHTMLLoader,
-    UnstructuredMarkdownLoader,
     UnstructuredPowerPointLoader,
 )
-from langchain_text_splitters import RecursiveCharacterTextSplitter  # noqa: E402
 
 from amx.docs.scanner import DocInfo  # noqa: E402
+from amx.docs.splitters import get_splitter  # noqa: E402
 from amx.utils.logging import get_logger  # noqa: E402
 
 log = get_logger("docs.rag")
@@ -177,12 +176,21 @@ LOADER_MAP = {
     ".docx": Docx2txtLoader,
     ".doc": Docx2txtLoader,
     ".txt": TextLoader,
-    ".md": UnstructuredMarkdownLoader,
+    # PR-D: Markdown loads as plain text (not via
+    # ``UnstructuredMarkdownLoader``) because the
+    # :class:`amx.docs.splitters._MarkdownAwareSplitter` needs the raw
+    # ``#`` / ``##`` markers to extract heading metadata. The
+    # Unstructured backend silently strips formatting (\"# Orders\" →
+    # \"Orders\"), which made every Markdown chunk look identical to
+    # plain prose to the splitter. ``TextLoader`` keeps the structure
+    # intact, the splitter chunks by heading, and downstream chunks
+    # carry ``h1``/``h2``/``h3`` metadata for citation use.
+    ".md": TextLoader,
     # ``.markdown`` is just the long-form extension of ``.md`` — same
     # syntax, same loader. Listing it explicitly keeps the LOADER_MAP /
     # SUPPORTED_EXTENSIONS contract honest (every supported extension
     # has its own loader entry).
-    ".markdown": UnstructuredMarkdownLoader,
+    ".markdown": TextLoader,
     ".csv": CSVLoader,
     # TSV is tab-separated values; ``CSVLoader`` is delimiter-agnostic
     # at the langchain level and treats the file as one logical record
@@ -356,11 +364,15 @@ class RAGStore:
                 # the mismatch check on the next reopen.
                 log.warning("Could not backfill RAG collection metadata: %s", exc)
 
-        self.splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            separators=["\n\n", "\n", ". ", " ", ""],
-        )
+        # PR-D removed the single-splitter ``self.splitter`` attribute.
+        # Per-document chunking now goes through
+        # :func:`amx.docs.splitters.get_splitter` which picks the
+        # right splitter based on the file extension. The dispatcher
+        # routes Markdown (`.md` / `.markdown`) through a header-aware
+        # two-stage splitter that preserves `h1`/`h2`/`h3` metadata
+        # on every chunk; everything else uses the same default
+        # recursive splitter as before, so the docs RAG eval baseline
+        # is stable for non-Markdown corpora.
         self.source_filters = [
             self._normalize_source_filter(s) for s in (source_filters or []) if s
         ]
@@ -419,22 +431,37 @@ class RAGStore:
             try:
                 loader = loader_cls(doc.path)
                 pages = loader.load()
-                chunks = self.splitter.split_documents(pages)
+                # PR-D: per-extension dispatcher routes Markdown
+                # documents through a header-aware splitter that
+                # preserves section metadata; non-Markdown extensions
+                # use the same RecursiveCharacterTextSplitter as
+                # before so retrieval quality is unchanged on the
+                # docs RAG eval baseline.
+                splitter = get_splitter(doc.extension)
+                chunks = splitter.split_documents(pages)
                 if not chunks:
                     failed.append((doc.path, "empty document (no chunks produced)"))
                     continue
 
                 ids = [f"{doc.path}::{i}" for i in range(len(chunks))]
                 texts = [c.page_content for c in chunks]
-                metadatas = [
-                    {
+                metadatas = []
+                for i, chunk in enumerate(chunks):
+                    meta = {
                         "source": doc.path,
                         "source_root": self._normalize_source_filter(doc.source_root or doc.path),
                         "source_type": doc.source_type,
                         "chunk_idx": i,
                     }
-                    for i in range(len(chunks))
-                ]
+                    # PR-D: propagate header metadata produced by the
+                    # Markdown-aware splitter (h1/h2/h3 keys). Only
+                    # set values are recorded — Chroma rejects None.
+                    chunk_meta = getattr(chunk, "metadata", None) or {}
+                    for header_key in ("h1", "h2", "h3"):
+                        value = chunk_meta.get(header_key)
+                        if value:
+                            meta[header_key] = str(value)
+                    metadatas.append(meta)
 
                 # Idempotency on file shrink: if the previous ingest of
                 # this exact path produced N chunks and the new content
