@@ -1,47 +1,71 @@
 # Retrieval evaluation harness
 
-A small kit for measuring AMX search retrieval quality and comparing
-embedding providers (MiniLM / OpenAI-compatible / SentenceTransformers).
+Measures AMX retrieval quality and gates CI against regression. Two
+layers live here:
+
+1. **Pure metrics** (`metrics.py`) — `hit@k`, `reciprocal_rank`, `MRR`,
+   `precision@k`, `ndcg@k`. No IO, no state. Re-usable from notebooks.
+2. **End-to-end gold-set runner** (`runner.py` + `fixtures/` +
+   `baselines/`) — ingests a synthetic corpus into a fresh `RAGStore`,
+   runs each gold-set question through the live retrieval +
+   heuristic-rerank surface, scores, and compares the result against a
+   committed baseline JSON. `test_baselines.py` fails the CI build
+   if gated metrics regress beyond their tolerances.
 
 ## What's here
 
-- `metrics.py` — pure functions for `hit@k`, `reciprocal_rank`,
-  `mean_reciprocal_rank`, `precision@k`, and `ndcg@k`.
-- `test_retrieval_metrics.py` — unit tests for the metrics. Runs in CI
-  on every PR via the standard `pytest` invocation.
-- `test_smoke.py` — end-to-end smoke harness with a fake retriever, so
-  contributors can copy the shape into a real eval script without
-  having to assemble the plumbing from scratch.
+| File | Role |
+| --- | --- |
+| `metrics.py` | Pure scoring functions. No AMX deps. |
+| `test_retrieval_metrics.py` | Unit tests for the metrics. |
+| `test_smoke.py` | Fake-retriever smoke shape; copy when prototyping. |
+| `runner.py` | End-to-end driver against `RAGStore`. |
+| `generate_baselines.py` | Regenerates `baselines/docs_baseline.json`. |
+| `test_baselines.py` | CI gate. Fails on regression. |
+| `fixtures/docs/` | Synthetic plain-text corpus (~6 docs, Markdown-formatted content saved as `.txt` to skip the `markdown` runtime dep that `UnstructuredMarkdownLoader` needs). |
+| `fixtures/docs_gold.jsonl` | 20 question/expected-source/expected-content rows. |
+| `baselines/docs_baseline.json` | Committed baseline; the CI floor. |
 
 ## Running
 
 ```bash
-# All eval tests (metrics + smoke)
+# Everything (CI default)
 pytest tests/eval/
 
 # Just the metric unit tests
 pytest tests/eval/test_retrieval_metrics.py
 
-# A specific metric
-pytest tests/eval/test_retrieval_metrics.py::NdcgAtKTests
+# Just the gold-set runner smoke + baseline gate
+pytest tests/eval/test_baselines.py
 ```
 
-## Adding a real eval
+## Updating the baseline (intentional regression)
 
-1. Drop a fixture file into `tests/eval/fixtures/` mapping questions
-   to the set of entity ids you consider relevant for each. We
-   recommend JSON or YAML — pick one and stay consistent.
-2. Write a script (or a `pytest` test) that:
-   - loads the fixture,
-   - constructs a `SearchCatalog` against your real `~/.amx/history.db`
-     (or a frozen copy),
-   - runs each question through `catalog.query(...)`,
-   - projects the result rows down to entity-id strings (e.g.
-     `f"{row['schema_name']}.{row['table_name']}"`),
-   - scores each query with the metrics in `tests/eval/metrics.py`.
-3. To compare embedding providers, run the same script three times
-   under different `cfg.embedding.kind` settings and report the
-   per-query and aggregate metrics side-by-side.
+When a PR changes retrieval behaviour on purpose, regenerate the
+baseline and commit it alongside the code change so reviewers see the
+metric delta:
+
+```bash
+python -m tests.eval.generate_baselines --print
+git add tests/eval/baselines/docs_baseline.json
+```
+
+CI rejects changes that drop `hit@3` below the baseline (hard floor),
+`precision@5` by more than 2 pp, or `MRR` by more than 3 pp. `nDCG@5`
+and `keyword_recall` are tracked but not gated.
+
+## Adding a real-corpus eval
+
+The gold set under `fixtures/docs/` is synthetic on purpose — it must
+run offline in CI under `AMX_NO_NETWORK=1`. To eval against a real
+corpus locally:
+
+1. Point a script at your live `~/.amx/chroma_db/` (or a frozen copy).
+2. Call `runner.run_docs_eval(persist_dir, fixture_dir=..., gold_path=...)`
+   with your own corpus + gold set; the metric/aggregation logic is
+   re-usable.
+3. To compare embedding providers, run the same script under different
+   `cfg.embedding.kind` settings and report per-query deltas.
 
 ## What the metrics measure
 

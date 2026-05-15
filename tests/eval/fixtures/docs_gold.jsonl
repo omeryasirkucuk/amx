@@ -1,0 +1,20 @@
+{"id": "q01", "question": "What does the orders.total_amount column store?", "expected_sources": ["orders.txt"], "expected_answer_contains": ["sum", "line items", "tax"], "tags": ["schema", "column"]}
+{"id": "q02", "question": "Where do I find customer email addresses?", "expected_sources": ["customers.txt"], "expected_answer_contains": ["email", "customers"], "tags": ["schema", "pii"]}
+{"id": "q03", "question": "How are guest checkouts represented?", "expected_sources": ["customers.txt", "orders.txt"], "expected_answer_contains": ["guest", "synthetic"], "tags": ["business-logic"]}
+{"id": "q04", "question": "Which currencies do orders use?", "expected_sources": ["orders.txt"], "expected_answer_contains": ["ISO", "currency_code"], "tags": ["schema"]}
+{"id": "q05", "question": "How do I get the available-to-sell stock for a product variant?", "expected_sources": ["inventory.txt"], "expected_answer_contains": ["stock_on_hand", "stock_reserved"], "tags": ["business-logic", "schema"]}
+{"id": "q06", "question": "What is GMV?", "expected_sources": ["glossary.txt"], "expected_answer_contains": ["Gross", "total_amount", "confirmed"], "tags": ["glossary"]}
+{"id": "q07", "question": "How is AOV computed?", "expected_sources": ["glossary.txt"], "expected_answer_contains": ["GMV", "order"], "tags": ["glossary"]}
+{"id": "q08", "question": "When is a customer considered churned?", "expected_sources": ["glossary.txt"], "expected_answer_contains": ["180", "last order"], "tags": ["glossary"]}
+{"id": "q09", "question": "Which ETL job loads the orders table?", "expected_sources": ["etl.txt"], "expected_answer_contains": ["sync_orders_daily", "02:00"], "tags": ["etl"]}
+{"id": "q10", "question": "How often does the inventory sync run?", "expected_sources": ["etl.txt"], "expected_answer_contains": ["hourly"], "tags": ["etl"]}
+{"id": "q11", "question": "Why do you keep customer rows after GDPR erasure?", "expected_sources": ["customers.txt"], "expected_answer_contains": ["customer_id", "foreign key"], "tags": ["pii", "business-logic"]}
+{"id": "q12", "question": "What does SKU mean?", "expected_sources": ["glossary.txt", "products.txt"], "expected_answer_contains": ["Stock Keeping Unit"], "tags": ["glossary"]}
+{"id": "q13", "question": "Can I reuse a SKU after the product is discontinued?", "expected_sources": ["products.txt", "glossary.txt"], "expected_answer_contains": ["never", "reuse"], "tags": ["business-logic"]}
+{"id": "q14", "question": "Where is product pricing stored?", "expected_sources": ["products.txt"], "expected_answer_contains": ["variant", "price"], "tags": ["schema"]}
+{"id": "q15", "question": "What is a phantom stock bug?", "expected_sources": ["inventory.txt"], "expected_answer_contains": ["stock_reserved", "stock_on_hand", "reservation"], "tags": ["business-logic"]}
+{"id": "q16", "question": "What are the valid order statuses?", "expected_sources": ["orders.txt"], "expected_answer_contains": ["pending", "confirmed", "shipped", "delivered", "cancelled"], "tags": ["schema"]}
+{"id": "q17", "question": "Where is ATC tracked?", "expected_sources": ["glossary.txt"], "expected_answer_contains": ["analytics warehouse"], "tags": ["glossary"]}
+{"id": "q18", "question": "How do I tell if a product is currently listed?", "expected_sources": ["products.txt"], "expected_answer_contains": ["is_active"], "tags": ["schema"]}
+{"id": "q19", "question": "What happens to stock when an order is cancelled?", "expected_sources": ["inventory.txt"], "expected_answer_contains": ["reservation", "released"], "tags": ["business-logic"]}
+{"id": "q20", "question": "Why does sync_customers_full need to run after the GDPR scrub?", "expected_sources": ["etl.txt"], "expected_answer_contains": ["scrubbed", "erasure"], "tags": ["etl", "business-logic"]}
