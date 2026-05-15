@@ -13,38 +13,27 @@ from amx.utils.optional_deps import ensure as _ensure
 if TYPE_CHECKING:
     from chromadb.api.types import EmbeddingFunction
 
-# Document-RAG is a heavy cluster (~150 MB across chromadb + the
-# langchain ecosystem + unstructured's parser fleet). It only loads
-# on first ``/docs ingest`` / ``/run`` with docs / RAG-backed answer
-# — not on every CLI launch — so the install cost is amortised across
-# the whole tool's lifetime, incurred once, by the user who actually
-# uses the feature. The bundle name is shared with /search and /code
-# so a user who has already touched any RAG path skips the install.
-_ensure("docs-extended")
+# Document-RAG pulls a heavy cluster (~150 MB across chromadb + the
+# langchain ecosystem + unstructured's parser fleet). The cluster is
+# fetched on first :class:`RAGStore` construction, NOT at module
+# import — Studio's transitive import path runs through this module
+# unconditionally (web.routers.ask -> agents.orchestrator ->
+# agents.rag_agent -> here), and a module-level install call would
+# block every Studio cold start on a fresh ``pip install amx-cli``.
+# The bundle name is shared with /search and /code, so a user who
+# has already touched any RAG path skips the install.
 
-import chromadb  # noqa: E402
-from langchain_community.document_loaders import (  # noqa: E402
-    CSVLoader,
-    Docx2txtLoader,
-    PyPDFLoader,
-    TextLoader,
-    UnstructuredExcelLoader,
-    UnstructuredHTMLLoader,
-    UnstructuredPowerPointLoader,
-)
-
-from amx.docs._fts5_sidecar import FTS5Sidecar  # noqa: E402
-from amx.docs.scanner import DocInfo  # noqa: E402
-from amx.docs.splitters import get_splitter  # noqa: E402
-from amx.rag_core.fusion import (  # noqa: E402
+from amx.docs._fts5_sidecar import FTS5Sidecar
+from amx.docs.scanner import DocInfo
+from amx.rag_core.fusion import (
     maximal_marginal_relevance,
     reciprocal_rank_fusion,
 )
-from amx.rag_core.rerank import (  # noqa: E402
+from amx.rag_core.rerank import (
     CrossEncoderReranker,
     reranker_from_kind,
 )
-from amx.utils.logging import get_logger  # noqa: E402
+from amx.utils.logging import get_logger
 
 log = get_logger("docs.rag")
 
@@ -180,45 +169,56 @@ EXPLANATORY_TERMS = frozenset(
     }
 )
 
-LOADER_MAP = {
-    ".pdf": PyPDFLoader,
-    ".docx": Docx2txtLoader,
-    ".doc": Docx2txtLoader,
-    ".txt": TextLoader,
-    # PR-D: Markdown loads as plain text (not via
-    # ``UnstructuredMarkdownLoader``) because the
-    # :class:`amx.docs.splitters._MarkdownAwareSplitter` needs the raw
-    # ``#`` / ``##`` markers to extract heading metadata. The
-    # Unstructured backend silently strips formatting (\"# Orders\" →
-    # \"Orders\"), which made every Markdown chunk look identical to
-    # plain prose to the splitter. ``TextLoader`` keeps the structure
-    # intact, the splitter chunks by heading, and downstream chunks
-    # carry ``h1``/``h2``/``h3`` metadata for citation use.
-    ".md": TextLoader,
-    # ``.markdown`` is just the long-form extension of ``.md`` — same
-    # syntax, same loader. Listing it explicitly keeps the LOADER_MAP /
-    # SUPPORTED_EXTENSIONS contract honest (every supported extension
-    # has its own loader entry).
-    ".markdown": TextLoader,
-    ".csv": CSVLoader,
-    # TSV is tab-separated values; ``CSVLoader`` is delimiter-agnostic
-    # at the langchain level and treats the file as one logical record
-    # per row, which is all the RAG pipeline needs (the splitter then
-    # decides chunking).
-    ".tsv": CSVLoader,
-    ".xlsx": UnstructuredExcelLoader,
-    ".xls": UnstructuredExcelLoader,
-    ".html": UnstructuredHTMLLoader,
-    ".htm": UnstructuredHTMLLoader,
-    ".pptx": UnstructuredPowerPointLoader,
-    ".json": TextLoader,
-    ".yaml": TextLoader,
-    ".yml": TextLoader,
-    ".rst": TextLoader,
-    # Python source files: index as plain text so the chunker can pull
-    # out docstrings / comments alongside code identifiers.
-    ".py": TextLoader,
-}
+
+def _build_loader_map() -> dict[str, Any]:
+    """Build the extension -> langchain loader class map on first use.
+
+    The langchain document loaders ship in the ``docs-extended``
+    bundle, which is fetched lazily. Building the map at runtime
+    keeps :mod:`amx.docs.rag`'s import cost limited to the standard
+    library (Studio's cold-start path imports this module without
+    needing the loaders).
+    """
+    _ensure("docs-extended")
+    from langchain_community.document_loaders import (
+        CSVLoader,
+        Docx2txtLoader,
+        PyPDFLoader,
+        TextLoader,
+        UnstructuredExcelLoader,
+        UnstructuredHTMLLoader,
+        UnstructuredPowerPointLoader,
+    )
+
+    return {
+        ".pdf": PyPDFLoader,
+        ".docx": Docx2txtLoader,
+        ".doc": Docx2txtLoader,
+        ".txt": TextLoader,
+        # PR-D: Markdown loads as plain text (not via
+        # ``UnstructuredMarkdownLoader``) because the Markdown-aware
+        # splitter in ``amx.docs.splitters`` needs the raw ``#`` /
+        # ``##`` markers to extract heading metadata. The Unstructured
+        # backend silently strips formatting, making every Markdown
+        # chunk look identical to plain prose to the splitter.
+        ".md": TextLoader,
+        ".markdown": TextLoader,
+        ".csv": CSVLoader,
+        # TSV is tab-separated values; ``CSVLoader`` is delimiter-
+        # agnostic at the langchain level and treats the file as one
+        # logical record per row.
+        ".tsv": CSVLoader,
+        ".xlsx": UnstructuredExcelLoader,
+        ".xls": UnstructuredExcelLoader,
+        ".html": UnstructuredHTMLLoader,
+        ".htm": UnstructuredHTMLLoader,
+        ".pptx": UnstructuredPowerPointLoader,
+        ".json": TextLoader,
+        ".yaml": TextLoader,
+        ".yml": TextLoader,
+        ".rst": TextLoader,
+        ".py": TextLoader,
+    }
 
 
 @dataclass(frozen=True)
@@ -260,6 +260,13 @@ class RAGStore:
         reranker_kind: str | None = None,
         cfg: Any | None = None,
     ):
+        # First runtime touchpoint for the heavy RAG cluster — install
+        # the bundle and bind chromadb locally. Module-level imports
+        # are intentionally absent so Studio cold start can import
+        # this module without paying the ~150 MB install cost.
+        _ensure("docs-extended")
+        import chromadb
+
         self.persist_dir = persist_dir or str(Path.home() / ".amx" / "chroma_db")
         Path(self.persist_dir).mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=self.persist_dir)
@@ -485,11 +492,18 @@ class RAGStore:
         """
         if refresh and docs:
             self.delete_chunks_for_sources([x for d in docs for x in (d.path, d.source_root) if x])
+        # Lazy imports: splitters and the loader-class map both rely
+        # on the ``docs-extended`` bundle. Building them here (not at
+        # module top) keeps :mod:`amx.docs.rag` import light enough
+        # for Studio's transitive cold-start path.
+        from amx.docs.splitters import get_splitter
+
+        loader_map = _build_loader_map()
         succeeded: list[str] = []
         failed: list[tuple[str, str]] = []
         total_chunks = 0
         for doc in docs:
-            loader_cls = LOADER_MAP.get(doc.extension)
+            loader_cls = loader_map.get(doc.extension)
             if loader_cls is None:
                 reason = f"no loader for extension {doc.extension!r}"
                 log.warning("No loader for %s, skipping %s", doc.extension, doc.path)

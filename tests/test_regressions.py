@@ -4329,7 +4329,7 @@ class PerProfileCollectionTests(unittest.TestCase):
                 return col
 
         with tempfile.TemporaryDirectory() as td:
-            with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+            with patch("chromadb.PersistentClient", FakeClient):
                 idx = index_module.SearchIndex(persist_dir=td)
                 idx.upsert_entities(
                     [
@@ -4399,7 +4399,7 @@ class PerProfileCollectionTests(unittest.TestCase):
                 return FakeCollection()
 
         with tempfile.TemporaryDirectory() as td:
-            with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+            with patch("chromadb.PersistentClient", FakeClient):
                 idx = index_module.SearchIndex(persist_dir=td)
                 idx.query("what is X?", db_profile="prod", n_results=5)
 
@@ -4431,7 +4431,7 @@ class SearchIndexEmbeddingTests(unittest.TestCase):
                 captured.update(kwargs)
                 return FakeCollection()
 
-        with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+        with patch("chromadb.PersistentClient", FakeClient):
             index_module.SearchIndex(persist_dir=self._tempdir.name)
 
         # Default behaviour: no embedding_function → Chroma uses MiniLM.
@@ -4456,7 +4456,7 @@ class SearchIndexEmbeddingTests(unittest.TestCase):
                 return FakeCollection()
 
         sentinel_ef = object()
-        with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+        with patch("chromadb.PersistentClient", FakeClient):
             idx = index_module.SearchIndex(
                 persist_dir=self._tempdir.name,
                 embedding_function=sentinel_ef,  # type: ignore[arg-type]
@@ -4998,7 +4998,7 @@ class EmbeddingDefaultFactoryTests(unittest.TestCase):
 
         self.embeddings_module.set_default_embedding_function(lambda: sentinel)
         with tempfile.TemporaryDirectory() as td:
-            with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+            with patch("chromadb.PersistentClient", FakeClient):
                 index_module.SearchIndex(persist_dir=td)
 
         # Default factory's sentinel was wired into the Chroma collection.
@@ -5022,7 +5022,7 @@ class EmbeddingDefaultFactoryTests(unittest.TestCase):
         # must win over it so callers retain control.
         self.embeddings_module.set_default_embedding_function(lambda: object())
         with tempfile.TemporaryDirectory() as td:
-            with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+            with patch("chromadb.PersistentClient", FakeClient):
                 index_module.SearchIndex(
                     persist_dir=td,
                     embedding_function=explicit,  # type: ignore[arg-type]

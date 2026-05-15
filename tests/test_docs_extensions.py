@@ -49,7 +49,8 @@ def test_every_supported_extension_has_a_loader() -> None:
     """If scan accepts a file, ingest must be able to parse it. This
     guard previously broke for ``.tsv`` and ``.markdown``."""
     from amx.docs.extensions import SUPPORTED_EXTENSIONS
-    from amx.docs.rag import LOADER_MAP
+    from amx.docs.rag import _build_loader_map
 
-    missing = sorted(ext for ext in SUPPORTED_EXTENSIONS if ext not in LOADER_MAP)
+    loader_map = _build_loader_map()
+    missing = sorted(ext for ext in SUPPORTED_EXTENSIONS if ext not in loader_map)
     assert missing == [], f"loaders missing for: {missing}"

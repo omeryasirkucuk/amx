@@ -38,8 +38,10 @@ def test_query_code_snippets_respects_timeout(monkeypatch, caplog):
         "_open_collection",
         lambda *_a, **_kw: fake_coll,
     )
+    import chromadb
+
     monkeypatch.setattr(
-        cr.chromadb,
+        chromadb,
         "PersistentClient",
         lambda **_kw: SimpleNamespace(),
     )
@@ -95,7 +97,9 @@ def test_query_code_snippets_hybrid_rerank_promotes_literal_match(monkeypatch):
 
     fake_coll = SimpleNamespace(query=_fake_query)
     monkeypatch.setattr(cr, "_open_collection", lambda *_a, **_kw: fake_coll)
-    monkeypatch.setattr(cr.chromadb, "PersistentClient", lambda **_kw: SimpleNamespace())
+    import chromadb
+
+    monkeypatch.setattr(chromadb, "PersistentClient", lambda **_kw: SimpleNamespace())
 
     hits = cr.query_code_snippets("sap", n_results=3, timeout=None)
     # The literal-match chunk must come first.
@@ -122,7 +126,9 @@ def test_query_code_snippets_no_timeout_runs_synchronously(monkeypatch):
 
     fake_coll = SimpleNamespace(query=_fast_query)
     monkeypatch.setattr(cr, "_open_collection", lambda *_a, **_kw: fake_coll)
-    monkeypatch.setattr(cr.chromadb, "PersistentClient", lambda **_kw: SimpleNamespace())
+    import chromadb
+
+    monkeypatch.setattr(chromadb, "PersistentClient", lambda **_kw: SimpleNamespace())
 
     hits = cr.query_code_snippets("q", n_results=1, timeout=None)
     assert len(hits) == 1
