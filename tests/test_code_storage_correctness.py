@@ -105,7 +105,60 @@ def test_collection_records_embedding_metadata_on_create(tmp_path: Path) -> None
     meta = dict(coll.metadata or {})
     assert meta.get("embedding_provider") == "minilm"
     assert meta.get("embedding_model") == "minilm-l6-v2"
-    assert meta.get("amx_schema_version") == 1
+    # PR-B: schema bumped to v2 across docs + code RAG; ``embedding_dim``
+    # added for MiniLM (well-known = 384). Older v1 metadata gets
+    # upgraded silently on reopen — see test_legacy_dim_backfilled below.
+    assert meta.get("amx_schema_version") == 2
+    assert meta.get("embedding_dim") == 384
+
+
+def test_legacy_v1_code_collection_dim_backfilled_on_reopen(tmp_path: Path) -> None:
+    """v1 metadata (no ``embedding_dim``) reopens cleanly and the dim
+    is back-filled silently on next open — mirrors the docs-RAG test
+    in test_rag_storage_correctness.py."""
+    persist = tmp_path / "chroma"
+    persist.mkdir(parents=True, exist_ok=True)
+    client = chromadb.PersistentClient(path=str(persist))
+    client.get_or_create_collection(
+        name=COLLECTION,
+        metadata={
+            "hnsw:space": "cosine",
+            "embedding_provider": "minilm",
+            "embedding_model": "minilm-l6-v2",
+            "amx_schema_version": 1,
+        },
+    )
+    _seed_collection(persist, provider="minilm", model="minilm-l6-v2")
+    coll = client.get_collection(COLLECTION)
+    meta = dict(coll.metadata or {})
+    assert meta.get("embedding_dim") == 384
+    assert meta.get("amx_schema_version") == 2
+
+
+def test_dim_mismatch_raises_code_embedding_mismatch(tmp_path: Path) -> None:
+    """Same provider/model strings but a recorded dim that disagrees
+    with the active dim raises. Catches the silent-corruption case
+    where two providers expose the same model id with different
+    vector dimensions."""
+    persist = tmp_path / "chroma"
+    persist.mkdir(parents=True, exist_ok=True)
+    client = chromadb.PersistentClient(path=str(persist))
+    client.get_or_create_collection(
+        name=COLLECTION,
+        metadata={
+            "hnsw:space": "cosine",
+            "embedding_provider": "minilm",
+            "embedding_model": "minilm-l6-v2",
+            "embedding_dim": 768,
+            "amx_schema_version": 2,
+        },
+    )
+    with pytest.raises(CodeEmbeddingMismatch) as excinfo:
+        _seed_collection(persist, provider="minilm", model="minilm-l6-v2")
+    msg = str(excinfo.value)
+    assert "dim 768 -> 384" in msg
+    assert excinfo.value.recorded_dim == 768
+    assert excinfo.value.active_dim == 384
 
 
 # ── mismatch raises ──────────────────────────────────────────────────

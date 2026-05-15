@@ -51,14 +51,19 @@ class RAGQueryTimeout(TimeoutError):
 
 
 class EmbeddingProviderMismatch(RuntimeError):
-    """Raised when the active embedding provider does not match the
+    """Raised when the active embedding identity does not match the
     one used to populate the existing Chroma collection.
 
-    The collection metadata records the provider/model used at first
-    create. If the user later switches embedding providers (via
-    ``/embeddings``) the existing vectors are in a different
-    semantic space, so retrieval would silently degrade. Raising
-    here forces an explicit reindex or revert decision.
+    The collection metadata records the provider/model/dim used at
+    first create. If the user later switches embedding providers (via
+    ``/embeddings``) the existing vectors are in a different semantic
+    space, so retrieval would silently degrade. Raising here forces
+    an explicit reindex or revert decision.
+
+    PR-B (this commit) added ``recorded_dim`` / ``active_dim`` —
+    optional, default ``0``. ``0`` on either side disables the dim
+    half of the check (keeps backward-compat for pre-PR-B collections
+    whose metadata has no ``embedding_dim`` key).
     """
 
     def __init__(
@@ -68,23 +73,32 @@ class EmbeddingProviderMismatch(RuntimeError):
         recorded_model: str,
         active_provider: str,
         active_model: str,
+        recorded_dim: int = 0,
+        active_dim: int = 0,
     ) -> None:
         self.recorded_provider = recorded_provider
         self.recorded_model = recorded_model
         self.active_provider = active_provider
         self.active_model = active_model
+        self.recorded_dim = int(recorded_dim or 0)
+        self.active_dim = int(active_dim or 0)
+        dim_suffix = ""
+        if self.recorded_dim and self.active_dim and self.recorded_dim != self.active_dim:
+            dim_suffix = f" (dim {self.recorded_dim} -> {self.active_dim})"
         super().__init__(
             f"Docs RAG collection was indexed with provider={recorded_provider} "
             f"model={recorded_model}. Current config says provider={active_provider} "
-            f"model={active_model}. "
+            f"model={active_model}{dim_suffix}. "
             "Run `/docs reindex` to rebuild the collection with the active provider, "
             "or update the embedding profile to match the indexed model."
         )
 
 
 # Schema version for the docs RAG collection metadata. Bumped when the
-# metadata shape changes in a way old AMX cannot read.
-_AMX_RAG_SCHEMA_VERSION = 1
+# metadata shape changes in a way old AMX cannot read. v2 added
+# ``embedding_dim`` — older collections still work; the field is
+# backfilled silently on first reopen.
+_AMX_RAG_SCHEMA_VERSION = 2
 
 
 def _resolve_active_embedding(cfg: Any | None = None) -> tuple[str, str, EmbeddingFunction | None]:
@@ -247,8 +261,17 @@ class RAGStore:
             if embedding_function is None:
                 embedding_function = resolved_ef
 
+        # PR-B: resolve the dim alongside provider/model so the
+        # collection records the full identity triple. ``0`` means
+        # "unknown" — disables the dim half of the mismatch check
+        # without breaking anything.
+        from amx.rag_core.collection_identity import infer_dimension
+
+        embedding_dim = infer_dimension(embedding_provider, embedding_model, embedding_function)
+
         self.embedding_provider = embedding_provider
         self.embedding_model = embedding_model
+        self.embedding_dim = embedding_dim
         self.embedding_function = embedding_function
 
         kwargs: dict[str, Any] = {
@@ -257,6 +280,7 @@ class RAGStore:
                 "hnsw:space": "cosine",
                 "embedding_provider": embedding_provider,
                 "embedding_model": embedding_model,
+                "embedding_dim": int(embedding_dim),
                 "amx_schema_version": _AMX_RAG_SCHEMA_VERSION,
             },
         }
@@ -271,20 +295,49 @@ class RAGStore:
         #
         # * If the existing collection has recorded provider/model
         #   that DON'T match the active config → raise mismatch.
+        # * If recorded provider+model match but recorded dim differs
+        #   from a non-zero active dim → raise. (PR-B addition; catches
+        #   the silent-corruption case where two providers expose the
+        #   same model name string with different vector dimensions.)
+        # * If recorded dim is 0 (legacy v1 metadata) but active dim is
+        #   non-zero → backfill the dim onto the collection so future
+        #   reopens get the tighter check.
         # * If it has no recorded provider/model (pre-PR-B
-        #   collection) → backfill the metadata now; do NOT force a
-        #   reindex (grandfather rule from the design spec).
+        #   collection) → backfill the full metadata now; do NOT force
+        #   a reindex (grandfather rule from the design spec).
         existing_meta = dict(self.collection.metadata or {})
         recorded_provider = existing_meta.get("embedding_provider")
         recorded_model = existing_meta.get("embedding_model")
+        try:
+            recorded_dim = int(existing_meta.get("embedding_dim", 0) or 0)
+        except (TypeError, ValueError):
+            recorded_dim = 0
         if recorded_provider and recorded_model:
-            if recorded_provider != embedding_provider or recorded_model != embedding_model:
+            dim_mismatch = recorded_dim > 0 and embedding_dim > 0 and recorded_dim != embedding_dim
+            if (
+                recorded_provider != embedding_provider
+                or recorded_model != embedding_model
+                or dim_mismatch
+            ):
                 raise EmbeddingProviderMismatch(
                     recorded_provider=str(recorded_provider),
                     recorded_model=str(recorded_model),
                     active_provider=str(embedding_provider),
                     active_model=str(embedding_model),
+                    recorded_dim=recorded_dim,
+                    active_dim=embedding_dim,
                 )
+            if recorded_dim == 0 and embedding_dim > 0:
+                # Upgrade legacy v1 metadata to record the dim so the
+                # next reopen has it for comparison. Same modify()
+                # pattern as the full backfill below.
+                merged = {k: v for k, v in existing_meta.items() if not str(k).startswith("hnsw:")}
+                merged["embedding_dim"] = int(embedding_dim)
+                merged["amx_schema_version"] = _AMX_RAG_SCHEMA_VERSION
+                try:
+                    self.collection.modify(metadata=merged)
+                except Exception as exc:
+                    log.warning("Could not upgrade RAG collection metadata dim: %s", exc)
         else:
             # Pre-existing collection without metadata — write it now
             # so future opens have something to compare against.
@@ -294,6 +347,7 @@ class RAGStore:
             merged = {k: v for k, v in existing_meta.items() if not str(k).startswith("hnsw:")}
             merged["embedding_provider"] = embedding_provider
             merged["embedding_model"] = embedding_model
+            merged["embedding_dim"] = int(embedding_dim)
             merged["amx_schema_version"] = _AMX_RAG_SCHEMA_VERSION
             try:
                 self.collection.modify(metadata=merged)

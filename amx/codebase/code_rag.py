@@ -34,18 +34,19 @@ COLLECTION = "amx_code"
 # Schema version for the code RAG collection metadata. Bumped when the
 # metadata shape changes in a way old AMX cannot read. Mirrors the
 # value used by the docs RAG store so the two indexes evolve together.
-_AMX_CODE_SCHEMA_VERSION = 1
+# v2 added ``embedding_dim`` — older collections still work; the field
+# is backfilled silently on first reopen.
+_AMX_CODE_SCHEMA_VERSION = 2
 
 
 class CodeEmbeddingMismatch(RuntimeError):
-    """Raised when the active embedding provider does not match the
+    """Raised when the active embedding identity does not match the
     one used to populate the existing ``amx_code`` collection.
 
-    The collection metadata records the provider/model used at first
-    create. If the user later switches embedding providers (via
-    ``/embeddings``) the existing vectors are in a different semantic
-    space, so retrieval would silently degrade. Raising here forces an
-    explicit reindex or revert decision.
+    PR-B (this commit) added ``recorded_dim`` / ``active_dim`` —
+    optional, default ``0``. ``0`` on either side disables the dim
+    half of the check (keeps backward-compat for pre-PR-B collections
+    whose metadata has no ``embedding_dim`` key).
     """
 
     def __init__(
@@ -55,15 +56,22 @@ class CodeEmbeddingMismatch(RuntimeError):
         recorded_model: str,
         active_provider: str,
         active_model: str,
+        recorded_dim: int = 0,
+        active_dim: int = 0,
     ) -> None:
         self.recorded_provider = recorded_provider
         self.recorded_model = recorded_model
         self.active_provider = active_provider
         self.active_model = active_model
+        self.recorded_dim = int(recorded_dim or 0)
+        self.active_dim = int(active_dim or 0)
+        dim_suffix = ""
+        if self.recorded_dim and self.active_dim and self.recorded_dim != self.active_dim:
+            dim_suffix = f" (dim {self.recorded_dim} -> {self.active_dim})"
         super().__init__(
             f"Code RAG collection was indexed with provider={recorded_provider} "
             f"model={recorded_model}. Current config says provider={active_provider} "
-            f"model={active_model}. "
+            f"model={active_model}{dim_suffix}. "
             "Run `/code-refresh` to rebuild the collection with the active provider, "
             "or update the embedding profile to match the indexed model."
         )
@@ -285,12 +293,20 @@ def _open_collection(
     docs-path implementation. Raises :class:`CodeEmbeddingMismatch`
     when the recorded provider/model disagree with the active config.
     """
+    # PR-B: resolve and record the embedding dim alongside provider /
+    # model so silent-corruption switches (same model id, different
+    # vector size) get caught at reopen.
+    from amx.rag_core.collection_identity import infer_dimension
+
+    embedding_dim = infer_dimension(embedding_provider, embedding_model, embedding_function)
+
     kwargs: dict[str, Any] = {
         "name": COLLECTION,
         "metadata": {
             "hnsw:space": "cosine",
             "embedding_provider": embedding_provider,
             "embedding_model": embedding_model,
+            "embedding_dim": int(embedding_dim),
             "amx_schema_version": _AMX_CODE_SCHEMA_VERSION,
         },
     }
@@ -301,21 +317,43 @@ def _open_collection(
     existing_meta = dict(coll.metadata or {})
     recorded_provider = existing_meta.get("embedding_provider")
     recorded_model = existing_meta.get("embedding_model")
+    try:
+        recorded_dim = int(existing_meta.get("embedding_dim", 0) or 0)
+    except (TypeError, ValueError):
+        recorded_dim = 0
     if recorded_provider and recorded_model:
-        if recorded_provider != embedding_provider or recorded_model != embedding_model:
+        dim_mismatch = recorded_dim > 0 and embedding_dim > 0 and recorded_dim != embedding_dim
+        if (
+            recorded_provider != embedding_provider
+            or recorded_model != embedding_model
+            or dim_mismatch
+        ):
             raise CodeEmbeddingMismatch(
                 recorded_provider=str(recorded_provider),
                 recorded_model=str(recorded_model),
                 active_provider=str(embedding_provider),
                 active_model=str(embedding_model),
+                recorded_dim=recorded_dim,
+                active_dim=embedding_dim,
             )
+        if recorded_dim == 0 and embedding_dim > 0:
+            # Upgrade legacy v1 metadata so the next reopen has the dim
+            # for comparison.
+            merged = {k: v for k, v in existing_meta.items() if not str(k).startswith("hnsw:")}
+            merged["embedding_dim"] = int(embedding_dim)
+            merged["amx_schema_version"] = _AMX_CODE_SCHEMA_VERSION
+            try:
+                coll.modify(metadata=merged)
+            except Exception as exc:
+                log.warning("Could not upgrade code RAG collection metadata dim: %s", exc)
     else:
-        # Pre-PR-beta collection — backfill metadata silently. Strip
+        # Pre-PR-B collection — backfill metadata silently. Strip
         # ``hnsw:*`` keys before modify(): Chroma rejects construction-
         # time parameters even when the value is unchanged.
         merged = {k: v for k, v in existing_meta.items() if not str(k).startswith("hnsw:")}
         merged["embedding_provider"] = embedding_provider
         merged["embedding_model"] = embedding_model
+        merged["embedding_dim"] = int(embedding_dim)
         merged["amx_schema_version"] = _AMX_CODE_SCHEMA_VERSION
         try:
             coll.modify(metadata=merged)
