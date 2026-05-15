@@ -844,6 +844,8 @@ class SQLiteHistoryStore:
                     llm_profile TEXT NOT NULL,
                     review_strategy TEXT NOT NULL,
                     extra_args_json TEXT,
+                    kind TEXT NOT NULL DEFAULT 'analyze',
+                    cron_expr TEXT,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     fired_at REAL,
@@ -1063,6 +1065,18 @@ class SQLiteHistoryStore:
         for col_name, col_type in (
             ("database", "TEXT"),
             ("catalog", "TEXT"),
+            # ``kind`` discriminates run-type schedules from cache-refresh
+            # schedules. Cache-refresh rows ignore LLM-profile fields and
+            # invalidate the catalog cache via the connector path instead
+            # of spawning an analysis_runs row. Defaults to 'analyze' so
+            # every legacy row keeps its current behaviour.
+            ("kind", "TEXT NOT NULL DEFAULT 'analyze'"),
+            # ``cron_expr`` turns a one-shot schedule into a recurring
+            # one. NULL keeps the legacy single-fire semantics; a valid
+            # croniter expression (e.g. ``0 */6 * * *``) re-arms the row
+            # to ``status='pending'`` with a fresh ``fire_at_utc`` every
+            # time it fires.
+            ("cron_expr", "TEXT"),
         ):
             if col_name in existing_cols:
                 continue
@@ -3033,6 +3047,8 @@ class SQLiteHistoryStore:
             "llm_profile",
             "review_strategy",
             "extra_args_json",
+            "kind",
+            "cron_expr",
         }
     )
 
@@ -3049,6 +3065,8 @@ class SQLiteHistoryStore:
         database: str | None = None,
         catalog: str | None = None,
         extra_args_json: str | None = None,
+        kind: str = "analyze",
+        cron_expr: str | None = None,
     ) -> int:
         """Insert a new scheduled_runs row in status='pending'.
 
@@ -3058,6 +3076,12 @@ class SQLiteHistoryStore:
         are nullable: legacy rows + backends that don't expose a
         database/catalog axis (e.g. SQLite single-file profiles) keep
         the profile default.
+
+        ``kind`` discriminates between the legacy analyze-run schedule
+        ('analyze') and the Catalog-Freshness cache refresh
+        ('cache_refresh'). ``cron_expr`` is NULL for one-shot fires and
+        a valid croniter expression for recurring schedules — the tick
+        engine re-arms the row from the cron after each fire.
         """
         now = time.time()
         with self._lock, self._connect() as conn:
@@ -3067,8 +3091,9 @@ class SQLiteHistoryStore:
                     name, fire_at_utc, fire_at_tz, status,
                     db_profile, database, catalog,
                     scope_json, llm_profile, review_strategy,
-                    extra_args_json, created_at, updated_at
-                ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    extra_args_json, kind, cron_expr,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -3081,6 +3106,8 @@ class SQLiteHistoryStore:
                     llm_profile,
                     review_strategy,
                     extra_args_json,
+                    str(kind or "analyze"),
+                    cron_expr,
                     now,
                     now,
                 ),
@@ -3292,6 +3319,73 @@ class SQLiteHistoryStore:
             if cur.rowcount == 1:
                 return sid
             return None
+
+    def arm_next_fire(self, schedule_id: int) -> float | None:
+        """Re-arm a recurring schedule to its next ``fire_at_utc``.
+
+        Reads ``cron_expr`` from the row; if NULL or invalid, leaves
+        the row alone (one-shot schedules complete after a single fire
+        — they should be left at ``status='completed'`` by the tick
+        path). Otherwise computes the next fire timestamp via
+        ``croniter.get_next(float)`` and flips ``status`` back to
+        ``'pending'`` so the tick loop picks it up next cycle.
+
+        Returns the new ``fire_at_utc`` on success, or None when the
+        row had no usable cron expression (caller treats that as
+        one-shot done).
+        """
+        try:
+            from croniter import croniter
+        except Exception as exc:
+            log.warning("croniter unavailable; cannot re-arm schedule %s: %s", schedule_id, exc)
+            return None
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT cron_expr FROM scheduled_runs WHERE id = ?",
+                (schedule_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            expr = row[0]
+            if not expr:
+                return None
+            try:
+                next_at = float(croniter(str(expr), time.time()).get_next(float))
+            except Exception as exc:
+                log.warning(
+                    "Invalid cron_expr %r on schedule %s, leaving completed: %s",
+                    expr,
+                    schedule_id,
+                    exc,
+                )
+                return None
+            conn.execute(
+                """
+                UPDATE scheduled_runs
+                SET status = 'pending', fire_at_utc = ?, updated_at = ?, last_error = NULL
+                WHERE id = ?
+                """,
+                (next_at, time.time(), schedule_id),
+            )
+            return next_at
+
+    def profile_has_active_cache_refresh_schedule(self, db_profile: str) -> bool:
+        """``True`` when the profile has any non-terminal cache-refresh
+        schedule. The 1-week auto-refresh sweeper uses this to skip
+        profiles that already have user-managed schedules — the user's
+        schedule is authoritative."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM scheduled_runs
+                WHERE db_profile = ?
+                  AND kind = 'cache_refresh'
+                  AND status IN ('pending', 'running')
+                LIMIT 1
+                """,
+                (str(db_profile or ""),),
+            ).fetchone()
+        return row is not None
 
     def set_run_schedule_link(self, run_id: int, schedule_id: int) -> None:
         """Attach a scheduled_runs id to an existing analysis_runs row.

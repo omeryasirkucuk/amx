@@ -1091,6 +1091,22 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "extra_args_json": (
             "JSON of additional CLI flags to pass at fire time. NULL when no overrides are needed."
         ),
+        "kind": (
+            "Discriminator between schedule types: 'analyze' fires a /run "
+            "via production_run_executor (the legacy path); 'cache_refresh' "
+            "invalidates the Catalog Freshness cache and re-populates via "
+            "the connector — no analysis_runs row is written. Cache-refresh "
+            "rows ignore llm_profile and review_strategy."
+        ),
+        "cron_expr": (
+            "Croniter expression for recurring schedules. NULL keeps "
+            "one-shot semantics — the row transitions to "
+            "'completed'/'failed' after a single fire. A valid cron "
+            "expression (e.g. '0 */6 * * *') re-arms the row to "
+            "status='pending' with a freshly-computed fire_at_utc after "
+            "every fire, so a Catalog Freshness schedule keeps cycling "
+            "until the user deletes it."
+        ),
         "created_at": "UTC epoch seconds the schedule was created.",
         "updated_at": "UTC epoch seconds of the last edit.",
         "fired_at": "UTC epoch seconds the tick engine fired the schedule. NULL until firing.",
