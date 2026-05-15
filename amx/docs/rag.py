@@ -40,6 +40,10 @@ from amx.rag_core.fusion import (  # noqa: E402
     maximal_marginal_relevance,
     reciprocal_rank_fusion,
 )
+from amx.rag_core.rerank import (  # noqa: E402
+    CrossEncoderReranker,
+    reranker_from_kind,
+)
 from amx.utils.logging import get_logger  # noqa: E402
 
 log = get_logger("docs.rag")
@@ -253,6 +257,7 @@ class RAGStore:
         embedding_function: EmbeddingFunction | None = None,
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
+        reranker_kind: str | None = None,
         cfg: Any | None = None,
     ):
         self.persist_dir = persist_dir or str(Path.home() / ".amx" / "chroma_db")
@@ -383,6 +388,22 @@ class RAGStore:
         # both together. Every upsert into Chroma also lands in the
         # sidecar; ``query()`` fuses dense + lexical via RRF.
         self._fts = FTS5Sidecar(self.persist_dir)
+
+        # PR-F: optional cross-encoder reranker. When ``reranker_kind``
+        # is None / "heuristic", retrieval keeps using the in-process
+        # heuristic ``rerank``. When a real model id is passed
+        # (e.g. ``"cross_encoder"``), the cross-encoder replaces the
+        # heuristic on the candidate pool — opt-in because it requires
+        # ``sentence-transformers`` (~500 MB) and adds 30-200 ms per
+        # query. The factory returns ``None`` on unknown / heuristic
+        # kinds; the factory and the wrapper both degrade silently to
+        # the heuristic on load failure (no install, no network).
+        resolved_kind = reranker_kind
+        if resolved_kind is None:
+            docs_cfg = getattr(cfg, "docs", None) if cfg is not None else None
+            rerank_cfg = getattr(docs_cfg, "rerank", None) if docs_cfg is not None else None
+            resolved_kind = getattr(rerank_cfg, "kind", None) if rerank_cfg is not None else None
+        self._cross_encoder: CrossEncoderReranker | None = reranker_from_kind(resolved_kind or "")
         # First-time-after-PR-E backfill: if the sidecar is empty but
         # the Chroma collection has chunks (returning user upgrading
         # AMX), seed the FTS table from existing chunks so hybrid
@@ -714,7 +735,16 @@ class RAGStore:
         else:
             hits = list(hits_by_id.values())
 
-        reranked = self.rerank(question, hits)
+        # PR-F: cross-encoder rerank replaces the heuristic when
+        # configured. The cross-encoder is opt-in and may silently
+        # fall back to the heuristic on model-load failure. The
+        # ``getattr`` default keeps tests that bypass __init__
+        # (e.g. ``object.__new__(RAGStore)``) on the heuristic path.
+        cross_encoder = getattr(self, "_cross_encoder", None)
+        if cross_encoder is not None:
+            reranked = cross_encoder.rerank(question, hits)
+        else:
+            reranked = self.rerank(question, hits)
 
         # PR-I: MMR for diversity. After rerank we have a relevance
         # ordering; MMR re-orders it to demote near-duplicate
