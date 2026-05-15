@@ -1,0 +1,20 @@
+{
+  "amx_version": "0.14.0",
+  "embedder": {
+    "dimension": 384,
+    "model": "minilm-l6-v2",
+    "provider": "minilm"
+  },
+  "metrics": {
+    "hit_at_1": 0.7,
+    "hit_at_3": 0.9,
+    "hit_at_5": 0.95,
+    "keyword_recall": 0.95,
+    "mrr": 0.8042,
+    "n_queries": 20,
+    "ndcg_at_5": 0.8157,
+    "precision_at_5": 0.2733
+  },
+  "pipeline": "docs",
+  "schema_version": 1
+}
