@@ -77,15 +77,76 @@ class CodeEmbeddingMismatch(RuntimeError):
         )
 
 
+# PR-C: Code RAG default upgrade path.
+#
+# When the user has not picked an explicit embedding provider, code
+# retrieval prefers a code-specialised model (``jinaai/jina-embeddings-v2-base-code``,
+# ~161 MB, 768-dim) over the generic English prose model MiniLM ships
+# with. Identifier-heavy and snake_case / CamelCase queries are
+# measurably better on a code-trained encoder.
+#
+# The upgrade is **opportunistic**: jina only kicks in when
+# ``sentence-transformers`` is installed (``pip install amx[local-embeddings]``)
+# AND the model is loadable (either cached from a prior call or
+# downloadable now). Anything that fails — missing dep, offline
+# install, model-load error — degrades gracefully back to bundled
+# MiniLM with a one-time WARNING that names the install command. The
+# fallback is **silent** for retrieval quality (MiniLM still works) but
+# **logged** so operators see what's happening.
+#
+# Document RAG keeps MiniLM as its default — prose retrieval doesn't
+# benefit from a code-trained encoder. Switching there belongs to a
+# separate decision tied to E2 of the audit (``bge-small-en-v1.5``).
+JINA_CODE_MODEL = "jinaai/jina-embeddings-v2-base-code"
+
+# Cache so the WARNING fires once per process even when many
+# CodeIndex instances are constructed during a long-running CLI
+# session. Per-process, not per-config — the message is about the
+# user's install, not their config.
+_jina_fallback_warned = False
+
+
+def _try_jina_code_embedder() -> tuple[EmbeddingFunction | None, str | None]:
+    """Try to build the jina code embedder. Returns ``(ef, error)``.
+
+    Returns ``(ef, None)`` on success.
+    Returns ``(None, reason)`` when sentence-transformers isn't
+    installed, the model can't be downloaded (offline / network
+    failure), or any other construction error — caller falls back to
+    MiniLM. ``reason`` is short and quotable in the one-time WARNING.
+    """
+    try:
+        from amx.search.embeddings import SentenceTransformerEmbedding
+    except ImportError as exc:  # pragma: no cover — amx package always available
+        return None, f"amx.search.embeddings unavailable: {exc}"
+    try:
+        ef = SentenceTransformerEmbedding(model=JINA_CODE_MODEL)
+    except RuntimeError as exc:
+        # SentenceTransformerEmbedding.__init__ raises RuntimeError
+        # when ``sentence-transformers`` itself isn't importable.
+        return None, str(exc)
+    except Exception as exc:  # noqa: BLE001 — broad on purpose
+        # Model load failure: network down, HF Hub unreachable,
+        # disk-cache permission issue, etc. Don't crash the whole
+        # CodeIndex on a recoverable degradation.
+        return None, f"{exc.__class__.__name__}: {exc}"
+    return ef, None
+
+
 def _resolve_active_embedding(
     cfg: Any | None = None,
 ) -> tuple[str, str, EmbeddingFunction | None]:
     """Resolve ``(provider, model, embedding_function)`` from config.
 
-    Mirrors :func:`amx.docs.rag._resolve_active_embedding` so the code
-    path honours the same embedding provider as the docs path. Imports
-    are deferred to avoid a circular import (``amx.search.embeddings``
-    pulls Chroma which pulls this module on some platforms).
+    Mirrors :func:`amx.docs.rag._resolve_active_embedding` for the
+    explicit-provider path. The DEFAULT path differs: code retrieval
+    prefers ``jinaai/jina-embeddings-v2-base-code`` over MiniLM when
+    ``sentence-transformers`` is installed (PR-C); falls back to
+    MiniLM with a one-time WARNING when it isn't.
+
+    Imports are deferred to avoid a circular import
+    (``amx.search.embeddings`` pulls Chroma which pulls this module on
+    some platforms).
     """
     from amx.search.embeddings import make_embedding_function
 
@@ -99,7 +160,7 @@ def _resolve_active_embedding(
 
     embedding = getattr(cfg, "embedding", None) if cfg is not None else None
     if embedding is None:
-        return ("minilm", "minilm-l6-v2", None)
+        return _default_code_embedding()
 
     kind = (getattr(embedding, "kind", "") or "minilm").lower().strip()
     model = getattr(embedding, "model", "") or ""
@@ -107,16 +168,42 @@ def _resolve_active_embedding(
     base_url = getattr(embedding, "base_url", "") or ""
 
     if kind in {"", "minilm", "default", "minilm-l6-v2"}:
-        return ("minilm", "minilm-l6-v2", None)
+        # User is on the default — opportunistically upgrade to the
+        # code-specialised embedder. An explicit ``/embeddings minilm``
+        # choice falls into this branch too (the cfg layer normalises
+        # both to ``minilm``), which is intentional: a code-trained
+        # encoder is the right floor for ``/code search`` regardless
+        # of what the user picked for prose RAG.
+        return _default_code_embedding()
 
     if not model:
-        return ("minilm", "minilm-l6-v2", None)
+        return _default_code_embedding()
 
     try:
         ef = make_embedding_function(kind, model=model, api_key=api_key, base_url=base_url)
     except Exception:
-        return ("minilm", "minilm-l6-v2", None)
+        return _default_code_embedding()
     return (kind, model, ef)
+
+
+def _default_code_embedding() -> tuple[str, str, EmbeddingFunction | None]:
+    """The opportunistic-jina-with-MiniLM-fallback default. Extracted
+    so all the early-return branches in :func:`_resolve_active_embedding`
+    share one code path and one place to fire the WARNING."""
+    global _jina_fallback_warned
+    ef, reason = _try_jina_code_embedder()
+    if ef is not None:
+        return ("sentence_transformers", JINA_CODE_MODEL, ef)
+    if not _jina_fallback_warned:
+        _jina_fallback_warned = True
+        log.warning(
+            "Code RAG falling back to MiniLM (%s). Install "
+            '`pip install "amx-cli[local-embeddings]"` to enable the '
+            "code-specialised %s embedder (~161 MB).",
+            reason or "sentence-transformers unavailable",
+            JINA_CODE_MODEL,
+        )
+    return ("minilm", "minilm-l6-v2", None)
 
 
 def _normalize_source_filter(source: str) -> str:
