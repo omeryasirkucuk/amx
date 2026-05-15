@@ -2976,6 +2976,26 @@ class SQLiteHistoryStore:
             "total_events": int(total_events or 0),
         }
 
+    def count_pending_review_runs(self, command_filter: str | None = "analyze.run") -> int:
+        """Global count of runs that still have unreviewed result rows.
+
+        Covers both ``ready_for_review`` (nothing applied yet) and
+        ``applied_partial`` (some applied, some still pending) — the
+        two terminal states where human review work remains. Used by
+        the Studio Landing "pending review" chip so the badge reflects
+        the whole table, not just the most-recent feed slice.
+        """
+        where = "status IN ('ready_for_review','applied_partial')"
+        params: tuple[Any, ...] = ()
+        if command_filter:
+            where += " AND command = ?"
+            params = (command_filter,)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS n FROM analysis_runs WHERE {where}", params
+            ).fetchone()
+        return int((row["n"] if row is not None else 0) or 0)
+
     def list_recent_events(self, limit: int = 30) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
