@@ -6,6 +6,30 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-05-15
+
+### Highlights
+
+- **LLM price browser.** Pick model prices for any LiteLLM/OpenRouter
+  model from Studio + CLI; sidebar shows the live token-consuming rate.
+- **Scheduled jobs.** Cron-based daemon for recurring runs across macOS,
+  Linux, and Windows; Studio surfaces edit dialog and one-click install.
+- **Hybrid docs RAG.** FTS5 sidecar + RRF fusion, opt-in cross-encoder
+  rerank, MMR diversity, header-aware Markdown chunker, and edges-first
+  context assembly with model-aware budget.
+- **Code RAG default model upgrade.** `jina-embeddings-v2-base-code`
+  becomes the default with a MiniLM fallback; collection identity v2
+  records `embedding_dim` and surfaces port mismatches in Catalog Search.
+- **Docs RAG quality gate.** Gold-set runner with a baseline regression
+  CI gate so retrieval quality never silently drifts.
+- **Studio Catalog cache page** + scheduled refresh schedules, sidebar
+  column-level search, breadcrumb UX, phone-first responsive shell.
+- **Bulk review UX.** Filter, search, sort, group, selection, pagination,
+  URL state, keyboard navigation, and column-level compare.
+- **Real cancellation.** Cancel button now short-circuits the next LLM
+  call across `/ask`, `/run`, and scheduler; cancelled runs are tagged
+  `cancelled` (not `success`), failed runs flip to `failed`.
+
 ### Documentation
 
 - **README overhaul.** Replaces the static top banner with an inline

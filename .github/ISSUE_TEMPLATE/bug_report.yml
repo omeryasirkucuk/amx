@@ -27,7 +27,7 @@ body:
       label: Reproduction steps
       description: Exact steps to reproduce, ideally as a numbered list. Include any commands you ran inside the REPL.
       placeholder: |
-        1. `pip install amx-cli==0.14.0`
+        1. `pip install amx-cli==0.15.0`
         2. `amx`
         3. `/setup` ... pick Postgres profile
         4. `/run sales.orders`
@@ -56,7 +56,7 @@ body:
     attributes:
       label: AMX version
       description: Output of `amx --version`.
-      placeholder: 0.14.0
+      placeholder: 0.15.0
     validations:
       required: true
 
