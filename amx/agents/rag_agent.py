@@ -26,6 +26,11 @@ from amx.llm.style.guard import scrub_placeholders
 from amx.llm.style.injector import render_style_section
 from amx.llm.style.loader import load_active_style_profile
 from amx.llm.style.profile import StyleProfile
+from amx.rag_core.assembly import (
+    assemble_chunks,
+    compute_input_budget,
+    format_chunk_header,
+)
 from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
 from amx.utils.token_tracker import estimate_tokens, tracker
@@ -320,18 +325,32 @@ class RAGAgent(BaseAgent):
         if not unique_hits:
             return None
 
-        prompt_hits = list(unique_hits[: pd.rag_max_chunks])
+        # PR-H: edges-first reorder over the top-k chunks. ``chunks``
+        # arrives in descending rerank score; ``assemble_chunks``
+        # anchors the highest scorers at both prompt edges and pushes
+        # the mid-scorers into the attention-dead middle (Liu et al.
+        # 2023, "Lost in the Middle"). The function also implements
+        # the truncation, replacing the previous ``[:rag_max_chunks]``
+        # slice — single seam, no double-pass.
+        prompt_hits = list(assemble_chunks(unique_hits, pd.rag_max_chunks))
         # Stash for downstream snapshot writers; keyed by (schema,
         # table) since the agent is reused across many tables in one
         # run.
         self.last_prompt_hits[(ctx.schema, ctx.table)] = list(prompt_hits)
-        doc_chunks = [
-            f"[{h['metadata'].get('source', 'unknown')}]\n{h['text']}" for h in prompt_hits
-        ]
+        # PR-H: per-chunk citation header carries source basename +
+        # Markdown section (from PR-D's h2/h3 metadata) + relevance.
+        # Replaces the bare ``[source]`` prefix so the LLM has a
+        # scannable summary at every chunk boundary even when
+        # attention is weak in the middle of the prompt.
+        doc_chunks = [f"{format_chunk_header(h)}\n{h['text']}" for h in prompt_hits]
+        # PR-H: per-model input budget via LiteLLM lookup. Falls back
+        # to the legacy ``max_tokens * 3`` heuristic when the model id
+        # is unknown — same numeric floor, just more honest about big-
+        # context models.
+        model_name = str(getattr(self.llm.cfg, "model", "") or "")
+        max_output_tokens = int(getattr(self.llm.cfg, "max_tokens", 4096) or 4096)
         validator = MaxTokenValidator(
-            comfortable_input_tokens=max(
-                1_000, int(getattr(self.llm.cfg, "max_tokens", 4096) or 4096) * 3
-            )
+            comfortable_input_tokens=compute_input_budget(model_name, max_output_tokens)
         )
         doc_chunks = validator.compact_chunks(doc_chunks)
         doc_text = "\n\n---\n\n".join(doc_chunks)
