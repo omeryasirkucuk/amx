@@ -286,7 +286,7 @@ def test_query_drops_chunks_above_distance_ceiling(monkeypatch, tmp_path: Path) 
     """
     store = _make_store(tmp_path / "chroma")
 
-    def _fake_query(query_texts: list[str], n_results: int) -> dict:
+    def _fake_query(query_texts: list[str], n_results: int, **_: object) -> dict:
         return {
             "documents": [["RELEVANT chunk about zip codes.", "RESUME irrelevant block."]],
             "metadatas": [
