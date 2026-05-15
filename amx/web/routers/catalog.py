@@ -18,15 +18,38 @@ expose those when needed).
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 
 from amx.config import AMXConfig
 from amx.search.catalog import SearchCatalog
 from amx.web.deps import get_cfg
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
+
+
+class CacheRefreshRequest(BaseModel):
+    """Body accepted by ``POST /api/catalog/refresh``.
+
+    Ad-hoc, synchronous variant of the scheduled cache_refresh executor:
+    the user picks a scope in the Catalog cache page's Sync-scope dialog
+    and the request runs the same invalidate + warm path that the tick
+    engine would run for a scheduled refresh, but without writing a
+    ``scheduled_runs`` row. Mode mirrors the picker output exactly so
+    the executor branch is identical to the scheduled path.
+    """
+
+    profile: str = Field(min_length=1)
+    database: str | None = None
+    catalog: str | None = None
+    scope: dict[str, Any] = Field(
+        default_factory=lambda: {"mode": "all"},
+        description="{'mode': 'all|schemas|tables|columns', ...}.",
+    )
+    kind: Literal["cache_refresh"] = "cache_refresh"
 
 
 def _catalog(cfg: AMXConfig) -> SearchCatalog:
@@ -432,4 +455,60 @@ def trigger_catalog_sync(
         "profiles": targets,
         "database": database or None,
         "status": "queued",
+    }
+
+
+@router.post("/refresh")
+def trigger_cache_refresh(
+    body: CacheRefreshRequest,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Ad-hoc, synchronous cache refresh for a scope the user picked.
+
+    Calls the same ``cache_refresh_executor`` the scheduler tick uses
+    for ``kind='cache_refresh'`` schedules, but skips the
+    ``scheduled_runs`` round-trip — this is intended for "do it right
+    now" buttons (the Catalog cache page's "Sync scope…" dialog) where
+    persisting a one-off schedule row would be noise. Profile must be a
+    saved profile; otherwise the executor's own profile lookup raises
+    and we surface the error as 400.
+
+    Returns ``{ok: true, mode: '<scope.mode>'}`` on success so the SPA
+    can render a toast. Exceptions in the executor surface as 500 with
+    the underlying message so the user sees what went wrong.
+    """
+    from amx.runtime.worker import cache_refresh_executor
+
+    profile_name = body.profile.strip()
+    if not profile_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="profile is required.",
+        )
+    profile_map = getattr(cfg, "db_profiles", {}) or {}
+    if profile_name not in profile_map:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No DB profile named {profile_name!r}.",
+        )
+
+    payload: dict[str, Any] = {
+        "id": 0,
+        "kind": "cache_refresh",
+        "db_profile": profile_name,
+        "database": body.database or None,
+        "catalog": body.catalog or None,
+        "scope_json": json.dumps(body.scope),
+    }
+    try:
+        cache_refresh_executor(0, payload)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Cache refresh failed: {exc.__class__.__name__}: {exc}",
+        ) from exc
+    return {
+        "ok": True,
+        "profile": profile_name,
+        "mode": str(body.scope.get("mode") or "all"),
     }

@@ -47,6 +47,13 @@ class ScheduleCreateRequest(BaseModel):
     ``fire_at_local`` is a wall-clock ``YYYY-MM-DDTHH:MM`` (or with
     seconds) in ``fire_at_tz``. The server converts to canonical UTC
     using ``zoneinfo``.
+
+    ``kind='cache_refresh'`` opts into the Catalog-Freshness path:
+    ``llm_profile`` may be empty and ``review_strategy`` is ignored;
+    the executor invalidates the catalog cache instead of writing an
+    analysis_runs row. ``cron_expr`` is optional — a valid expression
+    turns the row into a recurring schedule that the tick engine
+    re-arms after every fire.
     """
 
     name: str = Field(min_length=1, max_length=200)
@@ -66,8 +73,17 @@ class ScheduleCreateRequest(BaseModel):
         description="Per-schedule catalog overlay (Unity Catalog etc.).",
     )
     scope: dict[str, Any] = Field(description="{'mode':'all|schemas|tables', ...}.")
-    llm_profile: str
+    llm_profile: str = ""
     review_strategy: Literal["auto", "manual"] = "auto"
+    kind: Literal["analyze", "cache_refresh"] = "analyze"
+    cron_expr: str | None = Field(
+        default=None,
+        description=(
+            "Optional croniter expression for recurring schedules. NULL "
+            "keeps one-shot semantics. Example: '0 */6 * * *' for every "
+            "six hours."
+        ),
+    )
 
 
 class SchedulePatchRequest(BaseModel):
@@ -80,6 +96,35 @@ class SchedulePatchRequest(BaseModel):
     scope: dict[str, Any] | None = None
     llm_profile: str | None = None
     review_strategy: Literal["auto", "manual"] | None = None
+    cron_expr: str | None = None
+
+
+def _validate_cron_expr(expr: str | None) -> str | None:
+    """Reject malformed cron expressions before they reach the store.
+
+    The tick engine treats invalid expressions as one-shot (no re-arm),
+    so a typo would silently disable a "recurring" schedule. Surface
+    the error at create / patch time so the Studio form can render it
+    inline. Empty string normalises to None.
+    """
+    if expr is None:
+        return None
+    cleaned = expr.strip()
+    if not cleaned:
+        return None
+    try:
+        from croniter import croniter
+    except Exception as exc:  # pragma: no cover - runtime dep
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"croniter unavailable: {exc}",
+        ) from exc
+    if not croniter.is_valid(cleaned):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid cron expression: {cleaned!r}",
+        )
+    return cleaned
 
 
 def _parse_fire_at(local: str, tz_name: str) -> float:
@@ -124,6 +169,7 @@ def _serialise(row: dict[str, Any]) -> dict[str, Any]:
 def list_schedules(
     status_filter: str | None = None,
     db_profile: str | None = None,
+    kind: str | None = None,
     limit: int = 200,
 ) -> dict[str, Any]:
     s = _store()
@@ -131,6 +177,10 @@ def list_schedules(
     if status_filter:
         statuses = [piece.strip() for piece in status_filter.split(",") if piece.strip()]
     rows = s.list_scheduled_runs(statuses=statuses, db_profile=db_profile, limit=limit)
+    if kind:
+        kind_clean = kind.strip()
+        if kind_clean:
+            rows = [r for r in rows if str(r.get("kind") or "analyze") == kind_clean]
     return {"schedules": [_serialise(r) for r in rows]}
 
 
@@ -138,6 +188,7 @@ def list_schedules(
 def create_schedule(body: ScheduleCreateRequest) -> dict[str, Any]:
     s = _store()
     fire_at_utc = _parse_fire_at(body.fire_at_local, body.fire_at_tz)
+    cron_expr = _validate_cron_expr(body.cron_expr)
     sid = s.create_scheduled_run(
         name=body.name,
         fire_at_utc=fire_at_utc,
@@ -148,6 +199,8 @@ def create_schedule(body: ScheduleCreateRequest) -> dict[str, Any]:
         scope_json=json.dumps(body.scope),
         llm_profile=body.llm_profile,
         review_strategy=body.review_strategy,
+        kind=body.kind,
+        cron_expr=cron_expr,
     )
     return _serialise(s.get_scheduled_run(sid))
 
@@ -195,6 +248,10 @@ def patch_schedule(schedule_id: int, body: SchedulePatchRequest) -> dict[str, An
         patch["llm_profile"] = body.llm_profile
     if body.review_strategy is not None:
         patch["review_strategy"] = body.review_strategy
+    if body.cron_expr is not None:
+        # Empty string clears the recurring schedule — falls back to
+        # one-shot semantics with the existing fire_at_utc.
+        patch["cron_expr"] = _validate_cron_expr(body.cron_expr)
 
     try:
         s.update_scheduled_run(schedule_id, patch=patch)
