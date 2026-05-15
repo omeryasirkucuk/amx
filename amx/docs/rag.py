@@ -33,8 +33,10 @@ from langchain_community.document_loaders import (  # noqa: E402
     UnstructuredPowerPointLoader,
 )
 
+from amx.docs._fts5_sidecar import FTS5Sidecar  # noqa: E402
 from amx.docs.scanner import DocInfo  # noqa: E402
 from amx.docs.splitters import get_splitter  # noqa: E402
+from amx.rag_core.fusion import reciprocal_rank_fusion  # noqa: E402
 from amx.utils.logging import get_logger  # noqa: E402
 
 log = get_logger("docs.rag")
@@ -367,15 +369,53 @@ class RAGStore:
         # PR-D removed the single-splitter ``self.splitter`` attribute.
         # Per-document chunking now goes through
         # :func:`amx.docs.splitters.get_splitter` which picks the
-        # right splitter based on the file extension. The dispatcher
-        # routes Markdown (`.md` / `.markdown`) through a header-aware
-        # two-stage splitter that preserves `h1`/`h2`/`h3` metadata
-        # on every chunk; everything else uses the same default
-        # recursive splitter as before, so the docs RAG eval baseline
-        # is stable for non-Markdown corpora.
+        # right splitter based on the file extension.
         self.source_filters = [
             self._normalize_source_filter(s) for s in (source_filters or []) if s
         ]
+
+        # PR-E: SQLite FTS5 sidecar for the BM25 half of hybrid
+        # retrieval. Lives in the same persist dir as Chroma
+        # (``<persist_dir>/docs_fts.sqlite``) so backup/restore lifts
+        # both together. Every upsert into Chroma also lands in the
+        # sidecar; ``query()`` fuses dense + lexical via RRF.
+        self._fts = FTS5Sidecar(self.persist_dir)
+        # First-time-after-PR-E backfill: if the sidecar is empty but
+        # the Chroma collection has chunks (returning user upgrading
+        # AMX), seed the FTS table from existing chunks so hybrid
+        # retrieval works immediately rather than requiring a manual
+        # ``/docs ingest --refresh``. Best-effort; failures degrade to
+        # vector-only.
+        self._maybe_backfill_fts_from_chroma()
+
+    def _maybe_backfill_fts_from_chroma(self) -> None:
+        """Populate the FTS5 sidecar from Chroma if Chroma has data
+        and the sidecar is empty. One-time migration for collections
+        created before PR-E.
+        """
+        try:
+            if self._fts.count() > 0:
+                return  # sidecar already populated; nothing to do
+            existing = self.collection.get(include=["documents", "metadatas"])
+        except Exception as exc:
+            log.warning("Could not inspect Chroma for FTS backfill: %s", exc)
+            return
+        ids = list(existing.get("ids") or [])
+        documents = list(existing.get("documents") or [])
+        metadatas = list(existing.get("metadatas") or [])
+        if not ids:
+            return
+        rows: list[tuple[str, str, str]] = []
+        for cid, content, meta in zip(ids, documents, metadatas, strict=False):
+            if not isinstance(content, str):
+                continue
+            source = ""
+            if isinstance(meta, dict):
+                source = str(meta.get("source") or "")
+            rows.append((str(cid), source, content))
+        if rows:
+            inserted = self._fts.upsert(rows)
+            log.info("Backfilled FTS5 sidecar from %d existing Chroma chunks", inserted)
 
     def delete_chunks_for_sources(self, sources: list[str]) -> int:
         """Remove chunks by resolved file path or original configured source path."""
@@ -397,6 +437,9 @@ class RAGStore:
             ids = sorted(set(ids))
             if ids:
                 self.collection.delete(ids=ids)
+                # PR-E: drop the same chunks from the FTS5 sidecar so
+                # hybrid retrieval doesn't surface stale lexical hits.
+                self._fts.delete_by_ids(ids)
                 removed += len(ids)
                 log.info("Deleted %d chunks for source %s", len(ids), src)
         return removed
@@ -483,6 +526,10 @@ class RAGStore:
                 if orphans:
                     try:
                         self.collection.delete(ids=orphans)
+                        # PR-E: keep FTS5 sidecar in sync with Chroma
+                        # — orphans must vanish from the lexical index
+                        # too, otherwise BM25 will keep surfacing them.
+                        self._fts.delete_by_ids(orphans)
                         log.info(
                             "Deleted %d orphan chunk(s) for %s before re-ingest",
                             len(orphans),
@@ -492,6 +539,12 @@ class RAGStore:
                         log.warning("Could not delete orphan chunks for %s: %s", doc.path, exc)
 
                 self.collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
+                # PR-E: mirror the same chunks into the FTS5 sidecar
+                # so BM25 retrieval sees identical content. The
+                # sidecar upsert is best-effort — a failure logs and
+                # degrades to vector-only retrieval for this corpus,
+                # not a hard ingest failure.
+                self._fts.upsert(zip(ids, [doc.path] * len(ids), texts, strict=False))
                 total_chunks += len(chunks)
                 succeeded.append(doc.path)
                 log.info("Ingested %s -> %d chunks", doc.path, len(chunks))
@@ -516,7 +569,11 @@ class RAGStore:
         raw_n = max(int(n_results), min(int(n_results) * 4, 40))
 
         def _do_query() -> Any:
-            return self.collection.query(query_texts=[question], n_results=raw_n)
+            return self.collection.query(
+                query_texts=[question],
+                n_results=raw_n,
+                include=["documents", "metadatas", "distances"],
+            )
 
         # Honour the optional per-query wall-clock cap. We submit the
         # Chroma call to a fresh single-thread executor scoped to a
@@ -562,25 +619,96 @@ class RAGStore:
         # LLM consumed them and synthesised absurd descriptions.
         threshold = float(min_similarity or 0.0)
         max_distance = (1.0 - threshold) if threshold > 0.0 else None
-        hits: list[dict] = []
-        for i in range(len(results["documents"][0])):
-            meta = results["metadatas"][0][i]
+
+        # Build a dict keyed by chunk_id so we can fuse with the FTS5
+        # ranking without duplicating entries. Vector candidates are
+        # appended in retrieval order so the chunk_id list below
+        # preserves Chroma's ranking.
+        hits_by_id: dict[str, dict] = {}
+        vector_ranking: list[str] = []
+        ids_row = (results.get("ids") or [[]])[0]
+        documents_row = (results.get("documents") or [[]])[0]
+        metadatas_row = (results.get("metadatas") or [[]])[0]
+        distances_row = (results.get("distances") or [[]])[0] if results.get("distances") else []
+        for i in range(len(documents_row)):
+            # Use the Chroma id when available; otherwise synthesise a
+            # per-position id so test fakes that don't surface ``ids``
+            # still produce distinct dict entries. Synthetic ids never
+            # collide with real ids (real ones contain ``::`` as the
+            # ``"{path}::{idx}"`` separator).
+            raw_id = ids_row[i] if i < len(ids_row) and ids_row[i] is not None else None
+            chunk_id = str(raw_id) if raw_id is not None and str(raw_id) else f"__synth__::{i}"
+            meta = metadatas_row[i] if i < len(metadatas_row) else {}
             if not self._source_allowed(meta):
                 continue
-            raw_distance = results["distances"][0][i] if results.get("distances") else None
+            raw_distance = distances_row[i] if i < len(distances_row) else None
             if (
                 max_distance is not None
                 and raw_distance is not None
                 and float(raw_distance) > max_distance
             ):
                 continue
-            hits.append(
-                {
-                    "text": results["documents"][0][i],
-                    "metadata": meta,
-                    "distance": raw_distance,
-                }
-            )
+            hits_by_id[chunk_id] = {
+                "id": chunk_id,
+                "text": documents_row[i],
+                "metadata": meta,
+                "distance": raw_distance,
+            }
+            vector_ranking.append(chunk_id)
+
+        # PR-E: BM25 channel via the FTS5 sidecar. Top-N candidates
+        # scored by BM25 join the candidate pool; chunks present
+        # only in the lexical channel get their text+metadata
+        # back-filled from Chroma so downstream rerank sees a
+        # uniform shape. Sidecar errors degrade to vector-only.
+        # ``getattr`` default handles tests that bypass __init__
+        # (e.g. ``object.__new__(RAGStore)`` with hand-set
+        # ``collection`` only) — no sidecar means vector-only,
+        # exactly the pre-PR-E behaviour.
+        lexical_ranking: list[str] = []
+        fts = getattr(self, "_fts", None)
+        lexical_hits = fts.query(question, k=raw_n) if fts is not None else []
+        if lexical_hits:
+            missing_ids = [cid for cid, _ in lexical_hits if cid and cid not in hits_by_id]
+            if missing_ids:
+                try:
+                    enrich = self.collection.get(
+                        ids=missing_ids, include=["documents", "metadatas"]
+                    )
+                except Exception as exc:
+                    log.warning("Could not enrich BM25-only hits from Chroma: %s", exc)
+                    enrich = {"ids": [], "documents": [], "metadatas": []}
+                got_ids = list(enrich.get("ids") or [])
+                got_docs = list(enrich.get("documents") or [])
+                got_metas = list(enrich.get("metadatas") or [])
+                for cid, content, meta in zip(got_ids, got_docs, got_metas, strict=False):
+                    if not self._source_allowed(meta):
+                        continue
+                    hits_by_id[str(cid)] = {
+                        "id": str(cid),
+                        "text": content,
+                        "metadata": meta,
+                        "distance": None,  # not measured for BM25-only hits
+                    }
+            for chunk_id, _score in lexical_hits:
+                if chunk_id in hits_by_id:
+                    lexical_ranking.append(chunk_id)
+
+        # Fuse the two rankings via RRF. When only one channel
+        # produced results (no BM25 sidecar yet, or query had no
+        # alphanumeric tokens), RRF collapses to that channel's
+        # original order — exact backward-compat for vector-only
+        # corpora.
+        if vector_ranking or lexical_ranking:
+            rankings = [r for r in (vector_ranking, lexical_ranking) if r]
+            rrf_scores = reciprocal_rank_fusion(rankings)
+            fused_order = sorted(
+                rrf_scores.items(), key=lambda kv: (-kv[1], kv[0])
+            )  # tiebreak by id for determinism
+            hits = [hits_by_id[cid] for cid, _ in fused_order if cid in hits_by_id]
+        else:
+            hits = list(hits_by_id.values())
+
         return self.rerank(question, hits)[:n_results]
 
     def rerank(self, question: str, hits: list[dict]) -> list[dict]:
