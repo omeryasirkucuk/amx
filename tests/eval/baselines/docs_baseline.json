@@ -13,7 +13,7 @@
     "mrr": 0.775,
     "n_queries": 20,
     "ndcg_at_5": 0.8112,
-    "precision_at_5": 0.2842
+    "precision_at_5": 0.2775
   },
   "pipeline": "docs",
   "schema_version": 1
