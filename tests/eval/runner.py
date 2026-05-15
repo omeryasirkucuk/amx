@@ -125,19 +125,29 @@ def load_gold_set(path: Path = DOCS_GOLD_PATH) -> list[GoldQuery]:
 
 
 def _scan_fixture_docs(fixture_dir: Path) -> list[DocInfo]:
-    """Build :class:`DocInfo` records for every Markdown file in the
-    fixture directory. We deliberately do not invoke the real
-    ``amx.docs.scanner.scan_docs`` here — the scanner walks gitignore,
-    runs binary-sniffers, and consults configuration the eval shouldn't
-    have to mock. A flat directory of ``.md`` files is enough."""
+    """Build :class:`DocInfo` records for every plain-text fixture file.
+
+    We use ``.txt`` rather than ``.md`` on purpose: ``.md`` routes
+    ingest through ``UnstructuredMarkdownLoader``, which depends on
+    the ``markdown`` PyPI package — installed as a transitive in some
+    environments but **not** in CI's ``pip install -e ".[all,code-intel]"``
+    matrix. ``.txt`` lands on ``TextLoader``, which is dependency-free.
+    The fixture content is still Markdown-formatted prose; only the
+    file extension changes.
+
+    We deliberately do not invoke the real ``amx.docs.scanner.scan_docs``
+    — the scanner walks gitignore, runs binary-sniffers, and consults
+    configuration the eval shouldn't have to mock. A flat directory of
+    text files is enough.
+    """
     docs: list[DocInfo] = []
-    for path in sorted(fixture_dir.glob("*.md")):
+    for path in sorted(fixture_dir.glob("*.txt")):
         stat = path.stat()
         docs.append(
             DocInfo(
                 path=str(path),
                 size_bytes=stat.st_size,
-                extension=".md",
+                extension=".txt",
                 source_type="local",
                 source_root=str(fixture_dir),
             )

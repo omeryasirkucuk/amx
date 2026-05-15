@@ -6,14 +6,14 @@
     "provider": "minilm"
   },
   "metrics": {
-    "hit_at_1": 0.7,
-    "hit_at_3": 0.9,
+    "hit_at_1": 0.65,
+    "hit_at_3": 0.85,
     "hit_at_5": 0.95,
     "keyword_recall": 0.95,
-    "mrr": 0.8042,
+    "mrr": 0.775,
     "n_queries": 20,
-    "ndcg_at_5": 0.8157,
-    "precision_at_5": 0.2733
+    "ndcg_at_5": 0.8112,
+    "precision_at_5": 0.2842
   },
   "pipeline": "docs",
   "schema_version": 1

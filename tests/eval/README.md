@@ -22,7 +22,7 @@ layers live here:
 | `runner.py` | End-to-end driver against `RAGStore`. |
 | `generate_baselines.py` | Regenerates `baselines/docs_baseline.json`. |
 | `test_baselines.py` | CI gate. Fails on regression. |
-| `fixtures/docs/` | Synthetic Markdown corpus (~6 docs). |
+| `fixtures/docs/` | Synthetic plain-text corpus (~6 docs, Markdown-formatted content saved as `.txt` to skip the `markdown` runtime dep that `UnstructuredMarkdownLoader` needs). |
 | `fixtures/docs_gold.jsonl` | 20 question/expected-source/expected-content rows. |
 | `baselines/docs_baseline.json` | Committed baseline; the CI floor. |
 
