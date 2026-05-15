@@ -88,6 +88,10 @@ export default function App() {
               <Route path="pricing" element={<Pricing />} />
               <Route path="db-cache" element={<DbCache />} />
               <Route path="runs/schedules" element={<Schedules />} />
+              <Route
+                path="runs/catalog-refresh-schedules"
+                element={<Navigate to="/db-cache" replace />}
+              />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

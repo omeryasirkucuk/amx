@@ -948,10 +948,13 @@ export const api = {
     apiFetch<ModelCatalog>("/api/pricing/models"),
 
   // ── Scheduled runs (Phase 5a routes) ───────────────────────────────
-  listSchedules: (params: { status?: string; db_profile?: string } = {}) => {
+  listSchedules: (
+    params: { status?: string; db_profile?: string; kind?: string } = {},
+  ) => {
     const qs = new URLSearchParams();
     if (params.status) qs.set("status_filter", params.status);
     if (params.db_profile) qs.set("db_profile", params.db_profile);
+    if (params.kind) qs.set("kind", params.kind);
     return apiFetch<SchedulesListResponse>(
       `/api/schedules${qs.toString() ? `?${qs.toString()}` : ""}`,
     );
@@ -990,7 +993,26 @@ export const api = {
     apiFetch<{ message: string }>(`/api/scheduler/uninstall-daemon`, {
       method: "POST",
     }),
+
+  /** Ad-hoc synchronous cache refresh — invalidates + warms the cache
+   * for the picked scope without writing a scheduled_runs row. Backs
+   * the Catalog cache page's "Sync scope…" dialog. */
+  refreshCatalogScope: (body: CatalogScopeRefreshPayload) =>
+    apiFetch<{ ok: boolean; profile: string; mode: string }>(
+      `/api/catalog/refresh`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
 };
+
+export interface CatalogScopeRefreshPayload {
+  profile: string;
+  database?: string | null;
+  catalog?: string | null;
+  scope: Record<string, unknown>;
+}
 
 export interface ScheduleRow {
   id: number;
@@ -1014,6 +1036,14 @@ export interface ScheduleRow {
   // Epoch seconds when the schedule actually fired (run was created
   // and the executor was dispatched). Null until the schedule fires.
   fired_at: number | null;
+  // Discriminator: 'analyze' (legacy run) or 'cache_refresh'
+  // (Catalog Freshness refresh). Defaulted on the server so legacy
+  // rows keep the analyze behaviour.
+  kind?: "analyze" | "cache_refresh";
+  // Optional croniter expression. NULL = one-shot; non-NULL = the
+  // scheduler re-arms the row with a fresh fire_at_utc after every
+  // fire so the schedule keeps cycling.
+  cron_expr?: string | null;
 }
 
 export interface SchedulesListResponse {
@@ -1028,8 +1058,10 @@ export interface ScheduleCreatePayload {
   database?: string | null;
   catalog?: string | null;
   scope: Record<string, unknown>;
-  llm_profile: string;
+  llm_profile?: string;
   review_strategy?: "auto" | "manual";
+  kind?: "analyze" | "cache_refresh";
+  cron_expr?: string | null;
 }
 
 export interface SchedulerStatusResponse {

@@ -76,6 +76,12 @@ dependencies = [
     "python-multipart>=0.0.7",
     "duckdb>=1.0",
     "duckdb-engine>=0.13",
+    # ``croniter`` evaluates recurring schedule expressions: the
+    # Catalog Freshness "Schedule" affordance accepts cron strings or
+    # an interval dropdown that maps to one, and the scheduler tick
+    # uses ``croniter.get_next()`` to re-arm the next fire after each
+    # successful run.
+    "croniter>=2.0",
 ]
 
 [project.urls]

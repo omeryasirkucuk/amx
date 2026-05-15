@@ -382,6 +382,152 @@ def _resolve_live_scope(scope_json: str | None, db: Any) -> dict[str, list[str]]
     return {}
 
 
+def cache_refresh_executor(run_id: int, payload: dict[str, Any]) -> None:
+    """Re-populate the Catalog Freshness caches for a scheduled refresh.
+
+    Mirrors the manual ``Sync all`` / per-schema refresh affordances
+    in the Studio sidebar but for a schedule-driven trigger. Branches
+    on ``scope.mode``:
+
+    * ``all`` — call :func:`sync_profile_skeleton` against the whole
+      ``(profile, database)`` (or the entire profile when no database
+      overlay is set).
+    * ``schemas`` — for each named schema invalidate the column-
+      comments cache and re-list assets so the bulk path warms it
+      again; warm comments per table.
+    * ``tables`` / ``columns`` — same warm path restricted to the
+      exact (schema, table) pairs the user picked. Column-level
+      picks collapse to their owning table.
+
+    Per-asset failures are caught and logged so one bad table doesn't
+    abort the rest of the schedule's work.
+    """
+    from amx.config import AMXConfig
+    from amx.db.connector import DatabaseConnector
+    from amx.search.catalog import SearchCatalog
+    from amx.search.drift import sync_profile_skeleton
+
+    schedule_id = int(payload.get("id") or 0)
+    profile_name = str(payload.get("db_profile") or "")
+    if not profile_name:
+        raise ValueError(f"schedule #{schedule_id} missing db_profile for cache refresh")
+    database_overlay = payload.get("database") or None
+    catalog_overlay = payload.get("catalog") or None
+
+    cfg = AMXConfig.load()
+    db_cfg = cfg.db_profiles.get(profile_name)
+    if db_cfg is None:
+        raise KeyError(
+            f"DB profile '{profile_name}' (from schedule #{schedule_id}) "
+            "no longer exists. Edit the schedule or recreate the profile."
+        )
+
+    from dataclasses import replace as _dc_replace
+
+    overlay: dict[str, Any] = {}
+    if database_overlay:
+        overlay["database"] = str(database_overlay)
+    if catalog_overlay:
+        overlay["catalog"] = str(catalog_overlay)
+    scoped_cfg = _dc_replace(db_cfg, **overlay) if overlay else db_cfg
+    connector = DatabaseConnector(scoped_cfg, profile_name=profile_name)
+
+    scope_raw = payload.get("scope_json")
+    try:
+        scope_obj = json.loads(scope_raw) if isinstance(scope_raw, str) and scope_raw else {}
+    except (TypeError, ValueError):
+        scope_obj = {}
+    mode = str(scope_obj.get("mode") or "all")
+
+    log.info(
+        "cache_refresh_executor: schedule #%s firing on profile=%s mode=%s",
+        schedule_id,
+        profile_name,
+        mode,
+    )
+
+    if mode == "all":
+        catalog = SearchCatalog.from_history_store()
+        if catalog is None:
+            raise RuntimeError("History store unavailable; cache refresh aborted.")
+        databases_arg = [str(database_overlay)] if database_overlay else None
+        sync_profile_skeleton(cfg, profile_name, catalog, databases=databases_arg)
+        return
+
+    # Collect (schema, table | None) work units. schemas → whole-schema.
+    work: list[tuple[str, str | None]] = []
+    if mode == "schemas":
+        for s in scope_obj.get("schemas") or []:
+            if isinstance(s, str) and s:
+                work.append((s, None))
+    elif mode == "tables":
+        for item in scope_obj.get("tables") or []:
+            if not isinstance(item, dict):
+                continue
+            schema = str(item.get("schema") or "")
+            table = str(item.get("table") or "")
+            if schema and table:
+                work.append((schema, table))
+    elif mode == "columns":
+        seen_tables: set[tuple[str, str]] = set()
+        for item in scope_obj.get("columns") or []:
+            if not isinstance(item, dict):
+                continue
+            schema = str(item.get("schema") or "")
+            table = str(item.get("table") or "")
+            if not schema or not table:
+                continue
+            key = (schema, table)
+            if key in seen_tables:
+                continue
+            seen_tables.add(key)
+            work.append((schema, table))
+
+    for schema, table in work:
+        try:
+            connector.invalidate_column_comments_cache(schema=schema, table=table)
+        except Exception as exc:
+            log.debug(
+                "cache_refresh_executor: invalidate failed for %s.%s: %s",
+                schema,
+                table,
+                exc,
+            )
+        if table is None:
+            try:
+                assets = list(connector.list_assets(schema))
+            except Exception as exc:
+                log.warning(
+                    "cache_refresh_executor: list_assets(%s) failed: %s",
+                    schema,
+                    exc,
+                )
+                assets = []
+            for asset_name, _kind in assets:
+                try:
+                    connector.get_table_comment(schema, asset_name)
+                    connector.get_column_comments(schema, asset_name)
+                except Exception as exc:
+                    log.debug(
+                        "cache_refresh_executor: warm %s.%s failed: %s",
+                        schema,
+                        asset_name,
+                        exc,
+                    )
+        else:
+            try:
+                connector.get_table_comment(schema, table)
+                connector.get_column_comments(schema, table)
+                connector.list_column_profiles(schema, table)
+            except Exception as exc:
+                log.debug(
+                    "cache_refresh_executor: warm %s.%s failed: %s",
+                    schema,
+                    table,
+                    exc,
+                )
+
+
 def spawn_scheduled_worker(
     payload: dict[str, Any],
     *,
@@ -401,7 +547,15 @@ def spawn_scheduled_worker(
     *payload* is the full ``scheduled_runs`` row as returned by
     :meth:`SQLiteHistoryStore.get_scheduled_run`.
     """
-    executor = run_executor or default_run_executor
+    # Discriminate by ``kind``: cache_refresh schedules invalidate the
+    # catalog cache via the connector, not the LLM/agent stack. The
+    # legacy ``analyze`` kind keeps the caller-supplied executor (the
+    # daemon path injects ``production_run_executor``).
+    kind = str(payload.get("kind") or "analyze")
+    if kind == "cache_refresh":
+        executor = cache_refresh_executor
+    else:
+        executor = run_executor or default_run_executor
     scope = _parse_scope(payload.get("scope_json"))
 
     run_id = store.create_run(
@@ -540,6 +694,8 @@ def _mark_completed(store: _HistoryStore, *, run_id: int, schedule_id: int) -> N
         )
     except BaseException:  # noqa: BLE001
         log.exception("finish_run failed for run_id=%s", run_id)
+    if _try_rearm_recurring(store, schedule_id):
+        return
     try:
         store.set_scheduled_run_status(
             schedule_id,
@@ -572,6 +728,12 @@ def _mark_failed(
         )
     except BaseException:  # noqa: BLE001
         log.exception("finish_run failed for run_id=%s", run_id)
+    # Recurring schedules re-arm even on failure — the user's intent
+    # is "keep refreshing every N hours"; a single bad fire doesn't
+    # cancel future ones. The failed analysis_runs row still carries
+    # the diagnostic detail.
+    if _try_rearm_recurring(store, schedule_id):
+        return
     try:
         store.set_scheduled_run_status(
             schedule_id,
@@ -581,3 +743,22 @@ def _mark_failed(
         )
     except ValueError:
         pass
+
+
+def _try_rearm_recurring(store: _HistoryStore, schedule_id: int) -> bool:
+    """Call ``store.arm_next_fire`` for recurring schedules.
+
+    Returns True when the row was re-armed (the caller should skip
+    the terminal status transition). False when the row has no cron
+    expression or the store helper isn't available — the caller then
+    falls back to setting a terminal status.
+    """
+    helper = getattr(store, "arm_next_fire", None)
+    if helper is None:
+        return False
+    try:
+        next_at = helper(schedule_id)
+    except Exception:
+        log.exception("arm_next_fire raised for schedule_id=%s", schedule_id)
+        return False
+    return bool(next_at)

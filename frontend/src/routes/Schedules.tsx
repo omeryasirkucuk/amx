@@ -564,7 +564,7 @@ export default function Schedules() {
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["schedules", statusFilter],
-    queryFn: () => api.listSchedules({ status: apiStatus }),
+    queryFn: () => api.listSchedules({ status: apiStatus, kind: "analyze" }),
     // Poll the list so the page reflects daemon-driven fires
     // without forcing the user to refresh: 5s while at least one
     // schedule is mid-fire (status='running'), 15s baseline so
@@ -833,7 +833,7 @@ export default function Schedules() {
   // reality regardless of which Show: option the user picked).
   const missedQ = useQuery({
     queryKey: ["schedules", "missed-banner"],
-    queryFn: () => api.listSchedules({ status: "missed" }),
+    queryFn: () => api.listSchedules({ status: "missed", kind: "analyze" }),
     refetchInterval: 30_000,
   });
   const liveMissedCount = missedQ.data?.schedules?.length ?? 0;
@@ -901,9 +901,9 @@ export default function Schedules() {
   return (
     <>
       <PageHeader
-        title="Schedules"
+        title="Analyze schedules"
         breadcrumbs={[{ label: "Runs", to: "/runs" }, { label: "Schedules" }]}
-        description="One-shot scheduled metadata runs. Catch-up surfaces on next open when AMX was closed at fire time."
+        description="Scheduled analysis runs (LLM-driven metadata generation). For Catalog Freshness cache refreshes, see Runs → Catalog refreshes."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             {daemonControls}

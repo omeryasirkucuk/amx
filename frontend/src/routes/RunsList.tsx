@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import {
   CalendarClock,
+  DatabaseZap,
   GitCompare,
   History,
   PauseCircle,
@@ -349,6 +350,15 @@ export default function RunsList() {
                 leadingIcon={<CalendarClock size={14} />}
               >
                 Schedules
+              </Button>
+            </Link>
+            <Link to="/db-cache">
+              <Button
+                variant="secondary"
+                size="md"
+                leadingIcon={<DatabaseZap size={14} />}
+              >
+                Catalog cache
               </Button>
             </Link>
             <Link to="/runs/compare">

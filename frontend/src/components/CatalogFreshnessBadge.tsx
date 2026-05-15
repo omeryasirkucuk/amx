@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Database, RefreshCw } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
+import { ArrowRight, Database, RefreshCw } from "lucide-react";
 
 import { apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
@@ -50,7 +51,12 @@ function relativeAge(ageSec: number | null): string {
 export default function CatalogFreshnessBadge() {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const qc = useQueryClient();
+  const navigate = useNavigate();
+
+  const goToManage = () => {
+    setOpen(false);
+    navigate("/db-cache");
+  };
 
   // Close the dropdown on outside click + Escape, mirroring the
   // pattern used by ProfilePicker so every top-bar dropdown behaves
@@ -93,27 +99,7 @@ export default function CatalogFreshnessBadge() {
   ).length;
   const profileCount = data?.profiles.length ?? 0;
 
-  const sync = useMutation({
-    mutationFn: (target: string | null) =>
-      apiFetch(
-        target
-          ? `/api/catalog/sync?profile=${encodeURIComponent(target)}`
-          : "/api/catalog/sync",
-        { method: "POST" },
-      ),
-    onSettled: () => {
-      // Two invalidations: the first picks up the synchronous
-      // ``state='syncing'`` flip the backend made before returning;
-      // the second 3 s later catches small catalogs that finish
-      // before the next poll tick.
-      qc.invalidateQueries({ queryKey: ["catalog-freshness"] });
-      window.setTimeout(() => {
-        qc.invalidateQueries({ queryKey: ["catalog-freshness"] });
-      }, 3000);
-    },
-  });
-
-  const isSyncing = syncingCount > 0 || sync.isPending;
+  const isSyncing = syncingCount > 0;
   const tone: "neutral" | "warning" | "positive" | "syncing" =
     isSyncing
       ? "syncing"
@@ -184,24 +170,11 @@ export default function CatalogFreshnessBadge() {
             <span className="text-xs font-semibold text-ink">
               Catalog freshness
             </span>
-            <button
-              type="button"
-              onClick={() => sync.mutate(null)}
-              disabled={sync.isPending || isSyncing}
-              className="inline-flex items-center gap-1 rounded-md bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent-ink hover:bg-accent-soft/80 disabled:opacity-60"
-              title="Sync all profiles"
-            >
-              <RefreshCw
-                size={11}
-                className={isSyncing ? "animate-spin" : ""}
-              />
-              {isSyncing ? "Syncing…" : "Sync all"}
-            </button>
           </div>
           {profileCount === 0 ? (
             <p className="text-[11px] text-ink-dim">
-              No profile has been indexed yet. Click <strong>Sync all</strong>{" "}
-              to enumerate every schema + table for the active DB profiles.
+              No profile has been indexed yet. Open{" "}
+              <strong>Catalog refreshes</strong> to sync.
             </p>
           ) : (
             <ul className="space-y-1.5">
@@ -255,39 +228,27 @@ export default function CatalogFreshnessBadge() {
                         />
                       </div>
                     )}
-                    {p.state === "failed" && (
-                      <div className="mt-1 flex items-start gap-1.5">
-                        <span
-                          aria-hidden="true"
-                          className="mt-0.5 shrink-0 text-critical"
-                        >
-                          ⚠
-                        </span>
-                        <div className="min-w-0 flex-1 space-y-1">
-                          <p className="break-words text-[10.5px] text-critical">
-                            {p.last_error || "Unknown error"}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => sync.mutate(p.profile)}
-                            disabled={sync.isPending}
-                            className="inline-flex items-center gap-1 rounded bg-critical/10 px-1.5 py-0.5 text-[10px] font-medium text-critical hover:bg-critical/20 disabled:opacity-60"
-                          >
-                            <RefreshCw size={10} />
-                            Retry
-                          </button>
-                        </div>
-                      </div>
+                    {p.state === "failed" && p.last_error && (
+                      <p className="mt-1 break-words text-[10.5px] text-critical">
+                        ⚠ {p.last_error}
+                      </p>
                     )}
                   </li>
                 );
               })}
             </ul>
           )}
+          <button
+            type="button"
+            onClick={goToManage}
+            className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-accent-soft px-2 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-soft/80"
+          >
+            Manage refreshes
+            <ArrowRight size={11} />
+          </button>
           <p className="mt-2 text-[10px] text-ink-dim">
-            Sidebar / Schedule / Run / Ask read from the live DB until a
-            full sync completes — never showing a partial catalog as the
-            whole picture.
+            All manual sync, retry, and scheduled refresh management
+            lives on the Catalog cache page.
           </p>
         </div>
       )}
