@@ -9,12 +9,17 @@ from collections.abc import Callable
 
 import click
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 from prompt_toolkit.styles import Style
 
+from amx.cli_support._session_keybindings import (  # noqa: PLC0414
+    _NS_STATE as _NS_STATE,
+)
+from amx.cli_support._session_keybindings import (
+    _kb_escape_namespace as _kb_escape_namespace,
+)
 from amx.cli_support.commands.db import (
     cmd_add_profile as _cmd_add_profile,
 )
@@ -149,8 +154,6 @@ WarnNoPaths = Callable[..., None]
 NormalizeArgs = Callable[[list[str], AMXConfig], list[str]]
 PrintDbHint = Callable[[], None]
 
-_NS_STATE: dict[str, str] = {"namespace": ""}
-
 
 def _rebuild_prompt_input() -> None:
     """Force prompt_toolkit to drop its cached ``Vt100Input``.
@@ -218,57 +221,6 @@ def _format_session_click_error(cmdline: str, exc: click.ClickException) -> str:
     if isinstance(exc, click.UsageError) and "No such command" in str(exc):
         return f"Unknown command: /{cmdline}. Type /help."
     return str(exc)
-
-
-def _kb_escape_namespace() -> KeyBindings:
-    kb = KeyBindings()
-
-    @Condition
-    def _is_buffer_empty() -> bool:
-        from prompt_toolkit.application.current import get_app
-
-        return len(get_app().current_buffer.text) == 0
-
-    tabs = ["", "db", "metadata", "docs", "llm", "code", "analyze", "search", "history"]
-
-    @kb.add("escape")
-    def _(event) -> None:  # type: ignore[no-untyped-def]
-        buf = event.app.current_buffer
-        if buf.text:
-            buf.reset()
-            return
-        namespace = _NS_STATE.get("namespace", "")
-        if namespace:
-            _NS_STATE["namespace"] = ""
-            event.app.exit(result="__amx_esc_back__")
-        else:
-            event.app.exit(result="__amx_esc_root__")
-
-    @kb.add("c-c")
-    def _(event) -> None:  # type: ignore[no-untyped-def]
-        # Ctrl-C with text in the buffer clears the line (standard shell
-        # convention). On an empty prompt — i.e. the user is just sitting
-        # on a tab, not mid-input — leave the session entirely so Ctrl-C
-        # behaves as a quick exit instead of a no-op.
-        buf = event.app.current_buffer
-        if buf.text:
-            buf.reset()
-        else:
-            event.app.exit(result="__amx_exit__")
-
-    @kb.add("right", filter=_is_buffer_empty)
-    def _(event) -> None:  # type: ignore[no-untyped-def]
-        curr = _NS_STATE.get("namespace", "")
-        idx = tabs.index(curr) if curr in tabs else 0
-        event.app.exit(result=f"__amx_switch_ns__:{tabs[(idx + 1) % len(tabs)]}")
-
-    @kb.add("left", filter=_is_buffer_empty)
-    def _(event) -> None:  # type: ignore[no-untyped-def]
-        curr = _NS_STATE.get("namespace", "")
-        idx = tabs.index(curr) if curr in tabs else 0
-        event.app.exit(result=f"__amx_switch_ns__:{tabs[(idx - 1) % len(tabs)]}")
-
-    return kb
 
 
 _TAB_ORDER = ["root", "db", "metadata", "docs", "llm", "code", "analyze", "search", "history"]
