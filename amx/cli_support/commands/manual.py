@@ -8,6 +8,12 @@ from typing import Any
 
 import click
 
+from amx.cli_support._manual_errors import (  # noqa: PLC0414
+    _report_manual_db_error as _report_manual_db_error,
+)
+from amx.cli_support._manual_errors import (
+    _summarize_db_exception as _summarize_db_exception,
+)
 from amx.config import AMXConfig, DBConfig
 from amx.db.connector import AssetKind
 from amx.services.manual_metadata import (
@@ -24,27 +30,6 @@ from amx.services.manual_metadata import (
 from amx.utils.console import ask, confirm, console, error, info, render_table, success, warn
 
 LogEvent = Callable[..., None]
-
-
-def _summarize_db_exception(exc: Exception) -> str:
-    detail = str(exc).strip()
-    lower = detail.lower()
-    if "connection refused" in lower:
-        return "Database connection refused."
-    if "timeout" in lower or "timed out" in lower:
-        return "Database connection timed out."
-    if "authentication" in lower or "password" in lower or "permission denied" in lower:
-        return "Database authentication failed."
-    first_line = next((line.strip() for line in detail.splitlines() if line.strip()), "")
-    return first_line[:220]
-
-
-def _report_manual_db_error(action: str, exc: Exception) -> None:
-    error(f"Could not {action} because AMX cannot reach the active database.")
-    warn("Check the active DB profile and run /db then /connect.")
-    summary = _summarize_db_exception(exc)
-    if summary:
-        warn(f"Cause: {summary}")
 
 
 def _is_cancel(value: str | None) -> bool:
