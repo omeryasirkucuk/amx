@@ -13,6 +13,27 @@ from types import ModuleType
 from typing import Any
 
 from amx.config import LLMConfig, normalize_llm_model
+from amx.llm._provider_config import (
+    _DEFAULT_REASONING_FLOOR as _DEFAULT_REASONING_FLOOR,
+)
+from amx.llm._provider_config import (
+    _REASONING_AUTO_RETRY_CAP as _REASONING_AUTO_RETRY_CAP,
+)
+from amx.llm._provider_config import (  # noqa: PLC0414
+    PROVIDER_ENV_KEY as PROVIDER_ENV_KEY,
+)
+from amx.llm._provider_config import (
+    PROVIDER_MODEL_PREFIX as PROVIDER_MODEL_PREFIX,
+)
+from amx.llm._provider_config import (
+    _is_openai_reasoning_style_model as _is_openai_reasoning_style_model,
+)
+from amx.llm._provider_config import (
+    _openai_model_id as _openai_model_id,
+)
+from amx.llm._provider_config import (
+    _supports_thinking as _supports_thinking,
+)
 from amx.llm._provider_errors import (
     _FATAL_HTTP_STATUS_CODES as _FATAL_HTTP_STATUS_CODES,
 )
@@ -277,63 +298,6 @@ def _install_structured_content_shim(lm: ModuleType) -> None:
     _LiteLLMMessage._amx_structured_content_shim = True  # type: ignore[attr-defined]
 
 
-PROVIDER_MODEL_PREFIX = {
-    "openai": "openai/",
-    # OpenRouter prefix is now ALWAYS applied. Older code left this empty
-    # because typical OpenRouter model ids look like "openai/gpt-4o-mini" —
-    # i.e. they already contain a "/" and LiteLLM happens to route them
-    # correctly via the OpenAI client + api_base override. But for vendor
-    # namespaces LiteLLM doesn't natively recognise (qwen/, mistralai/,
-    # google/, meta-llama/, etc.) the missing "openrouter/" prefix makes
-    # LiteLLM fail with "LLM Provider NOT provided". Forcing the prefix
-    # makes every OpenRouter model identifiable. ``model_name`` strips the
-    # prefix when it's already present so we never double-prepend.
-    "openrouter": "openrouter/",
-    "anthropic": "anthropic/",
-    "gemini": "gemini/",
-    "deepseek": "deepseek/",
-    "local": "openai/",
-    "kimi": "openai/",
-    "ollama": "ollama/",
-    # Databricks Foundation Model Serving + custom serving endpoints expose
-    # an OpenAI-compatible REST surface at
-    # ``<workspace>/serving-endpoints/<endpoint>/invocations`` (and the
-    # chat-completions alias). LiteLLM routes those via the openai client,
-    # so we use the same prefix as ``local`` / ``kimi``. The wizard adds the
-    # ``serving-endpoints`` suffix to the api_base so users only paste the
-    # workspace host.
-    "databricks_serving": "openai/",
-}
-
-PROVIDER_ENV_KEY = {
-    "openai": "OPENAI_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "gemini": "GEMINI_API_KEY",
-    "deepseek": "DEEPSEEK_API_KEY",
-    "databricks_serving": "DATABRICKS_TOKEN",
-}
-
-# OpenAI "reasoning" models (gpt-5*, o-series), Anthropic extended-thinking
-# Claude, DeepSeek-reasoner, and OpenRouter's reasoning routes (Kimi K2.x
-# thinking variants, Qwen3-thinking, GLM-4.6-thinking …) may spend the
-# whole max_tokens budget on internal reasoning, leaving message.content
-# empty with finish_reason=length. Floor output budget + optional
-# reasoning_effort (LiteLLM passes through to the API). Bumped from
-# 16_384 → 32_768 in 2026-05 because Kimi K2.x and Claude Sonnet/Opus 4
-# extended thinking routinely spend 8-16k tokens on thoughts before the
-# first visible character.
-_DEFAULT_REASONING_FLOOR = 32_768
-
-# Hard cap for the auto-recovery path (see ``chat`` finish=length branch).
-# When a reasoning route returns 0 visible characters and consumed every
-# allotted output token, AMX retries the call once with ``max_tokens × 4``
-# bounded by this cap so the user gets a usable response without having
-# to set ``AMX_LLM_MIN_MAX_TOKENS`` manually for every new reasoning
-# model that ships.
-_REASONING_AUTO_RETRY_CAP = 131_072
-
-
 @dataclass
 class ToolCall:
     """A single tool/function call requested by the LLM in a chat turn."""
@@ -541,74 +505,6 @@ def confidence_from_logprobs(
     if score >= medium_threshold:
         return "MEDIUM"
     return "LOW"
-
-
-def _openai_model_id(model: str) -> str:
-    return model.split("/")[-1].strip().lower()
-
-
-def _is_openai_reasoning_style_model(model: str) -> bool:
-    mid = _openai_model_id(model)
-    return (
-        mid.startswith("gpt-5")
-        or mid.startswith("o1")
-        or mid.startswith("o3")
-        or mid.startswith("o4")
-    )
-
-
-def _supports_thinking(provider: str, model: str) -> bool:
-    """Whether this provider/model emits a stream of reasoning content.
-
-    True for Anthropic Claude with extended thinking (Sonnet 3.7+, Sonnet/Opus
-    4+), DeepSeek-reasoner, and OpenAI reasoning models. OpenRouter routes
-    these too, so we sniff the model substring there as well.
-    """
-    p = (provider or "").lower()
-    m = (model or "").lower()
-    if p == "anthropic":
-        return any(
-            tag in m
-            for tag in (
-                "claude-sonnet-4",
-                "claude-opus-4",
-                "claude-3-7-sonnet",
-                "claude-3.7-sonnet",
-            )
-        )
-    if p == "deepseek":
-        return "reasoner" in m
-    if p == "openai":
-        return _is_openai_reasoning_style_model(model)
-    if p == "openrouter":
-        # Reuse the OpenAI sniffer for o-series / gpt-5 routes (covers o1,
-        # o3, o4, gpt-5 in any vendor-prefixed form). Then add named
-        # routes for non-OpenAI reasoning models OpenRouter fronts.
-        if _is_openai_reasoning_style_model(model):
-            return True
-        # Generic "thinking" / "reasoner" / "reasoning" substring match
-        # so newly-launched reasoning routes are caught automatically
-        # without code changes — every major lab now uses one of these
-        # tokens in the route name (kimi-thinking, qwen3-thinking,
-        # glm-4.6-thinking, deepseek-reasoner, …). False positives on
-        # non-reasoning models that happen to contain the substring are
-        # harmless: the only effect is a higher max_tokens floor.
-        if any(tok in m for tok in ("thinking", "reasoner", "reasoning")):
-            return True
-        return any(
-            tag in m
-            for tag in (
-                "claude-sonnet-4",
-                "claude-opus-4",
-                "claude-3-7-sonnet",
-                # Kimi K2.x — every 2.x point release ships a thinking
-                # mode by default (k2.6, k2.7, …). Match the family
-                # rather than each version so we don't have to keep up.
-                "kimi-k2",
-                "kimi-2",
-            )
-        )
-    return False
 
 
 # ── Streamed-response shim ──────────────────────────────────────────────────
