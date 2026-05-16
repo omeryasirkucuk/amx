@@ -25,6 +25,7 @@ import logging
 import os
 from unittest.mock import patch
 
+from amx.llm import _litellm_shims as litellm_shims
 from amx.llm import provider as llm_provider
 
 
@@ -43,7 +44,7 @@ def test_local_model_cost_map_env_set_before_import() -> None:
     # ordering and trip the assertion.
     saved = os.environ.pop("LITELLM_LOCAL_MODEL_COST_MAP", None)
     try:
-        with patch.object(llm_provider, "_litellm_module", None):
+        with patch.object(litellm_shims, "_litellm_module", None):
             llm_provider._litellm()
         assert os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP") == "True"
     finally:
@@ -80,7 +81,7 @@ def test_existing_env_var_is_respected() -> None:
     try:
         os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "False"
         # Force re-init by stomping the cached module reference.
-        with patch.object(llm_provider, "_litellm_module", None):
+        with patch.object(litellm_shims, "_litellm_module", None):
             llm_provider._litellm()
         assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] == "False"
     finally:

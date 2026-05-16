@@ -2056,9 +2056,10 @@ class LLMProviderTests(unittest.TestCase):
             logger.disabled = False
 
         try:
+            import amx.llm._litellm_shims as litellm_shims
             import amx.llm.provider as provider_module
 
-            provider_module._litellm_module = None
+            litellm_shims._litellm_module = None
             fake_litellm = SimpleNamespace()
             with patch.dict(sys.modules, {"litellm": fake_litellm}):
                 loaded = provider_module._litellm()
@@ -2070,9 +2071,9 @@ class LLMProviderTests(unittest.TestCase):
                 self.assertGreater(logger.level, logging.CRITICAL)
                 self.assertTrue(any(isinstance(h, logging.NullHandler) for h in logger.handlers))
         finally:
-            import amx.llm.provider as provider_module
+            import amx.llm._litellm_shims as litellm_shims
 
-            provider_module._litellm_module = None
+            litellm_shims._litellm_module = None
             for name, (handlers, propagate, level, disabled) in saved.items():
                 logger = logging.getLogger(name)
                 logger.handlers.clear()
