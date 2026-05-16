@@ -22,7 +22,10 @@ from __future__ import annotations
 import json
 import re as _re
 from difflib import SequenceMatcher
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from amx.db.connector import DatabaseConnector
 
 
 class _ToolError(RuntimeError):
@@ -134,3 +137,48 @@ def _safe_json(value: Any, *, max_len: int = 6000) -> str:
     if len(text) > max_len:
         text = text[: max_len - 18] + "...<truncated>"
     return text
+
+
+def _sample_distinct_values(
+    db: DatabaseConnector,
+    schema: str,
+    table: str,
+    column: str,
+    limit: int,
+) -> tuple[list[str], int | None]:
+    """Pull up to *limit* distinct non-null values from one column.
+
+    Shared by ``_tool_sample_column_values`` (LLM-facing) and the
+    ``value_overlap`` join-inference strategy. The same SQL shape is
+    used in both: a single ``SELECT DISTINCT col ... LIMIT N`` plus a
+    best-effort ``COUNT(DISTINCT col)`` that soft-fails on un-indexed
+    columns where the planner gives up.
+
+    Returns ``(samples, distinct_count)`` where ``distinct_count`` is
+    ``None`` when the count query failed. Raises ``Exception`` from
+    the engine layer when the main SELECT itself fails — callers
+    decide whether to swallow that into a per-row "skipped" marker
+    or bubble it up.
+    """
+    from sqlalchemy import text as _text
+
+    adapter = db._adapter  # noqa: SLF001
+    fqn = adapter.fully_qualified_name(schema, table)
+    col_q = adapter.quote_identifier(column)
+    n = max(1, int(limit))
+    with db.engine.connect() as conn:
+        rows = conn.execute(
+            _text(f"SELECT DISTINCT {col_q} AS v FROM {fqn} WHERE {col_q} IS NOT NULL LIMIT :n"),
+            {"n": n},
+        ).fetchall()
+        samples = [str(r[0]) for r in rows if r and r[0] is not None]
+        try:
+            distinct_row = conn.execute(
+                _text(f"SELECT COUNT(DISTINCT {col_q}) FROM {fqn}"),
+            ).fetchone()
+            distinct_count: int | None = (
+                int(distinct_row[0]) if distinct_row and distinct_row[0] is not None else None
+            )
+        except Exception:
+            distinct_count = None
+    return samples, distinct_count
