@@ -329,10 +329,11 @@ def _externalise_secrets_in_data(
         for fld in _LLM_SECRET_FIELDS:
             _externalise_secret(llm_top, fld, f"llm_profiles/{active_llm_profile}/{fld}", store)
 
-    embedding = data.get("embedding")
-    if isinstance(embedding, dict):
-        for fld in _EMBEDDING_SECRET_FIELDS:
-            _externalise_secret(embedding, fld, f"embedding/{fld}", store)
+    for side in ("docs", "code"):
+        block = data.get(f"embedding_{side}")
+        if isinstance(block, dict):
+            for fld in _EMBEDDING_SECRET_FIELDS:
+                _externalise_secret(block, fld, f"embedding_{side}/{fld}", store)
     return data
 
 
@@ -395,10 +396,11 @@ def _resolve_secrets_in_data(data: dict[str, Any], store: SecretStore) -> dict[s
         for fld in _LLM_SECRET_FIELDS:
             _resolve_secret_field(llm_top, fld, store)
 
-    embedding = data.get("embedding")
-    if isinstance(embedding, dict):
-        for fld in _EMBEDDING_SECRET_FIELDS:
-            _resolve_secret_field(embedding, fld, store)
+    for side in ("docs", "code"):
+        block = data.get(f"embedding_{side}")
+        if isinstance(block, dict):
+            for fld in _EMBEDDING_SECRET_FIELDS:
+                _resolve_secret_field(block, fld, store)
     return data
 
 
@@ -1642,6 +1644,43 @@ def _embedding_to_mapping(emb: EmbeddingConfig) -> dict[str, Any]:
     }
 
 
+def _migrate_legacy_embedding_in_data(data: dict[str, Any], store: SecretStore) -> None:
+    """One-shot migration of pre-0.15 single ``embedding:`` configs.
+
+    Splits the legacy ``embedding`` block into ``embedding_docs`` and
+    ``embedding_code`` so docs RAG and code RAG can carry independent
+    providers. The legacy keyring secret (``embedding/api_key``) is
+    resolved to plaintext and re-attached to both copies; the next
+    ``cfg.save()`` re-externalises each under its own keyring path. The
+    legacy keyring entry is best-effort deleted at the end.
+
+    No-op when the YAML already carries the split shape.
+    """
+    legacy = data.get("embedding")
+    if not isinstance(legacy, dict):
+        return
+    has_docs = isinstance(data.get("embedding_docs"), dict)
+    has_code = isinstance(data.get("embedding_code"), dict)
+    if has_docs or has_code:
+        # Partial state (e.g. a hand-edited YAML) — prefer the new keys
+        # and just drop the legacy block.
+        data.pop("embedding", None)
+        return
+
+    legacy_copy = dict(legacy)
+    for fld in _EMBEDDING_SECRET_FIELDS:
+        _resolve_secret_field(legacy_copy, fld, store)
+
+    data["embedding_docs"] = dict(legacy_copy)
+    data["embedding_code"] = dict(legacy_copy)
+    data.pop("embedding", None)
+
+    if store.is_available():
+        for fld in _EMBEDDING_SECRET_FIELDS:
+            with suppress(Exception):
+                store.delete(f"embedding/{fld}")
+
+
 # Schema version stamped into every saved config.yml. Bump it whenever
 # the on-disk shape changes in a way an OLDER AMX cannot understand
 # (renamed key, removed key, semantic change). Additive changes (new
@@ -1652,7 +1691,7 @@ def _embedding_to_mapping(emb: EmbeddingConfig) -> dict[str, Any]:
 # refuses with ``ConfigSchemaTooNewError`` so the user gets a clear
 # upgrade message instead of having profiles silently mangled (the
 # exact bug class that hit the 0.3.1 / 0.11.0 PATH skew on 2026-05-01).
-CONFIG_SCHEMA_VERSION: int = 2
+CONFIG_SCHEMA_VERSION: int = 3
 
 
 class ConfigSchemaTooNewError(RuntimeError):
@@ -1679,7 +1718,8 @@ class ConfigSchemaTooNewError(RuntimeError):
 class AMXConfig:
     db: DBConfig = field(default_factory=DBConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
-    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    embedding_docs: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    embedding_code: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     doc_paths: list[str] = field(default_factory=list)
     code_paths: list[str] = field(default_factory=list)
     selected_schemas: list[str] = field(default_factory=list)
@@ -1788,7 +1828,8 @@ class AMXConfig:
         {
             "db",
             "llm",
-            "embedding",
+            "embedding_docs",
+            "embedding_code",
             "doc_paths",
             "code_paths",
             "selected_schemas",
@@ -1825,7 +1866,14 @@ class AMXConfig:
         object.__setattr__(self, name, value)
         if name.startswith("_") or name == "CONFIG_DIR":
             return
-        if name in {"db", "llm", "embedding", "db_profiles", "llm_profiles"}:
+        if name in {
+            "db",
+            "llm",
+            "embedding_docs",
+            "embedding_code",
+            "db_profiles",
+            "llm_profiles",
+        }:
             self._attach_children()
         if name in self._PERSISTED_FIELDS:
             if name == "write_through_config" and getattr(self, "_autosave_ready", False):
@@ -1859,6 +1907,10 @@ class AMXConfig:
             # the in-memory dataclasses. Backwards-compatible: plaintext values
             # left untouched so legacy configs keep working.
             _resolve_secrets_in_data(data, get_default_store())
+            # Migrate the pre-0.15 single ``embedding:`` block to the
+            # ``embedding_docs`` / ``embedding_code`` split. One-shot; the
+            # next save writes only the new keys.
+            _migrate_legacy_embedding_in_data(data, get_default_store())
             if "db" in data:
                 for k, v in data["db"].items():
                     if hasattr(cfg.db, k):
@@ -1996,9 +2048,12 @@ class AMXConfig:
             cfg.history_store_schema = str(data.get("history_store_schema") or "AMX")
             cfg.history_store_database = str(data.get("history_store_database") or "")
 
-            embedding_raw = data.get("embedding")
-            if isinstance(embedding_raw, dict):
-                cfg.embedding = _embedding_from_mapping(embedding_raw)
+            embedding_docs_raw = data.get("embedding_docs")
+            if isinstance(embedding_docs_raw, dict):
+                cfg.embedding_docs = _embedding_from_mapping(embedding_docs_raw)
+            embedding_code_raw = data.get("embedding_code")
+            if isinstance(embedding_code_raw, dict):
+                cfg.embedding_code = _embedding_from_mapping(embedding_code_raw)
 
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
@@ -2211,8 +2266,9 @@ class AMXConfig:
                     target.update(source)
 
             # Nested dataclasses (``cfg.db``, ``cfg.llm``,
-            # ``cfg.embedding``) before scalars too, same reason.
-            for nested_attr in ("db", "llm", "embedding"):
+            # ``cfg.embedding_docs``, ``cfg.embedding_code``) before
+            # scalars too, same reason.
+            for nested_attr in ("db", "llm", "embedding_docs", "embedding_code"):
                 fresh_nested = getattr(fresh, nested_attr, None)
                 if fresh_nested is None:
                     continue
@@ -2363,7 +2419,8 @@ class AMXConfig:
             data["history_store_profile"] = str(self.history_store_profile or "")
             data["history_store_schema"] = str(self.history_store_schema or "AMX")
             data["history_store_database"] = str(self.history_store_database or "")
-            data["embedding"] = _embedding_to_mapping(self.embedding)
+            data["embedding_docs"] = _embedding_to_mapping(self.embedding_docs)
+            data["embedding_code"] = _embedding_to_mapping(self.embedding_code)
             # Move plaintext secrets to the OS keyring; the YAML now stores only
             # opaque "keyring:..." references. No-op when keyring is unavailable.
             _externalise_secrets_in_data(
@@ -2805,7 +2862,9 @@ class AMXConfig:
         with suppress(Exception):
             object.__setattr__(self.llm, "_amx_owner", self)
         with suppress(Exception):
-            object.__setattr__(self.embedding, "_amx_owner", self)
+            object.__setattr__(self.embedding_docs, "_amx_owner", self)
+        with suppress(Exception):
+            object.__setattr__(self.embedding_code, "_amx_owner", self)
         for profile in getattr(self, "db_profiles", {}).values():
             with suppress(Exception):
                 object.__setattr__(profile, "_amx_owner", self)

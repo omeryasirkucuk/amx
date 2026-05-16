@@ -41,15 +41,16 @@ def _drop_embeddings_module() -> None:
 def test_default_embedding_kind_does_not_import_search_embeddings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A default-kind ``AMXConfig`` (``embedding.kind == "minilm"``) must
-    take the no-op shortcut. Importing ``amx.search.embeddings`` here
+    """A default-kind ``AMXConfig`` (both ``embedding_docs.kind`` and
+    ``embedding_code.kind`` default to ``"minilm"``) must take the
+    no-op shortcut. Importing ``amx.search.embeddings`` here
     would re-trigger the chromadb-pulling ``_ensure("rag")`` on every
     fresh-install REPL open, even though Chroma's bundled MiniLM is
     the exact provider AMX would have configured.
     """
     _drop_embeddings_module()
     cfg = AMXConfig()  # default kind = "minilm"
-    assert cfg.embedding.kind == "minilm"
+    assert cfg.embedding_docs.kind == "minilm"
 
     _install_embedding_provider(cfg)
 
@@ -66,14 +67,14 @@ def test_default_kind_aliases_all_take_the_shortcut(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The shortcut accepts the common spellings users (and historical
-    configs) might leave in ``cfg.embedding.kind``: empty string,
+    configs) might leave in ``cfg.embedding_docs.kind``: empty string,
     ``default``, ``minilm-l6-v2``, and capitalisation variants. Without
     this normalisation a tiny typo flips the user into the
     eager-import path and tanks first-launch UX.
     """
     _drop_embeddings_module()
     cfg = AMXConfig()
-    cfg.embedding.kind = default_alias
+    cfg.embedding_docs.kind = default_alias
 
     _install_embedding_provider(cfg)
 
@@ -95,7 +96,7 @@ def test_custom_embedding_kind_still_imports_search_embeddings(
     """
     _drop_embeddings_module()
     cfg = AMXConfig()
-    cfg.embedding.kind = "openai_compatible"
+    cfg.embedding_docs.kind = "openai_compatible"
 
     _install_embedding_provider(cfg)
 
