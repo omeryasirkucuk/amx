@@ -60,8 +60,7 @@ def test_override_gate_noop_when_user_declines(cfg_with_profile, monkeypatch) ->
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(analyze_flow, "confirm", lambda *_a, **_k: False)
     monkeypatch.setattr(
-        analyze_flow,
-        "ask",
+        "amx.cli_support._analyze_flow_prompts.ask",
         lambda *_a, **_k: pytest.fail("ask must not be called when user declines"),
     )
     saved_llm = cfg_with_profile.llm
@@ -108,8 +107,8 @@ def test_override_gate_applies_only_changed_fields(cfg_with_profile, monkeypatch
     def fake_ask_choice(_q: str, choices: list[str], *, default: str = "", **_k):
         return default  # accept current
 
-    monkeypatch.setattr(analyze_flow, "ask", fake_ask)
-    monkeypatch.setattr(analyze_flow, "ask_choice", fake_ask_choice)
+    monkeypatch.setattr("amx.cli_support._analyze_flow_prompts.ask", fake_ask)
+    monkeypatch.setattr("amx.cli_support._analyze_flow_prompts.ask_choice", fake_ask_choice)
 
     saved_llm = cfg_with_profile.llm
     restore, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
@@ -148,13 +147,10 @@ def test_override_gate_out_of_range_keeps_profile_value(cfg_with_profile, monkey
         ]
     )
     monkeypatch.setattr(
-        analyze_flow,
-        "ask",
-        lambda *_a, **_k: next(answers, ""),
+        "amx.cli_support._analyze_flow_prompts.ask", lambda *_a, **_k: next(answers, "")
     )
     monkeypatch.setattr(
-        analyze_flow,
-        "ask_choice",
+        "amx.cli_support._analyze_flow_prompts.ask_choice",
         lambda _q, _c, *, default="", **_k: default,
     )
 
@@ -171,8 +167,7 @@ def test_override_gate_walks_choice_fields(cfg_with_profile, monkeypatch) -> Non
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(analyze_flow, "confirm", lambda *_a, **_k: True)
     monkeypatch.setattr(
-        analyze_flow,
-        "ask",
+        "amx.cli_support._analyze_flow_prompts.ask",
         lambda *_a, **_k: "",  # accept every numeric default
     )
 
@@ -187,7 +182,7 @@ def test_override_gate_walks_choice_fields(cfg_with_profile, monkeypatch) -> Non
                 return value
         return default
 
-    monkeypatch.setattr(analyze_flow, "ask_choice", fake_choice)
+    monkeypatch.setattr("amx.cli_support._analyze_flow_prompts.ask_choice", fake_choice)
 
     _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
     assert applied == {
@@ -212,7 +207,7 @@ def test_override_gate_walks_choice_fields(cfg_with_profile, monkeypatch) -> Non
 def _all_numeric_blank(monkeypatch) -> None:
     """Helper: monkeypatch ``ask`` to return blank (= accept default)
     for every numeric prompt the picker walks."""
-    monkeypatch.setattr(analyze_flow, "ask", lambda *_a, **_k: "")
+    monkeypatch.setattr("amx.cli_support._analyze_flow_prompts.ask", lambda *_a, **_k: "")
 
 
 def test_override_gate_walks_alternatives_mode_when_n_gt_1(cfg_with_profile, monkeypatch) -> None:
@@ -235,7 +230,7 @@ def test_override_gate_walks_alternatives_mode_when_n_gt_1(cfg_with_profile, mon
             return "lexical"
         return default
 
-    monkeypatch.setattr(analyze_flow, "ask_choice", fake_choice)
+    monkeypatch.setattr("amx.cli_support._analyze_flow_prompts.ask_choice", fake_choice)
 
     saved_llm = cfg_with_profile.llm
     restore, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
@@ -272,7 +267,9 @@ def test_override_gate_skips_alternatives_mode_when_n_is_1(cfg_with_profile, mon
             "",  # custom_output
         ]
     )
-    monkeypatch.setattr(analyze_flow, "ask", lambda *_a, **_k: next(answers, ""))
+    monkeypatch.setattr(
+        "amx.cli_support._analyze_flow_prompts.ask", lambda *_a, **_k: next(answers, "")
+    )
 
     asked_alt_mode = False
 
@@ -282,7 +279,7 @@ def test_override_gate_skips_alternatives_mode_when_n_is_1(cfg_with_profile, mon
             asked_alt_mode = True
         return default
 
-    monkeypatch.setattr(analyze_flow, "ask_choice", fake_choice)
+    monkeypatch.setattr("amx.cli_support._analyze_flow_prompts.ask_choice", fake_choice)
 
     _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
 
@@ -310,7 +307,7 @@ def test_override_gate_walks_confidence_signal(cfg_with_profile, monkeypatch) ->
             return "judge"
         return default
 
-    monkeypatch.setattr(analyze_flow, "ask_choice", fake_choice)
+    monkeypatch.setattr("amx.cli_support._analyze_flow_prompts.ask_choice", fake_choice)
 
     saved_llm = cfg_with_profile.llm
     _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
@@ -331,8 +328,7 @@ def test_override_gate_keep_default_for_new_fields(cfg_with_profile, monkeypatch
     _all_numeric_blank(monkeypatch)
 
     monkeypatch.setattr(
-        analyze_flow,
-        "ask_choice",
+        "amx.cli_support._analyze_flow_prompts.ask_choice",
         lambda _q, _choices, *, default="", **_k: default,
     )
 
@@ -364,7 +360,7 @@ def test_override_summary_line_includes_new_overrides(
             return "judge"
         return default
 
-    monkeypatch.setattr(analyze_flow, "ask_choice", fake_choice)
+    monkeypatch.setattr("amx.cli_support._analyze_flow_prompts.ask_choice", fake_choice)
 
     _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
     assert applied == {
@@ -388,13 +384,11 @@ def test_override_gate_non_interactive_does_not_prompt_for_new_fields(
     non-interactive run produces deterministic output."""
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     monkeypatch.setattr(
-        analyze_flow,
-        "ask_choice",
+        "amx.cli_support._analyze_flow_prompts.ask_choice",
         lambda *_a, **_k: pytest.fail("ask_choice must not run in non-TTY mode"),
     )
     monkeypatch.setattr(
-        analyze_flow,
-        "ask",
+        "amx.cli_support._analyze_flow_prompts.ask",
         lambda *_a, **_k: pytest.fail("ask must not run in non-TTY mode"),
     )
 
