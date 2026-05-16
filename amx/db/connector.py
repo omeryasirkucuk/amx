@@ -6,7 +6,6 @@ Supports multiple backends via the adapter layer in ``amx.db.adapters``.
 from __future__ import annotations
 
 import time
-from dataclasses import fields as dc_fields
 from typing import Any
 
 from sqlalchemy import inspect, text
@@ -127,6 +126,17 @@ class DatabaseConnector:
     @property
     def capabilities(self) -> BackendCapabilities:
         return getattr(self._adapter, "capabilities", BackendCapabilities())
+
+    def _get_inspector(self):
+        """Return a SQLAlchemy inspector for the live engine.
+
+        Indirection point so tests can monkey-patch
+        ``amx.db.connector.inspect`` (the single source of truth) and
+        affect every call site — including the profiler module which
+        delegates here instead of importing :mod:`sqlalchemy.inspect`
+        independently.
+        """
+        return inspect(self.engine)
 
     def _normalize_id(self, value: str) -> str:
         """Fold a user-supplied identifier into the form the backend stores.
@@ -1042,7 +1052,6 @@ class DatabaseConnector:
         return self._adapter.get_database_comment(self.engine)
 
     # ── Profiling ─────────────────────────────────────────────────────────
-
     def profile_table(
         self,
         schema: str,
@@ -1050,504 +1059,40 @@ class DatabaseConnector:
         sample_size: int | None = None,
         asset_kind: AssetKind | None = None,
     ) -> TableProfile:
-        # Fold *once* at the entry point so every downstream
-        # inspector/adapter call (get_pk_constraint, get_columns,
-        # fully_qualified_name, etc.) sees identifiers in the form the
-        # backend stores them. Oracle / Snowflake fold to upper; other
-        # backends pass through unchanged.
-        schema = self._normalize_id(schema)
-        table = self._normalize_id(table)
-        if asset_kind is None:
-            asset_kind = self.resolve_asset_kind(schema, table)
-        log.info("Profiling %s.%s (%s) via %s", schema, table, asset_kind.label, self.backend)
+        from amx.db._column_profiler import profile_table
 
-        adapter = self._adapter
-        fqn = adapter.fully_qualified_name(schema, table)
-        mode = str(getattr(self.cfg, "profiling_mode", "full") or "full").lower().strip()
-        if mode not in {"full", "sampled", "metadata"}:
-            mode = "full"
-        max_rows = max(0, int(getattr(self.cfg, "profiling_max_rows", 1_000_000) or 0))
-        effective_sample_size = max(
-            0,
-            int(
-                sample_size
-                if sample_size is not None
-                else getattr(self.cfg, "profiling_sample_size", 5) or 0
-            ),
-        )
-        profile = TableProfile(
-            schema=schema,
-            name=table,
-            asset_kind=asset_kind,
-            existing_comment=self.get_table_comment(schema, table),
-            schema_comment=self.get_schema_comment(schema),
-            database_comment=self.get_database_comment(),
-        )
+        return profile_table(self, schema, table, sample_size=sample_size, asset_kind=asset_kind)
 
-        try:
-            stats = adapter.get_table_stats(self.engine, schema, table)
-            profile.stats_seq_scan = stats.get("seq_scan", 0)
-            profile.stats_idx_scan = stats.get("idx_scan", 0)
-            profile.stats_n_live_tup = stats.get("n_live_tup", 0)
-        except Exception as exc:
-            actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
-                exc, backend=self.backend
-            )
-            # Always include the exception class so the user can tell a
-            # ``KeyError('cars.data')`` (corrupt catalog cache) from a
-            # ``SQLAlchemyOperationalError`` (DB down) — the plain
-            # ``str(exc)`` fallback strips that signal. Log the full
-            # traceback at WARNING so operators have the chain in
-            # studio.log even when the UI shows only the one-liner.
-            exc_class = type(exc).__name__
-            actionable_str = (actionable or "").strip() or "(no detail)"
-            msg = f"Profiling failed for {schema}.{table}: {actionable_str} [{exc_class}]"
-            log.warning(
-                "Profiling failed for %s.%s (class=%s, raw=%r)",
-                schema,
-                table,
-                exc_class,
-                str(exc),
-                exc_info=True,
-            )
-            raise ProfilingError(schema, table, msg) from exc
-        estimated_rows = int(profile.stats_n_live_tup or 0)
-        full_scan_blocked = bool(max_rows and estimated_rows > max_rows)
-        if (
-            mode == "full"
-            and max_rows
-            and estimated_rows <= 0
-            and not self.capabilities.full_scan_when_row_count_unknown
-        ):
-            full_scan_blocked = True
+    # The five ``_collect_*`` profiling helpers live in
+    # :mod:`amx.db._column_profiler`. Tests that exercised them as
+    # methods on ``DatabaseConnector`` keep working through these
+    # thin delegators; ``profile_table`` itself calls the module-level
+    # functions directly to avoid one hop per call inside the inner loop.
 
-        if mode == "full" and not full_scan_blocked:
-            try:
-                with self.engine.connect() as conn:
-                    row_count = conn.execute(text(f"SELECT COUNT(*) FROM {fqn}")).scalar() or 0
-                    profile.row_count = int(row_count or 0)
-            except Exception as exc:
-                # Demoted from WARNING to DEBUG in v0.10.9: the exact
-                # COUNT(*) failure is fully recovered by falling back
-                # to the estimated row count, so the user sees no
-                # functional regression. The previous WARNING leaked
-                # through the live-display panel during /ask answers
-                # ("[WARNING] amx.db.connector — Exact row count
-                # failed for public.bkpf: ...") which alarmed users
-                # despite being a no-op recovery. Operators who want
-                # to investigate slow / blocked counts can still get
-                # the line via ``AMX_LOG_LEVEL=debug``.
-                log.debug(
-                    "Exact row count failed for %s.%s; falling back to "
-                    "estimated row count (%d). Detail: %s",
-                    schema,
-                    table,
-                    estimated_rows,
-                    exc,
-                )
-                profile.row_count = estimated_rows
-        else:
-            profile.row_count = estimated_rows
+    def _collect_column_stats_and_samples(self, *args, **kwargs):
+        from amx.db._column_profiler import collect_column_stats_and_samples
 
-        if mode == "full" and max_rows and profile.row_count > max_rows:
-            full_scan_blocked = True
-        scan_column_stats = mode == "full" and not full_scan_blocked
-        scan_samples = mode in {"full", "sampled"} and effective_sample_size > 0
+        return collect_column_stats_and_samples(self, *args, **kwargs)
 
-        insp = inspect(self.engine)
+    def _collect_bulk_stats(self, *args, **kwargs):
+        from amx.db._column_profiler import collect_bulk_stats
 
-        try:
-            pk = insp.get_pk_constraint(table, schema=schema) or {}
-            profile.primary_key = list(pk.get("constrained_columns") or [])
-        except Exception:
-            profile.primary_key = []
+        return collect_bulk_stats(self, *args, **kwargs)
 
-        try:
-            profile.foreign_keys = list(insp.get_foreign_keys(table, schema=schema) or [])
-        except Exception:
-            profile.foreign_keys = []
+    def _collect_per_column_stats_fallback(self, *args, **kwargs):
+        from amx.db._column_profiler import collect_per_column_stats_fallback
 
-        try:
-            profile.unique_constraints = [
-                list((u or {}).get("column_names") or [])
-                for u in (insp.get_unique_constraints(table, schema=schema) or [])
-            ]
-        except Exception:
-            profile.unique_constraints = []
+        return collect_per_column_stats_fallback(self, *args, **kwargs)
 
-        try:
-            profile.check_constraints = [
-                str((c or {}).get("sqltext") or "")
-                for c in (insp.get_check_constraints(table, schema=schema) or [])
-                if (c or {}).get("sqltext")
-            ]
-        except Exception:
-            profile.check_constraints = []
+    def _collect_bulk_samples(self, *args, **kwargs):
+        from amx.db._column_profiler import collect_bulk_samples
 
-        profile.referenced_by = self.get_incoming_foreign_keys(schema, table)
-        profile.related_comments = self.get_related_table_comments(
-            profile.foreign_keys, profile.referenced_by
-        )
+        return collect_bulk_samples(self, *args, **kwargs)
 
-        try:
-            raw_cols = insp.get_columns(table, schema=schema)
-        except Exception as exc:
-            actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
-                exc, backend=self.backend
-            )
-            # Always include the exception class so the user can tell a
-            # ``KeyError('cars.data')`` (corrupt catalog cache) from a
-            # ``SQLAlchemyOperationalError`` (DB down) — the plain
-            # ``str(exc)`` fallback strips that signal. Log the full
-            # traceback at WARNING so operators have the chain in
-            # studio.log even when the UI shows only the one-liner.
-            exc_class = type(exc).__name__
-            actionable_str = (actionable or "").strip() or "(no detail)"
-            msg = f"Profiling failed for {schema}.{table}: {actionable_str} [{exc_class}]"
-            log.warning(
-                "Profiling failed for %s.%s (class=%s, raw=%r)",
-                schema,
-                table,
-                exc_class,
-                str(exc),
-                exc_info=True,
-            )
-            raise ProfilingError(schema, table, msg) from exc
+    def _collect_per_column_samples(self, *args, **kwargs):
+        from amx.db._column_profiler import collect_per_column_samples
 
-        # Build the ColumnProfile list first; we need it indexed before
-        # the bulk stats query so we can map result-row positions back
-        # to columns.
-        for col_info in raw_cols:
-            col_name = col_info["name"]
-            cp = ColumnProfile(
-                name=col_name,
-                dtype=str(col_info["type"]),
-                nullable=col_info.get("nullable", True),
-                row_count=profile.row_count,
-            )
-            cp.existing_comment = col_info.get("comment")
-            profile.columns.append(cp)
-
-        if (scan_column_stats or scan_samples) and profile.columns:
-            self._collect_column_stats_and_samples(
-                schema=schema,
-                table=table,
-                fqn=fqn,
-                adapter=adapter,
-                column_profiles=profile.columns,
-                row_count=profile.row_count,
-                scan_column_stats=scan_column_stats,
-                scan_samples=scan_samples,
-                effective_sample_size=effective_sample_size,
-            )
-
-        # Analytics metadata — best-effort populate of partition /
-        # clustering / size / format / freshness / tags. Each adapter
-        # ships a backend-specific implementation; the default is an
-        # empty dict so old call sites (and adapters that don't need
-        # this) keep working unchanged.
-        try:
-            am = self._adapter.get_analytics_metadata(self.engine, schema, table)
-            if am:
-                # Whitelisted assignment so unknown keys don't blow up
-                # the dataclass when an adapter passes extra fields.
-                allowed = {f.name for f in dc_fields(AnalyticsMetadata)}
-                for key, value in am.items():
-                    if key in allowed:
-                        setattr(profile.analytics, key, value)
-        except Exception as exc:
-            # Analytics metadata is purely additive — never let a
-            # failure here prevent the user from seeing the basic
-            # profile they asked for.
-            log.debug(
-                "Analytics metadata fetch failed for %s.%s: %s",
-                schema,
-                table,
-                exc,
-            )
-
-        return profile
-
-    def _collect_column_stats_and_samples(
-        self,
-        *,
-        schema: str,
-        table: str,
-        fqn: str,
-        adapter: Any,
-        column_profiles: list[ColumnProfile],
-        row_count: int,
-        scan_column_stats: bool,
-        scan_samples: bool,
-        effective_sample_size: int,
-    ) -> None:
-        """Populate stats / samples on ``column_profiles`` in place.
-
-        Stats path uses one bulk query (``column_stats_bulk_sql``) per
-        chunk of N columns instead of one query per column — on a
-        300-column table this collapses 300 queries to 6 (at the
-        default batch size of 50). On a warehouse-billed backend
-        (Databricks/Snowflake/BigQuery) every query saved is one fewer
-        full-table scan. If the bulk query fails (rare — usually a
-        single column with a type the bulk cast can't handle),
-        per-column-fallback runs only for the unprofiled columns of
-        that batch, so a single bad column never masks the rest of
-        the table.
-
-        Sample path is still per-column for now — Phase 2 will collapse
-        it the same way (one bounded sample of the table, distill per
-        column in Python).
-        """
-        if scan_column_stats:
-            batch_size = max(
-                1,
-                int(getattr(self.cfg, "profiling_stats_batch_size", 50) or 50),
-            )
-            self._collect_bulk_stats(
-                schema=schema,
-                table=table,
-                fqn=fqn,
-                adapter=adapter,
-                column_profiles=column_profiles,
-                row_count=row_count,
-                batch_size=batch_size,
-            )
-
-        if scan_samples and effective_sample_size > 0:
-            self._collect_bulk_samples(
-                schema=schema,
-                table=table,
-                fqn=fqn,
-                adapter=adapter,
-                column_profiles=column_profiles,
-                effective_sample_size=effective_sample_size,
-            )
-
-    def _collect_bulk_stats(
-        self,
-        *,
-        schema: str,
-        table: str,
-        fqn: str,
-        adapter: Any,
-        column_profiles: list[ColumnProfile],
-        row_count: int,
-        batch_size: int,
-    ) -> None:
-        """Run bulk stats query in chunks; fall back per-column on failure."""
-        for batch_start in range(0, len(column_profiles), batch_size):
-            batch = column_profiles[batch_start : batch_start + batch_size]
-            quoted_cols = [adapter.quote_identifier(cp.name) for cp in batch]
-            try:
-                bulk_sql = adapter.column_stats_bulk_sql(fqn, quoted_cols)
-                with self.engine.connect() as conn:
-                    row = conn.execute(text(bulk_sql)).fetchone()
-                if row is None:
-                    continue
-                for j, cp in enumerate(batch):
-                    base = j * 4
-                    cp.null_count = row[base] or 0
-                    cp.distinct_count = row[base + 1] or 0
-                    cp.min_val = row[base + 2]
-                    cp.max_val = row[base + 3]
-                    cp.cardinality_ratio = (
-                        float(cp.distinct_count) / float(row_count) if row_count > 0 else 0.0
-                    )
-            except Exception as exc:
-                # Bulk failed — most likely one column in this batch has
-                # a type the cast can't handle. Retry per-column for
-                # this batch only; columns that fail individually get
-                # logged and skipped (the original behavior).
-                actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
-                    exc, backend=self.backend
-                )
-                log.debug(
-                    "Bulk column stats failed for %s.%s (batch %d-%d), "
-                    "falling back to per-column: %s",
-                    schema,
-                    table,
-                    batch_start,
-                    batch_start + len(batch) - 1,
-                    actionable or exc,
-                )
-                self._collect_per_column_stats_fallback(
-                    schema=schema,
-                    table=table,
-                    fqn=fqn,
-                    adapter=adapter,
-                    batch=batch,
-                    row_count=row_count,
-                )
-
-    def _collect_per_column_stats_fallback(
-        self,
-        *,
-        schema: str,
-        table: str,
-        fqn: str,
-        adapter: Any,
-        batch: list[ColumnProfile],
-        row_count: int,
-    ) -> None:
-        """Original one-query-per-column path. Used only on bulk failure."""
-        for cp in batch:
-            quoted_col = adapter.quote_identifier(cp.name)
-            try:
-                stats_sql = adapter.column_stats_sql(fqn, quoted_col)
-                with self.engine.connect() as conn:
-                    col_stats = conn.execute(text(stats_sql)).fetchone()
-                if col_stats:
-                    cp.null_count = col_stats[0] or 0
-                    cp.distinct_count = col_stats[1] or 0
-                    cp.min_val = col_stats[2]
-                    cp.max_val = col_stats[3]
-                    cp.cardinality_ratio = (
-                        float(cp.distinct_count) / float(row_count) if row_count > 0 else 0.0
-                    )
-            except Exception as exc:
-                actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
-                    exc, backend=self.backend
-                )
-                log.warning(
-                    "Skipping profile stats for %s.%s.%s: %s",
-                    schema,
-                    table,
-                    cp.name,
-                    actionable or exc,
-                )
-
-    def _collect_bulk_samples(
-        self,
-        *,
-        schema: str,
-        table: str,
-        fqn: str,
-        adapter: Any,
-        column_profiles: list[ColumnProfile],
-        effective_sample_size: int,
-    ) -> None:
-        """One bulk sample query for all columns; escalate per-column only
-        for columns that didn't get enough distinct values.
-
-        Wide-table win: a 300-column table at the default sample size
-        of 5 distincts/col used to issue 300 separate
-        ``SELECT DISTINCT col FROM big_table TABLESAMPLE … LIMIT 5``
-        queries. We now issue one ``SELECT col1, col2, …, colN FROM
-        big_table TABLESAMPLE … LIMIT row_cap`` and distill per-column
-        distincts in Python. row_cap is adaptive — 1000 baseline plus
-        50 × column_count so very wide tables get a deeper sample.
-
-        Quality safety net: if a column emerged from the bulk sample
-        with fewer than ``min(target, 3)`` distinct values, the
-        connector escalates to a per-column query for *that column
-        only*. This catches the rare case of a billion-row table
-        whose 1000-row TABLESAMPLE happened to land on a near-constant
-        slice for some skewed column.
-        """
-        n_cols = len(column_profiles)
-        row_cap = max(1000, 50 * n_cols)
-        quoted_cols = [adapter.quote_identifier(cp.name) for cp in column_profiles]
-
-        try:
-            bulk_sql = adapter.bulk_sample_sql(fqn, quoted_cols, row_cap)
-            with self.engine.connect() as conn:
-                rows = conn.execute(text(bulk_sql)).fetchall()
-        except Exception as exc:
-            # Bulk failed entirely — fall back to per-column for all
-            # columns so the user still gets samples.
-            actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
-                exc, backend=self.backend
-            )
-            log.debug(
-                "Bulk sample failed for %s.%s, falling back to per-column: %s",
-                schema,
-                table,
-                actionable or exc,
-            )
-            self._collect_per_column_samples(
-                schema=schema,
-                table=table,
-                fqn=fqn,
-                adapter=adapter,
-                column_profiles=column_profiles,
-                effective_sample_size=effective_sample_size,
-            )
-            return
-
-        # Distill per-column distinct values from the wide row set.
-        # ``rows`` may be empty (very small / heavily filtered table);
-        # in that case every column ends up needing escalation.
-        short_columns: list[ColumnProfile] = []
-        threshold = min(effective_sample_size, 3)
-        for col_idx, cp in enumerate(column_profiles):
-            seen: set[Any] = set()
-            samples: list[Any] = []
-            for row in rows:
-                v = row[col_idx]
-                if v is None or v in seen:
-                    continue
-                seen.add(v)
-                samples.append(v)
-                if len(samples) >= effective_sample_size:
-                    break
-            cp.samples = samples
-            if len(samples) < threshold:
-                short_columns.append(cp)
-
-        if short_columns:
-            log.debug(
-                "Escalating sample collection for %d/%d columns of %s.%s "
-                "(bulk row_cap=%d returned <%d distincts)",
-                len(short_columns),
-                n_cols,
-                schema,
-                table,
-                row_cap,
-                threshold,
-            )
-            self._collect_per_column_samples(
-                schema=schema,
-                table=table,
-                fqn=fqn,
-                adapter=adapter,
-                column_profiles=short_columns,
-                effective_sample_size=effective_sample_size,
-            )
-
-    def _collect_per_column_samples(
-        self,
-        *,
-        schema: str,
-        table: str,
-        fqn: str,
-        adapter: Any,
-        column_profiles: list[ColumnProfile],
-        effective_sample_size: int,
-    ) -> None:
-        """Per-column sample fetch. Used as the fallback path when the
-        bulk query fails or as escalation for columns that didn't get
-        enough distinct values from the bulk sample.
-        """
-        for cp in column_profiles:
-            quoted_col = adapter.quote_identifier(cp.name)
-            try:
-                sample_sql = adapter.column_sample_sql(fqn, quoted_col)
-                with self.engine.connect() as conn:
-                    samples_row = conn.execute(
-                        text(sample_sql), {"lim": effective_sample_size}
-                    ).fetchall()
-                cp.samples = [r[0] for r in samples_row]
-            except Exception as exc:
-                actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
-                    exc, backend=self.backend
-                )
-                log.warning(
-                    "Skipping sample collection for %s.%s.%s: %s",
-                    schema,
-                    table,
-                    cp.name,
-                    actionable or exc,
-                )
+        return collect_per_column_samples(self, *args, **kwargs)
 
     def profile_entities(
         self,
