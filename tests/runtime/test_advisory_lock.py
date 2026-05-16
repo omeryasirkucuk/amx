@@ -48,9 +48,18 @@ def test_lock_distinct_keys_run_in_parallel(tmp_path: Path) -> None:
     store = AdvisoryLockStore(str(tmp_path / "locks.sqlite3"))
     intervals: list[tuple[float, float]] = []
     intervals_lock = threading.Lock()
+    # The barrier guarantees both threads have actually acquired their
+    # (distinct) locks before either starts its in-lock sleep, so the
+    # overlap test below measures lock concurrency rather than thread
+    # scheduling jitter. The previous version of the test relied on
+    # thread-start timing alone and was flaky on loaded CI runners
+    # where the OS could fully run one thread before scheduling the
+    # other (PR #476 + this PR follow-up).
+    rendezvous = threading.Barrier(2, timeout=5.0)
 
     def hold(key: tuple[str, str, str]) -> None:
         with store.acquire(key, timeout_sec=5.0):
+            rendezvous.wait()
             entered = time.monotonic()
             time.sleep(0.2)
             exited = time.monotonic()
@@ -64,17 +73,16 @@ def test_lock_distinct_keys_run_in_parallel(tmp_path: Path) -> None:
     t1.join()
     t2.join()
 
-    # Distinct keys must NOT serialise. The previous start-gap assertion
-    # was flaky on loaded CI runners (a slow thread schedule could
-    # measure ~250 ms between starts even though both locks were
-    # actually held concurrently). The overlap check is robust: serial
-    # execution leaves entered_b > exited_a (zero overlap), while
-    # parallel execution gives ~0.2 s of overlap matching the in-lock
-    # sleep, with broad tolerance for CI jitter.
+    # Distinct keys must NOT serialise. The barrier ensures both
+    # threads were holding their lock simultaneously before either
+    # entered the sleep, so the in-lock interval overlap proves the
+    # store does not serialise unrelated keys. Serial execution would
+    # have raised BrokenBarrierError on timeout because the second
+    # thread could never reach the barrier while the first holds it.
     assert len(intervals) == 2
     (entered_a, exited_a), (entered_b, exited_b) = intervals
     overlap = max(0.0, min(exited_a, exited_b) - max(entered_a, entered_b))
-    assert overlap > 0.05, (
+    assert overlap > 0.15, (
         f"distinct keys should run concurrently; overlap was {overlap:.3f}s "
         f"(entered {entered_a:.3f}/{entered_b:.3f}, exited {exited_a:.3f}/{exited_b:.3f})"
     )
