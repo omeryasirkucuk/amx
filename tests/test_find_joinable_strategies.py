@@ -195,7 +195,10 @@ def test_value_overlap_uses_real_value_intersection(cfg_sap, tmp_path) -> None:
 
     with (
         patch.object(ToolBox, "_connector_for_profile", return_value=object()),
-        patch("amx.search.agent_tools._sample_distinct_values", side_effect=_fake_sampler),
+        patch(
+            "amx.search._tool_join_inference._sample_distinct_values",
+            side_effect=_fake_sampler,
+        ),
     ):
         result = box._tool_find_joinable_tables(table="sap_s6p.adrc", strategy="value_overlap")
     assert result["inference_source"] == "value_overlap"
