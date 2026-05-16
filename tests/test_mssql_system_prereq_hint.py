@@ -22,7 +22,7 @@ class MssqlSystemPrereqHintTests(unittest.TestCase):
         with (
             patch("platform.system", return_value="Darwin"),
             patch(
-                "amx.cli_support.commands.db.info",
+                "amx.cli_support._db_diagnostics.info",
                 side_effect=lambda msg, *a, **kw: infos.append(str(msg)),
             ),
         ):
@@ -34,7 +34,7 @@ class MssqlSystemPrereqHintTests(unittest.TestCase):
         with (
             patch("platform.system", return_value="Linux"),
             patch(
-                "amx.cli_support.commands.db.info",
+                "amx.cli_support._db_diagnostics.info",
                 side_effect=lambda msg, *a, **kw: infos.append(str(msg)),
             ),
         ):
@@ -44,7 +44,7 @@ class MssqlSystemPrereqHintTests(unittest.TestCase):
     def test_other_backends_print_nothing(self) -> None:
         infos: list[str] = []
         with patch(
-            "amx.cli_support.commands.db.info",
+            "amx.cli_support._db_diagnostics.info",
             side_effect=lambda msg, *a, **kw: infos.append(str(msg)),
         ):
             _print_system_prereq_hint("postgresql")
