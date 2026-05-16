@@ -49,7 +49,7 @@ def test_default_returns_jina_when_sentence_transformers_available(
         lambda: (fake_ef, None),
     )
 
-    provider, model, ef = code_rag._resolve_active_embedding(cfg=None)
+    provider, model, ef = code_rag._resolve_code_embedding(cfg=None)
     assert provider == "sentence_transformers"
     assert model == "jinaai/jina-embeddings-v2-base-code"
     assert ef is fake_ef
@@ -70,7 +70,7 @@ def test_default_falls_back_to_minilm_when_st_missing(
         lambda: (None, "sentence-transformers not installed"),
     )
 
-    provider, model, ef = code_rag._resolve_active_embedding(cfg=None)
+    provider, model, ef = code_rag._resolve_code_embedding(cfg=None)
     assert provider == "minilm"
     assert model == "minilm-l6-v2"
     assert ef is None
@@ -89,9 +89,9 @@ def test_fallback_logs_one_time_warning(
     )
 
     with caplog.at_level(logging.WARNING, logger="codebase.code_rag"):
-        code_rag._resolve_active_embedding(cfg=None)
-        code_rag._resolve_active_embedding(cfg=None)
-        code_rag._resolve_active_embedding(cfg=None)
+        code_rag._resolve_code_embedding(cfg=None)
+        code_rag._resolve_code_embedding(cfg=None)
+        code_rag._resolve_code_embedding(cfg=None)
 
     warning_records = [
         r for r in caplog.records if r.levelno == logging.WARNING and "MiniLM" in r.getMessage()
@@ -125,14 +125,14 @@ def test_explicit_openai_compatible_config_is_honoured(
     )
 
     cfg = SimpleNamespace(
-        embedding=SimpleNamespace(
+        embedding_code=SimpleNamespace(
             kind="openai_compatible",
             model="text-embedding-3-small",
             api_key="sk-test",
             base_url="",
         )
     )
-    provider, model, ef = code_rag._resolve_active_embedding(cfg=cfg)
+    provider, model, ef = code_rag._resolve_code_embedding(cfg=cfg)
     assert provider == "openai_compatible"
     assert model == "text-embedding-3-small"
     assert ef is fake_ef

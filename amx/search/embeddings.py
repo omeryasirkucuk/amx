@@ -29,9 +29,29 @@ dict; it returns ``None`` for the MiniLM default so callers can pass
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from amx.utils.optional_deps import ensure as _ensure
+
+# Names shown to users when picking an OpenAI-compatible endpoint. The
+# CLI ``/embeddings`` command and the Studio settings panel both import
+# this list so the surfaces stay aligned — adding a new preset here lights
+# it up in both places without code duplication.
+OPENAI_COMPATIBLE_EXAMPLES: tuple[tuple[str, str], ...] = (
+    ("OpenAI", "https://api.openai.com/v1"),
+    ("OpenRouter", "https://openrouter.ai/api/v1"),
+    ("Together", "https://api.together.xyz/v1"),
+    ("Mistral", "https://api.mistral.ai/v1"),
+    ("DeepInfra", "https://api.deepinfra.com/v1/openai"),
+    (
+        "Azure OpenAI",
+        "https://<resource>.openai.azure.com/openai/deployments/<deployment>",
+    ),
+    ("vLLM / LM Studio / llama.cpp (local)", "http://localhost:8000/v1"),
+)
+
+EmbeddingSide = Literal["docs", "code"]
+_SIDES: tuple[EmbeddingSide, ...] = ("docs", "code")
 
 # Pulled in here (rather than at the entry-point of every /search and
 # /docs flow) because ``chromadb.api.types`` is referenced as a base
@@ -46,36 +66,42 @@ DEFAULT_KIND = "minilm"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
-# ── Default-provider singleton ────────────────────────────────────────
+# ── Per-side factory registry ──────────────────────────────────────────
 #
-# ``SearchIndex`` is constructed deep in the codebase (e.g. inside
-# ``SearchCatalog.from_history_store()``) where the live ``AMXConfig``
-# is not in scope. To avoid plumbing ``cfg`` through every caller we
-# expose a process-wide factory that the CLI installs at startup based
-# on ``cfg.embedding``. ``SearchIndex.__init__`` falls back to this
-# factory when no explicit ``embedding_function`` is passed, preserving
-# the previous default-MiniLM behaviour for direct constructors that
-# do not provide one (notably the test suite).
+# Docs RAG and code RAG carry independent embedding providers
+# (``cfg.embedding_docs`` and ``cfg.embedding_code``). Stores are
+# constructed deep in the codebase (e.g. inside
+# ``SearchCatalog.from_history_store()`` or ``query_code_snippets``)
+# where the live ``AMXConfig`` is not in scope, so we expose a
+# process-wide registry that the CLI installs at startup and refreshes
+# whenever the user changes a provider via ``/embeddings``. Callers
+# fetch their side's factory from this registry; ``None`` means
+# fall back to Chroma's bundled MiniLM, which preserves the previous
+# default behaviour for tests and direct constructors.
 
-_default_factory: Callable[[], EmbeddingFunction | None] | None = None
+_factories: dict[EmbeddingSide, Callable[[], EmbeddingFunction | None] | None] = {
+    "docs": None,
+    "code": None,
+}
 
 
-def set_default_embedding_function(
+def set_embedding_function(
+    side: EmbeddingSide,
     factory: Callable[[], EmbeddingFunction | None] | None,
 ) -> None:
-    """Install (or clear) the process-wide default embedding factory.
+    """Install (or clear) the process-wide factory for *side*.
 
-    The CLI calls this once at startup with a closure that builds the
-    provider configured in ``cfg.embedding``. Tests can install a stub
-    factory and reset to ``None`` in tearDown.
+    Tests can install a stub factory for one side and reset to ``None``
+    in tearDown without touching the other side.
     """
-    global _default_factory
-    _default_factory = factory
+    if side not in _factories:
+        raise ValueError(f"Unknown embedding side: {side!r}. Expected one of {_SIDES}.")
+    _factories[side] = factory
 
 
-def get_default_embedding_function() -> EmbeddingFunction | None:
-    """Return the configured default provider, or ``None`` for MiniLM."""
-    factory = _default_factory
+def get_embedding_function(side: EmbeddingSide) -> EmbeddingFunction | None:
+    """Return the configured provider for *side*, or ``None`` for MiniLM."""
+    factory = _factories.get(side)
     if factory is None:
         return None
     try:
@@ -88,44 +114,60 @@ def get_default_embedding_function() -> EmbeddingFunction | None:
 
 
 def configure_from_amx_config(cfg: Any, *, on_warning: Callable[[str], None] | None = None) -> None:
-    """Install the default embedding factory based on ``cfg.embedding``.
+    """Install both per-side factories from the live ``AMXConfig``.
 
-    Called once at CLI startup and again whenever the user changes the
-    embedding provider via the ``/embeddings`` command.
+    Called once at CLI startup and again whenever the user changes a
+    provider via the ``/embeddings`` command.
 
-    ``on_warning`` is called with a single themed message string when
-    the configured provider is incomplete (e.g. ``openai_compatible``
-    selected but no model). The behaviour falls back to MiniLM rather
-    than failing retrieval, so the warning is the only signal.
+    ``on_warning`` is called once per misconfigured side with a single
+    themed message string. The behaviour falls back to MiniLM for that
+    side rather than failing retrieval, so the warning is the only
+    signal.
     """
-    embedding = getattr(cfg, "embedding", None)
+    for side in _SIDES:
+        embedding = getattr(cfg, f"embedding_{side}", None)
+        _configure_side(side, embedding, on_warning=on_warning)
+
+
+def _configure_side(
+    side: EmbeddingSide,
+    embedding: Any,
+    *,
+    on_warning: Callable[[str], None] | None,
+) -> None:
     if embedding is None:
-        set_default_embedding_function(None)
+        set_embedding_function(side, None)
         return
 
     kind = (embedding.kind or DEFAULT_KIND).lower().strip()
     if kind in {"", "minilm", "default", "minilm-l6-v2"}:
-        set_default_embedding_function(None)
+        set_embedding_function(side, None)
         return
 
     if not embedding.is_configured():
         if on_warning is not None:
             on_warning(
-                f"Embedding provider {embedding.kind!r} is not fully configured "
-                "(missing model). Falling back to MiniLM. Run /embeddings to fix."
+                f"{side.capitalize()} embedding provider {embedding.kind!r} is not "
+                "fully configured (missing model). Falling back to MiniLM. "
+                f"Run /embeddings {side} to fix."
             )
-        set_default_embedding_function(None)
+        set_embedding_function(side, None)
         return
 
-    def _factory() -> EmbeddingFunction | None:
+    def _factory(
+        kind: str = embedding.kind,
+        model: str = embedding.model,
+        api_key: str = embedding.api_key,
+        base_url: str = embedding.base_url,
+    ) -> EmbeddingFunction | None:
         return make_embedding_function(
-            embedding.kind,
-            model=embedding.model,
-            api_key=embedding.api_key,
-            base_url=embedding.base_url,
+            kind,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
         )
 
-    set_default_embedding_function(_factory)
+    set_embedding_function(side, _factory)
 
 
 def _openai_client_factory(*, api_key: str, base_url: str, timeout: float | None) -> Any:
@@ -268,7 +310,7 @@ def make_embedding_function(
     result straight to ``Chroma.get_or_create_collection`` without
     having to special-case the default path::
 
-        ef = make_embedding_function(cfg.embedding.kind, model=cfg.embedding.model, ...)
+        ef = make_embedding_function(cfg.embedding_docs.kind, model=cfg.embedding_docs.model, ...)
         kwargs = {"embedding_function": ef} if ef is not None else {}
         collection = client.get_or_create_collection(name="amx_search", **kwargs)
 

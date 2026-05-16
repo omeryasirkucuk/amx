@@ -28,8 +28,10 @@ import { humanizeDelta } from "../lib/humanizeDelta";
 import { invalidateAfterDbProfileMutation } from "../lib/profileMutations";
 import { AlertDialog, InfoHint, RouteState, Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
 import { StyleReferenceCard } from "../components/StyleReferenceCard";
+import EmbeddingsTab from "./settings/EmbeddingsTab";
+import { Layers as EmbeddingsIcon } from "lucide-react";
 
-type Tab = "db" | "llm" | "docs" | "code";
+type Tab = "db" | "llm" | "docs" | "code" | "embeddings";
 
 interface DbProfileSummary {
   name: string;
@@ -104,9 +106,10 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Database }> = [
   { id: "llm", label: "LLM", icon: Sparkles },
   { id: "docs", label: "Docs", icon: FileText },
   { id: "code", label: "Code", icon: CodeIcon },
+  { id: "embeddings", label: "Embeddings", icon: EmbeddingsIcon },
 ];
 
-const TAB_IDS: readonly Tab[] = ["db", "llm", "docs", "code"];
+const TAB_IDS: readonly Tab[] = ["db", "llm", "docs", "code", "embeddings"];
 
 function isTab(value: string | null): value is Tab {
   return value !== null && (TAB_IDS as readonly string[]).includes(value);
@@ -155,6 +158,9 @@ export default function Settings() {
         </TabPanel>
         <TabPanel value="code">
           <CodeProfilesSection />
+        </TabPanel>
+        <TabPanel value="embeddings">
+          <EmbeddingsTab />
         </TabPanel>
       </Tabs>
     </>

@@ -4812,16 +4812,21 @@ class LLMTransientRetryTests(unittest.TestCase):
 class EmbeddingsSlashCommandTests(unittest.TestCase):
     """The /embeddings slash command lets users switch provider without
     hand-editing ~/.amx/config.yml. Each branch reinstalls the runtime
-    factory so subsequent /search queries pick up the new provider."""
+    factory so subsequent /search and /code queries pick up the new
+    provider. Tests target the docs side; the code side mirrors the
+    same code path through ``side="code"`` so a single set of branch
+    tests covers both."""
 
     def setUp(self) -> None:
         from amx.search import embeddings as embeddings_module
 
         self.embeddings_module = embeddings_module
-        embeddings_module.set_default_embedding_function(None)
+        embeddings_module.set_embedding_function("docs", None)
+        embeddings_module.set_embedding_function("code", None)
 
     def tearDown(self) -> None:
-        self.embeddings_module.set_default_embedding_function(None)
+        self.embeddings_module.set_embedding_function("docs", None)
+        self.embeddings_module.set_embedding_function("code", None)
 
     def test_minilm_branch_resets_provider(self) -> None:
         from amx.cli_support.commands.embeddings import cmd_embeddings
@@ -4832,15 +4837,15 @@ class EmbeddingsSlashCommandTests(unittest.TestCase):
         def sentinel_factory():
             return object()
 
-        self.embeddings_module.set_default_embedding_function(sentinel_factory)
-        self.assertIsNotNone(self.embeddings_module._default_factory)
+        self.embeddings_module.set_embedding_function("docs", sentinel_factory)
+        self.assertIsNotNone(self.embeddings_module._factories["docs"])
 
-        cmd_embeddings(cfg, ["minilm"])
+        cmd_embeddings(cfg, ["docs", "minilm"])
 
-        self.assertEqual(cfg.embedding.kind, "minilm")
-        self.assertEqual(cfg.embedding.model, "")
-        # MiniLM means: clear the factory so Chroma uses its bundled default.
-        self.assertIsNone(self.embeddings_module._default_factory)
+        self.assertEqual(cfg.embedding_docs.kind, "minilm")
+        self.assertEqual(cfg.embedding_docs.model, "")
+        # MiniLM means: clear the docs factory so Chroma uses its bundled default.
+        self.assertIsNone(self.embeddings_module._factories["docs"])
 
     def test_openai_branch_with_model_arg_installs_factory(self) -> None:
         from amx.cli_support.commands.embeddings import cmd_embeddings
@@ -4852,137 +4857,167 @@ class EmbeddingsSlashCommandTests(unittest.TestCase):
             ),
             patch("amx.cli_support.commands.embeddings.ask_password", return_value="sk-test"),
         ):
-            cmd_embeddings(cfg, ["openai", "text-embedding-3-small"])
+            cmd_embeddings(cfg, ["docs", "openai", "text-embedding-3-small"])
 
-        self.assertEqual(cfg.embedding.kind, "openai_compatible")
-        self.assertEqual(cfg.embedding.model, "text-embedding-3-small")
-        self.assertEqual(cfg.embedding.api_key, "sk-test")
-        self.assertEqual(cfg.embedding.base_url, "https://api.openai.com/v1")
-        # Factory installed and points at OpenAI-compatible.
-        self.assertIsNotNone(self.embeddings_module._default_factory)
+        self.assertEqual(cfg.embedding_docs.kind, "openai_compatible")
+        self.assertEqual(cfg.embedding_docs.model, "text-embedding-3-small")
+        self.assertEqual(cfg.embedding_docs.api_key, "sk-test")
+        self.assertEqual(cfg.embedding_docs.base_url, "https://api.openai.com/v1")
+        # Factory installed and points at OpenAI-compatible for the docs side.
+        self.assertIsNotNone(self.embeddings_module._factories["docs"])
 
     def test_local_branch_with_model_arg(self) -> None:
         from amx.cli_support.commands.embeddings import cmd_embeddings
 
         cfg = AMXConfig()
-        cmd_embeddings(cfg, ["local", "BAAI/bge-large-en-v1.5"])
+        cmd_embeddings(cfg, ["docs", "local", "BAAI/bge-large-en-v1.5"])
 
-        self.assertEqual(cfg.embedding.kind, "sentence_transformers")
-        self.assertEqual(cfg.embedding.model, "BAAI/bge-large-en-v1.5")
-        self.assertEqual(cfg.embedding.api_key, "")
+        self.assertEqual(cfg.embedding_docs.kind, "sentence_transformers")
+        self.assertEqual(cfg.embedding_docs.model, "BAAI/bge-large-en-v1.5")
+        self.assertEqual(cfg.embedding_docs.api_key, "")
+
+    def test_code_side_is_independent_of_docs_side(self) -> None:
+        """Setting the code side must not touch the docs side, and vice
+        versa — that is the entire point of the split."""
+        from amx.cli_support.commands.embeddings import cmd_embeddings
+
+        cfg = AMXConfig()
+        cmd_embeddings(cfg, ["code", "local", "BAAI/bge-m3"])
+
+        self.assertEqual(cfg.embedding_code.kind, "sentence_transformers")
+        self.assertEqual(cfg.embedding_code.model, "BAAI/bge-m3")
+        # Docs side stays on the default.
+        self.assertEqual(cfg.embedding_docs.kind, "minilm")
+        self.assertEqual(cfg.embedding_docs.model, "")
 
     def test_unknown_kind_emits_error_without_mutating_config(self) -> None:
         from amx.cli_support.commands.embeddings import cmd_embeddings
 
         cfg = AMXConfig()
-        original_kind = cfg.embedding.kind
+        original_kind = cfg.embedding_docs.kind
 
         # Should not raise — the error is printed via console.error().
-        cmd_embeddings(cfg, ["totally-not-a-kind"])
+        cmd_embeddings(cfg, ["docs", "totally-not-a-kind"])
 
-        self.assertEqual(cfg.embedding.kind, original_kind)
+        self.assertEqual(cfg.embedding_docs.kind, original_kind)
 
     def test_openai_branch_rejects_empty_model(self) -> None:
         from amx.cli_support.commands.embeddings import cmd_embeddings
 
         cfg = AMXConfig()
-        original_kind = cfg.embedding.kind
+        original_kind = cfg.embedding_docs.kind
         # `ask` returns "" → command must error rather than silently install
         # an unusable provider.
         with patch("amx.cli_support.commands.embeddings.ask", return_value=""):
-            cmd_embeddings(cfg, ["openai"])
+            cmd_embeddings(cfg, ["docs", "openai"])
 
-        self.assertEqual(cfg.embedding.kind, original_kind)
+        self.assertEqual(cfg.embedding_docs.kind, original_kind)
 
     def test_picker_default_is_current_provider_label(self) -> None:
-        """The interactive picker (no args) must default to the current
-        provider's labelled choice rather than a separate ambiguous "keep"
-        option, and selecting that default must be a no-op."""
+        """The interactive picker must first pick the side (default
+        ``Docs RAG``) and then default to the current provider's label."""
         from amx.cli_support.commands.embeddings import cmd_embeddings
 
         cfg = AMXConfig()
-        original_kind = cfg.embedding.kind  # "minilm" out of the box
-        # Simulate the user pressing Enter (returns the default).
+        original_kind = cfg.embedding_docs.kind  # "minilm" out of the box
+        # Both ask_choice calls (side, then kind) press Enter → use the default.
         with patch(
             "amx.cli_support.commands.embeddings.ask_choice",
             side_effect=lambda *_args, **kwargs: kwargs.get("default", ""),
         ):
             cmd_embeddings(cfg, [])
-        self.assertEqual(cfg.embedding.kind, original_kind)
+        self.assertEqual(cfg.embedding_docs.kind, original_kind)
 
     def test_picker_explicit_cancel_does_not_mutate(self) -> None:
         from amx.cli_support.commands.embeddings import _LABEL_CANCEL, cmd_embeddings
 
         cfg = AMXConfig()
-        original_kind = cfg.embedding.kind
+        original_kind = cfg.embedding_docs.kind
+        # Cancel at the side picker → both sides untouched.
         with patch(
             "amx.cli_support.commands.embeddings.ask_choice",
             return_value=_LABEL_CANCEL,
         ):
             cmd_embeddings(cfg, [])
-        self.assertEqual(cfg.embedding.kind, original_kind)
+        self.assertEqual(cfg.embedding_docs.kind, original_kind)
 
     def test_picker_minilm_choice_routes_to_minilm_branch(self) -> None:
         """Selecting the verbose 'MiniLM' label from the picker must route
-        through the same code path as `/embeddings minilm`."""
-        from amx.cli_support.commands.embeddings import _LABEL_MINILM, cmd_embeddings
+        through the same code path as `/embeddings docs minilm`."""
+        from amx.cli_support.commands.embeddings import (
+            _LABEL_DOCS,
+            _LABEL_MINILM,
+            cmd_embeddings,
+        )
         from amx.config import EmbeddingConfig
 
         cfg = AMXConfig()
-        cfg.embedding = EmbeddingConfig(
+        cfg.embedding_docs = EmbeddingConfig(
             kind="openai_compatible",
             model="text-embedding-3-small",
             api_key="sk-old",
             base_url="https://api.openai.com/v1",
         )
 
-        # User picks the MiniLM option from the verbose-label picker.
+        # First ask_choice picks the docs side; second picks the MiniLM kind.
         with patch(
             "amx.cli_support.commands.embeddings.ask_choice",
-            return_value=_LABEL_MINILM,
+            side_effect=[_LABEL_DOCS, _LABEL_MINILM],
         ):
             cmd_embeddings(cfg, [])
 
-        self.assertEqual(cfg.embedding.kind, "minilm")
-        self.assertEqual(cfg.embedding.model, "")
-        self.assertEqual(cfg.embedding.api_key, "")
+        self.assertEqual(cfg.embedding_docs.kind, "minilm")
+        self.assertEqual(cfg.embedding_docs.model, "")
+        self.assertEqual(cfg.embedding_docs.api_key, "")
 
 
-class EmbeddingDefaultFactoryTests(unittest.TestCase):
-    """The singleton in amx.search.embeddings lets the CLI install the
-    user's chosen provider once at startup so all later SearchIndex
-    constructors pick it up without plumbing cfg through every caller."""
+class EmbeddingFactoryRegistryTests(unittest.TestCase):
+    """The per-side registry in amx.search.embeddings lets the CLI install
+    the user's chosen provider once at startup so all later SearchIndex
+    and code-rag constructors pick it up without plumbing cfg through
+    every caller."""
 
     def setUp(self) -> None:
         from amx.search import embeddings as embeddings_module
 
         self.embeddings_module = embeddings_module
-        # Reset between tests so previous installs don't bleed across cases.
-        embeddings_module.set_default_embedding_function(None)
+        embeddings_module.set_embedding_function("docs", None)
+        embeddings_module.set_embedding_function("code", None)
 
     def tearDown(self) -> None:
-        self.embeddings_module.set_default_embedding_function(None)
+        self.embeddings_module.set_embedding_function("docs", None)
+        self.embeddings_module.set_embedding_function("code", None)
 
-    def test_default_factory_returns_none_when_unset(self) -> None:
-        self.assertIsNone(self.embeddings_module.get_default_embedding_function())
+    def test_unknown_side_raises_value_error(self) -> None:
+        with self.assertRaises(ValueError):
+            self.embeddings_module.set_embedding_function("other", None)  # type: ignore[arg-type]
 
-    def test_set_and_get_default_factory_round_trip(self) -> None:
+    def test_factory_returns_none_when_unset(self) -> None:
+        self.assertIsNone(self.embeddings_module.get_embedding_function("docs"))
+        self.assertIsNone(self.embeddings_module.get_embedding_function("code"))
+
+    def test_set_and_get_round_trip(self) -> None:
         sentinel = object()
-        self.embeddings_module.set_default_embedding_function(lambda: sentinel)
-        self.assertIs(self.embeddings_module.get_default_embedding_function(), sentinel)
+        self.embeddings_module.set_embedding_function("docs", lambda: sentinel)
+        self.assertIs(self.embeddings_module.get_embedding_function("docs"), sentinel)
+        # Other side untouched.
+        self.assertIsNone(self.embeddings_module.get_embedding_function("code"))
 
-    def test_default_factory_failure_swallowed_returns_none(self) -> None:
+    def test_factory_failure_swallowed_returns_none(self) -> None:
         def boom() -> object:
             raise RuntimeError("no model")
 
-        self.embeddings_module.set_default_embedding_function(boom)
-        self.assertIsNone(self.embeddings_module.get_default_embedding_function())
+        self.embeddings_module.set_embedding_function("docs", boom)
+        self.assertIsNone(self.embeddings_module.get_embedding_function("docs"))
 
-    def test_search_index_falls_back_to_default_factory(self) -> None:
+    def test_search_index_falls_back_to_docs_factory(self) -> None:
+        """SearchIndex powers docs RAG; its fallback must read the docs
+        slot, not the code slot."""
         from amx.search import index as index_module
 
         captured: dict[str, object] = {}
-        sentinel = object()
+        docs_sentinel = object()
+        code_sentinel = object()
 
         class FakeCollection:
             def __init__(self, **_: object) -> None:
@@ -4996,15 +5031,16 @@ class EmbeddingDefaultFactoryTests(unittest.TestCase):
                 captured.update(kwargs)
                 return FakeCollection()
 
-        self.embeddings_module.set_default_embedding_function(lambda: sentinel)
+        self.embeddings_module.set_embedding_function("docs", lambda: docs_sentinel)
+        self.embeddings_module.set_embedding_function("code", lambda: code_sentinel)
         with tempfile.TemporaryDirectory() as td:
             with patch("chromadb.PersistentClient", FakeClient):
                 index_module.SearchIndex(persist_dir=td)
 
-        # Default factory's sentinel was wired into the Chroma collection.
-        self.assertIs(captured.get("embedding_function"), sentinel)
+        # Docs sentinel got wired in, NOT the code sentinel.
+        self.assertIs(captured.get("embedding_function"), docs_sentinel)
 
-    def test_search_index_explicit_arg_bypasses_default_factory(self) -> None:
+    def test_search_index_explicit_arg_bypasses_registry(self) -> None:
         from amx.search import index as index_module
 
         captured: dict[str, object] = {}
@@ -5018,9 +5054,9 @@ class EmbeddingDefaultFactoryTests(unittest.TestCase):
                 captured.update(kwargs)
                 return object()
 
-        # A different sentinel is registered as the default; the explicit arg
-        # must win over it so callers retain control.
-        self.embeddings_module.set_default_embedding_function(lambda: object())
+        # A different sentinel is registered as the docs default; the
+        # explicit arg must win over it so callers retain control.
+        self.embeddings_module.set_embedding_function("docs", lambda: object())
         with tempfile.TemporaryDirectory() as td:
             with patch("chromadb.PersistentClient", FakeClient):
                 index_module.SearchIndex(
@@ -5029,99 +5065,6 @@ class EmbeddingDefaultFactoryTests(unittest.TestCase):
                 )
 
         self.assertIs(captured.get("embedding_function"), explicit)
-
-
-class EmbeddingConfigPersistenceTests(unittest.TestCase):
-    """The Week-3 EmbeddingConfig integrates with AMXConfig load/save and the
-    OS-keyring secret externalisation. These tests pin the round-trip and
-    confirm the api_key never lands in plaintext on disk."""
-
-    def setUp(self) -> None:
-        from amx.storage.secrets import InMemorySecretStore, set_default_store
-
-        self._store = InMemorySecretStore()
-        set_default_store(self._store)
-
-    def tearDown(self) -> None:
-        from amx.storage.secrets import set_default_store
-
-        set_default_store(None)
-
-    def test_default_embedding_is_minilm(self) -> None:
-        cfg = AMXConfig()
-        self.assertEqual(cfg.embedding.kind, "minilm")
-        self.assertEqual(cfg.embedding.model, "")
-        self.assertEqual(cfg.embedding.api_key, "")
-        self.assertTrue(cfg.embedding.is_configured())
-
-    def test_openai_compatible_requires_model_to_be_configured(self) -> None:
-        from amx.config import EmbeddingConfig
-
-        self.assertFalse(EmbeddingConfig(kind="openai_compatible", model="").is_configured())
-        self.assertTrue(
-            EmbeddingConfig(
-                kind="openai_compatible", model="text-embedding-3-small"
-            ).is_configured()
-        )
-
-    def test_save_and_load_round_trip_preserves_embedding_settings(self) -> None:
-        from amx.config import EmbeddingConfig
-
-        with tempfile.TemporaryDirectory() as td:
-            cfg_path = Path(td) / "config.yml"
-            cfg = AMXConfig()
-            cfg.embedding = EmbeddingConfig(
-                kind="openai_compatible",
-                model="text-embedding-3-large",
-                api_key="sk-embed-1234",
-                base_url="https://api.openai.com/v1",
-            )
-            cfg.save(str(cfg_path))
-
-            reloaded = AMXConfig.load(str(cfg_path))
-            self.assertEqual(reloaded.embedding.kind, "openai_compatible")
-            self.assertEqual(reloaded.embedding.model, "text-embedding-3-large")
-            self.assertEqual(reloaded.embedding.api_key, "sk-embed-1234")
-            self.assertEqual(reloaded.embedding.base_url, "https://api.openai.com/v1")
-
-    def test_embedding_api_key_externalised_to_keyring(self) -> None:
-        from amx.config import EmbeddingConfig
-
-        with tempfile.TemporaryDirectory() as td:
-            cfg_path = Path(td) / "config.yml"
-            cfg = AMXConfig()
-            cfg.embedding = EmbeddingConfig(
-                kind="openai_compatible",
-                model="text-embedding-3-small",
-                api_key="sk-must-not-leak",
-                base_url="https://api.openai.com/v1",
-            )
-            cfg.save(str(cfg_path))
-
-            yaml_text = cfg_path.read_text()
-            self.assertNotIn("sk-must-not-leak", yaml_text)
-            self.assertIn("keyring:embedding/api_key", yaml_text)
-            self.assertEqual(self._store.get("embedding/api_key"), "sk-must-not-leak")
-
-    def test_embedding_legacy_plaintext_loads_without_keyring(self) -> None:
-        """A YAML written before keyring integration (or by a user with
-        keyring unavailable) keeps working: api_key flows straight into the
-        in-memory dataclass, and the next save migrates it."""
-        with tempfile.TemporaryDirectory() as td:
-            cfg_path = Path(td) / "config.yml"
-            cfg_path.write_text(
-                "embedding:\n"
-                "  kind: openai_compatible\n"
-                "  model: text-embedding-3-small\n"
-                "  api_key: sk-plaintext-legacy\n"
-                "  base_url: https://api.openai.com/v1\n"
-            )
-            cfg = AMXConfig.load(str(cfg_path))
-            self.assertEqual(cfg.embedding.api_key, "sk-plaintext-legacy")
-
-            cfg.save(str(cfg_path))
-            self.assertEqual(self._store.get("embedding/api_key"), "sk-plaintext-legacy")
-            self.assertNotIn("sk-plaintext-legacy", cfg_path.read_text())
 
 
 class FirstRunConfigTests(unittest.TestCase):

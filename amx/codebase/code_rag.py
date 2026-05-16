@@ -149,12 +149,12 @@ def _try_jina_code_embedder() -> tuple[EmbeddingFunction | None, str | None]:
     return ef, None
 
 
-def _resolve_active_embedding(
+def _resolve_code_embedding(
     cfg: Any | None = None,
 ) -> tuple[str, str, EmbeddingFunction | None]:
     """Resolve ``(provider, model, embedding_function)`` from config.
 
-    Mirrors :func:`amx.docs.rag._resolve_active_embedding` for the
+    Mirrors :func:`amx.docs.rag._resolve_docs_embedding` for the
     explicit-provider path. The DEFAULT path differs: code retrieval
     prefers ``jinaai/jina-embeddings-v2-base-code`` over MiniLM when
     ``sentence-transformers`` is installed (PR-C); falls back to
@@ -174,7 +174,7 @@ def _resolve_active_embedding(
         except Exception:
             cfg = None
 
-    embedding = getattr(cfg, "embedding", None) if cfg is not None else None
+    embedding = getattr(cfg, "embedding_code", None) if cfg is not None else None
     if embedding is None:
         return _default_code_embedding()
 
@@ -204,7 +204,7 @@ def _resolve_active_embedding(
 
 def _default_code_embedding() -> tuple[str, str, EmbeddingFunction | None]:
     """The opportunistic-jina-with-MiniLM-fallback default. Extracted
-    so all the early-return branches in :func:`_resolve_active_embedding`
+    so all the early-return branches in :func:`_resolve_code_embedding`
     share one code path and one place to fire the WARNING."""
     global _jina_fallback_warned
     ef, reason = _try_jina_code_embedder()
@@ -481,7 +481,7 @@ def index_codebase_tree(
     Path(persist).mkdir(parents=True, exist_ok=True)
     client = _get_chroma().PersistentClient(path=persist)
 
-    provider, model, ef = _resolve_active_embedding(cfg)
+    provider, model, ef = _resolve_code_embedding(cfg)
     coll = _open_collection(
         client,
         embedding_provider=provider,
@@ -695,9 +695,9 @@ def query_code_snippets(
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
     client = _get_chroma().PersistentClient(path=persist)
     try:
-        # Honour cfg.embedding here too so a query running with a
+        # Honour cfg.embedding_code here too so a query running with a
         # custom provider can hit the collection it indexed earlier.
-        provider, model, ef = _resolve_active_embedding(cfg)
+        provider, model, ef = _resolve_code_embedding(cfg)
         coll = _open_collection(
             client,
             embedding_provider=provider,
