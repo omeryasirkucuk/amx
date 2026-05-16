@@ -46,14 +46,16 @@ def test_lock_serialises_two_holders(tmp_path: Path) -> None:
 
 def test_lock_distinct_keys_run_in_parallel(tmp_path: Path) -> None:
     store = AdvisoryLockStore(str(tmp_path / "locks.sqlite3"))
-    starts: list[float] = []
-    starts_lock = threading.Lock()
+    intervals: list[tuple[float, float]] = []
+    intervals_lock = threading.Lock()
 
     def hold(key: tuple[str, str, str]) -> None:
         with store.acquire(key, timeout_sec=5.0):
-            with starts_lock:
-                starts.append(time.monotonic())
+            entered = time.monotonic()
             time.sleep(0.2)
+            exited = time.monotonic()
+        with intervals_lock:
+            intervals.append((entered, exited))
 
     t1 = threading.Thread(target=hold, args=(("prod_sf", "public", "a"),))
     t2 = threading.Thread(target=hold, args=(("prod_sf", "public", "b"),))
@@ -62,11 +64,19 @@ def test_lock_distinct_keys_run_in_parallel(tmp_path: Path) -> None:
     t1.join()
     t2.join()
 
-    # Distinct keys must not serialise; both starts within 150ms is
-    # generous slack for thread scheduling on a busy CI runner.
-    assert len(starts) == 2
-    assert abs(starts[0] - starts[1]) < 0.15, (
-        f"distinct keys should run in parallel; gap was {abs(starts[0] - starts[1]):.3f}s"
+    # Distinct keys must NOT serialise. The previous start-gap assertion
+    # was flaky on loaded CI runners (a slow thread schedule could
+    # measure ~250 ms between starts even though both locks were
+    # actually held concurrently). The overlap check is robust: serial
+    # execution leaves entered_b > exited_a (zero overlap), while
+    # parallel execution gives ~0.2 s of overlap matching the in-lock
+    # sleep, with broad tolerance for CI jitter.
+    assert len(intervals) == 2
+    (entered_a, exited_a), (entered_b, exited_b) = intervals
+    overlap = max(0.0, min(exited_a, exited_b) - max(entered_a, entered_b))
+    assert overlap > 0.05, (
+        f"distinct keys should run concurrently; overlap was {overlap:.3f}s "
+        f"(entered {entered_a:.3f}/{entered_b:.3f}, exited {exited_a:.3f}/{exited_b:.3f})"
     )
 
 
