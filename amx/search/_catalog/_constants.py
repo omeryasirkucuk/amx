@@ -112,18 +112,19 @@ def _vector_score_floor(
 
 
 def _active_embedding_kind() -> str:
-    """Best-effort lookup of the active embedding kind.
+    """Best-effort lookup of the active docs-side embedding kind.
 
-    Imports ``AMXConfig`` lazily so callers in restricted contexts
-    don't pay the import cost; falls back to ``"minilm"`` when the
-    lookup fails so the default behaviour is unchanged from before
-    this calibration was added.
+    The catalog/search path is docs-side; ``cfg.embedding_docs`` is the
+    source of truth here. Imports ``AMXConfig`` lazily so callers in
+    restricted contexts don't pay the import cost; falls back to
+    ``"minilm"`` when the lookup fails so the default behaviour is
+    unchanged from before this calibration was added.
     """
     try:
         from amx.config import AMXConfig
 
         cfg = AMXConfig.load()
-        return (cfg.embedding.kind or "minilm").lower()
+        return (cfg.embedding_docs.kind or "minilm").lower()
     except Exception:
         return "minilm"
 

@@ -45,7 +45,7 @@ def _stub_embedding_resolver(monkeypatch):
     current: dict[str, tuple[str, str]] = {"value": ("minilm", "minilm-l6-v2")}
 
     def _fake_resolve(cfg=None):
-        emb = getattr(cfg, "embedding", None)
+        emb = getattr(cfg, "embedding_code", None)
         if emb is not None:
             return (
                 getattr(emb, "kind", "minilm"),
@@ -54,7 +54,7 @@ def _stub_embedding_resolver(monkeypatch):
             )
         return (*current["value"], None)
 
-    monkeypatch.setattr(code_rag, "_resolve_active_embedding", _fake_resolve)
+    monkeypatch.setattr(code_rag, "_resolve_code_embedding", _fake_resolve)
     yield current
 
 
@@ -84,7 +84,7 @@ def _seed_collection(
 
     class _FakeCfg:
         def __init__(self, k: str, m: str) -> None:
-            self.embedding = _FakeEmbedding(k, m)
+            self.embedding_code = _FakeEmbedding(k, m)
 
     index_codebase_tree(
         repo,

@@ -16,6 +16,7 @@ secret.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 from dataclasses import asdict, fields, replace
 from typing import Any
@@ -23,8 +24,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from amx.config import (
+    SUPPORTED_EMBEDDING_KINDS,
     AMXConfig,
     DBConfig,
+    EmbeddingConfig,
     LLMConfig,
 )
 from amx.db.profile_schema import FieldSpec, spec_for, supported_backends
@@ -45,6 +48,13 @@ _DB_SECRET_FIELDS = frozenset({"password", "access_token"})
 
 #: LLMConfig fields likewise.
 _LLM_SECRET_FIELDS = frozenset({"api_key"})
+
+#: EmbeddingConfig fields likewise.
+_EMBEDDING_SECRET_FIELDS = frozenset({"api_key"})
+
+#: Sides accepted by the embedding endpoints. The two sides are
+#: independent — docs RAG and code RAG carry their own provider.
+_EMBEDDING_SIDES = ("docs", "code")
 
 
 # ── Backend / provider catalogs ────────────────────────────────────────
@@ -370,6 +380,371 @@ def activate_llm(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]
     cfg.set_active_llm_profile(name)
     cfg.save()
     return {"active": name}
+
+
+# ── Embedding providers (docs + code) ──────────────────────────────────
+#
+# Mirrors the CLI ``/embeddings`` slash command. The config carries two
+# independent ``EmbeddingConfig`` blocks (``cfg.embedding_docs`` and
+# ``cfg.embedding_code``); each endpoint targets one side via the
+# ``{side}`` path parameter. After every PUT we reinstall both factory
+# slots from the live cfg so subsequent ``/search`` and code-RAG queries
+# pick up the new providers without restarting the server.
+
+
+def _check_side(side: str) -> str:
+    if side not in _EMBEDDING_SIDES:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown embedding side {side!r}. Expected one of {_EMBEDDING_SIDES}.",
+        )
+    return side
+
+
+def _embedding_for_side(cfg: AMXConfig, side: str) -> EmbeddingConfig:
+    return getattr(cfg, f"embedding_{_check_side(side)}")
+
+
+def _mask_embedding(emb: EmbeddingConfig) -> dict[str, Any]:
+    raw = asdict(emb)
+    for secret in _EMBEDDING_SECRET_FIELDS:
+        if raw.get(secret):
+            raw[secret] = SECRET_PLACEHOLDER
+    raw["is_configured"] = emb.is_configured()
+    return raw
+
+
+def _merge_embedding_patch(existing: EmbeddingConfig, body: dict[str, Any]) -> EmbeddingConfig:
+    valid = {f.name for f in fields(EmbeddingConfig)}
+    diff: dict[str, Any] = {}
+    for key, value in body.items():
+        if key not in valid:
+            continue
+        if key in _EMBEDDING_SECRET_FIELDS and value == SECRET_PLACEHOLDER:
+            continue  # keep existing secret
+        diff[key] = value
+    return replace(existing, **diff)
+
+
+def _sentence_transformers_available() -> bool:
+    """Cheap probe — no actual import, so the chromadb tax stays unpaid
+    until the user opts into a non-default provider."""
+    try:
+        return importlib.util.find_spec("sentence_transformers") is not None
+    except Exception:
+        return False
+
+
+def _kinds_payload() -> dict[str, Any]:
+    """Static metadata for the Studio kind picker.
+
+    ``available`` for ``sentence_transformers`` is probed at request
+    time so a remote-Studio host that lacks the extra renders the
+    option disabled rather than failing on save.
+    """
+    return {
+        "kinds": [
+            {
+                "id": "minilm",
+                "label": "MiniLM (--default)",
+                "needs_model": False,
+                "needs_key": False,
+                "needs_base": False,
+                "hint": "Chroma's bundled all-MiniLM-L6-v2 (offline, fastest, lowest quality).",
+                "available": True,
+            },
+            {
+                "id": "openai_compatible",
+                "label": "OpenAI-compatible",
+                "needs_model": True,
+                "needs_key": True,
+                "needs_base": True,
+                "hint": (
+                    "OpenAI / OpenRouter / Together / Mistral / Azure / vLLM / "
+                    "LM Studio / llama.cpp server / any /embeddings endpoint."
+                ),
+                "available": True,
+            },
+            {
+                "id": "sentence_transformers",
+                "label": "Local sentence-transformers",
+                "needs_model": True,
+                "needs_key": False,
+                "needs_base": False,
+                "hint": (
+                    "Any HuggingFace sentence-transformers model (offline). "
+                    'Requires `pip install "amx-cli[local-embeddings]"` on this host.'
+                ),
+                "available": _sentence_transformers_available(),
+            },
+        ],
+        "presets": [
+            {"id": "openai", "label": "OpenAI", "base_url": "https://api.openai.com/v1"},
+            {
+                "id": "openrouter",
+                "label": "OpenRouter",
+                "base_url": "https://openrouter.ai/api/v1",
+            },
+            {"id": "together", "label": "Together", "base_url": "https://api.together.xyz/v1"},
+            {"id": "mistral", "label": "Mistral", "base_url": "https://api.mistral.ai/v1"},
+            {
+                "id": "deepinfra",
+                "label": "DeepInfra",
+                "base_url": "https://api.deepinfra.com/v1/openai",
+            },
+            {
+                "id": "azure",
+                "label": "Azure OpenAI",
+                "base_url": ("https://<resource>.openai.azure.com/openai/deployments/<deployment>"),
+            },
+            {
+                "id": "vllm",
+                "label": "vLLM / LM Studio / llama.cpp (local)",
+                "base_url": "http://localhost:8000/v1",
+            },
+        ],
+        "sides": list(_EMBEDDING_SIDES),
+        "supported_kinds": list(SUPPORTED_EMBEDDING_KINDS),
+    }
+
+
+@router.get("/embedding/kinds")
+def list_embedding_kinds() -> dict[str, Any]:
+    return _kinds_payload()
+
+
+@router.get("/embedding")
+def get_embedding(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    return {side: _mask_embedding(_embedding_for_side(cfg, side)) for side in _EMBEDDING_SIDES}
+
+
+@router.put("/embedding/{side}")
+def upsert_embedding(
+    side: str,
+    body: dict[str, Any],
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    side = _check_side(side)
+    existing = _embedding_for_side(cfg, side)
+    kind = (body.get("kind") or existing.kind or "").lower().strip()
+    if kind and kind not in {"", "default", "minilm-l6-v2", *SUPPORTED_EMBEDDING_KINDS}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown embedding kind {kind!r}. Expected one of {SUPPORTED_EMBEDDING_KINDS}.",
+        )
+    merged = _merge_embedding_patch(existing, body)
+    setattr(cfg, f"embedding_{side}", merged)
+    cfg.save()
+    # Re-install both factory slots so subsequent retrieval calls pick
+    # up the new provider without a server restart.
+    try:
+        from amx.search.embeddings import configure_from_amx_config
+
+        configure_from_amx_config(cfg)
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning("Failed to reinstall embedding factory after PUT: %s", exc)
+    return _mask_embedding(merged)
+
+
+@router.post("/embedding/{side}/test")
+def test_embedding(
+    side: str,
+    body: dict[str, Any],
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Embed a one-token sentinel with the merged-not-saved settings.
+
+    Lets the Studio "Test" button surface a green/red pill plus the
+    actual vector dimension before the user commits the change.
+    """
+    side = _check_side(side)
+    existing = _embedding_for_side(cfg, side)
+    merged = _merge_embedding_patch(existing, body)
+    kind = (merged.kind or "").lower().strip()
+    if kind in {"", "minilm", "default", "minilm-l6-v2"}:
+        # MiniLM is the bundled default; nothing to round-trip beyond
+        # confirming Chroma can construct it.
+        try:
+            from amx.search.embeddings import MiniLMEmbedding
+
+            ef = MiniLMEmbedding()
+            dim = int(getattr(ef, "dim", 384))
+        except Exception as exc:
+            return {"ok": False, "message": f"{exc.__class__.__name__}: {exc}"}
+        return {"ok": True, "message": "MiniLM ready (Chroma bundled)", "dim": dim}
+
+    if not merged.is_configured():
+        return {
+            "ok": False,
+            "message": f"Provider {merged.kind!r} requires a model id before it can be tested.",
+        }
+    try:
+        from amx.search.embeddings import make_embedding_function
+
+        ef = make_embedding_function(
+            merged.kind,
+            model=merged.model,
+            api_key=merged.api_key,
+            base_url=merged.base_url,
+        )
+    except Exception as exc:
+        return {"ok": False, "message": f"{exc.__class__.__name__}: {exc}"}
+    if ef is None:
+        return {"ok": True, "message": "Configured for bundled MiniLM.", "dim": 384}
+    try:
+        vectors = ef(["AMX embedding connection test."])
+    except Exception as exc:
+        return {"ok": False, "message": f"{exc.__class__.__name__}: {exc}"}
+    if not vectors:
+        return {"ok": False, "message": "Provider returned no vectors."}
+    dim = len(list(vectors[0]) if vectors else [])
+    return {"ok": True, "message": f"OK — embedded one sample in {dim} dimensions.", "dim": dim}
+
+
+def _collection_status_for_side(side: str, cfg: AMXConfig) -> dict[str, Any]:
+    """Inspect persisted collections to detect stale-vector state.
+
+    Returns the per-collection ``provider``/``model``/``count`` plus a
+    ``stale`` flag. Stale means the collection's metadata recorded a
+    different provider/model than what ``cfg.embedding_{side}`` now
+    resolves to, so vectors must be re-embedded.
+    """
+    from pathlib import Path
+
+    try:
+        import chromadb
+    except Exception:
+        return {"collections": [], "stale": False, "error": "chromadb not installed"}
+
+    persist = str(Path.home() / ".amx" / "chroma_db")
+    try:
+        client = chromadb.PersistentClient(path=persist)
+    except Exception as exc:
+        return {"collections": [], "stale": False, "error": f"{exc.__class__.__name__}: {exc}"}
+
+    if side == "docs":
+        from amx.docs.rag import _resolve_docs_embedding
+
+        active_provider, active_model, _ = _resolve_docs_embedding(cfg)
+        prefix = "amx_search"
+    else:
+        from amx.codebase.code_rag import _resolve_code_embedding
+
+        active_provider, active_model, _ = _resolve_code_embedding(cfg)
+        prefix = "amx_code"
+
+    collections: list[dict[str, Any]] = []
+    stale = False
+    for coll in client.list_collections():
+        name = getattr(coll, "name", "")
+        if not name.startswith(prefix):
+            continue
+        try:
+            meta = dict(coll.metadata or {})
+        except Exception:
+            meta = {}
+        recorded_provider = str(meta.get("embedding_provider") or "")
+        recorded_model = str(meta.get("embedding_model") or "")
+        try:
+            count = int(coll.count())
+        except Exception:
+            count = 0
+        is_stale = bool(
+            recorded_provider
+            and recorded_model
+            and (recorded_provider != active_provider or recorded_model != active_model)
+        )
+        if is_stale:
+            stale = True
+        collections.append(
+            {
+                "name": name,
+                "count": count,
+                "embedding_provider": recorded_provider,
+                "embedding_model": recorded_model,
+                "stale": is_stale,
+            }
+        )
+    return {
+        "collections": collections,
+        "stale": stale,
+        "current_provider": active_provider,
+        "current_model": active_model,
+    }
+
+
+@router.get("/embedding/status")
+def get_embedding_status(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    return {side: _collection_status_for_side(side, cfg) for side in _EMBEDDING_SIDES}
+
+
+@router.post("/embedding/{side}/rebuild")
+def rebuild_embedding(
+    side: str,
+    body: dict[str, Any] | None = None,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Clear the per-side vector collections so the next query/ingest
+    re-embeds with the active provider.
+
+    Blocking — large catalogs take seconds to tens of seconds; jobs
+    infrastructure is out of scope for the initial split.
+    """
+    side = _check_side(side)
+    body = body or {}
+    profile_filter = (body.get("profile") or "").strip() or None
+
+    if side == "docs":
+        try:
+            from amx.search.catalog import SearchCatalog
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Docs catalog unavailable: {exc.__class__.__name__}: {exc}",
+            ) from exc
+        catalog = SearchCatalog.from_history_store()
+        if catalog is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Docs catalog is not initialised; run /sync first.",
+            )
+        rebuilt: list[str] = []
+        targets = [profile_filter] if profile_filter else sorted(cfg.db_profiles.keys()) or [""]
+        for db_profile in targets:
+            try:
+                catalog.rebuild_profile(db_profile or "")
+                rebuilt.append(db_profile or "(default)")
+            except Exception as exc:
+                log.warning("rebuild_profile failed for %r: %s", db_profile, exc)
+        return {
+            "ok": True,
+            "side": "docs",
+            "rebuilt": rebuilt,
+            "message": f"Rebuilt {len(rebuilt)} docs collection(s).",
+        }
+
+    # side == "code"
+    try:
+        from amx.codebase.code_rag import delete_code_collection
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Code RAG unavailable: {exc.__class__.__name__}: {exc}",
+        ) from exc
+    cleared = bool(
+        delete_code_collection(source_filters=[profile_filter] if profile_filter else None)
+    )
+    return {
+        "ok": True,
+        "side": "code",
+        "cleared": cleared,
+        "message": (
+            "Cleared the code collection; the next /code query will re-embed "
+            "with the active provider."
+            if cleared
+            else "Code collection did not exist; nothing to clear."
+        ),
+    }
 
 
 # ── Doc + Code profiles (path lists) ───────────────────────────────────

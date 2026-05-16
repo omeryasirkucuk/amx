@@ -155,25 +155,28 @@ def _install_embedding_provider(cfg: AMXConfig) -> None:
     ``on_warning`` hook so misconfigured providers surface as a themed
     one-line warning rather than a stack trace.
 
-    Default-kind shortcut: when the user has not customised
-    ``cfg.embedding`` (or has explicitly picked the MiniLM default),
-    skip importing ``amx.search.embeddings`` entirely. That module
-    runs a module-level ``_ensure("rag")`` which on a fresh install
-    triggers a chromadb pip download — and the default-MiniLM path
-    does not need a custom factory anyway (``SearchIndex.__init__``
-    falls back to Chroma's bundled MiniLM when no factory is
-    installed). So a user whose only intent on ``amx`` open is
-    ``/db``, ``/llm``, ``/metadata``, ``/ask`` etc. never has to
-    pay a chromadb install at REPL bootstrap. Custom-embedding users
-    still pay it here, but they are by definition heading for a
-    RAG flow that would have triggered the install on first use
-    regardless.
+    Default-kind shortcut: when neither ``cfg.embedding_docs`` nor
+    ``cfg.embedding_code`` has been customised away from MiniLM, skip
+    importing ``amx.search.embeddings`` entirely. That module runs a
+    module-level ``_ensure("rag")`` which on a fresh install triggers a
+    chromadb pip download — and the default-MiniLM path does not need a
+    custom factory anyway (``SearchIndex.__init__`` falls back to
+    Chroma's bundled MiniLM when no factory is installed). So a user
+    whose only intent on ``amx`` open is ``/db``, ``/llm``,
+    ``/metadata``, ``/ask`` etc. never has to pay a chromadb install at
+    REPL bootstrap. Custom-embedding users still pay it here, but they
+    are by definition heading for a RAG flow that would have triggered
+    the install on first use regardless.
     """
-    embedding = getattr(cfg, "embedding", None)
-    if embedding is None:
-        return
-    kind = (getattr(embedding, "kind", "") or "").lower().strip()
-    if kind in {"", "minilm", "default", "minilm-l6-v2"}:
+    default_aliases = {"", "minilm", "default", "minilm-l6-v2"}
+    for side in ("embedding_docs", "embedding_code"):
+        embedding = getattr(cfg, side, None)
+        if embedding is None:
+            continue
+        kind = (getattr(embedding, "kind", "") or "").lower().strip()
+        if kind not in default_aliases:
+            break
+    else:
         return
 
     from amx.search.embeddings import configure_from_amx_config

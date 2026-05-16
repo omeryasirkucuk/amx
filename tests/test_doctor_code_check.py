@@ -38,7 +38,7 @@ def test_doctor_passes_for_healthy_code_collection(monkeypatch):
 
     monkeypatch.setattr("amx.codebase.code_rag.query_code_snippets", lambda *_a, **_kw: [])
     monkeypatch.setattr(
-        "amx.codebase.code_rag._resolve_active_embedding",
+        "amx.codebase.code_rag._resolve_code_embedding",
         lambda *_a, **_kw: ("minilm", "minilm-l6-v2", None),
     )
 
@@ -59,7 +59,7 @@ def test_doctor_warns_for_empty_collection(monkeypatch):
     _wire_chroma(monkeypatch, coll=coll)
     monkeypatch.setattr("amx.codebase.code_rag.query_code_snippets", lambda *_a, **_kw: [])
     monkeypatch.setattr(
-        "amx.codebase.code_rag._resolve_active_embedding",
+        "amx.codebase.code_rag._resolve_code_embedding",
         lambda *_a, **_kw: ("minilm", "minilm-l6-v2", None),
     )
 
@@ -80,7 +80,7 @@ def test_doctor_fails_for_embedding_mismatch(monkeypatch):
     _wire_chroma(monkeypatch, coll=coll)
 
     monkeypatch.setattr(
-        "amx.codebase.code_rag._resolve_active_embedding",
+        "amx.codebase.code_rag._resolve_code_embedding",
         lambda *_a, **_kw: ("minilm", "minilm-l6-v2", None),
     )
     monkeypatch.setattr("amx.codebase.code_rag.query_code_snippets", lambda *_a, **_kw: [])

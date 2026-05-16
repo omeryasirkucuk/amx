@@ -53,8 +53,8 @@ def _resolve_search_identity(
     """Return the (provider, model, dim) triple to stamp on this
     process's Catalog Search collections.
 
-    Reads from ``cfg.embedding`` first (the same source docs / code
-    RAG use). Falls back to MiniLM defaults so a missing config never
+    Reads from ``cfg.embedding_docs`` (search powers docs RAG). Falls
+    back to MiniLM defaults so a missing config never
     blocks rebuild. The embedding function is consulted for its
     ``dim`` attribute when the static dispatch can't resolve it.
     """
@@ -66,7 +66,7 @@ def _resolve_search_identity(
         except Exception:
             cfg = None
 
-    embedding = getattr(cfg, "embedding", None) if cfg is not None else None
+    embedding = getattr(cfg, "embedding_docs", None) if cfg is not None else None
     kind = "minilm"
     model = "minilm-l6-v2"
     if embedding is not None:
@@ -125,11 +125,13 @@ class SearchIndex:
         Path(self.persist_dir).mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=self.persist_dir)
         if embedding_function is None:
-            # No explicit override — fall back to the process-wide default
-            # the CLI installed at startup based on ``cfg.embedding``.
-            from amx.search.embeddings import get_default_embedding_function
+            # No explicit override — fall back to the docs-side factory the
+            # CLI installed at startup from ``cfg.embedding_docs``. The
+            # search index powers docs RAG; the code RAG path resolves its
+            # own factory in ``amx.codebase.code_rag``.
+            from amx.search.embeddings import get_embedding_function
 
-            embedding_function = get_default_embedding_function()
+            embedding_function = get_embedding_function("docs")
         self.embedding_function = embedding_function
         # PR-B: resolve and record the embedding identity so /search
         # rebuild after an /embeddings swap no longer silently

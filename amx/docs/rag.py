@@ -98,13 +98,14 @@ class EmbeddingProviderMismatch(RuntimeError):
 _AMX_RAG_SCHEMA_VERSION = 2
 
 
-def _resolve_active_embedding(cfg: Any | None = None) -> tuple[str, str, EmbeddingFunction | None]:
-    """Resolve ``(provider, model, embedding_function)`` from config.
+def _resolve_docs_embedding(cfg: Any | None = None) -> tuple[str, str, EmbeddingFunction | None]:
+    """Resolve ``(provider, model, embedding_function)`` for docs RAG.
 
-    Falls back to the bundled MiniLM (``embedding_function=None``) when
-    no config is available or the user has the default kind selected.
-    The provider/model strings are what get persisted as collection
-    metadata so a later reopen can detect mismatches.
+    Reads ``cfg.embedding_docs``. Falls back to the bundled MiniLM
+    (``embedding_function=None``) when no config is available or the
+    user has the default kind selected. The provider/model strings are
+    what get persisted as collection metadata so a later reopen can
+    detect mismatches.
     """
     from amx.search.embeddings import make_embedding_function
 
@@ -116,7 +117,7 @@ def _resolve_active_embedding(cfg: Any | None = None) -> tuple[str, str, Embeddi
         except Exception:
             cfg = None
 
-    embedding = getattr(cfg, "embedding", None) if cfg is not None else None
+    embedding = getattr(cfg, "embedding_docs", None) if cfg is not None else None
     if embedding is None:
         return ("minilm", "minilm-l6-v2", None)
 
@@ -274,11 +275,11 @@ class RAGStore:
         # Resolve the active embedding provider so we can (a) wire it
         # into Chroma's ``embedding_function=`` slot — historically
         # omitted, which silently forced bundled MiniLM regardless of
-        # the user's ``cfg.embedding`` choice — and (b) record it on
+        # the user's ``cfg.embedding_docs`` choice — and (b) record it on
         # the collection metadata for the cross-version mismatch
         # check below.
         if embedding_provider is None or embedding_model is None or embedding_function is None:
-            resolved_provider, resolved_model, resolved_ef = _resolve_active_embedding(cfg)
+            resolved_provider, resolved_model, resolved_ef = _resolve_docs_embedding(cfg)
             if embedding_provider is None:
                 embedding_provider = resolved_provider
             if embedding_model is None:

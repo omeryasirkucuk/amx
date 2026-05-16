@@ -505,9 +505,9 @@ def _check_code_rag(cfg: AMXConfig) -> CheckResult:
     recorded_model = str(meta.get("embedding_model") or "")
     if recorded_provider and recorded_model:
         try:
-            from amx.codebase.code_rag import _resolve_active_embedding
+            from amx.codebase.code_rag import _resolve_code_embedding
 
-            active_provider, active_model, _ = _resolve_active_embedding(cfg)
+            active_provider, active_model, _ = _resolve_code_embedding(cfg)
             if active_provider != recorded_provider or active_model != recorded_model:
                 return CheckResult(
                     name="Code RAG store",
