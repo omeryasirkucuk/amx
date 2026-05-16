@@ -676,7 +676,7 @@ class SearchIntegrationTests(unittest.TestCase):
                 "effective_description": "noise",
             },
         ]
-        with patch("amx.cli_support.commands.search.console") as console_mock:
+        with patch("amx.cli_support._search_render.console") as console_mock:
             _render_search_rows(rows, answer_shape="ranked_list")
         console_mock.print.assert_called_once()
         printed_table = console_mock.print.call_args[0][0]
@@ -707,7 +707,7 @@ class SearchIntegrationTests(unittest.TestCase):
                 "effective_description": "Net value",
             },
         ]
-        with patch("amx.cli_support.commands.search.console") as console_mock:
+        with patch("amx.cli_support._search_render.console") as console_mock:
             _render_search_rows(rows, answer_shape="ranked_list", debug=True)
         printed_table = console_mock.print.call_args[0][0]
         column_headers = [c.header for c in printed_table.columns]
@@ -731,7 +731,7 @@ class SearchIntegrationTests(unittest.TestCase):
                 "effective_description": "Sales header",
             },
         ]
-        with patch("amx.cli_support.commands.search.console") as console_mock:
+        with patch("amx.cli_support._search_render.console") as console_mock:
             _render_search_rows(rows, answer_shape="ranked_list")
         printed_table = console_mock.print.call_args[0][0]
         why_cell = next(iter(printed_table.columns[2].cells))
@@ -751,7 +751,7 @@ class SearchIntegrationTests(unittest.TestCase):
                 "semantic_cluster": "Dd03L",
             },
         ]
-        with patch("amx.cli_support.commands.search.console") as console_mock:
+        with patch("amx.cli_support._search_render.console") as console_mock:
             _render_search_rows(rows)
         console_mock.print.assert_called_once()
         printed_table = console_mock.print.call_args[0][0]
