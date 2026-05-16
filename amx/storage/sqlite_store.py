@@ -2016,597 +2016,104 @@ class SQLiteHistoryStore:
             )
             return int(cur.rowcount or 0)
 
-    # ── run_context_cache: first-run table profiles reused on rerun ──
+    # ── Cache delegators (extracted to amx.storage._history_caches) ──
+    @staticmethod
+    def _context_cache_key(*args, **kwargs):
+        from amx.storage._history_caches import _context_cache_key
+
+        return _context_cache_key(*args, **kwargs)
+
+    def save_run_context_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import save_run_context_cache
+
+        return save_run_context_cache(self, *args, **kwargs)
+
+    def lookup_run_context_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import lookup_run_context_cache
+
+        return lookup_run_context_cache(self, *args, **kwargs)
+
+    def delete_run_context_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import delete_run_context_cache
+
+        return delete_run_context_cache(self, *args, **kwargs)
+
+    def gc_run_context_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import gc_run_context_cache
+
+        return gc_run_context_cache(self, *args, **kwargs)
 
     @staticmethod
-    def _context_cache_key(
-        *,
-        db_profile: str,
-        database: str,
-        schema: str,
-        table: str,
-    ) -> str:
-        return f"{db_profile}|{database or ''}|{schema}|{table}"
+    def _ccc_key(*args, **kwargs):
+        from amx.storage._history_caches import _ccc_key
 
-    def save_run_context_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str,
-        schema: str,
-        table: str,
-        payload: dict[str, Any],
-        source_run_id: int | None = None,
-        ttl_seconds: float = 86400.0,
-    ) -> None:
-        """Persist a table-level context snapshot for re-use on re-run.
+        return _ccc_key(*args, **kwargs)
 
-        ``payload`` is the JSON-serialisable dict the rerun executor
-        normally rebuilds via ``_build_db_profile_dict`` — keys at
-        minimum: ``db_profile`` (the column-aware profile dict) and
-        ``existing_metadata``.  ``ttl_seconds`` defaults to 24 hours so
-        a stale schema can't silently produce wrong descriptions when
-        the user re-runs a week later.
+    def save_column_comments_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import save_column_comments_cache
 
-        Uses ``INSERT OR REPLACE`` keyed on
-        (db_profile, database, schema, table) so a re-analyze of the
-        same table refreshes the cache rather than appending duplicates.
-        """
-        cache_key = self._context_cache_key(
-            db_profile=str(db_profile or ""),
-            database=str(database or ""),
-            schema=str(schema or ""),
-            table=str(table or ""),
-        )
-        now = time.time()
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO run_context_cache
-                    (cache_key, db_profile, database_name, schema_name, table_name,
-                     payload_json, source_run_id, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(cache_key) DO UPDATE SET
-                    payload_json = excluded.payload_json,
-                    source_run_id = excluded.source_run_id,
-                    created_at = excluded.created_at,
-                    expires_at = excluded.expires_at
-                """,
-                (
-                    cache_key,
-                    str(db_profile or ""),
-                    str(database or ""),
-                    str(schema or ""),
-                    str(table or ""),
-                    json.dumps(payload, ensure_ascii=True),
-                    int(source_run_id) if source_run_id is not None else None,
-                    now,
-                    (now + float(ttl_seconds)) if ttl_seconds > 0 else None,
-                ),
-            )
+        return save_column_comments_cache(self, *args, **kwargs)
 
-    def lookup_run_context_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str,
-        schema: str,
-        table: str,
-    ) -> dict[str, Any] | None:
-        """Return the cached payload for a table, or ``None`` if missing/expired.
+    def schema_has_bulk_filled_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import schema_has_bulk_filled_cache
 
-        Expired rows are kept on disk (cheaper than rewriting) but the
-        lookup pretends they're absent so callers always rebuild from
-        the live database. ``gc_run_context_cache`` reaps them.
-        """
-        cache_key = self._context_cache_key(
-            db_profile=str(db_profile or ""),
-            database=str(database or ""),
-            schema=str(schema or ""),
-            table=str(table or ""),
-        )
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT payload_json, expires_at, source_run_id, created_at
-                FROM run_context_cache
-                WHERE cache_key = ?
-                """,
-                (cache_key,),
-            ).fetchone()
-        if row is None:
-            return None
-        expires_at = row["expires_at"]
-        if expires_at is not None and float(expires_at) < time.time():
-            return None
-        try:
-            payload = json.loads(row["payload_json"])
-        except Exception:
-            return None
-        return {
-            "payload": payload,
-            "source_run_id": row["source_run_id"],
-            "created_at": float(row["created_at"]),
-        }
+        return schema_has_bulk_filled_cache(self, *args, **kwargs)
 
-    def delete_run_context_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str,
-        schema: str,
-        table: str,
-    ) -> int:
-        """Drop the cache row for a single table; returns rowcount.
+    def lookup_column_comments_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import lookup_column_comments_cache
 
-        Called from the apply path after a successful COMMENT write so
-        we don't keep stale-but-valid context around for a row the
-        user has already accepted.
-        """
-        cache_key = self._context_cache_key(
-            db_profile=str(db_profile or ""),
-            database=str(database or ""),
-            schema=str(schema or ""),
-            table=str(table or ""),
-        )
-        with self._lock, self._connect() as conn:
-            cur = conn.execute(
-                "DELETE FROM run_context_cache WHERE cache_key = ?",
-                (cache_key,),
-            )
-            return int(cur.rowcount or 0)
+        return lookup_column_comments_cache(self, *args, **kwargs)
 
-    def gc_run_context_cache(self) -> int:
-        """Sweep cache rows past their TTL; called at process startup."""
-        now = time.time()
-        with self._lock, self._connect() as conn:
-            cur = conn.execute(
-                "DELETE FROM run_context_cache WHERE expires_at IS NOT NULL AND expires_at < ?",
-                (now,),
-            )
-            return int(cur.rowcount or 0)
+    def lookup_column_comments_cache_bulk(self, *args, **kwargs):
+        from amx.storage._history_caches import lookup_column_comments_cache_bulk
 
-    # ── column_comments_cache: per-table existing-comment cache ──
+        return lookup_column_comments_cache_bulk(self, *args, **kwargs)
+
+    def invalidate_column_comments_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import invalidate_column_comments_cache
+
+        return invalidate_column_comments_cache(self, *args, **kwargs)
+
+    def gc_column_comments_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import gc_column_comments_cache
+
+        return gc_column_comments_cache(self, *args, **kwargs)
 
     @staticmethod
-    def _ccc_key(*, db_profile: str, database: str, schema: str, table: str) -> str:
-        return f"{db_profile}|{database or ''}|{schema}|{table}"
+    def _sc_key(*args, **kwargs):
+        from amx.storage._history_caches import _sc_key
 
-    def save_column_comments_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str,
-        schema: str,
-        entries: dict[str, dict[str, Any]],
-        ttl_seconds: float = 3600.0,
-        bulk_filled: bool = False,
-    ) -> int:
-        """Bulk upsert per-table entries after one ``bulk_schema_metadata`` call.
+        return _sc_key(*args, **kwargs)
 
-        ``entries`` maps each ``table_name`` to a dict with keys:
-        ``table_comment`` (str | None), ``columns`` (dict[col_name, comment_or_none]),
-        ``kind`` ("TABLE" | "VIEW" | "MATERIALIZED VIEW"). Missing keys default
-        to ``None`` / empty / "TABLE" so callers can pass partial payloads
-        when the backend only returns column-level data.
+    def save_schemas_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import save_schemas_cache
 
-        ``bulk_filled`` records *how* the entries arrived: ``True`` for a
-        successful bulk-adapter call (the dict covers every table in the
-        schema by contract), ``False`` for per-table fallback writes. The
-        flag is what lets ``list_assets`` know whether the cache is safe
-        to read instead of re-issuing SHOW TABLES.
-        """
-        if not entries:
-            return 0
-        now = time.time()
-        # ``ttl_seconds == 0`` defaults to one hour to match the helper's
-        # default kwarg; negative values are honoured verbatim so tests
-        # can stamp rows as already-expired.
-        if ttl_seconds == 0:
-            ttl_seconds = 3600.0
-        expires_at = now + float(ttl_seconds)
-        flag = 1 if bulk_filled else 0
-        rows = [
-            (
-                self._ccc_key(
-                    db_profile=str(db_profile or ""),
-                    database=str(database or ""),
-                    schema=str(schema or ""),
-                    table=str(table or ""),
-                ),
-                str(db_profile or ""),
-                str(database or ""),
-                str(schema or ""),
-                str(table or ""),
-                payload.get("table_comment"),
-                json.dumps(payload.get("columns") or {}, ensure_ascii=True),
-                str(payload.get("kind") or "TABLE"),
-                now,
-                expires_at,
-                flag,
-            )
-            for table, payload in entries.items()
-        ]
-        with self._lock, self._connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO column_comments_cache
-                    (cache_key, db_profile, database_name, schema_name, table_name,
-                     table_comment, columns_json, kind, fetched_at, expires_at, bulk_filled)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(cache_key) DO UPDATE SET
-                    table_comment = excluded.table_comment,
-                    columns_json  = excluded.columns_json,
-                    kind          = excluded.kind,
-                    fetched_at    = excluded.fetched_at,
-                    expires_at    = excluded.expires_at,
-                    bulk_filled   = MAX(column_comments_cache.bulk_filled, excluded.bulk_filled)
-                """,
-                rows,
-            )
-        return len(rows)
+        return save_schemas_cache(self, *args, **kwargs)
 
-    def schema_has_bulk_filled_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str,
-        schema: str,
-    ) -> bool:
-        """``True`` when at least one fresh ``bulk_filled=1`` row exists
-        for ``(profile, database, schema)``.
+    def lookup_schemas_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import lookup_schemas_cache
 
-        Presence of one bulk-filled row implies the whole schema is
-        covered by the cache (bulk_schema_metadata returns every table
-        in the schema by contract). ``list_assets`` keys off this flag
-        to decide whether reading from cache is safe — partial caches
-        produced by the per-table fallback path are not.
-        """
-        now = time.time()
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT 1 FROM column_comments_cache
-                WHERE db_profile = ? AND database_name = ? AND schema_name = ?
-                  AND bulk_filled = 1 AND expires_at >= ?
-                LIMIT 1
-                """,
-                (
-                    str(db_profile or ""),
-                    str(database or ""),
-                    str(schema or ""),
-                    now,
-                ),
-            ).fetchone()
-        return row is not None
+        return lookup_schemas_cache(self, *args, **kwargs)
 
-    def lookup_column_comments_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str,
-        schema: str,
-        table: str,
-    ) -> dict[str, Any] | None:
-        """Return a single fresh cache entry, or ``None`` if missing/expired.
+    def catalog_has_bulk_filled_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import catalog_has_bulk_filled_cache
 
-        Returned shape: ``{"table_comment": ..., "columns": {...}, "kind": ...,
-        "fetched_at": ..., "expires_at": ...}``. Expired rows are kept on disk
-        (cheaper than rewriting) but the lookup pretends they're absent.
-        """
-        cache_key = self._ccc_key(
-            db_profile=str(db_profile or ""),
-            database=str(database or ""),
-            schema=str(schema or ""),
-            table=str(table or ""),
-        )
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT table_comment, columns_json, kind, fetched_at, expires_at
-                FROM column_comments_cache
-                WHERE cache_key = ?
-                """,
-                (cache_key,),
-            ).fetchone()
-        if row is None:
-            return None
-        if float(row["expires_at"]) < time.time():
-            return None
-        try:
-            columns = json.loads(row["columns_json"])
-        except Exception:
-            columns = {}
-        return {
-            "table_comment": row["table_comment"],
-            "columns": columns,
-            "kind": row["kind"] or "TABLE",
-            "fetched_at": float(row["fetched_at"]),
-            "expires_at": float(row["expires_at"]),
-        }
+        return catalog_has_bulk_filled_cache(self, *args, **kwargs)
 
-    def lookup_column_comments_cache_bulk(
-        self,
-        *,
-        db_profile: str,
-        database: str,
-        schema: str,
-    ) -> dict[str, dict[str, Any]]:
-        """Return ``{table_name: cached_entry}`` for every fresh row in a schema.
+    def list_schemas_from_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import list_schemas_from_cache
 
-        Used by the connector's bulk path to decide whether a refetch is
-        needed at all. Expired rows are skipped.
-        """
-        now = time.time()
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT table_name, table_comment, columns_json, kind, fetched_at, expires_at
-                FROM column_comments_cache
-                WHERE db_profile = ? AND database_name = ? AND schema_name = ?
-                  AND expires_at >= ?
-                """,
-                (
-                    str(db_profile or ""),
-                    str(database or ""),
-                    str(schema or ""),
-                    now,
-                ),
-            ).fetchall()
-        out: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            try:
-                columns = json.loads(row["columns_json"])
-            except Exception:
-                columns = {}
-            out[str(row["table_name"])] = {
-                "table_comment": row["table_comment"],
-                "columns": columns,
-                "kind": row["kind"] or "TABLE",
-                "fetched_at": float(row["fetched_at"]),
-                "expires_at": float(row["expires_at"]),
-            }
-        return out
+        return list_schemas_from_cache(self, *args, **kwargs)
 
-    def invalidate_column_comments_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str = "",
-        schema: str | None = None,
-        table: str | None = None,
-    ) -> int:
-        """Drop cached rows at one of three granularities.
+    def invalidate_schemas_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import invalidate_schemas_cache
 
-        * ``schema`` + ``table`` set → single row (column/table comment write).
-        * ``schema`` set, ``table`` ``None`` → whole schema (schema comment write).
-        * Both ``None`` → whole profile (database comment write, profile reset).
+        return invalidate_schemas_cache(self, *args, **kwargs)
 
-        Returns rowcount. Always safe — a no-op on a cold cache returns 0.
-        """
-        params: list[Any] = [str(db_profile or "")]
-        sql = "DELETE FROM column_comments_cache WHERE db_profile = ?"
-        # ``database_name`` is empty string when the profile is single-db;
-        # we filter on it whenever a schema is named so a multi-db profile
-        # only wipes the affected database.
-        if schema is not None:
-            sql += " AND database_name = ? AND schema_name = ?"
-            params.append(str(database or ""))
-            params.append(str(schema or ""))
-        if table is not None:
-            sql += " AND table_name = ?"
-            params.append(str(table or ""))
-        with self._lock, self._connect() as conn:
-            cur = conn.execute(sql, params)
-            return int(cur.rowcount or 0)
+    def gc_schemas_cache(self, *args, **kwargs):
+        from amx.storage._history_caches import gc_schemas_cache
 
-    def gc_column_comments_cache(self) -> int:
-        """Sweep expired rows; called at process startup alongside other GC."""
-        now = time.time()
-        with self._lock, self._connect() as conn:
-            cur = conn.execute(
-                "DELETE FROM column_comments_cache WHERE expires_at < ?",
-                (now,),
-            )
-            return int(cur.rowcount or 0)
-
-    # ── schemas_cache: per-catalog schema-level cache ─────────────
-
-    @staticmethod
-    def _sc_key(*, db_profile: str, database: str, catalog: str, schema: str) -> str:
-        return f"{db_profile}|{database or ''}|{catalog or ''}|{schema}"
-
-    def save_schemas_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str,
-        catalog: str,
-        entries: dict[str, str | None],
-        ttl_seconds: float = 3600.0,
-        bulk_filled: bool = False,
-    ) -> int:
-        """Bulk upsert schema-level entries for one catalog.
-
-        ``entries`` maps schema name → schema comment (``None`` when the
-        schema has no comment). ``bulk_filled`` mirrors the column
-        cache's flag: ``True`` when a single ``bulk_catalog_metadata``
-        call produced the dict (covers every schema in the catalog),
-        ``False`` for per-schema fallback writes.
-        """
-        if not entries:
-            return 0
-        now = time.time()
-        if ttl_seconds == 0:
-            ttl_seconds = 3600.0
-        expires_at = now + float(ttl_seconds)
-        flag = 1 if bulk_filled else 0
-        rows = [
-            (
-                self._sc_key(
-                    db_profile=str(db_profile or ""),
-                    database=str(database or ""),
-                    catalog=str(catalog or ""),
-                    schema=str(schema or ""),
-                ),
-                str(db_profile or ""),
-                str(database or ""),
-                str(catalog or ""),
-                str(schema or ""),
-                comment,
-                flag,
-                now,
-                expires_at,
-            )
-            for schema, comment in entries.items()
-        ]
-        with self._lock, self._connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO schemas_cache
-                    (cache_key, db_profile, database_name, catalog_name, schema_name,
-                     schema_comment, bulk_filled, fetched_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(cache_key) DO UPDATE SET
-                    schema_comment = excluded.schema_comment,
-                    bulk_filled    = MAX(schemas_cache.bulk_filled, excluded.bulk_filled),
-                    fetched_at     = excluded.fetched_at,
-                    expires_at     = excluded.expires_at
-                """,
-                rows,
-            )
-        return len(rows)
-
-    def lookup_schemas_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str,
-        catalog: str,
-        schema: str,
-    ) -> dict[str, Any] | None:
-        """Return one fresh schema entry or ``None`` if missing/expired."""
-        cache_key = self._sc_key(
-            db_profile=str(db_profile or ""),
-            database=str(database or ""),
-            catalog=str(catalog or ""),
-            schema=str(schema or ""),
-        )
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT schema_comment, bulk_filled, fetched_at, expires_at
-                FROM schemas_cache WHERE cache_key = ?
-                """,
-                (cache_key,),
-            ).fetchone()
-        if row is None or float(row["expires_at"]) < time.time():
-            return None
-        return {
-            "schema_comment": row["schema_comment"],
-            "bulk_filled": bool(row["bulk_filled"]),
-            "fetched_at": float(row["fetched_at"]),
-            "expires_at": float(row["expires_at"]),
-        }
-
-    def catalog_has_bulk_filled_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str,
-        catalog: str,
-    ) -> bool:
-        """``True`` when at least one fresh ``bulk_filled=1`` row exists
-        for ``(profile, database, catalog)``.
-
-        ``list_schemas`` keys off this flag to decide whether reading
-        schema names from the cache is safe instead of re-issuing
-        SHOW SCHEMAS / pg_namespace lookups.
-        """
-        now = time.time()
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT 1 FROM schemas_cache
-                WHERE db_profile = ? AND database_name = ? AND catalog_name = ?
-                  AND bulk_filled = 1 AND expires_at >= ?
-                LIMIT 1
-                """,
-                (
-                    str(db_profile or ""),
-                    str(database or ""),
-                    str(catalog or ""),
-                    now,
-                ),
-            ).fetchone()
-        return row is not None
-
-    def list_schemas_from_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str,
-        catalog: str,
-    ) -> list[tuple[str, str | None]]:
-        """Return ``[(schema_name, schema_comment), …]`` for every fresh
-        row of this catalog. Caller is responsible for checking
-        ``catalog_has_bulk_filled_cache`` first if it needs to know
-        whether the list is exhaustive.
-        """
-        now = time.time()
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT schema_name, schema_comment FROM schemas_cache
-                WHERE db_profile = ? AND database_name = ? AND catalog_name = ?
-                  AND expires_at >= ?
-                ORDER BY schema_name
-                """,
-                (
-                    str(db_profile or ""),
-                    str(database or ""),
-                    str(catalog or ""),
-                    now,
-                ),
-            ).fetchall()
-        return [(str(r[0]), r[1]) for r in rows]
-
-    def invalidate_schemas_cache(
-        self,
-        *,
-        db_profile: str,
-        database: str = "",
-        catalog: str | None = None,
-        schema: str | None = None,
-    ) -> int:
-        """Drop schema-cache rows at one of three granularities.
-
-        * ``catalog`` + ``schema`` set → single schema row.
-        * ``catalog`` only → whole catalog.
-        * Both ``None`` → whole profile.
-        """
-        params: list[Any] = [str(db_profile or "")]
-        sql = "DELETE FROM schemas_cache WHERE db_profile = ?"
-        if catalog is not None:
-            sql += " AND database_name = ? AND catalog_name = ?"
-            params.append(str(database or ""))
-            params.append(str(catalog or ""))
-        if schema is not None:
-            sql += " AND schema_name = ?"
-            params.append(str(schema or ""))
-        with self._lock, self._connect() as conn:
-            cur = conn.execute(sql, params)
-            return int(cur.rowcount or 0)
-
-    def gc_schemas_cache(self) -> int:
-        """Sweep expired schemas_cache rows."""
-        now = time.time()
-        with self._lock, self._connect() as conn:
-            cur = conn.execute(
-                "DELETE FROM schemas_cache WHERE expires_at < ?",
-                (now,),
-            )
-            return int(cur.rowcount or 0)
+        return gc_schemas_cache(self, *args, **kwargs)
 
     def list_runs_with_result_counts(self, limit: int = 20) -> list[dict[str, Any]]:
         """List recent runs augmented with pending evaluation count."""
