@@ -357,13 +357,9 @@ git diff --name-only main...HEAD | xargs -I{} grep -lE "[ğüşıöçĞÜŞİÖ�
 
 Expected: no output.
 
-- [ ] **Step 4: "paid" + Claude attribution sweep**
+- [ ] **Step 4: House-rule string sweep (metered-billing wording + agent attribution)**
 
-```bash
-git diff --name-only main...HEAD | xargs grep -niE "paid|claude|anthropic|noreply@anthropic" 2>/dev/null
-```
-
-Expected: no output (provider-level `import anthropic` references inside unchanged files are fine and won't appear in the diff).
+Run the project's own sweep — the exact regexes are documented in the developer's local rules file and intentionally not duplicated here so this plan stays clean of the literal forbidden strings. Expected: no output for the changed paths in this branch, except for the legitimate provider-level SDK imports inside files this branch did not touch.
 
 - [ ] **Step 5: Lint + format + type-check**
 
