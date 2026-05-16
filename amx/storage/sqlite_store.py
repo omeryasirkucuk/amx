@@ -1381,32 +1381,32 @@ class SQLiteHistoryStore:
         return ids
 
     def set_session_state(self, namespace: str, key: str, value: Any) -> None:
-        """Write-through session/agent state storage."""
-        payload = json.dumps(value, ensure_ascii=True)
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO session_state (namespace, key_name, value_json, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(namespace, key_name) DO UPDATE SET
-                    value_json = excluded.value_json,
-                    updated_at = excluded.updated_at
-                """,
-                (namespace, key, payload, time.time()),
-            )
+        from amx.storage._history_session_state import set_session_state
+
+        set_session_state(self, namespace, key, value)
 
     def get_session_state(self, namespace: str, key: str, default: Any = None) -> Any:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT value_json FROM session_state WHERE namespace = ? AND key_name = ?",
-                (namespace, key),
-            ).fetchone()
-        if not row:
-            return default
-        try:
-            return json.loads(str(row["value_json"] or ""))
-        except Exception:
-            return default
+        from amx.storage._history_session_state import get_session_state
+
+        return get_session_state(self, namespace, key, default)
+
+    def log_event(
+        self,
+        *,
+        event_type: str,
+        status: str,
+        command: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        from amx.storage._history_event_log import log_event
+
+        log_event(
+            self,
+            event_type=event_type,
+            status=status,
+            command=command,
+            details=details,
+        )
 
     def record_evaluation(
         self,
@@ -2665,29 +2665,6 @@ class SQLiteHistoryStore:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
-
-    def log_event(
-        self,
-        *,
-        event_type: str,
-        status: str,
-        command: str,
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO app_events (created_at, event_type, status, command, details_json)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    time.time(),
-                    event_type,
-                    status,
-                    command,
-                    json.dumps(details or {}, ensure_ascii=True),
-                ),
-            )
 
     def list_recent_runs(
         self,
