@@ -26,6 +26,43 @@ from rich import box
 from rich.table import Table
 from rich.text import Text
 
+# Re-export the pure formatters that used to live in this file so the
+# existing call sites (and tests that import private helpers) keep working
+# unchanged. The ``as X`` aliasing is the canonical idiom Ruff
+# recognises for an intentional re-export (PLC0414).
+from amx.cli_support._compare_format import (  # noqa: PLC0414
+    _BAND_GLYPH as _BAND_GLYPH,
+)
+from amx.cli_support._compare_format import (
+    _band_prefix as _band_prefix,
+)
+from amx.cli_support._compare_format import (
+    _confidence_style as _confidence_style,
+)
+from amx.cli_support._compare_format import (
+    _fmt_dt as _fmt_dt,
+)
+from amx.cli_support._compare_format import (
+    _fmt_duration as _fmt_duration,
+)
+from amx.cli_support._compare_format import (
+    _fmt_float as _fmt_float,
+)
+from amx.cli_support._compare_format import (
+    _fmt_int as _fmt_int,
+)
+from amx.cli_support._compare_format import (
+    _fmt_or_dash as _fmt_or_dash,
+)
+from amx.cli_support._compare_format import (
+    _md_escape as _md_escape,
+)
+from amx.cli_support._compare_format import (
+    _md_table as _md_table,
+)
+from amx.cli_support._compare_format import (
+    _truncate as _truncate,
+)
 from amx.config import AMXConfig
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import (
@@ -60,43 +97,6 @@ _BY_TO_RUN_KEY: dict[str, str] = {
     "db_profile": "db_profile",
     "run": "id",
 }
-
-
-def _fmt_dt(ts: float | None) -> str:
-    if not ts:
-        return "—"
-    try:
-        return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return "—"
-
-
-def _fmt_duration(sec: float | None) -> str:
-    if sec is None or sec <= 0:
-        return "—"
-    s = float(sec)
-    if s < 60:
-        return f"{s:.1f}s"
-    m, rem = divmod(s, 60)
-    return f"{int(m)}m {rem:0.0f}s"
-
-
-def _fmt_or_dash(val: Any) -> str:
-    if val is None:
-        return "—"
-    s = str(val).strip()
-    return s if s else "—"
-
-
-def _confidence_style(band: str) -> str:
-    b = (band or "").lower()
-    if b == "high":
-        return "bold green"
-    if b == "medium" or b == "med":
-        return "yellow"
-    if b == "low":
-        return "red"
-    return "dim"
 
 
 def _detect_by(runs: list[dict[str, Any]]) -> str:
@@ -173,40 +173,6 @@ def _column_key(row: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
-#: Rich-markup glyphs for the Phase 1 confidence bands. Keyed by the
-#: enum-style strings emitted into ``alternatives_json``. Falls back to
-#: empty string for legacy rows (band ``None``) or unrecognised values.
-_BAND_GLYPH = {
-    "HIGH": "[green][H][/green]",
-    "MED": "[yellow][M][/yellow]",
-    "LOW": "[red][L][/red]",
-}
-
-
-def _band_prefix(alt_entry: Any) -> str:
-    """Return a Rich-markup band glyph for one alternative entry.
-
-    ``alt_entry`` is the parsed dict produced by
-    :func:`amx.storage.sqlite_store.parse_alternatives_json`. Returns
-    empty string when no band is available (legacy rows / confidence
-    disabled / unknown band).
-    """
-    if not isinstance(alt_entry, dict):
-        return ""
-    band = alt_entry.get("band")
-    if not band:
-        return ""
-    glyph = _BAND_GLYPH.get(band)
-    return f"{glyph} " if glyph else ""
-
-
-def _truncate(text: str, max_len: int = 60) -> str:
-    s = (text or "").strip()
-    if len(s) <= max_len:
-        return s
-    return s[: max_len - 1].rstrip() + "…"
-
-
 def _top_alternative(row: dict[str, Any]) -> str:
     """Pick a representative description from a run_results row.
 
@@ -232,20 +198,6 @@ def _top_alternative(row: dict[str, Any]) -> str:
             return str(first.get("text") or "").strip()
         return str(first).strip() if first else ""
     return ""
-
-
-def _fmt_int(n: Any) -> str:
-    try:
-        return f"{int(n):,}"
-    except Exception:
-        return "—"
-
-
-def _fmt_float(n: Any, places: int = 2) -> str:
-    try:
-        return f"{float(n):.{places}f}"
-    except Exception:
-        return "—"
 
 
 def _aggregate_for_run(run: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1129,21 +1081,6 @@ def _export_csv(
             writer.writeheader()
             for row in rows:
                 writer.writerow({h: ("" if row.get(h) is None else row.get(h)) for h in headers})
-
-
-def _md_escape(s: Any) -> str:
-    text = "" if s is None else str(s)
-    # Pipes break GFM tables; backslashes preserve them. Newlines collapse.
-    return text.replace("|", "\\|").replace("\n", " ").strip()
-
-
-def _md_table(headers: list[str], rows: list[list[Any]]) -> str:
-    if not rows:
-        return f"| {' | '.join(headers)} |\n| {' | '.join(['---'] * len(headers))} |\n| {' | '.join(['—'] * len(headers))} |\n"
-    body_lines = [f"| {' | '.join(headers)} |", f"| {' | '.join(['---'] * len(headers))} |"]
-    for row in rows:
-        body_lines.append("| " + " | ".join(_md_escape(c) for c in row) + " |")
-    return "\n".join(body_lines) + "\n"
 
 
 def _export_json(
