@@ -625,18 +625,21 @@ def lineage_for_studio(
 
     edge_payloads: list[dict[str, Any]] = []
     for edge in edges:
-        edge_payloads.append(
-            {
-                "id": edge.db_id,
-                "from": _node_id(edge.source),
-                "to": _node_id(edge.target),
-                "type": edge.relationship_type,
-                "extractor": edge.extractor,
-                "confidence": round(float(edge.confidence), 3),
-                "evidence": edge.evidence,
-                "verdict": edge.verdict,
-            }
-        )
+        payload = {
+            "id": edge.db_id,
+            "from": _node_id(edge.source),
+            "to": _node_id(edge.target),
+            "from_column": edge.source.column,
+            "to_column": edge.target.column,
+            "type": edge.relationship_type,
+            "extractor": edge.extractor,
+            "confidence": round(float(edge.confidence), 3),
+            "evidence": edge.evidence,
+            "verdict": edge.verdict,
+        }
+        if edge.operator is not None:
+            payload["operator"] = edge.operator.as_dict()
+        edge_payloads.append(payload)
 
     return {
         "anchor": {

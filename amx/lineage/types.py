@@ -24,6 +24,25 @@ class ColumnRef:
 
 
 @dataclass(frozen=True)
+class OperatorMeta:
+    """v4 inline transformation metadata on a lineage edge.
+
+    Surfaces on :class:`Edge` when a deterministic extractor sees a
+    source column flow through a transform (function call, aggregate,
+    filter predicate, join condition) before reaching its target.
+    ``op_kind`` is one of {'filter', 'join', 'function', 'aggregate',
+    'projection'}. ``expression`` is the original SQL fragment,
+    normalised. Frozen so :class:`Edge` stays hashable.
+    """
+
+    op_kind: str
+    expression: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"op_kind": self.op_kind, "expression": self.expression}
+
+
+@dataclass(frozen=True)
 class Edge:
     """A directed lineage edge between two columns or tables.
 
@@ -38,6 +57,11 @@ class Edge:
     ``verdict`` mirrors the v3 S4 authoring column when set, so the
     Studio UI can render approve / reject pills without a second
     round-trip.
+    ``operator`` (v4) carries inline transformation metadata when a
+    deterministic extractor sees the source pass through a function /
+    aggregate / filter / join on its way to the target. Shape:
+    ``{op_kind: 'filter'|'join'|'function'|'aggregate'|'projection',
+       expression: 'SUM(amount)'}``. Empty for plain pass-through.
     """
 
     source: ColumnRef
@@ -48,6 +72,7 @@ class Edge:
     evidence: str = ""  # short human-readable provenance hint
     db_id: int | None = None
     verdict: str = ""
+    operator: OperatorMeta | None = None
 
 
 @dataclass(frozen=True)
@@ -118,6 +143,7 @@ __all__ = [
     "CacheStatus",
     "ExtractMode",
     "ColumnRef",
+    "OperatorMeta",
     "Edge",
     "ScopeFragment",
     "CostHint",
