@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 CacheStatus = Literal["hit", "partial", "miss"]
-ExtractMode = Literal["cache_only", "db_fill"]
+ExtractMode = Literal["cache_only", "db_fill", "llm_suggest"]
 
 
 @dataclass(frozen=True)

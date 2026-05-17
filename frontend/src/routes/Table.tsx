@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
-import { AlignLeft, Columns, Sparkles, Database } from "lucide-react";
+import { AlignLeft, Columns, Sparkles, Database, Workflow } from "lucide-react";
 
-import { api } from "../lib/api";
+import { api, lineageRefresh } from "../lib/api";
 import { useScope, scopePath } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
@@ -182,6 +182,33 @@ export default function Table() {
     },
   });
 
+  // "Open lineage" button on the table page: ensures an artifact
+  // exists for the current anchor (creating it if needed), then routes
+  // the user into the canvas. Refresh is cache-only by default so the
+  // round-trip never blocks on a live DB call.
+  const openLineage = useMutation({
+    mutationFn: async () => {
+      if (!scope || !schema || !table) return null;
+      const anchorPath = [schema, table].filter(Boolean).join(".");
+      const result = await lineageRefresh(anchorPath, { profile: scope.profile });
+      const slug = `${schema}-${table}`.replace(/[^A-Za-z0-9_-]+/g, "_");
+      return { slug, anchorPath, profile: scope.profile, result };
+    },
+    onSuccess: (payload) => {
+      if (!payload) return;
+      navigate(
+        `/lineage/${encodeURIComponent(payload.profile)}/${encodeURIComponent(payload.slug)}`,
+      );
+    },
+    onError: (e: Error) => {
+      toast.push({
+        title: "Could not open lineage",
+        description: e.message,
+        tone: "error",
+      });
+    },
+  });
+
   if (!scope || !schema || !table) {
     return (
       <EmptyState
@@ -219,15 +246,27 @@ export default function Table() {
           />
         }
         actions={
-          <Button
-            variant="primary"
-            size="md"
-            leadingIcon={<Sparkles size={14} />}
-            loading={generateTableOnly.isPending || generate.isPending}
-            onClick={() => setConfirmGenerate(true)}
-          >
-            Generate description
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="md"
+              leadingIcon={<Workflow size={14} />}
+              loading={openLineage.isPending}
+              onClick={() => openLineage.mutate()}
+              title="Render this table's lineage and open it in the canvas"
+            >
+              Open lineage
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              leadingIcon={<Sparkles size={14} />}
+              loading={generateTableOnly.isPending || generate.isPending}
+              onClick={() => setConfirmGenerate(true)}
+            >
+              Generate description
+            </Button>
+          </div>
         }
       />
 

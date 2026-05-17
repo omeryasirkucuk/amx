@@ -31,6 +31,7 @@ from amx.web.routers import (
     generate,
     history,
     installs,
+    lineage,
     live_db,
     pending,
     pricing,
@@ -121,6 +122,7 @@ def create_app(
     app.include_router(catalog.router)
     app.include_router(db_cache.router)
     app.include_router(history.router)
+    app.include_router(lineage.router)
     app.include_router(runs.router)
     app.include_router(comments.router)
     app.include_router(ask.router)

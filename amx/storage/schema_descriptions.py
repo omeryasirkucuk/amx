@@ -887,20 +887,31 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "from_entity_id": "Source entity. Indexed jointly with to_entity_id and relationship_type.",
         "to_entity_id": "Destination entity.",
         "relationship_type": (
-            "Edge kind: fk | lineage_source | lineage_target | co_occurs | "
-            "semantic_similar. Drives how /ask presents the edge in narratives."
+            "Edge kind. Legacy values: fk | lineage_source | lineage_target | "
+            "co_occurs | semantic_similar. /lineage v1 added lineage_fk, "
+            "lineage_view_ddl, lineage_name_match. /lineage v2 added "
+            "lineage_query_log (INSERT/CTAS edges mined from history.db), "
+            "lineage_co_occurs (JOIN co-occurrence, weaker), lineage_llm "
+            "(on-demand LLM-inferred edges), lineage_manual (reserved for "
+            "user-authored edges in S4)."
         ),
         "score": (
-            "Strength of the edge in 0..1. 1.0 for hard FKs, lower for inferred relationships."
+            "Strength of the edge in 0..1. 1.0 for hard FKs and manual edges, "
+            "0.9 for query-log INSERT/CTAS, 0.4–0.8 for LLM, 0.3–0.6 for "
+            "name-match heuristic, 0.5 for query-log co-occurrence."
         ),
         "source": (
-            "How the edge was discovered: db_introspect | code_static | "
-            "code_runtime | doc_inferred | embedding. Empty until populated."
+            "How the edge was discovered. Legacy: db_introspect | code_static | "
+            "code_runtime | doc_inferred | embedding. /lineage values: "
+            "database (FK), view_ddl (sqlglot parse), name_match (heuristic), "
+            "query_log (history.db SQL mining), llm (on-demand LLM call), "
+            "manual (reserved for S4 user authoring). Empty until populated."
         ),
         "details_json": (
             "JSON payload with edge-specific evidence — referenced columns "
             "for FKs, source files/lines for code edges, similarity scores "
-            "for embeddings."
+            "for embeddings, raw SQL snippet + run_id for query-log edges, "
+            "and {reasoning, model, prompt_hash, ts} for LLM-inferred edges."
         ),
         "last_seen": (
             "UTC epoch seconds of the last sync that observed this edge. "
