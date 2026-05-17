@@ -336,6 +336,37 @@ class BigQueryAdapter(DatabaseAdapter):
             f"ORDER BY routine_name"
         )
 
+    def list_views_with_definitions(
+        self,
+        engine: Engine,
+        schema: str,
+    ) -> list[dict[str, Any]]:
+        # BigQuery views live in `<project>.<dataset>.INFORMATION_SCHEMA.VIEWS`.
+        # Project comes from the engine URL; SQLAlchemy puts it in the dialect
+        # at run time. The dataset is the AMX-level "schema". Fully qualifying
+        # avoids relying on a session-level default project.
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(
+                    text(
+                        f"SELECT table_name, view_definition "
+                        f"FROM `{schema}`.INFORMATION_SCHEMA.VIEWS "
+                        f"ORDER BY table_name"
+                    )
+                ).fetchall()
+            except Exception:
+                return []
+        return [
+            {
+                "name": str(r[0]),
+                "type": "view",
+                "definition": str(r[1]) if r[1] else None,
+                "comment": None,
+                "metadata": {},
+            }
+            for r in rows
+        ]
+
     def list_stored_procedures(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         with engine.connect() as conn:
             try:

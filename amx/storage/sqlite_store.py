@@ -505,6 +505,40 @@ class SQLiteHistoryStore:
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_sc_expires ON schemas_cache(expires_at)"
                 )
+            # ── view_definitions_cache: per-view DDL + pre-parsed lineage ──
+            # /lineage extractors stay off the wire by default. A single
+            # row per (profile, database, schema, view) caches the raw
+            # CREATE VIEW text and its sqlglot-parsed column lineage. TTL
+            # mirrors column_comments_cache so the cache-first guarantee
+            # is automatic on stable warehouses.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS view_definitions_cache (
+                    cache_key            TEXT PRIMARY KEY,
+                    db_profile           TEXT NOT NULL,
+                    database_name        TEXT NOT NULL DEFAULT '',
+                    schema_name          TEXT NOT NULL,
+                    view_name            TEXT NOT NULL,
+                    ddl_text             TEXT NOT NULL,
+                    dialect              TEXT NOT NULL,
+                    parsed_lineage_json  TEXT,
+                    parse_status         TEXT NOT NULL,
+                    parse_error          TEXT NOT NULL DEFAULT '',
+                    fetched_at           REAL NOT NULL,
+                    expires_at           REAL NOT NULL
+                )
+                """
+            )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_vdc_scope "
+                    "ON view_definitions_cache(db_profile, database_name, schema_name)"
+                )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_vdc_expires "
+                    "ON view_definitions_cache(expires_at)"
+                )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_run_id ON run_results(run_id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_run_results_asset "
@@ -683,6 +717,42 @@ class SQLiteHistoryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_catalog_relationships_from_to ON catalog_relationships(from_entity_id, to_entity_id, relationship_type)"
             )
+            # ── lineage_artifacts: registry of rendered lineage diagrams ──
+            # Each row binds a focal entity (anchor) to a rendered image
+            # on disk plus the edge-set hash that produced it. Drives
+            # /lineage open|refresh|delete|list and lets /open detect
+            # drift without re-running extractors.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lineage_artifacts (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name                TEXT NOT NULL,
+                    db_profile          TEXT NOT NULL,
+                    anchor_entity_id    INTEGER NOT NULL,
+                    depth_up            INTEGER NOT NULL DEFAULT 1,
+                    depth_down          INTEGER NOT NULL DEFAULT 1,
+                    format              TEXT NOT NULL,
+                    output_path         TEXT NOT NULL,
+                    edge_set_hash       TEXT NOT NULL,
+                    node_count          INTEGER NOT NULL,
+                    edge_count          INTEGER NOT NULL,
+                    generated_at        REAL NOT NULL,
+                    extractors_used     TEXT NOT NULL,
+                    extractors_partial  INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (anchor_entity_id) REFERENCES catalog_entities(id)
+                )
+                """
+            )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_lineage_artifacts_name "
+                    "ON lineage_artifacts(name)"
+                )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lineage_artifacts_anchor "
+                    "ON lineage_artifacts(anchor_entity_id)"
+                )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_usage_evidence (

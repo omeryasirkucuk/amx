@@ -401,6 +401,37 @@ class PostgreSQLAdapter(DatabaseAdapter):
 
     # ── Extended object types ─────────────────────────────────────────────
 
+    def list_views_with_definitions(
+        self,
+        engine: Engine,
+        schema: str,
+    ) -> list[dict[str, Any]]:
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(
+                    text(
+                        "SELECT viewname, definition, "
+                        "obj_description(("
+                        "  quote_ident(schemaname) || '.' || quote_ident(viewname)"
+                        ")::regclass) "
+                        "FROM pg_views WHERE schemaname = :schema "
+                        "ORDER BY viewname"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+            except Exception:
+                return []
+        return [
+            {
+                "name": str(r[0]),
+                "type": "view",
+                "definition": str(r[1]) if r[1] else None,
+                "comment": str(r[2]) if r[2] else None,
+                "metadata": {},
+            }
+            for r in rows
+        ]
+
     def list_stored_procedures(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         # PG 11+ distinguishes procedures (prokind='p') from functions
         # ('f') and aggregates ('a'). Older PG only has functions, so

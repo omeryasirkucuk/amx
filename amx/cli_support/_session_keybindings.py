@@ -28,7 +28,18 @@ def _kb_escape_namespace() -> KeyBindings:
 
         return len(get_app().current_buffer.text) == 0
 
-    tabs = ["", "db", "metadata", "docs", "llm", "code", "analyze", "search", "history"]
+    tabs = [
+        "",
+        "db",
+        "metadata",
+        "docs",
+        "llm",
+        "code",
+        "analyze",
+        "search",
+        "history",
+        "lineage",
+    ]
 
     @kb.add("escape")
     def _(event) -> None:  # type: ignore[no-untyped-def]

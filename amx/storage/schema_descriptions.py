@@ -671,6 +671,45 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "fetched_at": "UTC epoch seconds the entry was fetched.",
         "expires_at": "UTC epoch seconds at which the entry becomes stale. Indexed.",
     },
+    # ── view_definitions_cache (local only) ───────────────────────────────
+    "view_definitions_cache": {
+        "__table__": (
+            "Per-view cache of CREATE VIEW DDL and its sqlglot-parsed "
+            "column-lineage. Mirrors column_comments_cache discipline so "
+            "/lineage extractors stay off the wire by default. TTL-controlled: "
+            "rows past expires_at count as cache misses and prompt the user "
+            "before any DB round-trip. Storing parsed_lineage_json alongside "
+            "the raw DDL means subsequent reads emit edges without re-parsing."
+        ),
+        "cache_key": ("Composite key 'profile|database|schema|view'. Primary key for upsert."),
+        "db_profile": "DB profile the cached view belongs to.",
+        "database_name": "Database/catalog of the cached view. Empty string on flat backends.",
+        "schema_name": "Schema containing the view.",
+        "view_name": "View identifier within the schema.",
+        "ddl_text": ("Raw CREATE VIEW DDL text as returned by the backend's system catalog."),
+        "dialect": (
+            "sqlglot dialect tag used when the DDL was parsed (postgres | "
+            "snowflake | bigquery | mysql | duckdb | tsql | …)."
+        ),
+        "parsed_lineage_json": (
+            "JSON dump of the column-lineage extracted from this view's DDL: "
+            "a list of {target_column, sources:[{table, column}]} entries. "
+            "NULL when parse_status != 'ok'."
+        ),
+        "parse_status": (
+            "Outcome of the one-shot sqlglot parse at cache-fill time: "
+            "ok | parse_failed | unsupported_dialect. Edges emit only when 'ok'."
+        ),
+        "parse_error": (
+            "One-line excerpt of the parse error when parse_status != 'ok'. "
+            "Empty string otherwise. Surfaces in /lineage list --verbose."
+        ),
+        "fetched_at": "UTC epoch seconds when the DDL was retrieved from the source DB.",
+        "expires_at": (
+            "UTC epoch seconds after which the row is treated as a cache miss. "
+            "Indexed for the gc sweep."
+        ),
+    },
     # ── catalog_entities (local only) ─────────────────────────────────────
     "catalog_entities": {
         "__table__": (
@@ -866,6 +905,52 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "last_seen": (
             "UTC epoch seconds of the last sync that observed this edge. "
             "Edges not seen for >30 days are eligible for pruning."
+        ),
+    },
+    # ── lineage_artifacts (local only) ────────────────────────────────────
+    "lineage_artifacts": {
+        "__table__": (
+            "Registry of rendered lineage diagrams. Each row pairs a focal "
+            "entity (anchor) with the on-disk image file produced for it, "
+            "the edge-set hash that backs the image, and the extractors "
+            "used. Drives /lineage open, refresh, delete, list. /open uses "
+            "the hash to detect drift without re-running extractors."
+        ),
+        "id": "Surrogate INT primary key.",
+        "name": (
+            "User-facing slug used by /lineage open|refresh|delete. "
+            "Unique across all artifacts in this history store."
+        ),
+        "db_profile": (
+            "DB profile the anchor entity belongs to. Matches "
+            "catalog_entities.db_profile and disambiguates artifacts with "
+            "the same anchor name across profiles."
+        ),
+        "anchor_entity_id": (
+            "catalog_entities.id of the focal table or column the diagram "
+            "radiates from. Foreign key into catalog_entities."
+        ),
+        "depth_up": "Upstream hops included when this artifact was rendered.",
+        "depth_down": "Downstream hops included when this artifact was rendered.",
+        "format": "Image format on disk: 'png' | 'svg' | 'jpg'.",
+        "output_path": "Absolute filesystem path of the rendered image file.",
+        "edge_set_hash": (
+            "SHA-256 of the sorted (from_id, to_id, type, score) tuples used "
+            "in this render. /lineage open compares against the current hash "
+            "to flag stale renders without re-extracting."
+        ),
+        "node_count": "Number of distinct entity nodes drawn in the diagram.",
+        "edge_count": "Number of edges drawn in the diagram.",
+        "generated_at": "UTC epoch seconds when this artifact was rendered.",
+        "extractors_used": (
+            "JSON array of extractor identifiers that contributed edges, "
+            "e.g. ['fk','view_ddl','name_match']."
+        ),
+        "extractors_partial": (
+            "1 when one or more extractors reported cache misses that the "
+            "user declined to fill — the artifact reflects only cached data. "
+            "0 when every extractor returned a full cache hit or the user "
+            "filled the misses. Renderer adds a footer banner when 1."
         ),
     },
     # ── catalog_usage_evidence (local only) ───────────────────────────────

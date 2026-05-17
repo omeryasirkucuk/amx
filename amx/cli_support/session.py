@@ -677,6 +677,7 @@ _CROSS_NAMESPACE_HEADS: frozenset[str] = frozenset(
         "setup",
         "config",
         "studio",
+        "lineage",
     }
 )
 
@@ -852,6 +853,7 @@ def run_interactive_session(
     analyze_cmd_heads = _registry_cmd_heads("analyze")
     search_cmd_heads = _registry_cmd_heads("search") | frozenset({"embeddings", "embedding"})
     history_cmd_heads = _registry_cmd_heads("history")
+    lineage_cmd_heads = _registry_cmd_heads("lineage")
 
     # SIGWINCH (terminal resize) is POSIX-only — Windows raises
     # AttributeError on signal.SIGWINCH. Guard so the interactive session
@@ -1029,6 +1031,7 @@ def run_interactive_session(
                 "analyze",
                 "search",
                 "history",
+                "lineage",
             }:
                 namespace = "metadata" if cmdline == "manual" else cmdline
                 console.clear()
@@ -1081,6 +1084,9 @@ def run_interactive_session(
                 elif head in history_cmd_heads:
                     namespace = "history"
                     info("Assumed /history namespace for this command.")
+                elif head in lineage_cmd_heads:
+                    namespace = "lineage"
+                    info("Assumed /lineage namespace for this command.")
 
             if namespace == "docs":
                 if parts[0] == "search-docs" and len(parts) == 1:

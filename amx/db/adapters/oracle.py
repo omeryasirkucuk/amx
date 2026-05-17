@@ -410,6 +410,39 @@ class OracleAdapter(DatabaseAdapter):
 
     # ── Extended object types ─────────────────────────────────────────────
 
+    def list_views_with_definitions(
+        self,
+        engine: Engine,
+        schema: str,
+    ) -> list[dict[str, Any]]:
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(
+                    text(
+                        "SELECT v.view_name, v.text, c.comments "
+                        "FROM all_views v "
+                        "LEFT JOIN all_tab_comments c "
+                        "       ON c.owner = v.owner "
+                        "      AND c.table_name = v.view_name "
+                        "      AND c.table_type = 'VIEW' "
+                        "WHERE v.owner = :owner "
+                        "ORDER BY v.view_name"
+                    ),
+                    {"owner": (schema or "").upper()},
+                ).fetchall()
+            except Exception:
+                return []
+        return [
+            {
+                "name": str(r[0]),
+                "type": "view",
+                "definition": str(r[1]) if r[1] else None,
+                "comment": str(r[2]) if r[2] else None,
+                "metadata": {},
+            }
+            for r in rows
+        ]
+
     def list_stored_procedures(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         # ALL_PROCEDURES rows are duplicated when a procedure lives
         # inside a package — restrict to standalone procedures

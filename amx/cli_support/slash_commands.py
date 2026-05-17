@@ -115,6 +115,18 @@ _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (
     SlashCommand("/search", "root", "Enter /search namespace"),
     SlashCommand("/history", "root", "Enter /history namespace"),
     SlashCommand(
+        "/lineage",
+        "root",
+        "Enter /lineage namespace",
+        long_desc=(
+            "Render and manage column-level lineage diagrams. AMX derives "
+            "edges from cached schema introspection (FK constraints), parsed "
+            "view DDL, and a name-match heuristic — no live DB call unless "
+            "you explicitly confirm. Subcommands: create, list, open, "
+            "refresh, delete, show."
+        ),
+    ),
+    SlashCommand(
         "/studio",
         "root",
         "Open AMX Studio in your browser",
@@ -492,6 +504,53 @@ _HISTORY_COMMANDS: tuple[SlashCommand, ...] = (
     ),
 )
 
+_LINEAGE_COMMANDS: tuple[SlashCommand, ...] = (
+    SlashCommand(
+        "/create",
+        "lineage",
+        "Render a lineage diagram (/create <table> [--out PATH --format svg|png|jpg])",
+        long_desc=(
+            "Run extractors in cache-only mode by default. If anything would "
+            "require a DB round-trip, AMX prints the cost and asks before "
+            "fetching. --no-cache forces fresh; --cache-only refuses any DB "
+            "hit; --prefetch auto-confirms the cache fill."
+        ),
+    ),
+    SlashCommand("/list", "lineage", "List rendered lineage artifacts"),
+    SlashCommand(
+        "/open",
+        "lineage",
+        "Open a saved lineage diagram (/open <name_or_id>)",
+        long_desc=(
+            "Reads the cached image file from disk and opens it in the "
+            "platform default viewer. No DB call. Warns when the edge-set "
+            "hash differs from the current catalog state."
+        ),
+    ),
+    SlashCommand(
+        "/refresh",
+        "lineage",
+        "Re-render an existing lineage artifact (/refresh <name_or_id>)",
+        long_desc=(
+            "Re-runs the extractors with the artifact's stored scope and "
+            "writes a new image at the same path. Cache-first by default; "
+            "--no-cache invalidates the view-cache for the anchor's schema "
+            "and forces a fresh DB fetch."
+        ),
+    ),
+    SlashCommand(
+        "/delete",
+        "lineage",
+        "Delete a lineage artifact row and its file (/delete <name_or_id>)",
+    ),
+    SlashCommand(
+        "/show",
+        "lineage",
+        "Text-mode upstream/downstream tree for a table or column",
+    ),
+)
+
+
 # Search-namespace cross-cuts: extra commands callable from /search even
 # though their handlers live elsewhere. Used by the dispatch chain to
 # accept these without bouncing the user back to root.
@@ -518,6 +577,7 @@ ALL_COMMANDS: tuple[SlashCommand, ...] = (
     *_ANALYZE_COMMANDS,
     *_SEARCH_COMMANDS,
     *_HISTORY_COMMANDS,
+    *_LINEAGE_COMMANDS,
 )
 
 
@@ -559,6 +619,8 @@ def commands_for_namespace(namespace: str) -> tuple[SlashCommand, ...]:
         return (*_ROOT_BUILTINS, *_SEARCH_COMMANDS)
     if ns == "history":
         return (*_ROOT_BUILTINS, *_HISTORY_COMMANDS)
+    if ns == "lineage":
+        return (*_ROOT_BUILTINS, *_LINEAGE_COMMANDS)
     return _ROOT_BUILTINS
 
 
@@ -579,6 +641,7 @@ def cmd_heads_for_namespace(namespace: str) -> frozenset[str]:
         "analyze": _ANALYZE_COMMANDS,
         "search": _SEARCH_COMMANDS,
         "history": _HISTORY_COMMANDS,
+        "lineage": _LINEAGE_COMMANDS,
     }
     if ns not in table:
         return frozenset()
@@ -609,7 +672,17 @@ def find_command(slash_or_head: str) -> SlashCommand | None:
 
 def all_namespaces() -> tuple[str, ...]:
     """Distinct namespaces that have at least one command."""
-    return ("db", "metadata", "docs", "llm", "code", "analyze", "search", "history")
+    return (
+        "db",
+        "metadata",
+        "docs",
+        "llm",
+        "code",
+        "analyze",
+        "search",
+        "history",
+        "lineage",
+    )
 
 
 __all__ = [

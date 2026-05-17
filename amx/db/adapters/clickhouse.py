@@ -154,6 +154,35 @@ class ClickHouseAdapter(DatabaseAdapter):
             ).fetchall()
         return [str(r[0]) for r in rows]
 
+    def list_views_with_definitions(
+        self,
+        engine: Engine,
+        schema: str,
+    ) -> list[dict[str, Any]]:
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(
+                    text(
+                        "SELECT name, create_table_query, comment "
+                        "FROM system.tables "
+                        "WHERE database = :db AND engine = 'View' "
+                        "ORDER BY name"
+                    ),
+                    {"db": schema},
+                ).fetchall()
+            except Exception:
+                return []
+        return [
+            {
+                "name": str(r[0]),
+                "type": "view",
+                "definition": str(r[1]) if r[1] else None,
+                "comment": str(r[2]) if r[2] else None,
+                "metadata": {},
+            }
+            for r in rows
+        ]
+
     # ── Column profiling ──────────────────────────────────────────────────
 
     def column_stats_sql(self, fqn: str, quoted_col: str) -> str:

@@ -24,7 +24,18 @@ def _canonical_namespace(namespace: str) -> str:
     return "metadata" if namespace == "manual" else namespace
 
 
-_TAB_ORDER = ["root", "db", "metadata", "docs", "llm", "code", "analyze", "search", "history"]
+_TAB_ORDER = [
+    "root",
+    "db",
+    "metadata",
+    "docs",
+    "llm",
+    "code",
+    "analyze",
+    "search",
+    "history",
+    "lineage",
+]
 
 
 def _print_tab_bar(namespace: str) -> None:
@@ -74,6 +85,11 @@ def _print_namespace_hint(
         info("Search generated/manual metadata, join candidates, and code usage evidence.")
     elif namespace == "history":
         info("View past metadata extractions. Use /review to inspect results.")
+    elif namespace == "lineage":
+        info(
+            "Render column-level lineage diagrams from cached metadata. "
+            "Each subcommand walks a picker — /create starts a guided wizard."
+        )
 
 
 def _print_session_help(*, namespace: str, cfg: AMXConfig) -> None:
@@ -383,6 +399,36 @@ Commands:
 
 SQLite file:
   ~/.amx/history.db
+"""
+        )
+        return
+
+    if namespace == "lineage":
+        out.print(
+            """
+[heading]Help — /lineage namespace[/heading]
+Cache-first, wizard-driven column-level lineage diagrams. Every subcommand
+walks an ask_choice/ask picker chain when invoked bare — no flag is
+required. Power-user flags exist but are optional.
+
+Commands:
+  1) /back                       Return to root namespace
+  2) /create                     Wizard: profile → schema → table → (column)
+                                 → format → depth → cache strategy → render
+  3) /list                       Show all rendered artifacts in a table
+  4) /open                       Picker over existing artifacts; opens the file
+  5) /refresh                    Picker over artifacts; re-extracts + re-renders
+  6) /delete                     Picker over artifacts; removes row + file
+  7) /show                       Wizard for anchor; text-mode tree (no image)
+
+Cache strategies (asked at the end of /create and /refresh):
+  • cache-only           — never call the DB, use only what's cached (default)
+  • ask if needed        — mid-run prompt if a cache miss occurs
+  • fetch from DB        — auto-confirm cache fill before rendering
+  • force fresh          — invalidate view-DDL cache and re-pull from DB
+
+Artifacts:
+  ~/.amx/lineage/<slug>.<format>     (default output location)
 """
         )
         return
