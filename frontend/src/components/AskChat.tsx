@@ -152,6 +152,12 @@ export default function AskChat({
   const [turns, setTurns] = useState<SubmittedTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [activeJob, setActiveJob] = useState<string | null>(null);
+  // Wall-clock when the current ask job started — used to show a
+  // live elapsed-time tick in the response bubble so the user is
+  // never staring at a static "Reasoning…" for 5+ seconds without
+  // any signal that AMX is actually working.
+  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+  const [tick, setTick] = useState<number>(0);
   // ``cancelling`` flips to true the instant the user clicks Cancel,
   // ahead of the SSE ``job.cancelled`` event. The backend can't abort
   // an in-flight LLM HTTP call (LiteLLM is synchronous), so cancellation
@@ -231,11 +237,23 @@ export default function AskChat({
   const activeLlmProfile = ctxForLlm.data?.active_llm_profile ?? null;
   const activeLlmModel = ctxForLlm.data?.llm_model ?? null;
 
+  // Drive an interval timer while a job is running so the live
+  // "elapsed seconds" tick in the response bubble re-renders every
+  // 200 ms. The tick state is otherwise unused — just a render trigger.
+  useEffect(() => {
+    if (!activeJob || jobStartedAt == null) {
+      return;
+    }
+    const handle = window.setInterval(() => setTick((n) => n + 1), 200);
+    return () => window.clearInterval(handle);
+  }, [activeJob, jobStartedAt]);
+
   // Reseed history when the parent picks a different session.
   useEffect(() => {
     setSessionId(selectedSessionId);
     setTurns(seedTurns ?? []);
     setActiveJob(null);
+    setJobStartedAt(null);
     setSubmitError(null);
     setSubmitErrorHint(null);
     // Drop the "_new_" scratch entry when the parent transitions us
@@ -269,6 +287,7 @@ export default function AskChat({
           if (cancelled || !stillThis()) return;
           if (status.status === "running" || status.status === "queued") {
             setActiveJob(savedJobId);
+            setJobStartedAt(Date.now());
           } else {
             // Worker terminated while we were away. The assistant turn
             // (or failure) is already persisted to chat_sessions; ask
@@ -497,6 +516,7 @@ export default function AskChat({
         ];
       });
       setActiveJob(null);
+      setJobStartedAt(null);
       setCancelling(false);
       clearAskActiveJob(sessionKey);
       return;
@@ -508,6 +528,7 @@ export default function AskChat({
       // submitError block below replaces it with the clean error
       // surface so we don't leave an orphaned user-only bubble.
       setActiveJob(null);
+      setJobStartedAt(null);
       setCancelling(false);
       clearAskActiveJob(sessionKey);
       return;
@@ -539,6 +560,7 @@ export default function AskChat({
       setSubmitErrorHint("configure-llm");
     }
     setActiveJob(null);
+    setJobStartedAt(null);
     setCancelling(false);
     clearAskActiveJob(sessionKey);
   }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta, finalCitations, sessionKey, clearAskActiveJob, cancelling, wasCancelled]);
@@ -592,6 +614,7 @@ export default function AskChat({
       }
       setSessionId(result.session_id);
       setActiveJob(result.job_id);
+      setJobStartedAt(Date.now());
       // Persist the in-flight job under the resolved session key so a
       // navigation-away-and-back can reattach the SSE stream. For a
       // brand-new session we know the real id from the response — use
@@ -776,15 +799,20 @@ export default function AskChat({
                 <CircleStop size={11} /> Cancelling…
               </div>
             )}
+            {!cancelling && (
+              <LiveStatusLine
+                jobStartedAt={jobStartedAt}
+                tick={tick}
+                hasThinking={!!thinking}
+                hasActivity={activity.length > 0}
+                pendingActivity={activity.some((row) => row.phase === "pending")}
+                hasStreamingAnswer={!!streamingAnswer}
+                llmModel={activeLlmModel ?? activeLlmProfile ?? null}
+              />
+            )}
             {activity.length > 0 && <ActivityFeed rows={activity} />}
             {thinking && !cancelling ? <ThinkingBlock text={thinking} /> : null}
-            {streamingAnswer ? (
-              <MarkdownBody text={streamingAnswer} />
-            ) : (
-              !thinking && !cancelling && activity.length === 0 && (
-                <span className="text-sm text-ink-dim">Reasoning…</span>
-              )
-            )}
+            {streamingAnswer && <MarkdownBody text={streamingAnswer} />}
             {toolCalls.length > 0 && <ToolCallList calls={toolCalls} live />}
             {finalCitations.length > 0 && (
               <CitationsList citations={finalCitations} />
@@ -1110,6 +1138,62 @@ type ActivityRow = {
   scopeProfiles?: string[];
   elapsedMs?: number;
 };
+
+function LiveStatusLine({
+  jobStartedAt,
+  tick: _tick,
+  hasThinking,
+  hasActivity,
+  pendingActivity,
+  hasStreamingAnswer,
+  llmModel,
+}: {
+  jobStartedAt: number | null;
+  tick: number;
+  hasThinking: boolean;
+  hasActivity: boolean;
+  pendingActivity: boolean;
+  hasStreamingAnswer: boolean;
+  llmModel: string | null;
+}) {
+  // Always-on status row at the top of the live response bubble.
+  // The user used to stare at a static "Reasoning…" for ~5 s before
+  // the first SSE event arrived; this row updates every 200 ms with
+  // elapsed time + a phase label so the system never looks frozen.
+  const elapsedSec =
+    jobStartedAt != null
+      ? Math.max(0, (Date.now() - jobStartedAt) / 1000)
+      : 0;
+  const elapsedLabel =
+    elapsedSec >= 10
+      ? `${elapsedSec.toFixed(0)}s`
+      : `${elapsedSec.toFixed(1)}s`;
+  let label: string;
+  if (hasStreamingAnswer) {
+    label = "Writing answer";
+  } else if (pendingActivity) {
+    label = "Running tool";
+  } else if (hasActivity) {
+    label = "Picking next step";
+  } else if (hasThinking) {
+    label = "Reasoning";
+  } else {
+    label = llmModel ? `Talking to ${llmModel}` : "Talking to LLM";
+  }
+  return (
+    <div
+      aria-live="polite"
+      className="mb-2 flex items-center gap-2 text-xs text-ink-muted"
+    >
+      <span
+        aria-hidden
+        className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+      />
+      <span className="font-medium text-ink">{label}…</span>
+      <span className="ml-auto font-mono text-ink-dim">{elapsedLabel}</span>
+    </div>
+  );
+}
 
 function ActivityFeed({ rows }: { rows: ActivityRow[] }) {
   if (rows.length === 0) return null;
