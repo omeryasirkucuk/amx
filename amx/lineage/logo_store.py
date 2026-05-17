@@ -24,11 +24,117 @@ Logo nodes (placements on a saved canvas) live in
 from __future__ import annotations
 
 import base64
+import logging
 import re
 import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from amx.lineage.default_logos import DEFAULT_LOGOS, render_logo_svg, simpleicons_url
+from amx.lineage.default_logos import (
+    DEFAULT_LOGOS,
+    PLACEHOLDER_MARKER,
+    DefaultLogo,
+    render_logo_svg,
+)
+
+_log = logging.getLogger("amx.lineage.logo_store")
+
+# ── SimpleIcons fetch (seed-time only, never at request time) ────────────
+#
+# Cap on a fetched SVG. Brand marks are typically 500-2000 bytes; anything
+# above 50 KB is either a wrong response or a tarpit, so we discard and
+# fall back to the placeholder.
+_MAX_FETCH_BYTES = 50 * 1024
+_FETCH_TIMEOUT_S = 3.0
+
+
+def _get_svg(url: str) -> bytes | None:
+    """Best-effort fetch of one SVG; returns bytes or ``None`` on failure.
+
+    Filters: HTTP 200, sane size, response body that actually starts
+    like an SVG / XML preamble. Anything else (404 HTML stub, JSON
+    error envelope, oversized payload, timeout) returns ``None``.
+    """
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "AMX/lineage"})
+        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S) as resp:  # noqa: S310 - trusted CDN
+            if getattr(resp, "status", 200) != 200:
+                return None
+            body = resp.read(_MAX_FETCH_BYTES + 1)
+        if not body or len(body) > _MAX_FETCH_BYTES:
+            return None
+        head = body[:64].lower().lstrip()
+        if not (head.startswith(b"<?xml") or head.startswith(b"<svg")):
+            return None
+        return body
+    except Exception as exc:  # noqa: BLE001 - urllib raises many subtypes
+        _log.debug("logo fetch failed for %s: %s", url, exc)
+        return None
+
+
+def _fetch_logo_bytes(logo: DefaultLogo) -> bytes | None:
+    """Try SimpleIcons first, then Iconify, then give up.
+
+    SimpleIcons is the smallest payload (single brand-color path), so
+    we prefer it. Iconify's ``logos`` collection has many of the
+    brands SimpleIcons has dropped (AWS, Azure, Power BI, Tableau,
+    Redshift, dbt) and they ship multicolor so no tinting needed.
+    """
+    color_hex = logo.color.lstrip("#")
+    if logo.simpleicons_slug:
+        body = _get_svg(f"https://cdn.simpleicons.org/{logo.simpleicons_slug}/{color_hex}")
+        if body:
+            return body
+    if logo.iconify_slug and ":" in logo.iconify_slug:
+        set_name, icon_name = logo.iconify_slug.split(":", 1)
+        body = _get_svg(f"https://api.iconify.design/{set_name}/{icon_name}.svg")
+        if body:
+            return body
+    return None
+
+
+def _data_url_from_bytes(svg_bytes: bytes) -> str:
+    return "data:image/svg+xml;base64," + base64.b64encode(svg_bytes).decode("ascii")
+
+
+def _placeholder_data_url(logo: DefaultLogo) -> str:
+    """Render the brand-color + initials fallback as a data URL."""
+    return _data_url_from_bytes(render_logo_svg(logo).encode("utf-8"))
+
+
+def _is_placeholder_data_url(data_url: str) -> bool:
+    """Return ``True`` when ``data_url`` is our own placeholder render.
+
+    Two detection signals so we catch both:
+
+    * **Explicit marker** — new placeholders embed
+      ``<!-- amx-placeholder -->`` so detection is exact.
+    * **Structural signature** — legacy placeholders written before
+      the marker landed have a tell-tale ``<rect x="4" y="4"
+      width="120"`` followed by ``<text``. Real brand SVGs are
+      almost always built from ``<path>`` elements — this combo
+      is specific to our renderer.
+
+    Either signal triggers a re-fetch attempt on the next seed pass,
+    so an existing install upgrades placeholder rows to real logos
+    once the Iconify fallback ships.
+    """
+    if not data_url:
+        return False
+    marker = "," in data_url and data_url.split(",", 1)[1]
+    if not marker:
+        return False
+    try:
+        decoded = base64.b64decode(marker, validate=False)
+    except Exception:
+        return False
+    if PLACEHOLDER_MARKER.encode("ascii") in decoded:
+        return True
+    return (
+        b'<rect x="4" y="4" width="120"' in decoded
+        and b"<text " in decoded
+    )
 
 # ── byte-size guard on custom uploads ────────────────────────────────────
 #
@@ -68,60 +174,115 @@ class LogoStoreError(RuntimeError):
 def seed_default_logos(hs: Any) -> int:
     """Seed (or refresh) the bundled default logos in ``lineage_logos``.
 
-    For each entry in :data:`DEFAULT_LOGOS`:
+    Each entry is materialised as an inline base64 SVG ``data_url`` so
+    the canvas never depends on an external CDN at render time. Two
+    paths feed the inlining:
 
-    * If the brand has a SimpleIcons slug, the row gets the CDN URL
-      (``https://cdn.simpleicons.org/<slug>/<color>``) — actual brand
-      mark, brand color, no shipping binaries.
-    * If the slug is empty (no SimpleIcons entry — e.g. Dfive), the
-      placeholder SVG renderer fills ``data_url`` so the row still has
-      *something* to display until the user uploads a real custom logo.
+    * **SimpleIcons-backed brands**: we GET the CDN SVG once at seed
+      time (parallel, ``_FETCH_TIMEOUT_S`` per request) and embed the
+      bytes. Once ``data_url`` is set we never re-fetch — the next
+      init is O(0) network calls.
+    * **Fallback**: when the slug is empty (Dfive) or the fetch fails
+      (SimpleIcons has dropped a number of brands for trademark
+      reasons — AWS, Azure, Power BI, Tableau, Redshift among them;
+      or transient network errors), the placeholder SVG
+      (brand-color square + initials) is stored instead. Users
+      replace those via the picker's custom-upload tab.
 
-    Re-runs on every init: existing default rows are **UPDATEd in
-    place** so label / category / URL changes in the manifest
-    propagate to already-seeded stores. New defaults are INSERTed.
-    The return value is the count of *new inserts only* — re-seeds
-    return 0 even though they may have updated rows, so the
-    idempotency contract for callers (no new rows after the first
-    seed) is preserved.
+    Idempotency contract: rows whose ``data_url`` is already populated
+    are left untouched. Returns the count of *new inserts* — re-seeds
+    return 0 even when label / category got refreshed on existing rows.
     """
     inserted = 0
     now = time.time()
+
+    # Snapshot the existing default rows so we know which keys still
+    # need inlining and which can be skipped without a network call.
+    with hs._connect() as conn:
+        existing_rows: dict[str, tuple[int, str]] = {
+            str(r[0]): (int(r[1]), str(r[2] or ""))
+            for r in conn.execute(
+                "SELECT key, id, data_url FROM lineage_logos WHERE source = 'default'"
+            ).fetchall()
+        }
+
+    # Decide which entries actually need a fetch:
+    #   * Must have at least one slug (SimpleIcons or Iconify).
+    #   * Must not already have a *real* inlined data URL — placeholder
+    #     rows from a previous outage are eligible for re-fetch so a
+    #     later online seed can upgrade them.
+    to_fetch: list[DefaultLogo] = []
+    for logo in DEFAULT_LOGOS:
+        if not (logo.simpleicons_slug or logo.iconify_slug):
+            continue
+        existing = existing_rows.get(logo.key)
+        if existing and existing[1] and not _is_placeholder_data_url(existing[1]):
+            continue
+        to_fetch.append(logo)
+
+    fetched_bytes: dict[str, bytes | None] = {}
+    if to_fetch:
+        # First install is the only hot path; subsequent inits skip
+        # this block entirely because every row already has a data URL.
+        # Each future tries SimpleIcons first, then Iconify.
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futures = {ex.submit(_fetch_logo_bytes, logo): logo.key for logo in to_fetch}
+            for fut, key in futures.items():
+                try:
+                    fetched_bytes[key] = fut.result()
+                except Exception:  # noqa: BLE001 - defensive
+                    fetched_bytes[key] = None
+
     with hs._connect() as conn:
         for logo in DEFAULT_LOGOS:
-            if logo.simpleicons_slug:
-                url = simpleicons_url(logo)
-                data_url = ""
-            else:
-                svg = render_logo_svg(logo)
-                data_url = "data:image/svg+xml;base64," + base64.b64encode(
-                    svg.encode("utf-8")
-                ).decode("ascii")
-                url = ""
+            existing = existing_rows.get(logo.key)
+            already_real = bool(
+                existing and existing[1] and not _is_placeholder_data_url(existing[1])
+            )
+            if already_real:
+                # Cached real logo — only refresh manifest metadata,
+                # never touch the bytes.
+                conn.execute(
+                    """
+                    UPDATE lineage_logos
+                       SET label = ?, category = ?, url = ''
+                     WHERE id = ?
+                    """,
+                    (logo.label, logo.category, existing[0]),
+                )
+                continue
 
-            existing = conn.execute(
-                "SELECT id FROM lineage_logos WHERE key = ? AND source = 'default'",
-                (logo.key,),
-            ).fetchone()
+            svg_bytes = fetched_bytes.get(logo.key)
+            if svg_bytes:
+                data_url = _data_url_from_bytes(svg_bytes)
+            elif existing and existing[1]:
+                # Existing placeholder + fetch still failing → keep the
+                # previous placeholder so the row isn't blanked. Next
+                # online init can try again.
+                data_url = existing[1]
+            else:
+                data_url = _placeholder_data_url(logo)
+
             if existing:
                 conn.execute(
                     """
                     UPDATE lineage_logos
-                       SET label = ?, category = ?, data_url = ?, url = ?
+                       SET label = ?, category = ?, data_url = ?, url = ''
                      WHERE id = ?
                     """,
-                    (logo.label, logo.category, data_url, url, int(existing[0])),
+                    (logo.label, logo.category, data_url, existing[0]),
                 )
             else:
                 conn.execute(
                     """
                     INSERT INTO lineage_logos
                         (key, label, category, source, data_url, url, created_at)
-                    VALUES (?, ?, ?, 'default', ?, ?, ?)
+                    VALUES (?, ?, ?, 'default', ?, '', ?)
                     """,
-                    (logo.key, logo.label, logo.category, data_url, url, now),
+                    (logo.key, logo.label, logo.category, data_url, now),
                 )
                 inserted += 1
+
     return inserted
 
 
