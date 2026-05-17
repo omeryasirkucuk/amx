@@ -1177,12 +1177,31 @@ export interface ResultRow {
 
 // ── Lineage (v2) ────────────────────────────────────────────────────────
 
+export interface LineageNodeColumn {
+  name: string;
+  dtype: string;
+}
+
 export interface LineageNode {
   id: string;
   label: string;
-  kind: "table" | "column";
+  /** v4 — 'operator' is the synthetic node kind that appears between
+   *  source and target columns when a transform was detected (filter,
+   *  join, function, aggregate). */
+  kind: "table" | "column" | "operator";
   anchor: boolean;
   described: boolean;
+  /** v4 — per-column rows on a table node. Empty / undefined when the
+   *  catalog cache has no column entries for the table. */
+  columns?: LineageNodeColumn[];
+  /** v4 operator nodes only — the SQL fragment + classification. */
+  op_kind?: string;
+  expression?: string;
+}
+
+export interface LineageEdgeOperator {
+  op_kind: string;
+  expression: string;
 }
 
 export interface LineageEdge {
@@ -1197,6 +1216,17 @@ export interface LineageEdge {
   evidence: string;
   /** S4 authoring verdict: '', 'approved', 'rejected', 'pending'. */
   verdict?: string;
+  /** v4 — column-level edges populate these; empty string for
+   *  table-grain edges (legacy v1-v3 behaviour). */
+  from_column?: string;
+  to_column?: string;
+  /** v4 — present on the operator→target half of an operator chain,
+   *  so the consuming canvas can label the edge or expose the
+   *  expression on hover. */
+  operator?: LineageEdgeOperator;
+  /** v4 — 'operator_input' / 'operator_output' marker on the two
+   *  halves of an operator chain. Empty for plain edges. */
+  role?: string;
 }
 
 export interface LineagePayload {
@@ -1367,6 +1397,10 @@ export async function lineageCreateEdge(payload: {
   source_fqn: string;
   target_fqn: string;
   notes?: string;
+  /** v4 — column-level overrides for the parsed-from-FQN values. The
+   *  backend honours these when both are present. */
+  source_column?: string | null;
+  target_column?: string | null;
 }): Promise<LineageManualEdgeResponse> {
   return apiFetch<LineageManualEdgeResponse>("/api/lineage/edges", {
     method: "POST",

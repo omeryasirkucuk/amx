@@ -138,11 +138,23 @@ export default function LineageDetail() {
   };
 
   const createEdge = useMutation({
-    mutationFn: ({ source, target }: { source: string; target: string }) =>
+    mutationFn: ({
+      source,
+      target,
+      sourceColumn,
+      targetColumn,
+    }: {
+      source: string;
+      target: string;
+      sourceColumn: string | null;
+      targetColumn: string | null;
+    }) =>
       lineageCreateEdge({
         profile: profileName,
         source_fqn: source,
         target_fqn: target,
+        source_column: sourceColumn,
+        target_column: targetColumn,
       }),
     onSuccess: invalidateCanvas,
     onError: (e: Error) => {
@@ -200,11 +212,16 @@ export default function LineageDetail() {
     });
   };
 
-  const handleCreateEdge = (sourceId: string, targetId: string) => {
+  const handleCreateEdge = (conn: {
+    source: string;
+    target: string;
+    sourceColumn: string | null;
+    targetColumn: string | null;
+  }) => {
     // Source / target are node ids — i.e. "schema.table" or
-    // "database.schema.table". The backend resolver accepts either
-    // shape via _resolve_entity_id_strict.
-    createEdge.mutate({ source: sourceId, target: targetId });
+    // "database.schema.table". sourceColumn / targetColumn come from
+    // the React Flow port handles (column names on TableNode rows).
+    createEdge.mutate(conn);
   };
 
   // v3 S5 — rejected-edge toggle. Default hides them so the canvas
