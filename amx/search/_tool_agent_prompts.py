@@ -171,7 +171,7 @@ def agent_system_prompt(
         + scope_block
         + focus_block
         + "\nFAST-PATH ROUTING (one tool, one answer, never chain to 'verify'):\n"
-        "  * 'how many tables don't have comments' / 'coverage' / 'kaç tablo comment'siz' /\n"
+        "  * 'how many tables don't have comments' / 'coverage' /\n"
         "    'what fraction is documented' (any COUNT question about descriptions)\n"
         "      → catalog_coverage_summary. NEVER find_assets_missing_comment for counts —\n"
         "      that tool is live-only and gets refused; coverage questions live in the cache.\n"
