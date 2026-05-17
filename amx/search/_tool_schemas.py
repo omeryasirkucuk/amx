@@ -125,17 +125,21 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "catalog_coverage_summary",
             "description": (
-                "Return per-profile + per-schema counts of how many tables "
-                "and columns are described vs undescribed in the catalog. "
-                "One SQL GROUP BY against ``catalog_entities`` — sub-50 ms.\n\n"
-                "Call this FIRST whenever the user asks any variation of "
-                "'how many tables don't have comments?', 'how many columns "
-                "are documented?', 'what's our description coverage?', 'is "
-                "this schema covered?', 'which schemas are still missing "
-                "comments?', 'how complete is our documentation?'. The "
-                "response carries `profiles` (one row per profile+schema) "
-                "and `totals` (sum across the scope) — quote the numbers "
-                "directly without chaining describe_table per asset.\n\n"
+                "CACHE tool — instant counts of described vs undescribed "
+                "tables / columns per profile + schema. One SQL GROUP BY "
+                "against the catalog cache; sub-50 ms; always available "
+                "(cache-only Ask never blocks it).\n\n"
+                "ALWAYS pick this for COUNT / coverage / 'how many' "
+                "questions: 'how many tables don't have comments?', "
+                "'kaç tablo comment'siz?', 'how many columns are "
+                "documented?', 'what's our description coverage?', "
+                "'is this schema covered?', 'how complete is our "
+                "documentation?', 'what fraction is described?'.\n\n"
+                "PREFER OVER ``find_assets_missing_comment`` for any "
+                "question that wants a NUMBER. ``find_assets_missing_comment`` "
+                "is for NAMED LISTS only ('list the tables that are missing "
+                "comments') and is live-only, so it gets refused in "
+                "cache-only mode anyway.\n\n"
                 "Response shape: ``{\"profiles\": [{\"db_profile\", "
                 "\"database\", \"schema\", \"total_tables\", "
                 "\"undocumented_tables\", \"documented_tables\", "
@@ -143,7 +147,8 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "\"documented_columns\", \"table_coverage_pct\", "
                 "\"column_coverage_pct\", \"last_synced_at\"}], "
                 "\"totals\": {…}, \"scope\": [profiles], "
-                "\"source\": \"catalog\"}``."
+                "\"source\": \"catalog\"}``. Quote `totals.undocumented_tables` "
+                "and per-schema breakdowns directly; do not chain anything else."
             ),
             "parameters": {
                 "type": "object",
@@ -724,17 +729,19 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "find_assets_missing_comment",
             "description": (
-                "Return tables and/or columns that have NO comment in the live "
-                "database (queries the DB directly, NOT the catalog). Use this for "
-                "'are there any tables without a description?', 'which tables are "
-                "missing comments?', 'tables without descriptions', 'undocumented assets'. "
-                "Catalog data may be stale right after a /run-apply, so always use "
-                "this live-DB check for coverage questions instead of the concept "
-                "search tools. By default, system / extension assets (e.g. "
-                "pg_stat_statements, pg_statio_*) are filtered out — same rule "
-                "the /run flow uses; AMX never describes those. Set "
-                "``include_system=True`` only if the user EXPLICITLY asks about "
-                "system tables (e.g. 'including system views')."
+                "LIVE-DB tool: enumerate the SPECIFIC tables / columns whose "
+                "comments are NULL right now in the warehouse. Queries the DB "
+                "directly per asset; takes seconds and is BLOCKED in cache-only "
+                "Ask mode (the user must enable Live refresh first).\n\n"
+                "Use this ONLY when the user asks for a NAMED LIST: 'list the "
+                "tables that are missing comments', 'show me which columns have "
+                "no description', 'name the undocumented assets'. The user "
+                "expects asset names back, not a count.\n\n"
+                "DO NOT use this for COUNT / coverage / 'how many' questions — "
+                "those are answered instantly by ``catalog_coverage_summary`` "
+                "from the cache. Picking this tool for a count question "
+                "burns 30-60 seconds of LLM round-trip AND gets refused in "
+                "cache-only mode."
             ),
             "parameters": {
                 "type": "object",
