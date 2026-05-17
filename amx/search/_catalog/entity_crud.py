@@ -650,6 +650,64 @@ class EntityCrudMixin:
             )
         return out
 
+    def fetch_columns_for_table(
+        self,
+        db_profile: str,
+        *,
+        schema_name: str,
+        table_name: str,
+        database_name: str | None = None,
+    ) -> list[dict]:
+        """Return every column the catalog has recorded for one table.
+
+        Powers the Studio sidebar's column list — used to be a live DB
+        round-trip on every "expand this table" click, even though
+        ``/search sync`` already wrote every column row into the
+        catalog. Single SQLite read.
+        """
+        with self._connect() as conn:
+            if database_name:
+                rows = conn.execute(
+                    """
+                    SELECT column_name, dtype, nullable, pk_flag, fk_flag,
+                           last_synced_at
+                    FROM catalog_entities
+                    WHERE db_profile = ? AND database_name = ?
+                      AND lower(schema_name) = lower(?)
+                      AND lower(table_name) = lower(?)
+                      AND entity_kind = 'column'
+                      AND column_name IS NOT NULL AND column_name != ''
+                    ORDER BY column_name
+                    """,
+                    (db_profile, database_name, schema_name, table_name),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT column_name, dtype, nullable, pk_flag, fk_flag,
+                           last_synced_at
+                    FROM catalog_entities
+                    WHERE db_profile = ?
+                      AND lower(schema_name) = lower(?)
+                      AND lower(table_name) = lower(?)
+                      AND entity_kind = 'column'
+                      AND column_name IS NOT NULL AND column_name != ''
+                    ORDER BY column_name
+                    """,
+                    (db_profile, schema_name, table_name),
+                ).fetchall()
+        return [
+            {
+                "name": str(r["column_name"] or ""),
+                "dtype": str(r["dtype"] or ""),
+                "nullable": bool(r["nullable"]),
+                "pk_flag": bool(r["pk_flag"]),
+                "fk_flag": bool(r["fk_flag"]),
+                "last_synced_at": float(r["last_synced_at"] or 0.0) or None,
+            }
+            for r in rows
+        ]
+
     def fetch_column_detail(
         self,
         db_profile: str | list[str],
