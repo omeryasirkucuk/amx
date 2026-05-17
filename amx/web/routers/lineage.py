@@ -453,25 +453,72 @@ def _actor_name() -> str:
         return "studio"
 
 
-def _resolve_entity_id_strict(hs: Any, profile: str, fqn: str) -> int:
-    """Look up the catalog_entities.id for ``database.schema.table`` (or
-    ``schema.table``). Raises 404 with a clear message when missing.
+def _split_fqn_with_column(fqn: str) -> tuple[str, str, str, str]:
+    """Parse a 2/3/4-part FQN. Returns ``(database, schema, table, column)``.
+
+    Two parts: ``schema.table``. Three: ``database.schema.table`` —
+    column stays empty; callers that need a 3-part column FQN
+    (``schema.table.column``) should use
+    :func:`_split_fqn_resolve_column`, which falls back to the
+    column interpretation when the table lookup misses. Four parts:
+    ``database.schema.table.column``.
     """
     parts = [p for p in re.split(r"[./]", fqn) if p]
     if len(parts) == 2:
-        database, schema, table = "", parts[0], parts[1]
-    elif len(parts) == 3:
-        database, schema, table = parts[0], parts[1], parts[2]
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not parse FQN {fqn!r} (expected schema.table or database.schema.table).",
-        )
+        return "", parts[0], parts[1], ""
+    if len(parts) == 4:
+        return parts[0], parts[1], parts[2], parts[3]
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2], ""
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"Could not parse FQN {fqn!r} "
+            "(expected schema.table, database.schema.table, "
+            "or database.schema.table.column)."
+        ),
+    )
+
+
+def _split_fqn_resolve_column(hs: Any, profile: str, fqn: str) -> tuple[str, str, str, str]:
+    """Column-aware parser. Disambiguates 3-part FQNs by table lookup.
+
+    For 3-part inputs, first treats parts as ``database.schema.table``;
+    if no catalog row matches, retries as ``schema.table.column``.
+    """
+    parts = [p for p in re.split(r"[./]", fqn) if p]
+    if len(parts) != 3:
+        return _split_fqn_with_column(fqn)
+    db_cand, schema_cand, table_cand = parts
     with hs._connect() as conn:
-        # Try with the explicit database first; if empty, fall back to
-        # any database-scope so paths from the JSON payload (which
-        # always carry a database) and paths from the canvas (which
-        # may not) both work.
+        hit = conn.execute(
+            """
+            SELECT 1 FROM catalog_entities
+            WHERE db_profile = ? AND database_name = ?
+              AND schema_name = ? AND table_name = ?
+              AND entity_kind = 'table'
+            LIMIT 1
+            """,
+            (profile, db_cand, schema_cand, table_cand),
+        ).fetchone()
+    if hit:
+        return db_cand, schema_cand, table_cand, ""
+    return "", db_cand, schema_cand, table_cand
+
+
+def _resolve_entity_id_strict(hs: Any, profile: str, fqn: str) -> int:
+    """Look up the catalog_entities.id for the parent table of ``fqn``.
+
+    Accepts 2-, 3-, and 4-part FQNs. 3-part is disambiguated via
+    :func:`_split_fqn_resolve_column` so ``schema.table.column``
+    paths resolve to the table id. 4-part FQNs resolve to the
+    parent table id (the column part is intentionally dropped by
+    this helper; callers that need both the id and the column
+    should use :func:`_split_fqn_resolve_column` directly).
+    Raises 404 with a clear message when missing.
+    """
+    database, schema, table, _column = _split_fqn_resolve_column(hs, profile, fqn)
+    with hs._connect() as conn:
         if database:
             row = conn.execute(
                 """
@@ -513,11 +560,21 @@ def post_edge(
 
         {
           "profile": "local-postgre",
-          "source_fqn": "public.customers"   # or "db.public.customers"
-          "target_fqn": "public.orders",
-          "notes": "optional human note"
+          "source_fqn": "public.customers.id"     # or 2/3-part FQN
+          "target_fqn": "public.orders.customer_id",
+          "notes": "optional human note",
+          "source_column": "id",                  # optional override
+          "target_column": "customer_id"          # optional override
         }
+
+    When the FQN carries 4 parts (``database.schema.table.column``),
+    the rightmost segment is treated as the column. ``source_column``
+    / ``target_column`` in the body override the parsed value when
+    both are present — useful for hand-authored edges where the
+    canvas already knows the column independently from the FQN.
     """
+    from amx.lineage.operator_ops import write_column_edge
+
     profile = str(payload.get("profile") or "").strip()
     source_fqn = str(payload.get("source_fqn") or "").strip()
     target_fqn = str(payload.get("target_fqn") or "").strip()
@@ -540,38 +597,40 @@ def post_edge(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="History store not initialised.",
         )
+    _src_db, _src_schema, _src_table, src_column_from_fqn = _split_fqn_resolve_column(
+        hs, profile, source_fqn
+    )
+    _tgt_db, _tgt_schema, _tgt_table, tgt_column_from_fqn = _split_fqn_resolve_column(
+        hs, profile, target_fqn
+    )
     src_id = _resolve_entity_id_strict(hs, profile, source_fqn)
     tgt_id = _resolve_entity_id_strict(hs, profile, target_fqn)
+    src_column = str(payload.get("source_column") or src_column_from_fqn or "").strip()
+    tgt_column = str(payload.get("target_column") or tgt_column_from_fqn or "").strip()
     actor = _actor_name()
     now = time.time()
     details = {"notes": notes, "actor": actor, "ts": now}
 
-    with hs._lock, hs._connect() as conn:
-        # Upsert by (from, to, manual): re-drawing the same edge updates
-        # the verdict + audit fields rather than stacking duplicates.
-        conn.execute(
-            """
-            DELETE FROM catalog_relationships
-            WHERE from_entity_id = ? AND to_entity_id = ?
-              AND relationship_type = 'lineage_manual'
-            """,
-            (src_id, tgt_id),
-        )
-        cur = conn.execute(
-            """
-            INSERT INTO catalog_relationships
-                (from_entity_id, to_entity_id, relationship_type, score, source,
-                 details_json, last_seen, verdict, audit_actor, audit_at)
-            VALUES (?, ?, 'lineage_manual', 1.0, 'manual',
-                    ?, ?, 'approved', ?, ?)
-            """,
-            (src_id, tgt_id, json.dumps(details, ensure_ascii=False), now, actor, now),
-        )
-        edge_id = int(cur.lastrowid or 0)
+    edge_id = write_column_edge(
+        hs,
+        from_entity_id=src_id,
+        from_column=src_column,
+        to_entity_id=tgt_id,
+        to_column=tgt_column,
+        relationship_type="lineage_manual",
+        score=1.0,
+        source="manual",
+        details=details,
+        verdict="approved",
+        audit_actor=actor,
+        audit_at=now,
+    )
     return {
         "id": edge_id,
         "from": source_fqn,
         "to": target_fqn,
+        "from_column": src_column,
+        "to_column": tgt_column,
         "verdict": "approved",
         "audit_actor": actor,
         "audit_at": now,
@@ -647,6 +706,134 @@ def delete_edge(
     return None
 
 
+# ── v4 — column-level operator nodes ─────────────────────────────────────
+
+
+@router.post("/operators", status_code=status.HTTP_201_CREATED)
+def post_operator(
+    payload: dict[str, Any] = Body(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Create a transformation operator and chain it between two columns.
+
+    Writes one ``catalog_entities`` row (the operator) plus two
+    ``catalog_relationships`` rows (in/out edges) atomically — see
+    :func:`amx.lineage.operator_ops.create_operator_with_edges`.
+
+    Body::
+
+        {
+          "profile": "local-postgre",
+          "source_fqn": "public.orders.amount",
+          "target_fqn": "public.daily_totals.gross",
+          "op_kind": "aggregate",
+          "expression": "SUM(amount)",
+          "relationship_type": "lineage_manual"   # optional, defaults to manual
+        }
+    """
+    from amx.lineage.operator_ops import create_operator_with_edges
+
+    profile = str(payload.get("profile") or "").strip()
+    source_fqn = str(payload.get("source_fqn") or "").strip()
+    target_fqn = str(payload.get("target_fqn") or "").strip()
+    op_kind = str(payload.get("op_kind") or "").strip().lower()
+    expression = str(payload.get("expression") or "").strip()
+    relationship_type = str(payload.get("relationship_type") or "lineage_manual").strip()
+    if not profile or not source_fqn or not target_fqn or not op_kind:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="profile, source_fqn, target_fqn, op_kind are required.",
+        )
+    profile = _resolve_profile(cfg, profile)
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    src_id = _resolve_entity_id_strict(hs, profile, source_fqn)
+    tgt_id = _resolve_entity_id_strict(hs, profile, target_fqn)
+    _src_db, _src_sch, _src_tbl, src_col_from_fqn = _split_fqn_resolve_column(
+        hs, profile, source_fqn
+    )
+    tgt_db, tgt_schema, tgt_table, tgt_col_from_fqn = _split_fqn_resolve_column(
+        hs, profile, target_fqn
+    )
+    src_col = str(payload.get("source_column") or src_col_from_fqn or "").strip()
+    tgt_col = str(payload.get("target_column") or tgt_col_from_fqn or "").strip()
+    db_backend = _profile_backend(cfg, profile)
+    actor = _actor_name()
+    try:
+        result = create_operator_with_edges(
+            hs,
+            profile=profile,
+            db_backend=db_backend,
+            source_entity_id=src_id,
+            source_column=src_col,
+            target_entity_id=tgt_id,
+            target_column=tgt_col,
+            target_database=tgt_db,
+            target_schema=tgt_schema,
+            target_table=tgt_table,
+            op_kind=op_kind,
+            expression=expression,
+            relationship_type=relationship_type,
+            source="manual" if relationship_type == "lineage_manual" else "view_ddl",
+            verdict="approved" if relationship_type == "lineage_manual" else "",
+            audit_actor=actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return {
+        "operator_id": result["operator_id"],
+        "operator_path": result["operator_path"],
+        "edge_ids": result["edge_ids"],
+        "op_kind": op_kind,
+        "expression": expression,
+    }
+
+
+@router.patch("/operators/{operator_id}")
+def patch_operator(
+    operator_id: int,
+    payload: dict[str, Any] = Body(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Update an operator entity's expression."""
+    from amx.lineage.operator_ops import lookup_operator, update_operator_expression
+
+    expression = str(payload.get("expression") or "").strip()
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    if not update_operator_expression(hs, operator_id=int(operator_id), expression=expression):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Operator {operator_id} not found.",
+        )
+    after = lookup_operator(hs, operator_id=int(operator_id))
+    return {
+        "operator_id": int(operator_id),
+        "expression": expression,
+        "operator_path": after["operator_path"] if after else "",
+    }
+
+
+def _profile_backend(cfg: AMXConfig, profile: str) -> str:
+    """Look up the active backend for a profile (best effort)."""
+    profiles = getattr(cfg, "db_profiles", {}) or {}
+    entry = profiles.get(profile)
+    if entry is None:
+        return ""
+    return str(getattr(entry, "backend", "") or "")
+
+
 @router.post("/manual", status_code=status.HTTP_201_CREATED)
 def post_manual_artifact(
     payload: dict[str, Any] = Body(...),
@@ -682,50 +869,48 @@ def post_manual_artifact(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="History store not initialised.",
         )
+    from amx.lineage.operator_ops import write_column_edge
+
     anchor_id = _resolve_entity_id_strict(hs, profile, anchor_fqn)
     actor = _actor_name()
     now = time.time()
     persisted = 0
-    with hs._lock, hs._connect() as conn:
-        for edge in edges_in:
-            if not isinstance(edge, dict):
-                continue
-            src = str(edge.get("source_fqn") or "").strip()
-            tgt = str(edge.get("target_fqn") or "").strip()
-            if not src or not tgt or src == tgt:
-                continue
-            try:
-                src_id = _resolve_entity_id_strict(hs, profile, src)
-                tgt_id = _resolve_entity_id_strict(hs, profile, tgt)
-            except HTTPException:
-                continue
-            details = {"actor": actor, "ts": now, "via": "manual_canvas"}
-            conn.execute(
-                """
-                DELETE FROM catalog_relationships
-                WHERE from_entity_id = ? AND to_entity_id = ?
-                  AND relationship_type = 'lineage_manual'
-                """,
-                (src_id, tgt_id),
-            )
-            conn.execute(
-                """
-                INSERT INTO catalog_relationships
-                    (from_entity_id, to_entity_id, relationship_type, score, source,
-                     details_json, last_seen, verdict, audit_actor, audit_at)
-                VALUES (?, ?, 'lineage_manual', 1.0, 'manual',
-                        ?, ?, 'approved', ?, ?)
-                """,
-                (
-                    src_id,
-                    tgt_id,
-                    json.dumps(details, ensure_ascii=False),
-                    now,
-                    actor,
-                    now,
-                ),
-            )
-            persisted += 1
+    for edge in edges_in:
+        if not isinstance(edge, dict):
+            continue
+        src = str(edge.get("source_fqn") or "").strip()
+        tgt = str(edge.get("target_fqn") or "").strip()
+        if not src or not tgt or src == tgt:
+            continue
+        try:
+            src_id = _resolve_entity_id_strict(hs, profile, src)
+            tgt_id = _resolve_entity_id_strict(hs, profile, tgt)
+        except HTTPException:
+            continue
+        _src_db, _src_schema, _src_table, src_col_from_fqn = _split_fqn_resolve_column(
+            hs, profile, src
+        )
+        _tgt_db, _tgt_schema, _tgt_table, tgt_col_from_fqn = _split_fqn_resolve_column(
+            hs, profile, tgt
+        )
+        src_col = str(edge.get("source_column") or src_col_from_fqn or "").strip()
+        tgt_col = str(edge.get("target_column") or tgt_col_from_fqn or "").strip()
+        details = {"actor": actor, "ts": now, "via": "manual_canvas"}
+        write_column_edge(
+            hs,
+            from_entity_id=src_id,
+            from_column=src_col,
+            to_entity_id=tgt_id,
+            to_column=tgt_col,
+            relationship_type="lineage_manual",
+            score=1.0,
+            source="manual",
+            details=details,
+            verdict="approved",
+            audit_actor=actor,
+            audit_at=now,
+        )
+        persisted += 1
 
     # Compute scope and render the artifact so it shows up on the
     # browse list immediately. We re-use create_lineage so the matplotlib

@@ -934,6 +934,22 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "UTC epoch seconds of the last verdict change. NULL when "
             "the edge has not been touched by a user."
         ),
+        "from_column": (
+            "v4 column-level lineage. Source column name when this row "
+            "represents a column→column edge. Empty string keeps the "
+            "row at table grain (legacy v1–v3 behaviour). Combined "
+            "with from_entity_id, to_entity_id, to_column to form the "
+            "logical edge key. Operator-node edges set this when the "
+            "operator consumes the column."
+        ),
+        "to_column": (
+            "v4 column-level lineage. Destination column name when "
+            "this row represents a column→column edge. Empty for "
+            "table-grain rows. When the target is a synthetic "
+            "operator entity (entity_kind='operator'), this names the "
+            "operator's input port; otherwise it names the real "
+            "downstream column."
+        ),
     },
     # ── lineage_artifacts (local only) ────────────────────────────────────
     "lineage_artifacts": {
