@@ -858,16 +858,30 @@ export default function Schedules() {
       </div>
     ) : null;
 
-  // Daemon control: chip + actionable button. The button is the
-  // remote-friendly path -- users accessing Studio via a tunnel
-  // (e.g. on mobile, away from the host terminal) can flip the
-  // daemon on/off without dropping into a shell on the host.
+  // Daemon control: chip + actionable button. Three states now:
+  //   * not installed → orange "not installed" + Install button.
+  //   * installed + not loaded → orange "needs reload" + Reload button.
+  //     This is the case the modern launchctl path used to hide:
+  //     the plist sat on disk but launchd never bootstrapped it,
+  //     so schedules silently stopped firing.
+  //   * installed + loaded → green "running" + Uninstall button.
+  const daemonInstalled = !!statusQ.data?.daemon.installed;
+  const daemonLoaded = !!statusQ.data?.daemon.loaded;
+  const daemonRunning = daemonInstalled && daemonLoaded;
+  let daemonBadgeLabel: string;
+  if (!daemonInstalled) {
+    daemonBadgeLabel = "Daemon: not installed";
+  } else if (!daemonLoaded) {
+    daemonBadgeLabel = "Daemon: installed but not loaded";
+  } else {
+    daemonBadgeLabel = "Daemon: running";
+  }
   const daemonControls = statusQ.data ? (
     <div className="hidden items-center gap-1 sm:inline-flex">
-      <Badge tone={statusQ.data.daemon.installed ? "positive" : "warning"}>
-        Daemon {statusQ.data.daemon.installed ? "installed" : "not installed"}
+      <Badge tone={daemonRunning ? "positive" : "warning"}>
+        {daemonBadgeLabel}
       </Badge>
-      {statusQ.data.daemon.installed ? (
+      {daemonRunning ? (
         <Button
           variant="secondary"
           size="sm"
@@ -892,7 +906,11 @@ export default function Schedules() {
           onClick={() => installDaemonMut.mutate()}
           disabled={installDaemonMut.isPending}
         >
-          {installDaemonMut.isPending ? "Installing…" : "Install"}
+          {installDaemonMut.isPending
+            ? "Installing…"
+            : daemonInstalled
+              ? "Reload"
+              : "Install"}
         </Button>
       )}
     </div>
@@ -903,7 +921,7 @@ export default function Schedules() {
       <PageHeader
         title="Analyze schedules"
         breadcrumbs={[{ label: "Runs", to: "/runs" }, { label: "Schedules" }]}
-        description="Scheduled analysis runs (LLM-driven metadata generation). For Catalog Freshness cache refreshes, see Runs → Catalog refreshes."
+        description="Scheduled analysis runs (LLM-driven metadata generation). For Catalog Freshness cache refreshes, see Runs → Catalog refreshes. Both kinds share the same OS daemon — there is only one com.amx.scheduler service, not two."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             {daemonControls}

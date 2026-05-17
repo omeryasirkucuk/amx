@@ -6,6 +6,42 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Catalog cache no longer auto-expires after 7 days.**
+  ``SearchCatalog.is_profile_fully_synced()`` previously returned
+  ``False`` whenever ``last_full_sync_at`` was older than a week,
+  which silently forced sidebar / Ask / drift surfaces to fall
+  through to the live DB on any week-old profile. The cache now
+  lives forever: a profile with ``state='done'`` is fully synced
+  regardless of age. The ``/api/catalog/freshness`` pill still
+  flags profiles past one week (was 24 h) as ``stale: true`` so
+  the user has a visible nudge to ``/search sync`` at their own
+  pace — no more silent live-DB hits.
+
+### Fixed
+
+- **Scheduler daemon installation actually loads the daemon on
+  modern macOS.** ``launchctl load <plist>`` was deprecated in
+  Big Sur and returns 0 without doing anything on Darwin 24+, so
+  ``Install daemon`` clicks wrote the plist to disk but never
+  registered it with launchd — schedules silently never fired.
+  ``install_daemon()`` now uses the modern
+  ``launchctl bootout`` → ``bootstrap gui/<uid>`` → ``enable`` →
+  ``kickstart`` sequence, falls back to the legacy ``load`` for
+  pre-Big-Sur, and surfaces ``launchctl``'s stderr in the
+  install-result message instead of swallowing it. The Linux
+  systemd path is unchanged (already uses the right API).
+- **Scheduler status detection distinguishes "installed" from
+  "loaded".** ``detect_daemon_state()`` previously reported
+  ``installed=True`` whenever the plist / service file existed,
+  including the silent-failure case where the plist sat on disk
+  but launchd never bootstrapped it. The status response now
+  carries a separate ``loaded: bool`` flag (and ``log_size_bytes``
+  / ``log_mtime`` for the next-tick UI) so Studio's Schedules
+  page can render *"Installed but not loaded — click Reload"*
+  instead of misleading *"Installed ✓"*.
+
 ### Added
 
 - **Three new cache-only Ask tools** that answer the most-asked

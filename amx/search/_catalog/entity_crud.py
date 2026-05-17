@@ -431,16 +431,25 @@ class EntityCrudMixin:
         }
 
     def is_profile_fully_synced(self, db_profile: str) -> bool:
-        """``True`` iff the catalog can safely stand in for the live
-        DB. Reads ``catalog_profile_state``; requires ``state='done'``
-        AND ``last_full_sync_at`` within the last 7 days. Anything else
-        means a cache-first reader should fall through to the live
-        connector so the user never sees a partial slice.
+        """``True`` iff a full skeleton sync has ever finished for
+        *db_profile*. Reads ``catalog_profile_state``; requires
+        ``state='done'`` only. The cache NEVER auto-expires — pre-PR
+        the helper rejected snapshots older than 7 days, which forced
+        sidebar / Ask / drift surfaces to fall through to the live DB
+        on any week-old profile. The user's contract now: keep
+        cached data forever, surface a UI staleness pill instead of
+        invalidating.
 
-        Returns ``False`` when the table doesn't exist yet (legacy
-        catalog from a pre-v0.15 install) so existing users keep
-        seeing the live DB until they run a fresh skeleton sync — the
-        UI's Sync-all button handles that.
+        Returns ``False`` when:
+        - the table doesn't exist (legacy catalog from a pre-v0.15
+          install — keeps existing users on the live DB until they
+          run a fresh skeleton sync)
+        - the state row exists but `state != 'done'` (sync still
+          running, failed, or never started)
+
+        Use :meth:`get_profile_state` from ``SyncMixin`` to read
+        ``last_full_sync_at`` when a UI surface wants to render a
+        "synced N days ago" pill.
         """
         try:
             with self._connect() as conn:
@@ -460,9 +469,7 @@ class EntityCrudMixin:
         last = row["last_full_sync_at"]
         if state != "done" or last is None:
             return False
-        # 7-day staleness window — past this, force the user to
-        # re-sync rather than serve increasingly drifted data.
-        return (time.time() - float(last)) < 7 * 24 * 60 * 60
+        return True
 
     def fetch_distinct_schemas(
         self, db_profile: str, database_name: str | None = None
