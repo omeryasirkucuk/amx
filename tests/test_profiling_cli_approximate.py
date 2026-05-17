@@ -46,7 +46,7 @@ class ProfilingCommandApproximateTests(unittest.TestCase):
         with (
             patch.object(self.cfg, "save"),
             patch(
-                "amx.cli_support.commands.db.error",
+                "amx.cli_support._db_profiling.error",
                 side_effect=lambda msg, *a, **kw: errors.append(str(msg)),
             ),
         ):
