@@ -305,7 +305,7 @@ export default function AskChat({
   });
 
   // Aggregate streamed events into the assistant's turn.
-  const { thinking, streamingAnswer, finalAnswer, toolCalls, finalMeta, finalCitations, jobFailure, wasCancelled } = useMemo(() => {
+  const { thinking, streamingAnswer, finalAnswer, toolCalls, activity, finalMeta, finalCitations, jobFailure, wasCancelled } = useMemo(() => {
     const thinkingChunks: string[] = [];
     const tools: Array<{
       name: string;
@@ -313,6 +313,22 @@ export default function AskChat({
       result_preview: string;
       latency_ms?: number;
       citations?: Citation[];
+    }> = [];
+    // Real-time activity rows for the response card. ``tool.started``
+    // pushes a row with ``phase: "pending"``; the matching
+    // ``tool.call`` flips it to ``phase: "done"`` with the resolved
+    // source (catalog / live / blocked_cache_only) and elapsed ms.
+    // The user sees each step as it happens — no more 4-minute black
+    // box.
+    const activityRows: Array<{
+      key: string;
+      name: string;
+      arguments: string;
+      phase: "pending" | "done";
+      sourceHint?: "cache" | "live" | "unknown" | "blocked_cache_only";
+      source?: "catalog" | "live" | "live_cache" | "mixed" | "blocked_cache_only";
+      scopeProfiles?: string[];
+      elapsedMs?: number;
     }> = [];
     // ``answerChunks`` accumulates ``answer.delta`` events into the
     // streaming assistant bubble. Cleared whenever a ``tool.call``
@@ -336,17 +352,74 @@ export default function AskChat({
         thinkingChunks.push(event.text);
       } else if (event.type === "answer.delta" && typeof event.text === "string") {
         answerChunks.push(event.text);
+      } else if (event.type === "tool.started") {
+        // A tool is about to dispatch. Push a pending activity row so
+        // the UI shows the user what's happening BEFORE the handler
+        // runs — kills the "Reasoning…" black hole.
+        const name = String(event.name || "");
+        const args = String(event.arguments || "");
+        const hint = String(event.source_hint || "unknown") as
+          | "cache"
+          | "live"
+          | "unknown";
+        activityRows.push({
+          key: `act_${activityRows.length}_${name}`,
+          name,
+          arguments: args,
+          phase: "pending",
+          sourceHint: hint,
+          scopeProfiles: Array.isArray(event.scope_profiles)
+            ? (event.scope_profiles as string[])
+            : undefined,
+        });
       } else if (event.type === "tool.call") {
         // Interim narration before a tool call is not the final answer;
         // reset the streaming-answer accumulator so the bubble starts
         // fresh for the next iteration's content.
         answerChunks = [];
+        const name = String(event.name || "");
+        const args = String(event.arguments || "");
+        const elapsedMs =
+          typeof event.elapsed_ms === "number"
+            ? (event.elapsed_ms as number)
+            : typeof event.latency_ms === "number"
+              ? (event.latency_ms as number)
+              : undefined;
+        const source =
+          typeof event.source === "string"
+            ? (event.source as
+                | "catalog"
+                | "live"
+                | "live_cache"
+                | "mixed"
+                | "blocked_cache_only")
+            : undefined;
+        // Resolve the pending activity row this call completes.
+        // Match the LATEST pending row whose name + args agree — the
+        // tool agent loops sequentially so first-pending-first-out
+        // is the right ordering.
+        for (let i = activityRows.length - 1; i >= 0; i -= 1) {
+          const row = activityRows[i];
+          if (
+            row.phase === "pending" &&
+            row.name === name &&
+            row.arguments === args
+          ) {
+            activityRows[i] = {
+              ...row,
+              phase: "done",
+              source,
+              elapsedMs,
+            };
+            break;
+          }
+        }
         tools.push({
-          name: String(event.name || ""),
-          arguments: String(event.arguments || ""),
+          name,
+          arguments: args,
           result_preview: String(event.result_preview || ""),
           latency_ms:
-            typeof event.latency_ms === "number" ? event.latency_ms : undefined,
+            typeof event.latency_ms === "number" ? event.latency_ms : elapsedMs,
           citations: Array.isArray(event.citations)
             ? (event.citations as Citation[])
             : undefined,
@@ -390,6 +463,7 @@ export default function AskChat({
       streamingAnswer: answerChunks.join(""),
       finalAnswer: finalText,
       toolCalls: tools,
+      activity: activityRows,
       finalMeta: meta,
       finalCitations: citations,
       jobFailure: failure,
@@ -702,11 +776,12 @@ export default function AskChat({
                 <CircleStop size={11} /> Cancelling…
               </div>
             )}
+            {activity.length > 0 && <ActivityFeed rows={activity} />}
             {thinking && !cancelling ? <ThinkingBlock text={thinking} /> : null}
             {streamingAnswer ? (
               <MarkdownBody text={streamingAnswer} />
             ) : (
-              !thinking && !cancelling && (
+              !thinking && !cancelling && activity.length === 0 && (
                 <span className="text-sm text-ink-dim">Reasoning…</span>
               )
             )}
@@ -1021,6 +1096,112 @@ function ThinkingBlock({ text }: { text: string }) {
       >
         {text}
       </div>
+    </div>
+  );
+}
+
+type ActivityRow = {
+  key: string;
+  name: string;
+  arguments: string;
+  phase: "pending" | "done";
+  sourceHint?: "cache" | "live" | "unknown" | "blocked_cache_only";
+  source?: "catalog" | "live" | "live_cache" | "mixed" | "blocked_cache_only";
+  scopeProfiles?: string[];
+  elapsedMs?: number;
+};
+
+function ActivityFeed({ rows }: { rows: ActivityRow[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <div
+      aria-live="polite"
+      aria-atomic="false"
+      className="mb-2 flex flex-col gap-1.5 rounded-lg border border-surface-border bg-surface-subtle/40 p-2"
+    >
+      {rows.map((row) => {
+        const isPending = row.phase === "pending";
+        // Final source wins; before the tool completes we fall back
+        // to the hint the backend computed from the schema's freshness.
+        const finalSource: ActivityRow["source"] | undefined = row.source;
+        const previewedLive =
+          finalSource === "live" ||
+          finalSource === "live_cache" ||
+          finalSource === "mixed" ||
+          (isPending && row.sourceHint === "live");
+        const blocked = finalSource === "blocked_cache_only";
+        const labelPrefix = blocked
+          ? "Blocked"
+          : isPending
+            ? previewedLive
+              ? "Live query"
+              : "Reading cache"
+            : previewedLive
+              ? "Live query"
+              : "Cache hit";
+        const dotColor = blocked
+          ? "bg-critical"
+          : isPending
+            ? previewedLive
+              ? "bg-warning"
+              : "bg-accent"
+            : previewedLive
+              ? "bg-warning"
+              : "bg-success";
+        const elapsedText =
+          typeof row.elapsedMs === "number"
+            ? row.elapsedMs >= 1000
+              ? `${(row.elapsedMs / 1000).toFixed(1)} s`
+              : `${row.elapsedMs} ms`
+            : null;
+        return (
+          <div
+            key={row.key}
+            className="flex items-start gap-2 text-xs text-ink-muted"
+          >
+            <span
+              aria-hidden
+              className={cn(
+                "mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full",
+                dotColor,
+                isPending && "animate-pulse",
+              )}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-baseline gap-x-2">
+                <span
+                  className={cn(
+                    "font-medium",
+                    blocked
+                      ? "text-critical"
+                      : isPending
+                        ? "text-ink"
+                        : previewedLive
+                          ? "text-warning"
+                          : "text-success",
+                  )}
+                >
+                  {isPending ? "⟳" : blocked ? "⨯" : "✓"} {labelPrefix}
+                </span>
+                <span className="font-mono text-ink-muted">{row.name}</span>
+                {row.scopeProfiles && row.scopeProfiles.length > 0 && (
+                  <span className="text-ink-dim">
+                    on {row.scopeProfiles.join(", ")}
+                  </span>
+                )}
+                {elapsedText && (
+                  <span className="ml-auto text-ink-dim">{elapsedText}</span>
+                )}
+              </div>
+              {row.arguments && row.arguments !== "{}" && (
+                <pre className="mt-0.5 max-w-full overflow-x-hidden whitespace-pre-wrap break-all text-[10px] text-ink-dim">
+                  {row.arguments}
+                </pre>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

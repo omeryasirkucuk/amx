@@ -20,6 +20,7 @@ against — so it doesn't have to hallucinate.
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -219,6 +220,7 @@ def run_tool_agent(
     display: LiveDisplay | None = None,
     on_thinking_delta: Callable[[str], None] | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    on_tool_start: Callable[[dict[str, Any]], None] | None = None,
     on_content_delta: Callable[[str], None] | None = None,
     cancel_token: threading.Event | None = None,
     db_profiles: list[str] | None = None,
@@ -294,6 +296,7 @@ def run_tool_agent(
             display=display,
             on_thinking_delta=on_thinking_delta,
             on_tool_call=on_tool_call,
+            on_tool_start=on_tool_start,
             on_content_delta=on_content_delta,
             cancel_token=cancel_token,
         )
@@ -345,6 +348,7 @@ def _run_tool_loop(
     display: LiveDisplay | None = None,
     on_thinking_delta: Callable[[str], None] | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    on_tool_start: Callable[[dict[str, Any]], None] | None = None,
     on_content_delta: Callable[[str], None] | None = None,
     cancel_token: threading.Event | None = None,
 ) -> ToolAgentResult:
@@ -399,7 +403,11 @@ def _run_tool_loop(
     finish_reason: str | None = None
     last_thinking_content: str = ""
     iterations = 0
-    tools_schema = ToolBox.schemas()
+    # Use the instance method so cache-only mode hides every
+    # ``live_only`` tool from the LLM's menu. ``ToolBox.schemas()`` (the
+    # static accessor) still returns the full list for callers that
+    # want the inventory.
+    tools_schema = toolbox.available_schemas()
 
     # Single closure shared across iterations so the thinking panel keeps
     # streaming continuously even as we hop between LLM calls + tool calls.
@@ -508,12 +516,76 @@ def _run_tool_loop(
             }
         )
         for tc in result.tool_calls:
+            # Announce the dispatch BEFORE the handler runs so the SPA
+            # can render a live activity row immediately — the user
+            # used to stare at "Reasoning…" for the whole tool turn.
+            if on_tool_start is not None:
+                try:
+                    # Decide cache-vs-live hint from the tool schema's
+                    # freshness annotation. ``cache_ok`` is the
+                    # happy-path indicator; ``live_only`` would have
+                    # been refused upstream when cache-only mode is
+                    # active, so seeing it here means the toggle is
+                    # ON.
+                    source_hint = "cache"
+                    try:
+                        from amx.search._tool_schemas import tool_schemas as _ts
+
+                        for entry in _ts():
+                            if entry.get("function", {}).get("name") == tc.name:
+                                source_hint = (
+                                    "live"
+                                    if entry.get("freshness") == "live_only"
+                                    else "cache"
+                                )
+                                break
+                    except Exception:
+                        source_hint = "unknown"
+                    on_tool_start(
+                        {
+                            "name": tc.name,
+                            "arguments": tc.arguments or "{}",
+                            "source_hint": source_hint,
+                            "scope_profiles": list(toolbox.db_profiles),
+                        }
+                    )
+                except Exception:
+                    pass
             tool_t0 = _time.monotonic()
             tool_result = toolbox.invoke(tc.name, tc.arguments or "{}")
             tool_elapsed_ms = int((_time.monotonic() - tool_t0) * 1000)
             per_tool_latency_ms[tc.name] = per_tool_latency_ms.get(tc.name, 0) + tool_elapsed_ms
             summary = _summarise_tool_call(tc, tool_result)
             summary["latency_ms"] = tool_elapsed_ms
+            # Extract the final source the handler chose (catalog vs
+            # live vs live_only_tool_disabled) from the payload so the
+            # SPA can finalise the activity row.
+            try:
+                parsed = json.loads(tool_result) if isinstance(tool_result, str) else {}
+                if isinstance(parsed, dict):
+                    if parsed.get("error") == "live_only_tool_disabled":
+                        summary["source"] = "blocked_cache_only"
+                    elif parsed.get("cache_only"):
+                        summary["source"] = "catalog"
+                    elif isinstance(parsed.get("source"), str):
+                        summary["source"] = parsed["source"]
+                    elif parsed.get("multi_profile") and isinstance(
+                        parsed.get("profiles"), dict
+                    ):
+                        sources = {
+                            v.get("source")
+                            for v in parsed["profiles"].values()
+                            if isinstance(v, dict) and v.get("source")
+                        }
+                        if sources == {"catalog"}:
+                            summary["source"] = "catalog"
+                        elif sources == {"live"}:
+                            summary["source"] = "live"
+                        else:
+                            summary["source"] = "mixed"
+                    summary["elapsed_ms"] = tool_elapsed_ms
+            except Exception:
+                pass
             tool_call_log.append(summary)
             if on_tool_call is not None:
                 try:

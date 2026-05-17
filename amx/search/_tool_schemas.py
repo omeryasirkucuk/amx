@@ -6,12 +6,29 @@ JSON-schema argument shapes for every tool the ``/ask`` agent can call.
 The list is duplicated (deep-copied) on every access via ``tool_schemas()``
 so callers can mutate it without poisoning the shared source. The
 existing ``ToolBox.schemas()`` static method delegates here.
+
+Each entry carries a sibling ``freshness`` annotation:
+
+* ``"cache_ok"`` — the tool answers from the catalog cache for the
+  common path. Always available, including in cache-only Ask mode.
+* ``"live_only"`` — the tool's body can only answer with a live-DB
+  round-trip. Hidden from the LLM's menu when Ask is in cache-only
+  mode so the agent never proposes a call we'd refuse anyway.
+
+The key is a sibling of ``type`` / ``function`` on each entry. OpenAI's
+function-calling JSON schema ignores unknown top-level keys, so this is
+pure metadata.
 """
 
 from __future__ import annotations
 
 import copy
 from typing import Any
+
+#: Freshness annotation values — exported as a constant so the ToolBox
+#: filter and the test suite agree on the literal strings.
+FRESHNESS_CACHE_OK = "cache_ok"
+FRESHNESS_LIVE_ONLY = "live_only"
 
 # The single source of truth. Defined as a module-level constant so it is
 # constructed exactly once at import time; ``tool_schemas()`` returns a
@@ -20,6 +37,44 @@ from typing import Any
 _TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "catalog_sync_status",
+            "description": (
+                "Return the catalog's sync state and last-sync timestamp for "
+                "every DB profile in the current Ask scope. Read directly "
+                "from ``catalog_profile_state`` — no live database query, "
+                "one round-trip, ~30 ms.\n\n"
+                "Call this FIRST whenever the user asks any variation of "
+                "'are my tables synced / up to date / fresh / stale', 'is my "
+                "catalog still good', 'when did we last sync', or any other "
+                "freshness question. Answer directly from the response; do "
+                "NOT chain ``list_schemas`` / ``list_tables_in_schema`` / "
+                "``describe_table`` to 'verify' — the catalog state IS the "
+                "answer.\n\n"
+                "Response: ``{\"profiles\": [{\"db_profile\", \"state\", "
+                "\"last_synced_at\", \"age_seconds\", \"is_fresh_24h\", "
+                "\"is_fresh_7d\", \"processed_tables\", \"total_tables\", "
+                "\"last_error\"}]}``."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "db_profile": {
+                        "type": "string",
+                        "description": (
+                            "Optional: limit the response to a single "
+                            "profile. Omit to get every profile in scope."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
         "function": {
             "name": "list_schemas",
             "description": (
@@ -73,6 +128,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "list_tables_in_schema",
             "description": (
@@ -123,6 +179,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "find_table_by_name",
             "description": (
@@ -167,6 +224,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "describe_table",
             "description": (
@@ -266,6 +324,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "search_tables_by_concept",
             "description": (
@@ -295,6 +354,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "search_columns_by_concept",
             "description": (
@@ -327,6 +387,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "get_join_candidates",
             "description": (
@@ -352,6 +413,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "list_databases",
             "description": (
@@ -397,6 +459,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "list_catalogs",
             "description": (
@@ -414,6 +477,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "list_server_databases",
             "description": (
@@ -432,6 +496,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "list_volumes",
             "description": (
@@ -474,6 +539,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "find_columns_by_dtype",
             "description": (
@@ -522,6 +588,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "find_assets_missing_comment",
             "description": (
@@ -573,6 +640,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "check_uniqueness",
             "description": (
@@ -608,6 +676,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "detect_dimensional_role",
             "description": (
@@ -654,6 +723,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "detect_scd_pattern",
             "description": (
@@ -706,6 +776,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "sample_column_values",
             "description": (
@@ -745,6 +816,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "inspect_data_quality",
             "description": (
@@ -781,6 +853,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "find_joinable_tables",
             "description": (
@@ -844,6 +917,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "find_joinable_across_profiles",
             "description": (
@@ -889,6 +963,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "list_past_runs",
             "description": (
@@ -939,6 +1014,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "describe_run",
             "description": (
@@ -1001,6 +1077,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "compare_runs",
             "description": (
@@ -1096,6 +1173,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "list_chat_sessions",
             "description": (
@@ -1134,6 +1212,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "search_docs",
             "description": (
@@ -1172,6 +1251,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "search_code",
             "description": (
@@ -1222,6 +1302,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     # schedule` CLI for those actions.
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "list_schedules",
             "description": (
@@ -1255,6 +1336,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "get_schedule",
             "description": (

@@ -6,8 +6,44 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+
+- **`catalog_sync_status` tool.** Single-call freshness report for every
+  DB profile in scope — reads `catalog_profile_state` (zero live-DB
+  queries) and returns `state`, `last_synced_at`, `age_seconds`,
+  `is_fresh_24h`, `is_fresh_7d`, `processed_tables`, `total_tables`
+  per profile. Annotated `freshness="cache_ok"` so it is always
+  available, including in cache-only Ask mode. The system prompt
+  routes every "are my tables synced / up to date / fresh / stale"
+  variation to this tool first instead of letting the LLM hypothesise
+  with `list_schemas` → `list_tables_in_schema` → `describe_table`
+  loops.
+- **Real-time activity feed in Ask.** Each tool dispatch now emits a
+  `tool.started` SSE event before the handler runs; the post-call
+  `tool.call` summary is enriched with `source` (catalog / live /
+  blocked_cache_only) and `elapsed_ms`. The Studio Ask composer
+  renders a live `ActivityFeed` row per call ("⟳ Reading cache ·
+  catalog_sync_status" → "✓ Cache hit · 30 ms") with `aria-live`
+  for accessibility, so the user is no longer staring at a silent
+  "Reasoning…" spinner for the entire tool turn.
+
 ### Changed
 
+- **Cache-only Ask now widens to every live-only tool.** Tool schemas
+  carry a `freshness` annotation (`cache_ok` vs `live_only`); when the
+  Ask composer's Live refresh toggle is OFF, `ToolBox.available_schemas()`
+  hides every `live_only` tool from the LLM's menu — `list_catalogs`,
+  `list_server_databases`, `list_volumes`, `list_databases`,
+  `check_uniqueness`, `inspect_data_quality`, `sample_column_values`,
+  `detect_scd_pattern`, `detect_dimensional_role`, `find_joinable_tables`,
+  `find_joinable_across_profiles`. `ToolBox.invoke()` carries a
+  belt-and-braces guard that returns a structured
+  `live_only_tool_disabled` payload if an old session's tool_call
+  message asks for one of them. Cache-ok read tools
+  (`list_schemas`, `list_tables_in_schema`) also stop falling through
+  to live DB on a partial sync — they return the cached rows tagged
+  `cache_only=true, possibly_partial=true` so the LLM tells the user
+  to enable Live refresh instead of silently bypassing the toggle.
 - **Ask is now cache-only by default.** A question submitted from
   Studio's Ask panel no longer fires the background drift probe or
   honours tool-level `force_fresh=true` from the LLM. Both paths are

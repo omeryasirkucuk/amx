@@ -1012,7 +1012,28 @@ def _ask_worker_impl(
         # expander instead of the truncated single-line preview.
         if "citations" in summary:
             payload["citations"] = list(summary.get("citations") or [])
+        if "source" in summary:
+            payload["source"] = summary["source"]
+        if "elapsed_ms" in summary:
+            payload["elapsed_ms"] = summary["elapsed_ms"]
         emit(job.queue, "tool.call", payload)
+
+    def _on_tool_start(announcement: dict[str, Any]) -> None:
+        """Fired the moment a tool is about to dispatch, BEFORE the
+        Python handler runs. Lets the SPA render a live activity row
+        ("Reading cache · list_tables_in_schema on dbr-oyk") instead
+        of the user staring at a 'Reasoning…' spinner for the entire
+        tool turn. Carries ``source_hint`` so the row can preview
+        cache-vs-live before the handler decides for real.
+        """
+        payload: dict[str, Any] = {
+            "name": announcement.get("name", ""),
+            "arguments": announcement.get("arguments", "{}"),
+            "source_hint": announcement.get("source_hint", "unknown"),
+        }
+        if "scope_profiles" in announcement:
+            payload["scope_profiles"] = list(announcement.get("scope_profiles") or [])
+        emit(job.queue, "tool.started", payload)
 
     # Hydrate the prior-turn context so a resumed chat can resolve
     # follow-up references ("that table", "the second one"). Pulled
@@ -1032,6 +1053,7 @@ def _ask_worker_impl(
             display=None,
             on_thinking_delta=_on_thinking,
             on_tool_call=_on_tool_call,
+            on_tool_start=_on_tool_start,
             on_content_delta=_on_content_delta,
             cancel_token=job.cancel,
             db_profiles=list(scope_profiles) if scope_profiles else None,
