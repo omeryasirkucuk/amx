@@ -7,6 +7,7 @@ import {
   PanelLeft,
   Pin,
   Sparkles,
+  Workflow,
   History as HistoryIcon,
   Settings as SettingsIcon,
 } from "lucide-react";
@@ -39,6 +40,14 @@ const navItems = [
   // Audit moved out of the top bar — it lives on the Runs page header
   // as a sibling of Schedules / Compare / New run because the apply
   // trail is a per-run artefact, not a top-level mode.
+  {
+    to: "/lineage",
+    label: "Lineage",
+    icon: Workflow,
+    // Match both the browse route and the detail canvas so the tab
+    // stays highlighted while the user navigates between artefacts.
+    match: ["/lineage"],
+  },
   { to: "/settings", label: "Settings", icon: SettingsIcon, match: ["/settings"] },
   { to: "/system", label: "System", icon: Activity, match: ["/system"] },
 ];

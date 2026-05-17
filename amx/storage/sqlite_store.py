@@ -717,6 +717,19 @@ class SQLiteHistoryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_catalog_relationships_from_to ON catalog_relationships(from_entity_id, to_entity_id, relationship_type)"
             )
+            # v3 S4 — authoring metadata. Optional verdict + audit
+            # columns added via additive ALTERs so existing databases
+            # upgrade in place without losing rows. Values:
+            #   verdict ∈ {'', 'approved', 'rejected', 'pending'}
+            #   audit_actor: OS user / studio actor who last touched it
+            #   audit_at: UTC epoch seconds of last touch
+            for _ddl in (
+                "ALTER TABLE catalog_relationships ADD COLUMN verdict TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE catalog_relationships ADD COLUMN audit_actor TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE catalog_relationships ADD COLUMN audit_at REAL",
+            ):
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(_ddl)
             # ── lineage_artifacts: registry of rendered lineage diagrams ──
             # Each row binds a focal entity (anchor) to a rendered image
             # on disk plus the edge-set hash that produced it. Drives

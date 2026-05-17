@@ -1186,12 +1186,17 @@ export interface LineageNode {
 }
 
 export interface LineageEdge {
+  /** ``catalog_relationships.id`` when sourced from the local catalog
+   *  (FK / LLM / codebase / manual). Null for ephemeral edges. */
+  id: number | null;
   from: string;
   to: string;
   type: string;
   extractor: string;
   confidence: number;
   evidence: string;
+  /** S4 authoring verdict: '', 'approved', 'rejected', 'pending'. */
+  verdict?: string;
 }
 
 export interface LineagePayload {
@@ -1223,6 +1228,13 @@ export interface LineageArtifact {
   generated_at: number;
   extractors_used: string[];
   extractors_partial: boolean;
+  /** Enrichments added by the router from `catalog_entities` so the
+   *  Studio canvas can rebuild the anchor scope without a second
+   *  lookup. Optional because legacy rows may not carry them. */
+  anchor_database?: string;
+  anchor_schema?: string;
+  anchor_table?: string;
+  anchor_column?: string;
 }
 
 export interface LineageArtifactList {
@@ -1264,10 +1276,11 @@ export async function lineageList(profile?: string): Promise<LineageArtifactList
 
 export async function lineageFetch(
   anchor: string,
-  opts: { profile?: string; depthUp?: number; depthDown?: number } = {},
+  opts: { profile?: string; database?: string; depthUp?: number; depthDown?: number } = {},
 ): Promise<LineagePayload> {
   const params = new URLSearchParams();
   if (opts.profile) params.set("profile", opts.profile);
+  if (opts.database) params.set("database", opts.database);
   if (opts.depthUp !== undefined) params.set("depth_up", String(opts.depthUp));
   if (opts.depthDown !== undefined) params.set("depth_down", String(opts.depthDown));
   const qs = params.toString();
@@ -1278,10 +1291,11 @@ export async function lineageFetch(
 
 export async function lineageRefresh(
   anchor: string,
-  opts: { profile?: string; noCache?: boolean } = {},
+  opts: { profile?: string; database?: string; noCache?: boolean } = {},
 ): Promise<LineageRefreshResponse> {
   const params = new URLSearchParams();
   if (opts.profile) params.set("profile", opts.profile);
+  if (opts.database) params.set("database", opts.database);
   if (opts.noCache) params.set("no_cache", "true");
   const qs = params.toString();
   return apiFetch<LineageRefreshResponse>(
@@ -1292,13 +1306,89 @@ export async function lineageRefresh(
 
 export async function lineageSuggest(
   anchor: string,
-  opts: { profile?: string } = {},
+  opts: { profile?: string; database?: string } = {},
 ): Promise<LineageSuggestResponse> {
   const params = new URLSearchParams();
   if (opts.profile) params.set("profile", opts.profile);
+  if (opts.database) params.set("database", opts.database);
   const qs = params.toString();
   return apiFetch<LineageSuggestResponse>(
     `/api/lineage/${encodeAnchorPath(anchor)}/suggest${qs ? `?${qs}` : ""}`,
     { method: "POST" },
+  );
+}
+
+export interface LineageDiscoveredAnchor {
+  database: string;
+  schema: string;
+  table: string;
+  fqn: string;
+  edge_count: number;
+  extractors_used: string[];
+  partial: boolean;
+}
+
+export interface LineageDiscoverResponse {
+  profile: string;
+  anchors: LineageDiscoveredAnchor[];
+  tables_examined: number;
+  tables_with_edges: number;
+  total_edges: number;
+  truncated: boolean;
+  duration_sec: number;
+}
+
+export async function lineageDiscover(
+  opts: { profile?: string; maxTables?: number } = {},
+): Promise<LineageDiscoverResponse> {
+  const params = new URLSearchParams();
+  if (opts.profile) params.set("profile", opts.profile);
+  if (opts.maxTables !== undefined) params.set("max_tables", String(opts.maxTables));
+  const qs = params.toString();
+  return apiFetch<LineageDiscoverResponse>(
+    `/api/lineage/discover${qs ? `?${qs}` : ""}`,
+    { method: "POST" },
+  );
+}
+
+// ── Authoring — v3 S4 ──────────────────────────────────────────────────
+
+export interface LineageManualEdgeResponse {
+  id: number;
+  from: string;
+  to: string;
+  verdict: string;
+  audit_actor: string;
+  audit_at: number;
+}
+
+export async function lineageCreateEdge(payload: {
+  profile: string;
+  source_fqn: string;
+  target_fqn: string;
+  notes?: string;
+}): Promise<LineageManualEdgeResponse> {
+  return apiFetch<LineageManualEdgeResponse>("/api/lineage/edges", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function lineageDeleteEdge(edgeId: number): Promise<void> {
+  await apiFetch<void>(`/api/lineage/edges/${edgeId}`, { method: "DELETE" });
+}
+
+export async function lineageSetVerdict(
+  edgeId: number,
+  verdict: "approved" | "rejected" | "pending" | "",
+): Promise<{ id: number; verdict: string }> {
+  return apiFetch<{ id: number; verdict: string }>(
+    `/api/lineage/edges/${edgeId}/verdict`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ verdict }),
+    },
   );
 }
