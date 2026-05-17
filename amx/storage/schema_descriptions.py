@@ -997,6 +997,65 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "filled the misses. Renderer adds a footer banner when 1."
         ),
     },
+    # ── lineage_artifact_nodes (local only) ───────────────────────────────
+    "lineage_artifact_nodes": {
+        "__table__": (
+            "Per-canvas node placement for a saved lineage artifact. "
+            "One row per node on the canvas. Carries its own db_profile so "
+            "a single canvas can host nodes from multiple DB profiles "
+            "(cross-profile lineage). x/y persist the user's manual layout "
+            "so re-open restores the same arrangement without re-running "
+            "dagre."
+        ),
+        "id": "Surrogate INT primary key.",
+        "artifact_id": (
+            "lineage_artifacts.id this node belongs to. Cascades on artifact "
+            "delete so orphan node rows cannot accumulate."
+        ),
+        "entity_id": (
+            "catalog_entities.id of the table, view, or operator the node "
+            "represents on the canvas."
+        ),
+        "db_profile": (
+            "DB profile the entity belongs to. Stored per-node (not just on "
+            "the parent artifact) so cross-profile canvases can render each "
+            "node with its own profile context."
+        ),
+        "x": "Canvas x coordinate in ReactFlow units.",
+        "y": "Canvas y coordinate in ReactFlow units.",
+        "width": "Rendered node width in ReactFlow units.",
+        "height": "Rendered node height in ReactFlow units.",
+        "z_index": (
+            "Stacking order. Higher z renders on top of lower z when nodes "
+            "visually overlap. Defaults to 0."
+        ),
+    },
+    # ── lineage_comments (local only) ─────────────────────────────────────
+    "lineage_comments": {
+        "__table__": (
+            "Sticky-note annotations attached to a saved lineage canvas. "
+            "Comments are free-floating notes that never participate in "
+            "edge resolution; they live alongside the canvas and cascade "
+            "on artifact delete."
+        ),
+        "id": "Surrogate INT primary key.",
+        "artifact_id": (
+            "lineage_artifacts.id this comment belongs to. Cascades on "
+            "artifact delete."
+        ),
+        "x": "Canvas x coordinate in ReactFlow units.",
+        "y": "Canvas y coordinate in ReactFlow units.",
+        "width": "Rendered note width in ReactFlow units.",
+        "height": "Rendered note height in ReactFlow units.",
+        "color": (
+            "Background color palette key: amber | rose | emerald | sky | "
+            "violet | slate. The frontend resolves the key to the actual "
+            "rendered color so the palette can evolve without a migration."
+        ),
+        "text": "Free-form note body. Plain text with @-mention support in the UI.",
+        "created_at": "UTC epoch seconds when the comment was first saved.",
+        "updated_at": "UTC epoch seconds of the most recent edit.",
+    },
     # ── catalog_usage_evidence (local only) ───────────────────────────────
     "catalog_usage_evidence": {
         "__table__": (
