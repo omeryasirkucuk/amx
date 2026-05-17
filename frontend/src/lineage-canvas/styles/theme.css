@@ -1,0 +1,130 @@
+/**
+ * Lineage canvas: visual polish on top of AMX design tokens.
+ *
+ * The canvas piggybacks on AMX's existing CSS variables (--bg,
+ * --surface, --ink, --accent, etc.). The rules here add canvas-only
+ * extras: ReactFlow background dot color, edge animations, hover
+ * affordances, and the @-mention highlight backdrop.
+ */
+
+.lcv-canvas-root {
+  --lcv-bg: rgb(var(--bg));
+  --lcv-surface: rgb(var(--surface));
+  --lcv-surface-raised: rgb(var(--surface-raised));
+  --lcv-border: rgb(var(--border));
+  --lcv-border-strong: rgb(var(--border-strong));
+  --lcv-ink: rgb(var(--ink));
+  --lcv-ink-muted: rgb(var(--ink-muted));
+  --lcv-ink-dim: rgb(var(--ink-dim));
+  --lcv-accent: rgb(var(--accent));
+}
+
+/* React Flow background dots — subtle on dark surface. */
+.lcv-canvas-root .react-flow__background {
+  background-color: var(--lcv-bg);
+}
+.lcv-canvas-root .react-flow__background pattern circle {
+  fill: var(--lcv-border);
+}
+
+/* Controls (zoom in/out/fit) — match design tokens. */
+.lcv-canvas-root .react-flow__controls {
+  background: var(--lcv-surface-raised);
+  border: 1px solid var(--lcv-border);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.lcv-canvas-root .react-flow__controls-button {
+  background: transparent;
+  border-bottom: 1px solid var(--lcv-border);
+  color: var(--lcv-ink-muted);
+}
+.lcv-canvas-root .react-flow__controls-button:hover {
+  background: var(--lcv-surface);
+  color: var(--lcv-ink);
+}
+
+/* Edge labels — only visible on hover (Dataloom-style overlay). */
+.lcv-edge-label {
+  background: var(--lcv-surface-raised);
+  border: 1px solid var(--lcv-border-strong);
+  color: var(--lcv-ink-muted);
+  font-size: 10.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  font-family: ui-monospace, "JetBrains Mono", monospace;
+  pointer-events: none;
+}
+
+/* Handle dot — small disc colored by data type. */
+.lcv-handle {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  border: 1.5px solid rgb(var(--bg));
+}
+
+/* Per-column row in DataFrameNode. */
+.lcv-col-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  min-height: 24px;
+  position: relative;
+  font-size: 12.5px;
+}
+.lcv-col-row + .lcv-col-row {
+  border-top: 1px solid var(--lcv-border);
+}
+.lcv-col-row:hover {
+  background: var(--lcv-surface);
+}
+
+/* Type badge — small monospace pill, colored bg. */
+.lcv-type-badge {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, "JetBrains Mono", monospace;
+  font-weight: 600;
+  color: #0a0a0a;
+  letter-spacing: 0.02em;
+}
+
+/* AI-incoming edge — pulse the dashed purple stroke briefly so the
+   user notices the new edge appearing during streaming. */
+@keyframes lcv-edge-pulse {
+  0% { opacity: 0.0; }
+  10% { opacity: 1; }
+  100% { opacity: 1; }
+}
+.lcv-edge-fadein {
+  animation: lcv-edge-pulse 320ms var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+}
+
+/* @-mention highlight backdrop (HighlightedConditionInput). */
+.lcv-mention-backdrop {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  pointer-events: none;
+  color: transparent;
+  font: inherit;
+  border: 1px solid transparent;
+}
+.lcv-mention-backdrop mark {
+  background: rgba(251, 146, 60, 0.22);
+  color: transparent;
+  border-radius: 2px;
+}
+
+/* Comment / sticky-note resize control. */
+.lcv-canvas-root .react-flow__resize-control {
+  background: var(--lcv-accent);
+  border: 1px solid rgb(var(--bg));
+}

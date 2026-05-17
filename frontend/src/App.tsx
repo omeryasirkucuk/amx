@@ -34,11 +34,12 @@ const Audit = lazy(() => import("./routes/Audit"));
 const Schedules = lazy(() => import("./routes/Schedules"));
 const Pricing = lazy(() => import("./routes/Pricing"));
 const DbCache = lazy(() => import("./routes/DbCache"));
+// Lineage rebuilt around the new lineage-canvas package — one
+// component serves /lineage, /lineage/new, /lineage/saved, and the
+// legacy /lineage/:profile/:anchor URL (the latter redirects to the
+// canvas with the resolved artifact id when one exists).
 const Lineage = lazy(() => import("./routes/Lineage"));
-const LineageSaved = lazy(() => import("./routes/LineageSaved"));
-const LineageNew = lazy(() => import("./routes/LineageNew"));
-const LineageShare = lazy(() => import("./routes/LineageShare"));
-const LineageDetail = lazy(() => import("./routes/LineageDetail"));
+const LineageRedirect = lazy(() => import("./routes/LineageRedirect"));
 
 // Suspense fallback is intentionally minimal — chunk fetches over
 // loopback land in milliseconds, so a heavy skeleton would flash
@@ -93,10 +94,10 @@ export default function App() {
               <Route path="pricing" element={<Pricing />} />
               <Route path="db-cache" element={<DbCache />} />
               <Route path="lineage" element={<Lineage />} />
-              <Route path="lineage/saved" element={<LineageSaved />} />
-              <Route path="lineage/new" element={<LineageNew />} />
-              <Route path="lineage/share" element={<LineageShare />} />
-              <Route path="lineage/:profile/:anchor" element={<LineageDetail />} />
+              <Route path="lineage/saved" element={<Lineage />} />
+              <Route path="lineage/new" element={<Lineage />} />
+              <Route path="lineage/share" element={<Lineage />} />
+              <Route path="lineage/:profile/:anchor" element={<LineageRedirect />} />
               <Route path="runs/schedules" element={<Schedules />} />
               <Route
                 path="runs/catalog-refresh-schedules"

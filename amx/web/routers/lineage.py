@@ -436,6 +436,268 @@ def post_discover(
     }
 
 
+# ── Routes MUST come before the catch-all GET below ─────────────────────
+#
+# FastAPI matches routes in registration order; the bare
+# ``/{anchor_path:path}`` GET below would otherwise gobble ``/by-id/<id>``
+# and treat the artifact id as an anchor table FQN. We register the
+# by-id read + the SSE stream up here so they win the routing match.
+
+
+@router.get("/by-id/{artifact_id}")
+def get_artifact_by_id(
+    artifact_id: int,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Load a saved canvas by its artifact_id (cross-profile aware).
+
+    Returns nodes (with per-node profile + position), edges,
+    and comments. This is the canonical re-open path the frontend uses
+    after a save — it never resolves the canvas by the artifact's
+    user-visible name, which avoids the save-canvas name-as-table
+    misresolve bug.
+    """
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    with hs._connect() as conn:
+        art = conn.execute(
+            "SELECT id, name, db_profile, anchor_entity_id, generated_at, "
+            "       node_count, edge_count "
+            "FROM lineage_artifacts WHERE id = ?",
+            (int(artifact_id),),
+        ).fetchone()
+    if not art:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Lineage artifact {artifact_id} not found.",
+        )
+    primary_profile = str(art[2] or "")
+    anchor_id = int(art[3])
+
+    with hs._connect() as conn:
+        node_rows = conn.execute(
+            "SELECT entity_id, db_profile, x, y, width, height, z_index "
+            "FROM lineage_artifact_nodes WHERE artifact_id = ? "
+            "ORDER BY z_index, id",
+            (int(artifact_id),),
+        ).fetchall()
+        comment_rows = conn.execute(
+            "SELECT id, x, y, width, height, color, text, created_at, updated_at "
+            "FROM lineage_comments WHERE artifact_id = ? ORDER BY id",
+            (int(artifact_id),),
+        ).fetchall()
+
+    nodes_out: list[dict[str, Any]] = []
+    by_profile: dict[str, list[int]] = {}
+    for row in node_rows:
+        by_profile.setdefault(str(row[1] or ""), []).append(int(row[0]))
+
+    entity_meta: dict[int, dict[str, Any]] = {}
+    for prof, ids in by_profile.items():
+        if not ids:
+            continue
+        placeholders = ",".join("?" for _ in ids)
+        with hs._connect() as conn:
+            rows = conn.execute(
+                f"SELECT id, database_name, schema_name, table_name, "
+                f"       column_name, entity_kind "
+                f"FROM catalog_entities WHERE id IN ({placeholders})",
+                tuple(ids),
+            ).fetchall()
+        for r in rows:
+            entity_meta[int(r[0])] = {
+                "profile": prof,
+                "database": str(r[1] or ""),
+                "schema": str(r[2] or ""),
+                "table": str(r[3] or ""),
+                "column": str(r[4] or ""),
+                "kind": str(r[5] or "table"),
+            }
+
+    for row in node_rows:
+        entity_id = int(row[0])
+        meta = entity_meta.get(entity_id, {})
+        nodes_out.append(
+            {
+                "entity_id": entity_id,
+                "profile": str(row[1] or ""),
+                "x": float(row[2] or 0.0),
+                "y": float(row[3] or 0.0),
+                "width": float(row[4] or 240.0),
+                "height": float(row[5] or 120.0),
+                "z_index": int(row[6] or 0),
+                "database": meta.get("database", ""),
+                "schema": meta.get("schema", ""),
+                "table": meta.get("table", ""),
+                "column": meta.get("column", ""),
+                "kind": meta.get("kind", "table"),
+                "fqn": ".".join(
+                    p
+                    for p in (
+                        meta.get("database", ""),
+                        meta.get("schema", ""),
+                        meta.get("table", ""),
+                    )
+                    if p
+                ),
+            }
+        )
+
+    edges_out: list[dict[str, Any]] = []
+    if node_rows:
+        node_ids = [int(r[0]) for r in node_rows]
+        placeholders = ",".join("?" for _ in node_ids)
+        with hs._connect() as conn:
+            rels = conn.execute(
+                f"""
+                SELECT id, from_entity_id, to_entity_id, from_column, to_column,
+                       relationship_type, source, score, verdict
+                FROM catalog_relationships
+                WHERE from_entity_id IN ({placeholders})
+                  AND to_entity_id IN ({placeholders})
+                """,
+                tuple(node_ids) + tuple(node_ids),
+            ).fetchall()
+        for r in rels:
+            edges_out.append(
+                {
+                    "id": int(r[0]),
+                    "from_entity_id": int(r[1]),
+                    "to_entity_id": int(r[2]),
+                    "from_column": str(r[3] or ""),
+                    "to_column": str(r[4] or ""),
+                    "relationship_type": str(r[5] or ""),
+                    "source": str(r[6] or ""),
+                    "score": float(r[7] or 0.0),
+                    "verdict": str(r[8] or ""),
+                }
+            )
+
+    comments_out = [
+        {
+            "id": int(c[0]),
+            "x": float(c[1] or 0.0),
+            "y": float(c[2] or 0.0),
+            "width": float(c[3] or 240.0),
+            "height": float(c[4] or 140.0),
+            "color": str(c[5] or "amber"),
+            "text": str(c[6] or ""),
+            "created_at": float(c[7] or 0.0),
+            "updated_at": float(c[8] or 0.0),
+        }
+        for c in comment_rows
+    ]
+
+    return {
+        "artifact_id": int(art[0]),
+        "name": str(art[1] or ""),
+        "primary_profile": primary_profile,
+        "anchor_entity_id": anchor_id,
+        "generated_at": float(art[4] or 0.0),
+        "nodes": nodes_out,
+        "edges": edges_out,
+        "comments": comments_out,
+    }
+
+
+@router.get("/{anchor_path:path}/suggest/stream")
+def stream_suggest_lineage(
+    anchor_path: str,
+    profile: str | None = Query(default=None),
+    database: str = Query(default=""),
+    cfg: AMXConfig = Depends(get_cfg),
+):
+    """Server-Sent Events stream that emits one event per extractor batch.
+
+    Wraps :func:`amx.lineage.service.suggest_lineage_llm` and the cache-only
+    pass of the deterministic extractors. Events are emitted as they
+    complete (FK first, then view-DDL, then LLM) so the frontend canvas
+    can animate each batch in instead of waiting for the full pipeline.
+
+    Registered BEFORE the catch-all GET below so the routing match wins.
+
+    Event format::
+
+        event: edges-batch
+        data: {"extractor": "fk", "edges": [...], "partial": false}
+
+        event: done
+        data: {"total_edges": N}
+
+        event: error
+        data: {"message": "..."}
+    """
+    from fastapi.responses import StreamingResponse
+
+    name = _resolve_profile(cfg, profile)
+    scope = _scope(
+        cfg,
+        profile=name,
+        anchor_path=anchor_path,
+        depth_up=2,
+        depth_down=2,
+        explicit_database=database,
+    )
+
+    def _stream():
+        hs = history_store()
+        if hs is None:
+            yield 'event: error\ndata: {"message": "History store unavailable"}\n\n'
+            return
+        try:
+            yield from lineage_service.stream_suggest_lineage(hs, scope, cfg)
+        except Exception as exc:  # pragma: no cover - defensive
+            payload = json.dumps({"message": str(exc)})
+            yield f"event: error\ndata: {payload}\n\n"
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/by-id/{artifact_id}/comments")
+def list_comments(artifact_id: int) -> dict[str, Any]:
+    """List sticky-note comments on a saved canvas."""
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    with hs._connect() as conn:
+        rows = conn.execute(
+            "SELECT id, x, y, width, height, color, text, created_at, updated_at "
+            "FROM lineage_comments WHERE artifact_id = ? ORDER BY id",
+            (int(artifact_id),),
+        ).fetchall()
+    return {
+        "artifact_id": int(artifact_id),
+        "comments": [
+            {
+                "id": int(r[0]),
+                "x": float(r[1] or 0.0),
+                "y": float(r[2] or 0.0),
+                "width": float(r[3] or 240.0),
+                "height": float(r[4] or 140.0),
+                "color": str(r[5] or "amber"),
+                "text": str(r[6] or ""),
+                "created_at": float(r[7] or 0.0),
+                "updated_at": float(r[8] or 0.0),
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/{anchor_path:path}")
 def get_lineage(
     anchor_path: str,
@@ -1048,28 +1310,59 @@ def post_manual_artifact(
 ) -> dict[str, Any]:
     """Persist a hand-drawn canvas as a fresh lineage artifact.
 
+    Cross-profile aware: each node may carry its own ``profile`` so a
+    single canvas can host tables from multiple DB profiles. The
+    request's top-level ``profile`` is the artifact's "primary" profile
+    (used for AI generate / refresh on this canvas) and the default for
+    nodes that omit their own profile.
+
+    The ``name`` field is a pure display string; the response carries
+    ``artifact_id`` for navigation. Clients must navigate to the canvas
+    by id (``?artifact=<id>``), never by name — using name as an
+    anchor-table FQN was the root cause of the save-canvas mis-resolve
+    bug.
+
     Body::
 
         {
           "profile": "local-postgre",
           "name": "my-custom-flow",
           "anchor_fqn": "public.orders",        # canvas's centre
-          "edges": [
-            {"source_fqn": "public.customers", "target_fqn": "public.orders"},
+          "nodes": [
+            {
+              "profile": "local-postgre",       # optional override
+              "fqn": "public.orders",
+              "x": 120, "y": 80,
+              "width": 240, "height": 120
+            },
             ...
+          ],
+          "edges": [
+            {
+              "source_fqn": "public.customers", "source_profile": "...",
+              "target_fqn": "public.orders",   "target_profile": "...",
+              "source_column": "id",           "target_column": "customer_id"
+            },
+            ...
+          ],
+          "comments": [
+            {"x": 40, "y": 40, "width": 240, "height": 140,
+             "color": "amber", "text": "Note body"}
           ]
         }
     """
-    profile = str(payload.get("profile") or "").strip()
+    primary_profile = str(payload.get("profile") or "").strip()
     name = str(payload.get("name") or "").strip()
     anchor_fqn = str(payload.get("anchor_fqn") or "").strip()
+    nodes_in = payload.get("nodes") or []
     edges_in = payload.get("edges") or []
-    if not profile or not name or not anchor_fqn:
+    comments_in = payload.get("comments") or []
+    if not primary_profile or not name or not anchor_fqn:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="profile, name, anchor_fqn are required.",
         )
-    profile = _resolve_profile(cfg, profile)
+    primary_profile = _resolve_profile(cfg, primary_profile)
     hs = history_store()
     if hs is None:
         raise HTTPException(
@@ -1078,7 +1371,7 @@ def post_manual_artifact(
         )
     from amx.lineage.operator_ops import write_column_edge
 
-    anchor_id = _resolve_entity_id_strict(hs, profile, anchor_fqn)
+    anchor_id = _resolve_entity_id_strict(hs, primary_profile, anchor_fqn)
     actor = _actor_name()
     now = time.time()
     persisted = 0
@@ -1089,20 +1382,28 @@ def post_manual_artifact(
         tgt = str(edge.get("target_fqn") or "").strip()
         if not src or not tgt or src == tgt:
             continue
+        src_profile = str(edge.get("source_profile") or primary_profile).strip() or primary_profile
+        tgt_profile = str(edge.get("target_profile") or primary_profile).strip() or primary_profile
         try:
-            src_id = _resolve_entity_id_strict(hs, profile, src)
-            tgt_id = _resolve_entity_id_strict(hs, profile, tgt)
+            src_id = _resolve_entity_id_strict(hs, src_profile, src)
+            tgt_id = _resolve_entity_id_strict(hs, tgt_profile, tgt)
         except HTTPException:
             continue
         _src_db, _src_schema, _src_table, src_col_from_fqn = _split_fqn_resolve_column(
-            hs, profile, src
+            hs, src_profile, src
         )
         _tgt_db, _tgt_schema, _tgt_table, tgt_col_from_fqn = _split_fqn_resolve_column(
-            hs, profile, tgt
+            hs, tgt_profile, tgt
         )
         src_col = str(edge.get("source_column") or src_col_from_fqn or "").strip()
         tgt_col = str(edge.get("target_column") or tgt_col_from_fqn or "").strip()
-        details = {"actor": actor, "ts": now, "via": "manual_canvas"}
+        details = {
+            "actor": actor,
+            "ts": now,
+            "via": "manual_canvas",
+            "source_profile": src_profile,
+            "target_profile": tgt_profile,
+        }
         write_column_edge(
             hs,
             from_entity_id=src_id,
@@ -1122,7 +1423,10 @@ def post_manual_artifact(
     # Compute scope and render the artifact so it shows up on the
     # browse list immediately. We re-use create_lineage so the matplotlib
     # PNG/SVG generation, hashing, and lineage_artifacts row insert all
-    # happen through the canonical path.
+    # happen through the canonical path. Scope is the primary profile;
+    # nodes from other profiles are layered in via lineage_artifact_nodes
+    # below and surface through the cross-profile read path in
+    # ``GET /api/lineage/by-id/{id}``.
     with hs._connect() as conn:
         row = conn.execute(
             "SELECT database_name, schema_name, table_name FROM catalog_entities WHERE id = ?",
@@ -1132,7 +1436,7 @@ def post_manual_artifact(
     schema = str(row[1] or "")
     table = str(row[2] or "")
     scope = Scope(
-        profile=profile,
+        profile=primary_profile,
         anchor=ColumnRef(database=database, schema=schema, table=table, column=""),
         depth_up=1,
         depth_down=1,
@@ -1143,13 +1447,17 @@ def post_manual_artifact(
 
     from amx.config import _resolve_config_dir
 
-    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", name) or "lineage"
+    # Slug is used for the on-disk image path only. It never participates
+    # in re-open routing; the artifact_id is the only identifier the
+    # frontend uses to load this canvas back.
+    slug_base = re.sub(r"[^A-Za-z0-9_-]+", "_", name) or "lineage"
+    slug = f"{slug_base}_{int(now)}"
     out = _P(_resolve_config_dir()) / "lineage" / f"{slug}.svg"
     try:
         result = lineage_service.create_lineage(
             hs=hs,
             scope=scope,
-            name=slug,
+            name=name,
             output_path=out,
             fmt="svg",
             fill_decision="skip",
@@ -1161,6 +1469,67 @@ def post_manual_artifact(
             "artifact_id": 0,
             "render_error": str(exc),
         }
+
+    # Persist per-node placements + cross-profile mapping.
+    if result.artifact_id and nodes_in:
+        with hs._connect() as conn:
+            for node in nodes_in:
+                if not isinstance(node, dict):
+                    continue
+                node_fqn = str(node.get("fqn") or "").strip()
+                if not node_fqn:
+                    continue
+                node_profile = (
+                    str(node.get("profile") or primary_profile).strip() or primary_profile
+                )
+                try:
+                    entity_id = _resolve_entity_id_strict(hs, node_profile, node_fqn)
+                except HTTPException:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO lineage_artifact_nodes
+                        (artifact_id, entity_id, db_profile, x, y, width, height, z_index)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(result.artifact_id),
+                        entity_id,
+                        node_profile,
+                        float(node.get("x") or 0.0),
+                        float(node.get("y") or 0.0),
+                        float(node.get("width") or 240.0),
+                        float(node.get("height") or 120.0),
+                        int(node.get("z_index") or 0),
+                    ),
+                )
+
+    # Persist sticky-note comments alongside the canvas.
+    if result.artifact_id and comments_in:
+        with hs._connect() as conn:
+            for comment in comments_in:
+                if not isinstance(comment, dict):
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO lineage_comments
+                        (artifact_id, x, y, width, height, color, text,
+                         created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(result.artifact_id),
+                        float(comment.get("x") or 0.0),
+                        float(comment.get("y") or 0.0),
+                        float(comment.get("width") or 240.0),
+                        float(comment.get("height") or 140.0),
+                        str(comment.get("color") or "amber"),
+                        str(comment.get("text") or ""),
+                        now,
+                        now,
+                    ),
+                )
+
     return {
         "ok": not result.aborted,
         "persisted_edges": persisted,
@@ -1169,3 +1538,152 @@ def post_manual_artifact(
         "edge_count": result.edge_count,
         "extractors_used": result.extractors_used,
     }
+
+
+# ── Comments CRUD + SSE stream + SQL bridge ──────────────────────────────
+
+
+@router.post("/by-id/{artifact_id}/comments", status_code=status.HTTP_201_CREATED)
+def post_comment(
+    artifact_id: int,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    """Create a sticky-note comment on a saved canvas."""
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    now = time.time()
+    with hs._connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO lineage_comments
+                (artifact_id, x, y, width, height, color, text,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(artifact_id),
+                float(payload.get("x") or 0.0),
+                float(payload.get("y") or 0.0),
+                float(payload.get("width") or 240.0),
+                float(payload.get("height") or 140.0),
+                str(payload.get("color") or "amber"),
+                str(payload.get("text") or ""),
+                now,
+                now,
+            ),
+        )
+        new_id = int(cur.lastrowid)
+    return {"id": new_id, "artifact_id": int(artifact_id), "created_at": now}
+
+
+@router.patch("/by-id/{artifact_id}/comments/{comment_id}")
+def patch_comment(
+    artifact_id: int,
+    comment_id: int,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    """Update a sticky-note comment in place."""
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    sets: list[str] = []
+    args: list[Any] = []
+    for key in ("x", "y", "width", "height"):
+        if key in payload:
+            sets.append(f"{key} = ?")
+            args.append(float(payload[key]))
+    for key in ("color", "text"):
+        if key in payload:
+            sets.append(f"{key} = ?")
+            args.append(str(payload[key]))
+    if not sets:
+        return {"ok": True, "updated": 0}
+    now = time.time()
+    sets.append("updated_at = ?")
+    args.append(now)
+    args.extend([int(artifact_id), int(comment_id)])
+    with hs._connect() as conn:
+        cur = conn.execute(
+            f"UPDATE lineage_comments SET {', '.join(sets)} WHERE artifact_id = ? AND id = ?",
+            tuple(args),
+        )
+        updated = cur.rowcount
+    return {"ok": True, "updated": int(updated or 0), "updated_at": now}
+
+
+@router.delete(
+    "/by-id/{artifact_id}/comments/{comment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_comment(artifact_id: int, comment_id: int) -> None:
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    with hs._connect() as conn:
+        conn.execute(
+            "DELETE FROM lineage_comments WHERE artifact_id = ? AND id = ?",
+            (int(artifact_id), int(comment_id)),
+        )
+
+
+@router.post("/sql/parse")
+def sql_parse(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Parse a SELECT statement into canvas-ready node/edge JSON.
+
+    Backed by :mod:`amx.lineage.sql_bridge` which reuses the same sqlglot
+    parse path the ``view_ddl`` extractor uses, so parsing behavior stays
+    consistent between view inference and SQL import.
+    """
+    from amx.lineage import sql_bridge
+
+    sql = str(payload.get("sql") or "").strip()
+    dialect = str(payload.get("dialect") or "").strip() or None
+    if not sql:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`sql` is required.",
+        )
+    try:
+        return sql_bridge.parse_select_to_canvas(sql, dialect=dialect)
+    except sql_bridge.SqlBridgeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post("/sql/render")
+def sql_render(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Render a canvas back into a SELECT statement.
+
+    Walks the canvas's operator chain (filter/join/aggregate/projection)
+    and emits a single composed SELECT. Round-trip-friendly with
+    ``/api/lineage/sql/parse``.
+    """
+    from amx.lineage import sql_bridge
+
+    canvas = payload.get("canvas") or {}
+    dialect = str(payload.get("dialect") or "").strip() or None
+    if not isinstance(canvas, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`canvas` must be an object.",
+        )
+    try:
+        sql = sql_bridge.render_canvas_to_sql(canvas, dialect=dialect)
+    except sql_bridge.SqlBridgeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return {"sql": sql, "dialect": dialect or "ansi"}

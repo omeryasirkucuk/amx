@@ -779,6 +779,69 @@ class SQLiteHistoryStore:
                     "CREATE INDEX IF NOT EXISTS idx_lineage_artifacts_anchor "
                     "ON lineage_artifacts(anchor_entity_id)"
                 )
+            # ── lineage_artifact_nodes: per-canvas node placement w/ profile ──
+            # One row per node on a saved canvas. Carries its own db_profile
+            # so a single canvas can host nodes from multiple profiles
+            # (cross-profile lineage). x/y persist the user's manual layout
+            # so re-open restores the same arrangement instead of re-running
+            # dagre. ``entity_id`` is the catalog_entities row for the
+            # table or operator the node represents.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lineage_artifact_nodes (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    artifact_id     INTEGER NOT NULL,
+                    entity_id       INTEGER NOT NULL,
+                    db_profile      TEXT NOT NULL,
+                    x               REAL NOT NULL DEFAULT 0,
+                    y               REAL NOT NULL DEFAULT 0,
+                    width           REAL NOT NULL DEFAULT 240,
+                    height          REAL NOT NULL DEFAULT 120,
+                    z_index         INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (artifact_id) REFERENCES lineage_artifacts(id) ON DELETE CASCADE,
+                    FOREIGN KEY (entity_id) REFERENCES catalog_entities(id)
+                )
+                """
+            )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lineage_artifact_nodes_artifact "
+                    "ON lineage_artifact_nodes(artifact_id)"
+                )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lineage_artifact_nodes_entity "
+                    "ON lineage_artifact_nodes(entity_id, db_profile)"
+                )
+            # ── lineage_comments: sticky-note annotations on a canvas ──
+            # Free-floating notes are not lineage entities — they live
+            # alongside a saved canvas and never participate in edge
+            # resolution. Stored separately from catalog_entities so the
+            # entity model stays clean (it's about tables/columns/operators
+            # only). One artifact owns N comments; deleting the artifact
+            # cascades.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lineage_comments (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    artifact_id     INTEGER NOT NULL,
+                    x               REAL NOT NULL DEFAULT 0,
+                    y               REAL NOT NULL DEFAULT 0,
+                    width           REAL NOT NULL DEFAULT 240,
+                    height          REAL NOT NULL DEFAULT 140,
+                    color           TEXT NOT NULL DEFAULT 'amber',
+                    text            TEXT NOT NULL DEFAULT '',
+                    created_at      REAL NOT NULL,
+                    updated_at      REAL NOT NULL,
+                    FOREIGN KEY (artifact_id) REFERENCES lineage_artifacts(id) ON DELETE CASCADE
+                )
+                """
+            )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lineage_comments_artifact "
+                    "ON lineage_comments(artifact_id)"
+                )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_usage_evidence (
