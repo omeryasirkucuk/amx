@@ -625,6 +625,12 @@ def lineage_for_studio(
 
     edge_payloads: list[dict[str, Any]] = []
     for edge in edges:
+        if edge.operator is not None:
+            # v4 — split edges with operator metadata into
+            # source → op-node → target so the Studio canvas can render
+            # the operator as a first-class node (datapav model).
+            _emit_operator_chain(edge, nodes_by_id, edge_payloads)
+            continue
         payload = {
             "id": edge.db_id,
             "from": _node_id(edge.source),
@@ -637,9 +643,14 @@ def lineage_for_studio(
             "evidence": edge.evidence,
             "verdict": edge.verdict,
         }
-        if edge.operator is not None:
-            payload["operator"] = edge.operator.as_dict()
         edge_payloads.append(payload)
+
+    # Derive per-table column lists for TableNode rendering. Each table
+    # node ends up with `columns: [{name, dtype}]` so the canvas knows
+    # which port handles to lay out — drawn from the column entities
+    # that appeared in any edge endpoint plus the catalogged columns
+    # for the anchor table itself.
+    _attach_table_columns(hs, scope, nodes_by_id)
 
     return {
         "anchor": {
@@ -654,6 +665,99 @@ def lineage_for_studio(
         "extractors_used": sorted({e.extractor for e in edges}),
         "generated_at": time.time(),
     }
+
+
+def _emit_operator_chain(
+    edge: Edge,
+    nodes_by_id: dict[str, dict[str, Any]],
+    edge_payloads: list[dict[str, Any]],
+) -> None:
+    """Split a single operator-bearing edge into a 3-node chain.
+
+    The synthetic operator node is keyed on the source+target+op_kind
+    so identical transforms across multiple rows collapse to one
+    visible operator node on the canvas.
+    """
+    op = edge.operator
+    assert op is not None
+    source_id = _node_id(edge.source)
+    target_id = _node_id(edge.target)
+    # Stable synthetic id — the operator is logically owned by the
+    # target table (the view producing it), keyed off the kind +
+    # expression so identical transforms collapse, distinct ones split.
+    expr_tag = (op.expression or "").strip()
+    op_id = f"op:{target_id}:{op.op_kind}:{abs(hash(expr_tag)) % 0xFFFFFFFF:08x}"
+    if op_id not in nodes_by_id:
+        nodes_by_id[op_id] = {
+            "id": op_id,
+            "label": op.op_kind,
+            "kind": "operator",
+            "anchor": False,
+            "described": False,
+            "op_kind": op.op_kind,
+            "expression": op.expression,
+        }
+    base = {
+        "id": edge.db_id,
+        "type": edge.relationship_type,
+        "extractor": edge.extractor,
+        "confidence": round(float(edge.confidence), 3),
+        "evidence": edge.evidence,
+        "verdict": edge.verdict,
+    }
+    edge_payloads.append(
+        {
+            **base,
+            "from": source_id,
+            "to": op_id,
+            "from_column": edge.source.column,
+            "to_column": edge.source.column,
+            "role": "operator_input",
+        }
+    )
+    edge_payloads.append(
+        {
+            **base,
+            "from": op_id,
+            "to": target_id,
+            "from_column": edge.target.column,
+            "to_column": edge.target.column,
+            "role": "operator_output",
+            "operator": op.as_dict(),
+        }
+    )
+
+
+def _attach_table_columns(
+    hs: Any,
+    scope: Scope,
+    nodes_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Populate ``columns`` on every table node from the catalog cache.
+
+    Walks ``catalog_entities`` for rows matching each table id in the
+    payload, attaching ``[{"name": col, "dtype": dtype}]``. Operator
+    nodes are skipped (they carry op_kind/expression instead).
+    """
+    table_keys = [nid for nid, node in nodes_by_id.items() if node.get("kind") == "table"]
+    if not table_keys:
+        return
+    with hs._connect() as conn:
+        for nid in table_keys:
+            ref = _ref_from_node(nid)
+            rows = conn.execute(
+                """
+                SELECT column_name, dtype
+                FROM catalog_entities
+                WHERE db_profile = ? AND schema_name = ? AND table_name = ?
+                  AND entity_kind = 'column' AND column_name IS NOT NULL
+                ORDER BY column_name
+                """,
+                (scope.profile, ref.schema, ref.table),
+            ).fetchall()
+            nodes_by_id[nid]["columns"] = [
+                {"name": str(r[0]), "dtype": str(r[1] or "")} for r in rows
+            ]
 
 
 @dataclass
