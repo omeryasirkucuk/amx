@@ -1,28 +1,36 @@
 /**
- * LineageCanvas — React Flow wrapper that renders a LineagePayload.
+ * LineageCanvas — React Flow wrapper that renders a v4 LineagePayload
+ * as a column-level data-flow editor.
  *
- * v3 features baked in:
- * - Provider wrapper exposes `useReactFlow()` so parent search input
- *   can `fitView` on a chosen node.
- * - Click any node → chain highlight: upstream + downstream computed
- *   via BFS over the in-memory edge list; non-chain elements fade to
- *   opacity 0.15. Re-click the same node or click the pane to clear.
- * - Search input lives in `LineageSearchInput.tsx` and is rendered
- *   above the canvas by `LineageDetail.tsx`. The canvas exposes its
- *   node list via `useLineageNodes` for that component to consume.
+ * Node types:
+ *   - TableNode: per-column rows with left target + right source ports.
+ *     Drag-from-port → drag-to-port lands as `onCreateEdge(sourceId,
+ *     targetId, sourceColumn, targetColumn)` so the parent can POST a
+ *     column-level edge.
+ *   - OperatorNode: synthetic node representing a transformation
+ *     (filter / function / aggregate / join). Backend splits any edge
+ *     carrying operator metadata into source → op → target.
  *
- * Layout is dagre (left → right). Each node carries the FQN as `id`
- * so React Flow's edge endpoints line up with the backend payload
- * directly. Anchor is styled distinct; edges are coloured + dashed
- * based on `type` so the user can tell FK from heuristic from LLM at
- * a glance.
+ * Interactions kept from v3:
+ *   - Node click → upstream/downstream chain highlight (BFS over the
+ *     edge list).
+ *   - Right-click edge → floating Approve / Reject / Delete bar
+ *     (parent owns the mutation).
+ *   - Imperative `focusNode` for ⌘K search.
  *
- * Selection: clicking an edge raises `onSelectEdge(edge)` so the
- * parent can render the right-side EdgePanel. Read-only canvas in S3;
- * S4 will add drag-to-connect on top.
+ * Auto-fit on mount fires after layout settles, so the canvas no
+ * longer renders as a tiny graph in the bottom-left when there's a
+ * single node.
  */
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useState,
+} from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -34,39 +42,91 @@ import ReactFlow, {
   type EdgeMouseHandler,
   type Node as RFNode,
   type NodeMouseHandler,
+  type OnInit,
 } from "reactflow";
 import { Check, Trash2, X } from "lucide-react";
 import "reactflow/dist/style.css";
 import dagre from "dagre";
 
 import type { LineageEdge, LineageNode, LineagePayload } from "../lib/api";
+import { TableNode, type TableNodeData } from "./lineage/TableNode";
+import { OperatorNode, type OperatorNodeData } from "./lineage/OperatorNode";
 
-const NODE_W = 220;
-const NODE_H = 56;
+const TABLE_W = 240;
+const ROW_H = 22;
+const HEADER_H = 28;
+const OP_W = 180;
+const OP_H = 48;
+
+function nodeWidth(n: LineageNode): number {
+  if (n.kind === "operator") return OP_W;
+  return TABLE_W;
+}
+
+function nodeHeight(n: LineageNode): number {
+  if (n.kind === "operator") return OP_H;
+  const colRows = n.columns?.length ?? 0;
+  return HEADER_H + Math.max(1, colRows) * ROW_H + 4;
+}
+
+const NODE_TYPES = {
+  amxTable: TableNode,
+  amxOperator: OperatorNode,
+};
 
 type LayoutPair = { nodes: RFNode[]; edges: RFEdge[] };
 
-function layout(payload: LineagePayload): LayoutPair {
+function layout(
+  payload: LineagePayload,
+  tracedColumn: { nodeId: string; column: string } | null,
+): LayoutPair {
   const g = new dagre.graphlib.Graph().setGraph({
     rankdir: "LR",
-    nodesep: 32,
-    ranksep: 80,
+    nodesep: 28,
+    ranksep: 100,
     marginx: 24,
     marginy: 24,
   });
   g.setDefaultEdgeLabel(() => ({}));
-  payload.nodes.forEach((n) => g.setNode(n.id, { width: NODE_W, height: NODE_H }));
+  payload.nodes.forEach((n) =>
+    g.setNode(n.id, { width: nodeWidth(n), height: nodeHeight(n) }),
+  );
   payload.edges.forEach((e) => g.setEdge(e.from, e.to));
   dagre.layout(g);
 
   const nodes: RFNode[] = payload.nodes.map((n) => {
     const pos = g.node(n.id);
+    const w = nodeWidth(n);
+    const h = nodeHeight(n);
+    if (n.kind === "operator") {
+      const data: OperatorNodeData = {
+        label: n.label,
+        op_kind: n.op_kind,
+        expression: n.expression,
+      };
+      return {
+        id: n.id,
+        type: "amxOperator",
+        data,
+        position: { x: pos.x - w / 2, y: pos.y - h / 2 },
+        draggable: false,
+      };
+    }
+    const data: TableNodeData = {
+      label: n.label,
+      anchor: n.anchor,
+      described: n.described,
+      columns: n.columns,
+      tracedColumn:
+        tracedColumn && tracedColumn.nodeId === n.id
+          ? tracedColumn.column
+          : null,
+    };
     return {
       id: n.id,
-      type: "default",
-      data: { label: nodeLabel(n) },
-      position: { x: pos.x - NODE_W / 2, y: pos.y - NODE_H / 2 },
-      style: nodeStyle(n),
+      type: "amxTable",
+      data,
+      position: { x: pos.x - w / 2, y: pos.y - h / 2 },
       draggable: false,
     };
   });
@@ -75,42 +135,24 @@ function layout(payload: LineagePayload): LayoutPair {
     id: `${e.from}->${e.to}#${i}`,
     source: e.from,
     target: e.to,
+    sourceHandle: e.from_column || null,
+    targetHandle: e.to_column || null,
     label: edgeLabel(e),
     type: "smoothstep",
     markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor(e) },
-    style: { stroke: edgeColor(e), strokeWidth: edgeWidth(e), strokeDasharray: edgeDash(e) },
-    labelStyle: { fontSize: 10, fill: edgeColor(e) },
-    labelBgStyle: { fill: "#ffffffcc" },
-    labelBgPadding: [4, 2] as [number, number],
-    labelBgBorderRadius: 4,
+    style: {
+      stroke: edgeColor(e),
+      strokeWidth: edgeWidthFor(e),
+      strokeDasharray: edgeDash(e),
+    },
+    labelStyle: { fontSize: 9, fill: edgeColor(e) },
+    labelBgStyle: { fill: "#0f172acc" },
+    labelBgPadding: [3, 1] as [number, number],
+    labelBgBorderRadius: 3,
     data: e,
   }));
 
   return { nodes, edges };
-}
-
-function nodeLabel(n: LineageNode): string {
-  const badge = n.described ? "✓" : "○";
-  return `${n.anchor ? "★ " : ""}${badge} ${n.label}`;
-}
-
-function nodeStyle(n: LineageNode): React.CSSProperties {
-  if (n.anchor) {
-    return {
-      borderColor: "#d97706",
-      borderWidth: 2,
-      background: "#fff4e6",
-      fontWeight: 600,
-      padding: 8,
-      borderRadius: 8,
-    };
-  }
-  return {
-    borderColor: "#cbd5e1",
-    background: "#f8fafc",
-    padding: 8,
-    borderRadius: 8,
-  };
 }
 
 function edgeColor(e: LineageEdge): string {
@@ -136,7 +178,7 @@ function edgeColor(e: LineageEdge): string {
   }
 }
 
-function edgeWidth(e: LineageEdge): number {
+function edgeWidthFor(e: LineageEdge): number {
   return e.confidence >= 0.9 ? 1.6 : 1.0;
 }
 
@@ -151,6 +193,9 @@ function edgeDash(e: LineageEdge): string | undefined {
 }
 
 function edgeLabel(e: LineageEdge): string {
+  if (e.role === "operator_input" || e.role === "operator_output") {
+    return "";
+  }
   switch (e.type) {
     case "lineage_fk":
       return "fk";
@@ -159,11 +204,11 @@ function edgeLabel(e: LineageEdge): string {
     case "lineage_query_log":
       return "queries";
     case "lineage_co_occurs":
-      return "co-occurs";
+      return "co";
     case "lineage_llm":
-      return `AI (${e.confidence.toFixed(2)})`;
+      return `AI ${e.confidence.toFixed(2)}`;
     case "lineage_name_match":
-      return "≈name";
+      return "≈";
     case "lineage_codebase":
       return "code";
     case "lineage_manual":
@@ -181,63 +226,92 @@ export interface LineageCanvasHandle {
 export type EdgeVerdict = "approved" | "rejected" | "pending" | "";
 export type EdgeAction = "approve" | "reject" | "delete";
 
+export interface ConnectionPayload {
+  source: string;
+  target: string;
+  sourceColumn: string | null;
+  targetColumn: string | null;
+}
+
 interface Props {
   payload: LineagePayload;
   onSelectEdge?: (edge: LineageEdge | null) => void;
   /** When provided, the canvas enables drag-to-connect; new edges are
-   *  surfaced here so the parent can POST them.
+   *  surfaced with the column names from the port handles so the
+   *  parent can POST a column-level edge.
    */
-  onCreateEdge?: (sourceId: string, targetId: string) => void;
+  onCreateEdge?: (conn: ConnectionPayload) => void;
   /** When provided, right-clicking an edge surfaces a floating action
-   *  bar (Approve / Reject / Delete). The parent is responsible for the
-   *  actual mutation + refetch.
+   *  bar (Approve / Reject / Delete). The parent is responsible for
+   *  the actual mutation + refetch.
    */
   onEdgeAction?: (edge: LineageEdge, action: EdgeAction) => void;
+  /** Currently traced column for the right-rail panel. Highlights the
+   *  matching row in the corresponding TableNode. */
+  tracedColumn?: { nodeId: string; column: string } | null;
   className?: string;
 }
 
-export const LineageCanvas = forwardRef<LineageCanvasHandle, Props>(function LineageCanvas(
-  { payload, onSelectEdge, onCreateEdge, onEdgeAction, className }: Props,
-  ref,
-) {
-  if (payload.nodes.length === 0) {
-    return (
-      <div
-        className={
-          "flex h-full items-center justify-center rounded-xl border border-dashed " +
-          "border-surface-border bg-surface-muted text-sm text-fg-muted " +
-          (className ?? "")
-        }
-      >
-        Catalog has no entries for this anchor.
-      </div>
-    );
-  }
+export const LineageCanvas = forwardRef<LineageCanvasHandle, Props>(
+  function LineageCanvas(
+    {
+      payload,
+      onSelectEdge,
+      onCreateEdge,
+      onEdgeAction,
+      tracedColumn,
+      className,
+    }: Props,
+    ref,
+  ) {
+    if (payload.nodes.length === 0) {
+      return (
+        <div
+          className={
+            "flex h-full items-center justify-center rounded-xl border border-dashed " +
+            "border-surface-border bg-surface-muted text-sm text-fg-muted " +
+            (className ?? "")
+          }
+        >
+          No lineage detected yet — try AI suggest or draw manually.
+        </div>
+      );
+    }
 
-  return (
-    <ReactFlowProvider>
-      <CanvasInner
-        ref={ref}
-        payload={payload}
-        onSelectEdge={onSelectEdge}
-        onCreateEdge={onCreateEdge}
-        onEdgeAction={onEdgeAction}
-        className={className}
-      />
-    </ReactFlowProvider>
-  );
-});
+    return (
+      <ReactFlowProvider>
+        <CanvasInner
+          ref={ref}
+          payload={payload}
+          onSelectEdge={onSelectEdge}
+          onCreateEdge={onCreateEdge}
+          onEdgeAction={onEdgeAction}
+          tracedColumn={tracedColumn ?? null}
+          className={className}
+        />
+      </ReactFlowProvider>
+    );
+  },
+);
 
 const CanvasInner = forwardRef<LineageCanvasHandle, Props>(function CanvasInner(
-  { payload, onSelectEdge, onCreateEdge, onEdgeAction, className }: Props,
+  {
+    payload,
+    onSelectEdge,
+    onCreateEdge,
+    onEdgeAction,
+    tracedColumn = null,
+    className,
+  }: Props,
   ref,
 ) {
   const flow = useReactFlow();
-  const { nodes: baseNodes, edges: baseEdges } = useMemo(() => layout(payload), [payload]);
+  const { nodes: baseNodes, edges: baseEdges } = useMemo(
+    () => layout(payload, tracedColumn ?? null),
+    [payload, tracedColumn],
+  );
   const [highlightedNode, setHighlightedNode] = useState<string | null>(null);
 
-  // Pre-compute adjacency for BFS chain highlight. Memoised so flips
-  // between selections don't rebuild the index every click.
   const adjacency = useMemo(() => {
     const out: Record<string, string[]> = {};
     const inc: Record<string, string[]> = {};
@@ -279,9 +353,7 @@ const CanvasInner = forwardRef<LineageCanvasHandle, Props>(function CanvasInner(
   const nodes = useMemo<RFNode[]>(() => {
     if (!chain) return baseNodes;
     return baseNodes.map((n) =>
-      chain.nodes.has(n.id)
-        ? n
-        : { ...n, style: { ...(n.style ?? {}), opacity: 0.18 } },
+      chain.nodes.has(n.id) ? n : { ...n, style: { ...(n.style ?? {}), opacity: 0.18 } },
     );
   }, [baseNodes, chain]);
 
@@ -326,7 +398,12 @@ const CanvasInner = forwardRef<LineageCanvasHandle, Props>(function CanvasInner(
     if (!onCreateEdge) return;
     if (!connection.source || !connection.target) return;
     if (connection.source === connection.target) return;
-    onCreateEdge(connection.source, connection.target);
+    onCreateEdge({
+      source: connection.source,
+      target: connection.target,
+      sourceColumn: connection.sourceHandle ?? null,
+      targetColumn: connection.targetHandle ?? null,
+    });
   };
   const dismissContext = () => setContextEdge(null);
 
@@ -351,28 +428,44 @@ const CanvasInner = forwardRef<LineageCanvasHandle, Props>(function CanvasInner(
     setHighlightedNode(null);
   }, [payload]);
 
+  // Auto-fit on mount AND on payload change — without this a single-node
+  // canvas renders in the bottom-left at high zoom. fitView is debounced
+  // by React Flow itself so we don't hammer the animation loop.
+  const handleInit: OnInit = useCallback((instance) => {
+    instance.fitView({ padding: 0.2, duration: 200 });
+  }, []);
+  useEffect(() => {
+    const id = window.requestAnimationFrame(() => {
+      flow.fitView({ padding: 0.2, duration: 200 });
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [flow, payload]);
+
   return (
-    <div className={"relative h-full w-full " + (className ?? "")} style={{ minHeight: 420 }}>
+    <div
+      className={"relative h-full w-full " + (className ?? "")}
+      style={{ minHeight: 420 }}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
+        nodeTypes={NODE_TYPES}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         nodesDraggable={false}
         nodesConnectable={Boolean(onCreateEdge)}
         elementsSelectable
+        onInit={handleInit}
         onConnect={handleConnect}
         onNodeClick={handleNodeClick}
         onEdgeClick={handleEdgeClick}
         onEdgeContextMenu={handleEdgeContextMenu}
         onPaneClick={handlePaneClick}
         proOptions={{ hideAttribution: true }}
-        // v3 S5 — virtualize when the graph passes the soft node limit
-        // so large discovery results stay interactive.
-        onlyRenderVisibleElements={baseNodes.length > 200}
+        onlyRenderVisibleElements={baseNodes.length > 100}
         minZoom={0.05}
       >
-        <Background gap={20} color="#e2e8f0" />
+        <Background gap={20} color="#1e293b" />
         <Controls showInteractive={false} position="bottom-right" />
       </ReactFlow>
       {contextEdge && onEdgeAction && (
