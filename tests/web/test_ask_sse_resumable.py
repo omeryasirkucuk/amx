@@ -100,12 +100,16 @@ def test_two_concurrent_consumers_see_full_history() -> None:
     # Both consumers must observe the same event types in the same order.
     types_a = [_parse(f)[1] for f in gen_a]
     types_b = [_parse(f)[1] for f in gen_b]
-    assert types_a == types_b == [
-        "thinking.delta",
-        "thinking.delta",
-        "thinking.delta",
-        "job.done",
-    ]
+    assert (
+        types_a
+        == types_b
+        == [
+            "thinking.delta",
+            "thinking.delta",
+            "thinking.delta",
+            "job.done",
+        ]
+    )
     # And every frame in both streams must carry an id, so a future
     # disconnect of either consumer can resume cleanly.
     assert all(seq_id for seq_id, _, _ in (_parse(f) for f in gen_a))

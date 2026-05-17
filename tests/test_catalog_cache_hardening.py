@@ -243,7 +243,12 @@ def test_catalog_freshness_endpoint_shape(tmp_path: Path) -> None:
     SQLiteHistoryStore(db_path).init()
     now = time.time()
     fresh_row_at = now - 60
-    stale_row_at = now - (48 * 60 * 60)
+    # PR #501 bumped the staleness threshold from 24 hours to 7
+    # days so the UI pill aligns with the new "cache never auto-
+    # expires; nudge once a week" contract. Push the stale fixture
+    # past two weeks so it still trips the warning regardless of
+    # future threshold tweaks within reason.
+    stale_row_at = now - (14 * 24 * 60 * 60)
     with sqlite3.connect(db_path) as conn:
         for db_profile, last in (("fresh-p", fresh_row_at), ("stale-p", stale_row_at)):
             conn.execute(

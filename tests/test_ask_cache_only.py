@@ -32,7 +32,6 @@ from amx.db.profile_schema import (
 from amx.search.agent_tools import ToolBox
 from amx.web.routers.ask import AskRequest
 
-
 # ── AskRequest defaults ─────────────────────────────────────────────
 
 
@@ -74,9 +73,7 @@ def test_gate_force_fresh_suppresses_when_toggle_off(
         # Also returns False when the LLM didn't ask in the first place.
         assert box._gate_force_fresh(False) is False
     # The suppression should leave an audit-trail debug log.
-    suppressed = [
-        rec for rec in caplog.records if "force_fresh suppressed" in rec.getMessage()
-    ]
+    suppressed = [rec for rec in caplog.records if "force_fresh suppressed" in rec.getMessage()]
     assert suppressed, "expected a debug log line when force_fresh is suppressed"
 
 
@@ -119,9 +116,7 @@ def test_databricks_list_tables_returns_none_when_schema_missing() -> None:
     """No schema → can't query at all; legacy ``None`` fallback is fine
     here because the inspector path also has nothing to ask for."""
     adapter = DatabricksAdapter(cfg=SimpleNamespace(catalog=""))
-    assert (
-        adapter.list_tables(_RaisingEngine(), schema="", catalog="main") is None
-    )
+    assert adapter.list_tables(_RaisingEngine(), schema="", catalog="main") is None
 
 
 def test_databricks_list_views_returns_empty_when_catalog_missing(
@@ -204,9 +199,7 @@ def test_every_tool_schema_carries_freshness_annotation() -> None:
 def test_catalog_sync_status_is_registered_as_cache_ok() -> None:
     from amx.search._tool_schemas import tool_schemas
 
-    entry = next(
-        e for e in tool_schemas() if e["function"]["name"] == "catalog_sync_status"
-    )
+    entry = next(e for e in tool_schemas() if e["function"]["name"] == "catalog_sync_status")
     assert entry["freshness"] == "cache_ok"
 
 
@@ -282,15 +275,10 @@ def test_invoke_returns_needs_live_refresh_envelope(tmp_path) -> None:
     cat = SearchCatalog(db_path)
     cfg = AMXConfig()
     cfg.db.backend = "postgresql"
-    box = ToolBox(
-        cfg, cat, db_profiles=["prod-pg"], allow_live_refresh=False
-    )
+    box = ToolBox(cfg, cat, db_profiles=["prod-pg"], allow_live_refresh=False)
 
     # Sanity: live_only tool is still in the menu, the LLM sees it.
-    assert any(
-        e["function"]["name"] == "check_uniqueness"
-        for e in box.available_schemas()
-    )
+    assert any(e["function"]["name"] == "check_uniqueness" for e in box.available_schemas())
 
     # Dispatch — must refuse with the rich envelope.
     raw = box.invoke(
@@ -417,15 +405,21 @@ def test_tool_catalog_coverage_summary_returns_per_schema_counts(
 
     # prod-pg.public: 2 tables (1 documented), 4 columns (2 documented)
     cat.record_applied_description(
-        db_profile="prod-pg", db_backend="postgresql", database_name="",
-        schema_name="public", table_name="orders", column_name=None,
-        entity_kind="table", asset_kind="table",
+        db_profile="prod-pg",
+        db_backend="postgresql",
+        database_name="",
+        schema_name="public",
+        table_name="orders",
+        column_name=None,
+        entity_kind="table",
+        asset_kind="table",
         description="Order header",
     )
     # Add an undocumented table by upserting via _upsert_entity through
     # a no-op description. Easiest: use record_applied_description with
     # description="" then null out the effective pointer manually.
     import sqlite3
+
     with sqlite3.connect(db_path) as raw:
         raw.row_factory = sqlite3.Row
         raw.execute(
@@ -439,12 +433,14 @@ def test_tool_catalog_coverage_summary_returns_per_schema_counts(
               )"""
         )
         # 4 columns under prod-pg.public: 2 documented, 2 undocumented
-        for i, (table, col, described) in enumerate([
-            ("orders", "order_id", True),
-            ("orders", "amount", False),
-            ("users", "id", True),
-            ("users", "email", False),
-        ]):
+        for i, (table, col, described) in enumerate(
+            [
+                ("orders", "order_id", True),
+                ("orders", "amount", False),
+                ("users", "id", True),
+                ("users", "email", False),
+            ]
+        ):
             raw.execute(
                 """INSERT INTO catalog_entities (
                       db_profile, db_backend, database_name, schema_name,
@@ -472,9 +468,7 @@ def test_tool_catalog_coverage_summary_returns_per_schema_counts(
 
     cfg = AMXConfig()
     cfg.db.backend = "postgresql"
-    box = ToolBox(
-        cfg, cat, db_profiles=["prod-pg", "dbr-oyk"], allow_live_refresh=False
-    )
+    box = ToolBox(cfg, cat, db_profiles=["prod-pg", "dbr-oyk"], allow_live_refresh=False)
 
     result = box._tool_catalog_coverage_summary()
     assert "error" not in result
@@ -513,9 +507,7 @@ def test_tool_catalog_coverage_summary_rejects_out_of_scope_profile(
     cat = SearchCatalog(db_path)
     cfg = AMXConfig()
     cfg.db.backend = "postgresql"
-    box = ToolBox(
-        cfg, cat, db_profiles=["prod-pg"], allow_live_refresh=False
-    )
+    box = ToolBox(cfg, cat, db_profiles=["prod-pg"], allow_live_refresh=False)
     result = box._tool_catalog_coverage_summary(db_profile="someone-else")
     assert "error" in result
     assert "not in this Ask's scope" in result["error"]

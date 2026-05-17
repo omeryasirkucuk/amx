@@ -250,10 +250,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         if self._allow_live_refresh:
             return True
         try:
-            log.debug(
-                "force_fresh suppressed by cache-only Ask mode "
-                "(allow_live_refresh=False)"
-            )
+            log.debug("force_fresh suppressed by cache-only Ask mode (allow_live_refresh=False)")
         except Exception:
             pass
         return False
@@ -763,7 +760,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         # payload and renders an "Enable Live refresh & retry" button.
         if not self._allow_live_refresh and self._is_live_only_tool(name):
             log.info(
-                "live-only tool %s blocked: allow_live_refresh=False — "
+                "live-only tool %s blocked: allow_live_refresh=False - "
                 "returning needs_live_refresh envelope",
                 name,
             )
@@ -773,8 +770,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
                     "tool": name,
                     "arguments": args,
                     "reason": (
-                        "This tool samples the live database; the "
-                        "catalog cache cannot answer."
+                        "This tool samples the live database; the catalog cache cannot answer."
                     ),
                     "user_action": (
                         "Enable the 'Live refresh' toggle in the Ask "
@@ -1419,19 +1415,13 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
             "undocumented_columns": undocumented_columns,
             "documented_columns": documented_columns,
             "table_coverage_pct": (
-                round(100.0 * documented_tables / total_tables, 1)
-                if total_tables > 0
-                else None
+                round(100.0 * documented_tables / total_tables, 1) if total_tables > 0 else None
             ),
             "column_coverage_pct": (
-                round(100.0 * documented_columns / total_columns, 1)
-                if total_columns > 0
-                else None
+                round(100.0 * documented_columns / total_columns, 1) if total_columns > 0 else None
             ),
         }
-        last_synced_at = max(
-            (row["last_synced_at"] or 0.0 for row in rows), default=0.0
-        )
+        last_synced_at = max((row["last_synced_at"] or 0.0 for row in rows), default=0.0)
         return {
             "profiles": rows,
             "totals": totals,
@@ -2303,11 +2293,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         # Return a structured "not in cache" payload that the LLM can
         # surface back to the user; the assistant should then suggest
         # enabling Live refresh + re-asking (or running /search sync).
-        if (
-            cache_payload is None
-            and not self._allow_live_refresh
-            and not force_fresh
-        ):
+        if cache_payload is None and not self._allow_live_refresh and not force_fresh:
             return {
                 "schema": schema_name,
                 "table": table_name,
@@ -2364,9 +2350,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
             # Resolve the catalog for 3-level backends so describe_table
             # doesn't end up issuing ``DESCRIBE None.<schema>.<table>``
             # when the active profile didn't pin a catalog.
-            cat_arg, _user_catalogs, _all_catalogs = self._resolve_catalog_or_autopick(
-                db, explicit
-            )
+            cat_arg, _user_catalogs, _all_catalogs = self._resolve_catalog_or_autopick(db, explicit)
             # Cross-database resolution for unpinned 2-level backends.
             # When the user (or the LLM) passes ``database=…`` explicitly,
             # honour it — otherwise fall through to the connection-time
@@ -2509,9 +2493,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
             "documented_columns": documented_count,
             "undocumented_columns": max(0, len(all_cols) - documented_count),
             "column_coverage_pct": (
-                round(100.0 * documented_count / len(all_cols), 1)
-                if all_cols
-                else None
+                round(100.0 * documented_count / len(all_cols), 1) if all_cols else None
             ),
         }
         result = {

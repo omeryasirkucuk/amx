@@ -84,6 +84,10 @@ def _bare_toolbox(
     # fanout set ``_db`` directly; tests that don't get an anchor
     # MagicMock from the factory so the call doesn't AttributeError.
     tb._db_factory = lambda: MagicMock()
+    # PR #501 gated the cache-miss -> live fallback in describe_table
+    # behind ``allow_live_refresh``. Cross-DB fanout tests rely on
+    # that fallback firing, so opt the bare fixture into live mode.
+    tb._allow_live_refresh = True
     return tb
 
 
