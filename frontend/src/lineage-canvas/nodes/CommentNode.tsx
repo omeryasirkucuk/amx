@@ -2,24 +2,32 @@
  * CommentNode — canvas annotation (two render modes).
  *
  * Both modes share the same backend table (``lineage_comments``) and
- * the same React Flow data shape; only visuals differ:
+ * the same React Flow data shape; only visuals differ.
  *
  *   - ``data.style === "note"`` (default) — resizable sticky note with
  *     a colored background, header band, color-picker swatch.
- *   - ``data.style === "text"`` — minimal plain-text label: no
- *     background, no border, no header band. Used for canvas
- *     section headings ("Production pipeline", "Staging") and free-
- *     form labels.
+ *     ``data.text`` stays plain text in this mode.
  *
- * The textarea uses ``nodrag`` so canvas drag doesn't steal
- * pointerdown. Each keystroke commits back to canvas state via
- * :func:`useReactFlow().setNodes` so Save persists the latest text.
+ *   - ``data.style === "text"`` — minimal rich-text label. Uses a
+ *     ``contentEditable`` div so users can apply per-selection
+ *     formatting (font size, bold, color, bullet list). HTML lands in
+ *     ``data.text`` after DOMPurify sanitisation; rendered through
+ *     ``dangerouslySetInnerHTML`` on mount. The node auto-grows with
+ *     its content — no fixed height, no inner scrollbar; users who
+ *     want a fixed footprint can resize via :class:`NodeResizer`.
+ *
+ * Both modes are deletable: ReactFlow's default ``deleteKeyCode``
+ * (Backspace) fires when the canvas, not the editor, holds focus.
+ * The floating :class:`TextToolbar` exposes an explicit trash button
+ * so deletion never depends on the user clicking outside first.
  */
 
-import { memo, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { NodeProps, NodeResizer, useReactFlow } from "reactflow";
 import clsx from "clsx";
+import DOMPurify from "dompurify";
 
+import { TextToolbar } from "../components/TextToolbar";
 import { COMMENT_COLORS } from "../constants";
 import type { CommentNodeData } from "../types";
 
@@ -32,24 +40,69 @@ const PALETTE_ORDER: Array<keyof typeof COMMENT_COLORS> = [
   "slate",
 ];
 
+// Tight allowlist — toolbar only emits these tags + a single inline
+// ``style`` attribute. We never allow event handlers, scripts,
+// iframes, anchors, or class names. DOMPurify's default CSS
+// sanitiser strips dangerous properties (url(), expression(), etc.);
+// since the only producer of style is our own toolbar, the
+// remaining surface is limited to font-size / color / font-weight.
+const SANITIZE_OPTIONS = {
+  ALLOWED_TAGS: ["b", "strong", "i", "em", "u", "br", "div", "span", "ul", "li", "p"],
+  ALLOWED_ATTR: ["style"],
+};
+
+function sanitiseHtml(input: string): string {
+  // DOMPurify's return is widened to TrustedHTML in some typings —
+  // coerce to string for our `dangerouslySetInnerHTML` consumer.
+  return String(DOMPurify.sanitize(input || "", SANITIZE_OPTIONS));
+}
+
 function CommentNodeImpl({ id, data, selected }: NodeProps<CommentNodeData>) {
   const rf = useReactFlow();
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [text, setText] = useState<string>(data.text || "");
   const [color, setColor] = useState<keyof typeof COMMENT_COLORS>(
     (data.color as keyof typeof COMMENT_COLORS) || "amber",
   );
+  // Sticky text is plain — held in state so React drives the textarea.
+  const [stickyText, setStickyText] = useState<string>(data.text || "");
   const palette = COMMENT_COLORS[color] ?? COMMENT_COLORS.amber;
   const style = data.style || "note";
 
-  function commitText(next: string) {
-    setText(next);
+  // Rich-text editor ref + uncontrolled initial value. Updates flow
+  // OUT (oninput → setNodes) but never back IN after mount, otherwise
+  // the caret would jump back to position 0 on every keystroke.
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const initialRichHtml = useRef<string>(sanitiseHtml(data.text || ""));
+
+  // Hydrate the editor's initial HTML exactly once on mount.
+  useEffect(() => {
+    if (style === "text" && editorRef.current && initialRichHtml.current) {
+      editorRef.current.innerHTML = initialRichHtml.current;
+    }
+    // No deps — we explicitly want this to run only on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const commitRichHtml = useCallback(() => {
+    const html = sanitiseHtml(editorRef.current?.innerHTML || "");
     rf.setNodes((nodes) =>
       nodes.map((n) =>
-        n.id === id ? { ...n, data: { ...n.data, text: next } } : n,
+        n.id === id ? { ...n, data: { ...n.data, text: html } } : n,
       ),
     );
-  }
+  }, [id, rf]);
+
+  const commitStickyText = useCallback(
+    (next: string) => {
+      setStickyText(next);
+      rf.setNodes((nodes) =>
+        nodes.map((n) =>
+          n.id === id ? { ...n, data: { ...n.data, text: next } } : n,
+        ),
+      );
+    },
+    [id, rf],
+  );
 
   function commitColor(next: keyof typeof COMMENT_COLORS) {
     setColor(next);
@@ -61,15 +114,19 @@ function CommentNodeImpl({ id, data, selected }: NodeProps<CommentNodeData>) {
     );
   }
 
+  const deleteSelf = useCallback(() => {
+    rf.deleteElements({ nodes: [{ id }] });
+  }, [id, rf]);
+
+  // ── Text (rich) ─────────────────────────────────────────────────────
   if (style === "text") {
-    // Minimal plain-text label — no chrome, just an editable area.
-    // Resizable like the sticky variant but without any background.
     return (
       <div
         className={clsx(
           "relative h-full w-full",
           selected && "ring-1 ring-accent-default/60 ring-offset-1 ring-offset-bg",
         )}
+        style={{ minWidth: 80, minHeight: 28 }}
       >
         <NodeResizer
           isVisible={selected}
@@ -77,17 +134,36 @@ function CommentNodeImpl({ id, data, selected }: NodeProps<CommentNodeData>) {
           minHeight={28}
           lineStyle={{ borderColor: "rgb(var(--accent))" }}
         />
-        <textarea
-          value={text}
-          onChange={(e) => commitText(e.target.value)}
+        <TextToolbar
+          visible={!!selected}
+          editorRef={editorRef}
+          onChange={commitRichHtml}
+          onDelete={deleteSelf}
+        />
+        <div
+          ref={editorRef}
+          contentEditable
+          suppressContentEditableWarning
           spellCheck={false}
-          placeholder="Text…"
-          className="lcv-comment-grip nodrag nowheel block h-full w-full cursor-text resize-none border-0 bg-transparent p-1 text-center text-[15px] font-medium leading-snug text-ink outline-none placeholder:text-ink-dim"
+          onInput={commitRichHtml}
+          data-placeholder="Text…"
+          className={clsx(
+            "lcv-text-editor lcv-comment-grip nodrag nowheel",
+            "block min-h-[28px] w-full cursor-text bg-transparent p-1 leading-snug text-ink outline-none",
+            "text-[15px] font-medium",
+          )}
+          style={{
+            // Auto-grow with content — no scroll inside the node.
+            whiteSpace: "pre-wrap",
+            overflowWrap: "anywhere",
+            wordBreak: "break-word",
+          }}
         />
       </div>
     );
   }
 
+  // ── Note (sticky) ───────────────────────────────────────────────────
   return (
     <div
       className={clsx(
@@ -139,8 +215,8 @@ function CommentNodeImpl({ id, data, selected }: NodeProps<CommentNodeData>) {
         </div>
       )}
       <textarea
-        value={text}
-        onChange={(e) => commitText(e.target.value)}
+        value={stickyText}
+        onChange={(e) => commitStickyText(e.target.value)}
         spellCheck={false}
         placeholder="Note…"
         className="nodrag nowheel absolute inset-x-0 bottom-0 top-6 w-full resize-none border-0 bg-transparent px-2 py-1.5 text-[12px] leading-snug text-ink outline-none placeholder:text-ink-dim"

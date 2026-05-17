@@ -711,6 +711,22 @@ function CanvasInner() {
           fitView
           fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}
+          // Multi-select + delete keys. Arrays so both Mac and
+          // Windows / Linux work without sniffing the platform:
+          //   * Hold ⌘ / Ctrl + click to add a node to the selection.
+          //   * Hold Shift and drag the canvas to rubber-band select.
+          //   * Press Backspace or Delete with anything selected to
+          //     remove every selected node + its incident edges in one
+          //     pass — works for tables, operators, comments, text
+          //     labels, and logo nodes alike.
+          // Selectable / deletable defaults are on; spelling them out
+          // makes the contract obvious.
+          multiSelectionKeyCode={["Meta", "Control"]}
+          selectionKeyCode="Shift"
+          deleteKeyCode={["Backspace", "Delete"]}
+          nodesDraggable
+          nodesConnectable
+          elementsSelectable
         >
           <Background gap={20} size={1} />
           <Controls showInteractive={false} />
