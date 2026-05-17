@@ -548,6 +548,18 @@ _LINEAGE_COMMANDS: tuple[SlashCommand, ...] = (
         "lineage",
         "Text-mode upstream/downstream tree for a table or column",
     ),
+    SlashCommand(
+        "/suggest",
+        "lineage",
+        "Ask the active LLM to propose lineage edges (opt-in, spends tokens)",
+        long_desc=(
+            "Sends one chat call to your active LLM profile with the anchor's "
+            "columns + 30 candidate tables from the same database. Edges are "
+            "persisted into catalog_relationships with source='llm' so future "
+            "reads pick them up without another round-trip. Use /lineage show "
+            "to inspect the reasoning afterwards."
+        ),
+    ),
 )
 
 
