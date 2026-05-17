@@ -294,7 +294,20 @@ export default function AskChat({
           if (cancelled || !stillThis()) return;
           if (status.status === "running" || status.status === "queued") {
             setActiveJob(savedJobId);
-            setJobStartedAt(Date.now());
+            // Recover the original start time so the live timer keeps
+            // ticking through the reload instead of restarting at 0.
+            let recovered = NaN;
+            try {
+              const raw = localStorage.getItem(
+                `amx.ask.jobStartedAt.${savedJobId}`,
+              );
+              if (raw) recovered = Number(raw);
+            } catch {
+              recovered = NaN;
+            }
+            setJobStartedAt(
+              Number.isFinite(recovered) ? recovered : Date.now(),
+            );
           } else {
             // Worker terminated while we were away. The assistant turn
             // (or failure) is already persisted to chat_sessions; ask
@@ -686,7 +699,17 @@ export default function AskChat({
       }
       setSessionId(result.session_id);
       setActiveJob(result.job_id);
-      setJobStartedAt(Date.now());
+      const startedAt = Date.now();
+      setJobStartedAt(startedAt);
+      try {
+        localStorage.setItem(
+          `amx.ask.jobStartedAt.${result.job_id}`,
+          String(startedAt),
+        );
+      } catch {
+        // localStorage unavailable — timer resets on reload, but the
+        // job itself keeps running on the backend.
+      }
       // Persist the in-flight job under the resolved session key so a
       // navigation-away-and-back can reattach the SSE stream. For a
       // brand-new session we know the real id from the response — use
