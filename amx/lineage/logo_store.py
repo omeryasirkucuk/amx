@@ -28,7 +28,7 @@ import re
 import time
 from typing import Any
 
-from amx.lineage.default_logos import DEFAULT_LOGOS, render_logo_svg
+from amx.lineage.default_logos import DEFAULT_LOGOS, render_logo_svg, simpleicons_url
 
 # ── byte-size guard on custom uploads ────────────────────────────────────
 #
@@ -66,29 +66,61 @@ class LogoStoreError(RuntimeError):
 
 
 def seed_default_logos(hs: Any) -> int:
-    """Insert the 20 bundled default logos into ``lineage_logos``.
+    """Seed (or refresh) the bundled default logos in ``lineage_logos``.
 
-    Idempotent: re-runs on every init are no-ops once seeded thanks to
-    the ``UNIQUE(key, source)`` constraint. Returns the number of rows
-    that were actually inserted on this call (0 on warm restarts).
+    For each entry in :data:`DEFAULT_LOGOS`:
+
+    * If the brand has a SimpleIcons slug, the row gets the CDN URL
+      (``https://cdn.simpleicons.org/<slug>/<color>``) — actual brand
+      mark, brand color, no shipping binaries.
+    * If the slug is empty (no SimpleIcons entry — e.g. Dfive), the
+      placeholder SVG renderer fills ``data_url`` so the row still has
+      *something* to display until the user uploads a real custom logo.
+
+    Re-runs on every init: existing default rows are **UPDATEd in
+    place** so label / category / URL changes in the manifest
+    propagate to already-seeded stores. New defaults are INSERTed.
+    The return value is the count of *new inserts only* — re-seeds
+    return 0 even though they may have updated rows, so the
+    idempotency contract for callers (no new rows after the first
+    seed) is preserved.
     """
     inserted = 0
     now = time.time()
     with hs._connect() as conn:
         for logo in DEFAULT_LOGOS:
-            svg = render_logo_svg(logo)
-            data_url = "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode(
-                "ascii"
-            )
-            cur = conn.execute(
-                """
-                INSERT OR IGNORE INTO lineage_logos
-                    (key, label, category, source, data_url, url, created_at)
-                VALUES (?, ?, ?, 'default', ?, '', ?)
-                """,
-                (logo.key, logo.label, logo.category, data_url, now),
-            )
-            if cur.rowcount:
+            if logo.simpleicons_slug:
+                url = simpleicons_url(logo)
+                data_url = ""
+            else:
+                svg = render_logo_svg(logo)
+                data_url = "data:image/svg+xml;base64," + base64.b64encode(
+                    svg.encode("utf-8")
+                ).decode("ascii")
+                url = ""
+
+            existing = conn.execute(
+                "SELECT id FROM lineage_logos WHERE key = ? AND source = 'default'",
+                (logo.key,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE lineage_logos
+                       SET label = ?, category = ?, data_url = ?, url = ?
+                     WHERE id = ?
+                    """,
+                    (logo.label, logo.category, data_url, url, int(existing[0])),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO lineage_logos
+                        (key, label, category, source, data_url, url, created_at)
+                    VALUES (?, ?, ?, 'default', ?, ?, ?)
+                    """,
+                    (logo.key, logo.label, logo.category, data_url, url, now),
+                )
                 inserted += 1
     return inserted
 
