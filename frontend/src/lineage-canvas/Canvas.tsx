@@ -627,10 +627,21 @@ function CanvasInner() {
   // ── Tab-friendly KeyDown for canvas root ────────────────────────────────
   function onCanvasKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     // Single-character shortcuts (no modifiers) only fire when the
-    // canvas itself is focused, never inside an input/textarea.
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+    // canvas itself is focused, never inside an editable surface.
+    // ``contentEditable`` text labels are not HTMLInputElement /
+    // HTMLTextAreaElement so we check ``isContentEditable`` too —
+    // without that the user's typed letter triggers our shortcut
+    // (e.g. typing "table" in a label spawned an Add-Table modal).
+    if (
+      e.target instanceof HTMLInputElement ||
+      e.target instanceof HTMLTextAreaElement ||
+      (e.target instanceof HTMLElement && e.target.isContentEditable)
+    ) {
       return;
     }
+    // Any modifier key combo (Cmd / Ctrl / Alt) is reserved for the
+    // global handler — bail so we don't double-fire.
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key.toLowerCase();
     if (k === "d") setAddOpen(true);
     else if (k === "f") addOperatorNode("filter");
