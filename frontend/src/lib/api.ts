@@ -1409,6 +1409,48 @@ export async function lineageCreateEdge(payload: {
   });
 }
 
+export interface LineageTraceStep {
+  step: number;
+  depth: number;
+  entity_id: number;
+  fqn: string;
+  table: string;
+  schema: string;
+  column: string;
+  kind: string;
+  relationship_type: string;
+  operator?: { op_kind: string; expression: string };
+}
+
+export interface LineageTraceResponse {
+  profile: string;
+  anchor: { database: string; schema: string; table: string; column: string };
+  direction: "upstream" | "downstream";
+  steps: LineageTraceStep[];
+  count: number;
+  truncated: boolean;
+}
+
+export async function lineageTrace(payload: {
+  profile: string;
+  anchorPath: string;
+  column: string;
+  direction?: "upstream" | "downstream";
+  maxDepth?: number;
+}): Promise<LineageTraceResponse> {
+  const params = new URLSearchParams({
+    profile: payload.profile,
+    column: payload.column,
+    direction: payload.direction ?? "upstream",
+  });
+  if (payload.maxDepth !== undefined) {
+    params.set("max_depth", String(payload.maxDepth));
+  }
+  return apiFetch<LineageTraceResponse>(
+    `/api/lineage/column-trace/${encodeAnchorPath(payload.anchorPath)}?${params.toString()}`,
+  );
+}
+
 export async function lineageDeleteEdge(edgeId: number): Promise<void> {
   await apiFetch<void>(`/api/lineage/edges/${edgeId}`, { method: "DELETE" });
 }

@@ -28,6 +28,9 @@ export interface TableNodeData {
   columns?: LineageNodeColumn[];
   /** When set, this column name is highlighted as the trace target. */
   tracedColumn?: string | null;
+  /** Called when the user clicks a column row. Wired by the canvas
+   *  parent to open the trace panel for that column. */
+  onColumnClick?: (column: string) => void;
 }
 
 function dtypeBadge(dtype: string): string {
@@ -76,16 +79,18 @@ function TableNodeImpl({ data }: NodeProps<TableNodeData>) {
         <ul className="divide-y divide-slate-800 bg-slate-900">
           {cols.map((col) => {
             const isTraced = data.tracedColumn === col.name;
+            const handleClick = () => data.onColumnClick?.(col.name);
             return (
               <li
                 key={col.name}
                 className={
-                  "group/row relative flex items-center gap-2 px-3 py-1 font-mono text-[11px] " +
+                  "group/row relative flex items-center gap-2 px-3 py-1 font-mono text-[11px] cursor-pointer " +
                   (isTraced
                     ? "bg-amber-900/30 text-amber-100"
                     : "text-slate-200 hover:bg-slate-800")
                 }
                 data-column={col.name}
+                onClick={handleClick}
               >
                 <Handle
                   id={col.name}
