@@ -57,6 +57,11 @@ def _bare_toolbox(*, db_database: str = "", db_profile: str = "p"):
     tb._owned_connectors = set()
     tb._db = None
     tb._db_factory = lambda: MagicMock()
+    # These bare ToolBox fixtures exercise the cache-miss -> live
+    # fallback path that PR #501 gated behind ``allow_live_refresh``.
+    # Opt the bare fixture into live mode so the existing assertions
+    # (`source == "live"`, write-back triggers, etc.) keep firing.
+    tb._allow_live_refresh = True
     return tb
 
 

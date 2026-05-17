@@ -48,9 +48,7 @@ def _catalog_distinct_schemas(profile: str, database: str | None) -> list[str] |
     return [str(r.get("name") or "") for r in rows if r.get("name")]
 
 
-def _catalog_distinct_tables(
-    profile: str, schema: str, database: str | None
-) -> list[str] | None:
+def _catalog_distinct_tables(profile: str, schema: str, database: str | None) -> list[str] | None:
     """Cache-first read for ``/db tables <schema>``. Returns ``None``
     on cache miss so the caller falls back to the live connector."""
     try:
@@ -296,11 +294,7 @@ def register_root_commands(
     def db_schemas(cfg: AMXConfig, live: bool) -> None:
         """List available schemas (cache-first, ``--live`` to force fresh)."""
         active_profile = (cfg.active_db_profile or "default").strip() or "default"
-        scope = (
-            (cfg.db.database or "").strip()
-            or (cfg.db.catalog or "").strip()
-            or None
-        )
+        scope = (cfg.db.database or "").strip() or (cfg.db.catalog or "").strip() or None
         if not live:
             cached = _catalog_distinct_schemas(active_profile, scope)
             if cached:
@@ -335,11 +329,7 @@ def register_root_commands(
     def db_tables(cfg: AMXConfig, schema: str, live: bool) -> None:
         """List assets in a schema (cache-first, ``--live`` to force fresh)."""
         active_profile = (cfg.active_db_profile or "default").strip() or "default"
-        scope = (
-            (cfg.db.database or "").strip()
-            or (cfg.db.catalog or "").strip()
-            or None
-        )
+        scope = (cfg.db.database or "").strip() or (cfg.db.catalog or "").strip() or None
         if not live:
             cached = _catalog_distinct_tables(active_profile, schema, scope)
             if cached:

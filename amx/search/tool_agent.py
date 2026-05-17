@@ -367,9 +367,7 @@ def _llm_round_heartbeat(
                 # one second away.
                 continue
 
-    ticker = threading.Thread(
-        target=_tick, name=f"amx-llm-heartbeat-{round_id}", daemon=True
-    )
+    ticker = threading.Thread(target=_tick, name=f"amx-llm-heartbeat-{round_id}", daemon=True)
     ticker.start()
     try:
         yield
@@ -628,9 +626,7 @@ def _run_tool_loop(
                         for entry in _ts():
                             if entry.get("function", {}).get("name") == tc.name:
                                 source_hint = (
-                                    "live"
-                                    if entry.get("freshness") == "live_only"
-                                    else "cache"
+                                    "live" if entry.get("freshness") == "live_only" else "cache"
                                 )
                                 break
                     except Exception:
@@ -657,9 +653,10 @@ def _run_tool_loop(
             try:
                 parsed = json.loads(tool_result) if isinstance(tool_result, str) else {}
                 if isinstance(parsed, dict):
-                    if parsed.get("needs_live_refresh") is True or parsed.get(
-                        "error"
-                    ) == "live_only_tool_disabled":
+                    if (
+                        parsed.get("needs_live_refresh") is True
+                        or parsed.get("error") == "live_only_tool_disabled"
+                    ):
                         summary["source"] = "blocked_cache_only"
                         # Surface the structured envelope to the SPA so
                         # the AskChat retry button knows which tool +
@@ -675,9 +672,7 @@ def _run_tool_loop(
                         summary["source"] = "catalog"
                     elif isinstance(parsed.get("source"), str):
                         summary["source"] = parsed["source"]
-                    elif parsed.get("multi_profile") and isinstance(
-                        parsed.get("profiles"), dict
-                    ):
+                    elif parsed.get("multi_profile") and isinstance(parsed.get("profiles"), dict):
                         sources = {
                             v.get("source")
                             for v in parsed["profiles"].values()
