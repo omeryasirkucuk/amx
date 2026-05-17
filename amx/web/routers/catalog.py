@@ -264,7 +264,12 @@ def catalog_freshness(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
         except Exception:
             pass
     now = _time.time()
-    stale_after_sec = 24 * 60 * 60
+    # The catalog cache itself NEVER auto-invalidates (pre-PR the
+    # 7-day window forced live-DB fallbacks; the user prefers a
+    # staleness warning over a hard expiry). The pill turns yellow
+    # past one week so the user has a visible nudge to run /search
+    # sync at their own pace.
+    stale_after_sec = 7 * 24 * 60 * 60
     state_by_profile = {str(r["db_profile"] or ""): r for r in state_rows}
     # Filter to profiles the user actually has configured. ``catalog_entities``
     # row keys are profile names that may include tombstones — names like

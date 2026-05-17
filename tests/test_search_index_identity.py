@@ -81,7 +81,12 @@ def test_provider_swap_raises_collection_identity_mismatch(tmp_path: Path) -> No
     """A collection stamped with one provider, re-opened by an index
     configured for another, raises the structured mismatch with a
     ``/search rebuild`` recovery hint. This is the failure the previous
-    silent-re-embed behaviour hid."""
+    silent-re-embed behaviour hid.
+
+    ``SearchIndex`` opens the legacy collection lazily, so the mismatch
+    fires on first access to ``index.collection`` (or any tool path
+    that reaches ``_collection_for``), not at construction.
+    """
     persist = tmp_path / "chroma"
     persist.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(persist))
@@ -99,8 +104,9 @@ def test_provider_swap_raises_collection_identity_mismatch(tmp_path: Path) -> No
             "amx_schema_version": 1,
         },
     )
+    index = SearchIndex(persist_dir=str(persist))
     with pytest.raises(CollectionIdentityMismatch) as excinfo:
-        SearchIndex(persist_dir=str(persist))
+        _ = index.collection
     msg = str(excinfo.value)
     assert "/search rebuild" in msg
     # provider changed AND model changed AND dim changed.
@@ -128,8 +134,9 @@ def test_dim_mismatch_alone_raises(tmp_path: Path) -> None:
             "amx_schema_version": 1,
         },
     )
+    index = SearchIndex(persist_dir=str(persist))
     with pytest.raises(CollectionIdentityMismatch) as excinfo:
-        SearchIndex(persist_dir=str(persist))
+        _ = index.collection
     msg = str(excinfo.value)
     assert "dim: 768" in msg or "dim 768 -> 384" in msg
 

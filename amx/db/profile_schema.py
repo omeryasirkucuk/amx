@@ -350,3 +350,49 @@ def field_names_for(backend: str) -> list[str]:
 def applies_to_url_fields(backend: str) -> list[str]:
     """Fields the URL builder is expected to consume for *backend*."""
     return [f.name for f in _SCHEMA.get(backend, ()) if f.applies_to_url]
+
+
+class ProfileValidationError(ValueError):
+    """Raised when a DB profile payload fails the spec's required-field check.
+
+    ``missing`` lists the ``FieldSpec.name`` values that were empty / null.
+    Surfaced as a 400 by the Studio upsert route and printed by the CLI
+    wizard so the user sees which field needs filling instead of getting
+    a downstream runtime error (e.g. Databricks' historical
+    ``Catalog 'None' was not found`` SQL crash when the catalog was
+    accepted as an empty string at save time).
+    """
+
+    def __init__(self, backend: str, missing: list[str]) -> None:
+        self.backend = backend
+        self.missing = list(missing)
+        labels = ", ".join(missing)
+        super().__init__(
+            f"Profile for backend {backend!r} is missing required field(s): {labels}."
+        )
+
+
+def validate_required_fields(backend: str, payload: dict) -> None:
+    """Reject a profile payload when any ``required=True`` field is empty.
+
+    Treats Python ``None``, empty string, and whitespace-only strings as
+    missing. Numeric / boolean fields are validated by presence: ``None``
+    is missing, ``0`` / ``False`` is acceptable. Unknown backends are a
+    no-op so a forwards-compatible Studio build adding a new backend
+    won't fail the existing release.
+    """
+    spec = _SCHEMA.get(backend, ())
+    if not spec:
+        return
+    missing: list[str] = []
+    for field in spec:
+        if not field.required:
+            continue
+        value = payload.get(field.name) if isinstance(payload, dict) else None
+        if value is None:
+            missing.append(field.name)
+            continue
+        if isinstance(value, str) and not value.strip():
+            missing.append(field.name)
+    if missing:
+        raise ProfileValidationError(backend, missing)

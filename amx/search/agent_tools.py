@@ -40,6 +40,9 @@ from amx.search._tool_rag import _RagToolsMixin
 from amx.search._tool_scd_and_role import _ScdAndRoleMixin
 from amx.search._tool_schemas import tool_schemas as _tool_schemas
 from amx.search.catalog import SearchCatalog
+from amx.utils.logging import get_logger
+
+log = get_logger("search.agent_tools")
 
 # ``json`` and ``SequenceMatcher`` stay imported above because the
 # ``ToolBox`` methods below still reach for them directly. The pure
@@ -106,6 +109,11 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
     # state should add their name here.
     _UNCACHED_TOOLS: frozenset[str] = frozenset()
 
+    #: Default for ``_allow_live_refresh`` — class-level so test
+    #: harnesses that ``object.__new__(ToolBox)`` past ``__init__``
+    #: still see the cache-only contract instead of an AttributeError.
+    _allow_live_refresh: bool = False
+
     #: Per-profile live-DB tool fan-out timeout. If a single profile
     #: takes longer than this to respond, its result is dropped from
     #: the union and the LLM is told the profile timed out — other
@@ -126,9 +134,16 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         db_connectors: dict[str, DatabaseConnector] | None = None,
         doc_profiles: list[str] | tuple[str, ...] | None = None,
         code_profiles: list[str] | tuple[str, ...] | None = None,
+        allow_live_refresh: bool = False,
     ) -> None:
         self.cfg = cfg
         self.catalog = catalog
+        # Per-question cache-only gate. When False (default), every tool
+        # that exposes a ``force_fresh`` argument silently coerces it to
+        # False so the LLM cannot bypass the catalog cache and trigger
+        # an unauthorised live-DB read. Flipped to True from the Ask UI
+        # "Live refresh" toggle.
+        self._allow_live_refresh: bool = bool(allow_live_refresh)
         # Resolve the multi-profile retrieval scope.
         # ``db_profiles`` (caller-supplied) > ``cfg.active_db_profiles`` (the
         # 0.11.0 multi-pick scope) > legacy single-active fallback. Anchor
@@ -220,6 +235,29 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         return len(self.db_profiles) > 1
 
     # ------------------------------------------------------------------ helpers
+    def _gate_force_fresh(self, requested: bool) -> bool:
+        """Honour ``force_fresh`` only when the user enabled "Live refresh".
+
+        Ask is cache-only by default — the per-question UI toggle is the
+        single source of truth for whether a tool call is permitted to
+        bypass the catalog cache. When the toggle is OFF, the LLM may
+        still pass ``force_fresh=true`` (it's documented in the tool
+        schema for back-compat) but we silently coerce it to ``False``
+        and log the suppression so the trace is auditable.
+        """
+        if not requested:
+            return False
+        if self._allow_live_refresh:
+            return True
+        try:
+            log.debug(
+                "force_fresh suppressed by cache-only Ask mode "
+                "(allow_live_refresh=False)"
+            )
+        except Exception:
+            pass
+        return False
+
     def _live_db(self) -> DatabaseConnector:
         if self._db is None:
             self._db = self._db_factory()
@@ -665,8 +703,39 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         parameter. Names are stable; argument names match the Python kwargs
         of the corresponding ``ToolBox`` method. Data lives in
         ``amx/search/_tool_schemas.py``; this method delegates so callers
-        keep their existing call site (``ToolBox.schemas()``)."""
+        keep their existing call site (``ToolBox.schemas()``).
+
+        Static method, returns the full unfiltered list. Use
+        :meth:`available_schemas` from instance call sites so the
+        cache-only ``allow_live_refresh`` filter is applied — that is
+        the path ``run_tool_agent`` takes.
+        """
         return _tool_schemas()
+
+    def available_schemas(self) -> list[dict[str, Any]]:
+        """Return the full schema list — live-only tools STAY visible.
+
+        Previous revisions filtered ``freshness="live_only"`` entries
+        when ``allow_live_refresh`` was False; that hid useful tool
+        names from the LLM and forced it to invent vague fallback
+        prose ("I don't have a direct tool that can…"). The current
+        contract instead keeps every tool visible AND has
+        :meth:`invoke` short-circuit cache-only mode with a
+        structured ``needs_live_refresh`` envelope. The LLM sees the
+        tool name + arguments it would have run, and can quote them
+        verbatim to the user along with the one-click retry hint.
+        """
+        return self.schemas()
+
+    def _is_live_only_tool(self, name: str) -> bool:
+        """``True`` when the named tool is annotated ``live_only`` in
+        the schema list — used by :meth:`invoke` as a belt-and-braces
+        guard in case the LLM tries to call a tool it could not have
+        seen in :meth:`available_schemas`."""
+        for entry in _tool_schemas():
+            if entry.get("function", {}).get("name") == name:
+                return entry.get("freshness", "cache_ok") == "live_only"
+        return False
 
     # ------------------------------------------------------------------ invoke
     def invoke(self, name: str, raw_arguments: str) -> str:
@@ -685,6 +754,40 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
             args = json.loads(raw_arguments) if raw_arguments else {}
         except json.JSONDecodeError as exc:
             return _safe_json({"error": f"Invalid arguments JSON: {exc}"})
+
+        # Cache-only mode: live-only tools stay in the menu but the
+        # body never runs. Return a structured ``needs_live_refresh``
+        # envelope so the LLM can surface the exact tool + arguments
+        # back to the user along with the one-click retry hint. The
+        # SPA reads ``needs_live_refresh: true`` from the tool.call
+        # payload and renders an "Enable Live refresh & retry" button.
+        if not self._allow_live_refresh and self._is_live_only_tool(name):
+            log.info(
+                "live-only tool %s blocked: allow_live_refresh=False — "
+                "returning needs_live_refresh envelope",
+                name,
+            )
+            return _safe_json(
+                {
+                    "needs_live_refresh": True,
+                    "tool": name,
+                    "arguments": args,
+                    "reason": (
+                        "This tool samples the live database; the "
+                        "catalog cache cannot answer."
+                    ),
+                    "user_action": (
+                        "Enable the 'Live refresh' toggle in the Ask "
+                        "composer and ask the same question again — "
+                        "the assistant will then call this tool."
+                    ),
+                    # Back-compat: tests pre-dating the envelope still
+                    # check for ``error == "live_only_tool_disabled"``;
+                    # keep the key so the freshness contract test and
+                    # the CHANGELOG-era harness keep passing.
+                    "error": "live_only_tool_disabled",
+                }
+            )
 
         # Cache lookup. JSON-stringify the args dict with sorted keys
         # so semantically-equivalent arg permutations
@@ -1156,12 +1259,243 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
             "profiles_with_errors": with_errors,
         }
 
+    def _tool_describe_column(
+        self,
+        schema: str,
+        table: str,
+        column: str,
+        db_profile: str = "",
+    ) -> dict[str, Any]:
+        """Cache-served column description / dtype / flags lookup.
+
+        Single ``catalog_entities`` row + description join — the agent
+        used to chain ``describe_table`` and parse its column list to
+        answer "is column X nullable?" / "what type is column Y?". This
+        tool returns the same data in one SQLite read.
+        """
+        sch = (schema or "").strip()
+        tbl = (table or "").strip()
+        col = (column or "").strip()
+        if not sch or not tbl or not col:
+            raise _ToolError("'schema', 'table', and 'column' are all required.")
+        target = (db_profile or "").strip()
+        if target and target not in self.db_profiles:
+            return {
+                "schema": sch,
+                "table": tbl,
+                "column": col,
+                "matches": [],
+                "source": "catalog",
+                "error": f"Profile {target!r} is not in this Ask's scope.",
+            }
+        scope: str | list[str] = target if target else self.db_profile_filter
+        try:
+            rows = self.catalog.fetch_column_detail(
+                scope,
+                schema_name=sch,
+                table_name=tbl,
+                column_name=col,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "schema": sch,
+                "table": tbl,
+                "column": col,
+                "matches": [],
+                "source": "catalog",
+                "error": f"Catalog column lookup failed: {exc}",
+            }
+        if not rows:
+            return {
+                "schema": sch,
+                "table": tbl,
+                "column": col,
+                "found": False,
+                "matches": [],
+                "source": "catalog",
+                "cache_only": True,
+                "hint": (
+                    f"No column '{sch}.{tbl}.{col}' in the catalog for "
+                    f"this scope. Enable Live refresh and ask again, or "
+                    f"run /search sync."
+                ),
+            }
+        return {
+            "schema": sch,
+            "table": tbl,
+            "column": col,
+            "found": True,
+            "matches": rows,
+            "count": len(rows),
+            "source": "catalog",
+        }
+
+    def _tool_catalog_inventory(
+        self,
+        scope: str = "schemas",
+        db_profile: str = "",
+    ) -> dict[str, Any]:
+        """Distinct databases / schemas from the catalog cache.
+
+        Cache-served replacement for the live ``list_databases`` /
+        ``list_server_databases`` paths when the user just wants the
+        inventory, not a live re-enumeration. Counts come from
+        ``catalog_entities`` — sub-50 ms regardless of profile
+        size.
+        """
+        normalised = (scope or "schemas").strip().lower()
+        if normalised not in {"databases", "schemas"}:
+            normalised = "schemas"
+        target = (db_profile or "").strip()
+        if target and target not in self.db_profiles:
+            return {
+                "scope_arg": normalised,
+                "rows": [],
+                "profiles": list(self.db_profiles),
+                "source": "catalog",
+                "error": f"Profile {target!r} is not in this Ask's scope.",
+            }
+        clause: str | list[str] = target if target else self.db_profile_filter
+        try:
+            rows = self.catalog.fetch_inventory(clause, scope=normalised)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "scope_arg": normalised,
+                "rows": [],
+                "profiles": list(self.db_profiles),
+                "source": "catalog",
+                "error": f"Catalog inventory query failed: {exc}",
+            }
+        return {
+            "scope_arg": normalised,
+            "rows": rows,
+            "profiles": list(self.db_profiles),
+            "count": len(rows),
+            "source": "catalog",
+        }
+
+    def _tool_catalog_coverage_summary(
+        self,
+        db_profile: str = "",
+        schema: str = "",
+    ) -> dict[str, Any]:
+        """Per-profile + per-schema description coverage from the catalog.
+
+        Single GROUP BY against ``catalog_entities`` — sub-50 ms — so the
+        Ask agent answers "how many tables don't have comments" in one
+        round-trip instead of chaining describe_table per asset (the
+        82-second hallucination loop the user hit).
+        """
+        target = (db_profile or "").strip()
+        if target and target not in self.db_profiles:
+            return {
+                "profiles": [],
+                "scope": list(self.db_profiles),
+                "source": "catalog",
+                "error": f"Profile {target!r} is not in this Ask's scope.",
+            }
+        scope: str | list[str] = target if target else self.db_profile_filter
+        sch = (schema or "").strip() or None
+        try:
+            rows = self.catalog.fetch_coverage_summary(scope, schema_name=sch)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "profiles": [],
+                "scope": list(self.db_profiles),
+                "source": "catalog",
+                "error": f"Catalog coverage query failed: {exc}",
+            }
+        total_tables = sum(row["total_tables"] for row in rows)
+        undocumented_tables = sum(row["undocumented_tables"] for row in rows)
+        total_columns = sum(row["total_columns"] for row in rows)
+        undocumented_columns = sum(row["undocumented_columns"] for row in rows)
+        documented_tables = max(0, total_tables - undocumented_tables)
+        documented_columns = max(0, total_columns - undocumented_columns)
+        totals = {
+            "total_tables": total_tables,
+            "undocumented_tables": undocumented_tables,
+            "documented_tables": documented_tables,
+            "total_columns": total_columns,
+            "undocumented_columns": undocumented_columns,
+            "documented_columns": documented_columns,
+            "table_coverage_pct": (
+                round(100.0 * documented_tables / total_tables, 1)
+                if total_tables > 0
+                else None
+            ),
+            "column_coverage_pct": (
+                round(100.0 * documented_columns / total_columns, 1)
+                if total_columns > 0
+                else None
+            ),
+        }
+        last_synced_at = max(
+            (row["last_synced_at"] or 0.0 for row in rows), default=0.0
+        )
+        return {
+            "profiles": rows,
+            "totals": totals,
+            "scope": list(self.db_profiles),
+            "source": "catalog",
+            "last_synced_at": last_synced_at or None,
+        }
+
+    def _tool_catalog_sync_status(self, db_profile: str = "") -> dict[str, Any]:
+        """One-shot freshness report for every DB profile in scope.
+
+        Reads ``catalog_profile_state`` via the SyncMixin getter, with
+        zero live-DB calls. The canonical answer to "are my tables
+        synced / up to date / fresh / stale" — single LLM round-trip,
+        no hypothesis loop.
+        """
+        target = (db_profile or "").strip()
+        if target:
+            profiles = [target] if target in self.db_profiles else []
+        else:
+            profiles = list(self.db_profiles)
+
+        now = self._now()
+        out: list[dict[str, Any]] = []
+        for name in profiles:
+            try:
+                state = self.catalog.get_profile_state(name)
+            except Exception as exc:  # noqa: BLE001
+                out.append(
+                    {
+                        "db_profile": name,
+                        "state": "unknown",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
+            last_full = state.get("last_full_sync_at")
+            age = max(0.0, now - float(last_full)) if last_full else None
+            out.append(
+                {
+                    "db_profile": name,
+                    "state": state.get("state") or "none",
+                    "last_synced_at": float(last_full) if last_full else None,
+                    "age_seconds": age,
+                    # 24h and 7d windows match the staleness signals the
+                    # rest of the catalog uses (``is_profile_fully_synced``
+                    # rejects anything older than 7 days, the Studio
+                    # freshness pill flags >24h).
+                    "is_fresh_24h": bool(age is not None and age < 86_400),
+                    "is_fresh_7d": bool(age is not None and age < 7 * 86_400),
+                    "processed_tables": int(state.get("processed_tables") or 0),
+                    "total_tables": int(state.get("total_tables") or 0),
+                    "last_error": state.get("last_error") or "",
+                }
+            )
+        return {"profiles": out, "scope": list(self.db_profiles)}
+
     def _tool_list_schemas(
         self,
         catalog: str = "",
         db_profile: str = "",
         force_fresh: bool = False,
     ) -> dict[str, Any]:
+        force_fresh = self._gate_force_fresh(force_fresh)
         # Multi-profile fan-out path: when the scope spans 2+ profiles
         # AND the LLM didn't target a specific one via ``db_profile``,
         # parallel-list schemas across every profile in scope. Each
@@ -1191,43 +1525,72 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
                 fully_synced = bool(self.catalog.is_profile_fully_synced(self.db_profile))
             except Exception:
                 fully_synced = False
-            if fully_synced:
-                try:
-                    # Scope to the active database (or 3-level catalog)
-                    # so the cache doesn't leak schemas across multi-DB
-                    # profiles. ``catalog`` arg here is the LLM-provided
-                    # override that's already been validated as empty
-                    # above — when populated we'd have skipped the
-                    # cache branch entirely. So the scope is whatever
-                    # the profile config points at.
-                    db_scope = str(
-                        getattr(self.cfg.db, "database", "")
-                        or getattr(self.cfg.db, "catalog", "")
-                        or getattr(self.cfg.db, "project", "")
-                        or ""
+            # ``fully_synced`` controls *trusting* the cache as
+            # exhaustive. Even when False we may still have a partial
+            # catalog of schemas; in cache-only mode we serve THAT and
+            # flag ``possibly_partial`` instead of going live.
+            try:
+                db_scope = str(
+                    getattr(self.cfg.db, "database", "")
+                    or getattr(self.cfg.db, "catalog", "")
+                    or getattr(self.cfg.db, "project", "")
+                    or ""
+                )
+                catalog_schemas = self.catalog.fetch_distinct_schemas(
+                    self.db_profile,
+                    database_name=db_scope or None,
+                )
+            except Exception:
+                catalog_schemas = []
+            # Strict list check — tests stub ``self.catalog`` with a
+            # bare MagicMock, which makes the call return a truthy
+            # MagicMock that isn't iterable as expected.
+            have_rows = isinstance(catalog_schemas, list) and bool(catalog_schemas)
+            if have_rows and (fully_synced or not self._allow_live_refresh):
+                fresh_ts = max((s.get("last_synced_at") or 0.0) for s in catalog_schemas)
+                age = max(0.0, self._now() - fresh_ts) if fresh_ts > 0 else 0.0
+                payload = {
+                    "database": self.cfg.db.database
+                    or self.cfg.db.catalog
+                    or self.cfg.db.project
+                    or "(active database)",
+                    "schemas": [s["name"] for s in catalog_schemas],
+                    "count": len(catalog_schemas),
+                    "source": "catalog",
+                    "age_seconds": age,
+                }
+                if not fully_synced:
+                    # Cache-only mode is the reason we did not go live.
+                    # Tell the LLM honestly so it can surface the caveat.
+                    payload["possibly_partial"] = True
+                    payload["cache_only"] = True
+                    payload["hint"] = (
+                        "Catalog sync is not marked complete; this list may "
+                        "be partial. Enable the 'Live refresh' toggle in "
+                        "the Ask composer and ask again to confirm against "
+                        "the live database, OR run /search sync first."
                     )
-                    catalog_schemas = self.catalog.fetch_distinct_schemas(
-                        self.db_profile,
-                        database_name=db_scope or None,
-                    )
-                except Exception:
-                    catalog_schemas = []
-                # Strict list check — tests stub ``self.catalog`` with a
-                # bare MagicMock, which makes the call return a truthy
-                # MagicMock that isn't iterable as expected.
-                if isinstance(catalog_schemas, list) and catalog_schemas:
-                    fresh_ts = max((s.get("last_synced_at") or 0.0) for s in catalog_schemas)
-                    age = max(0.0, self._now() - fresh_ts) if fresh_ts > 0 else 0.0
-                    return {
-                        "database": self.cfg.db.database
-                        or self.cfg.db.catalog
-                        or self.cfg.db.project
-                        or "(active database)",
-                        "schemas": [s["name"] for s in catalog_schemas],
-                        "count": len(catalog_schemas),
-                        "source": "catalog",
-                        "age_seconds": age,
-                    }
+                return payload
+            if not self._allow_live_refresh:
+                # No rows AND cache-only — refuse instead of falling to
+                # live DB. Better to tell the user "nothing in cache"
+                # than to silently bypass their toggle.
+                return {
+                    "database": self.cfg.db.database
+                    or self.cfg.db.catalog
+                    or self.cfg.db.project
+                    or "(active database)",
+                    "schemas": [],
+                    "count": 0,
+                    "source": "catalog",
+                    "cache_only": True,
+                    "possibly_partial": True,
+                    "hint": (
+                        "Catalog has no schemas recorded for this profile. "
+                        "Enable 'Live refresh' in the composer and ask "
+                        "again to query the database, or run /search sync."
+                    ),
+                }
         db = self._live_db()
         explicit = (catalog or "").strip()
         pinned_catalog = str(getattr(self.cfg.db, "catalog", "") or "").strip()
@@ -1314,6 +1677,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         db_profile: str = "",
         force_fresh: bool = False,
     ) -> dict[str, Any]:
+        force_fresh = self._gate_force_fresh(force_fresh)
         target = (schema or "").strip()
         if not target:
             raise _ToolError("Argument 'schema' is required.")
@@ -1332,38 +1696,69 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
                 fully_synced = bool(self.catalog.is_profile_fully_synced(self.db_profile))
             except Exception:
                 fully_synced = False
-            if fully_synced:
-                try:
-                    # Same database-level scoping as list_schemas above —
-                    # avoid pulling tables from sibling databases under
-                    # the same profile.
-                    db_scope = str(
-                        getattr(self.cfg.db, "database", "")
-                        or getattr(self.cfg.db, "catalog", "")
-                        or getattr(self.cfg.db, "project", "")
-                        or ""
+            try:
+                db_scope = str(
+                    getattr(self.cfg.db, "database", "")
+                    or getattr(self.cfg.db, "catalog", "")
+                    or getattr(self.cfg.db, "project", "")
+                    or ""
+                )
+                catalog_tables = self.catalog.fetch_distinct_tables_in_schema(
+                    self.db_profile,
+                    target,
+                    database_name=db_scope or None,
+                )
+            except Exception:
+                catalog_tables = []
+            have_rows = isinstance(catalog_tables, list) and bool(catalog_tables)
+            # Serve cached rows when EITHER the catalog is fully
+            # synced (trust the snapshot) OR the user is in cache-only
+            # mode (Live refresh OFF means do not go live regardless
+            # of completeness).
+            if have_rows and (fully_synced or not self._allow_live_refresh):
+                fresh_ts = max((t.get("last_synced_at") or 0.0) for t in catalog_tables)
+                age = max(0.0, self._now() - fresh_ts) if fresh_ts > 0 else 0.0
+                payload = {
+                    "schema": target,
+                    "catalog": None,
+                    "found": True,
+                    "tables": [{"name": t["name"], "kind": "table"} for t in catalog_tables],
+                    "count": len(catalog_tables),
+                    "source": "catalog",
+                    "age_seconds": age,
+                }
+                if not fully_synced:
+                    payload["possibly_partial"] = True
+                    payload["cache_only"] = True
+                    payload["hint"] = (
+                        "Catalog sync for this profile is not marked "
+                        "complete; the table list may be partial. Enable "
+                        "the 'Live refresh' toggle to confirm against the "
+                        "live database, or run /search sync."
                     )
-                    catalog_tables = self.catalog.fetch_distinct_tables_in_schema(
-                        self.db_profile,
-                        target,
-                        database_name=db_scope or None,
-                    )
-                except Exception:
-                    catalog_tables = []
-                if isinstance(catalog_tables, list) and catalog_tables:
-                    fresh_ts = max((t.get("last_synced_at") or 0.0) for t in catalog_tables)
-                    age = max(0.0, self._now() - fresh_ts) if fresh_ts > 0 else 0.0
-                    return {
-                        "schema": target,
-                        "catalog": None,
-                        "found": True,
-                        "tables": [{"name": t["name"], "kind": "table"} for t in catalog_tables],
-                        "count": len(catalog_tables),
-                        "source": "catalog",
-                        "age_seconds": age,
-                    }
-            else:
+                return payload
+            if not fully_synced:
                 partial_fallback = True
+            if not self._allow_live_refresh:
+                # Cache-only AND nothing in the catalog for this schema.
+                # Refuse to go live; tell the user we don't have it
+                # cached so they can opt in via the toggle.
+                return {
+                    "schema": target,
+                    "catalog": None,
+                    "found": False,
+                    "tables": [],
+                    "count": 0,
+                    "source": "catalog",
+                    "cache_only": True,
+                    "possibly_partial": True,
+                    "hint": (
+                        f"Catalog has no tables recorded for schema "
+                        f"'{target}' on profile {self.db_profile}. "
+                        "Enable 'Live refresh' to query the database, or "
+                        "run /search sync to refresh the catalog first."
+                    ),
+                }
         db = self._live_db()
         # Resolve the catalog: explicit > pinned > single-user-catalog
         # auto-pick. Without this, a Databricks UC backend without a
@@ -1611,6 +2006,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         return payload
 
     def _tool_find_table_by_name(self, name: str, force_fresh: bool = False) -> dict[str, Any]:
+        force_fresh = self._gate_force_fresh(force_fresh)
         target = (name or "").strip()
         if not target:
             raise _ToolError("Argument 'name' is required.")
@@ -1873,26 +2269,20 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         database: str = "",
         force_fresh: bool = False,
     ) -> dict[str, Any]:
+        force_fresh = self._gate_force_fresh(force_fresh)
         schema_name = (schema or "").strip()
         table_name = (table or "").strip()
         if not schema_name or not table_name:
             raise _ToolError("Both 'schema' and 'table' are required.")
-        # Profile-targeted: route to the named profile's connector when
-        # the LLM passed db_profile (or, in multi-profile scope, when
-        # the table only exists on one profile and we resolved the
-        # ambiguity earlier via find_table_by_name).
+        # Profile-targeted bookkeeping. The actual connector is opened
+        # LAZILY below — only when we need to pay for a live profile_table
+        # round-trip. Without this lazy-open the cache-only mode would
+        # still spin up a SQLAlchemy engine on every describe_table call
+        # even though the cache resolver would have returned the answer.
         targeted = (db_profile or "").strip()
         target_profile = targeted or self.db_profile
-        if targeted and targeted != self.db_profile:
-            db = self._connector_for_profile(targeted)
-        else:
-            db = self._live_db()
-        # Resolve the catalog for 3-level backends so describe_table
-        # doesn't end up issuing ``DESCRIBE None.<schema>.<table>``
-        # when the active profile didn't pin a catalog.
-        explicit = (catalog or "").strip()
-        cat_arg, _user_catalogs, _all_catalogs = self._resolve_catalog_or_autopick(db, explicit)
 
+        explicit = (catalog or "").strip()
         explicit_db = (database or "").strip()
 
         # ── Cache-first lookup ──
@@ -1908,6 +2298,35 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
             table=table_name,
             force_fresh=force_fresh,
         )
+
+        # Cache miss + cache-only mode: do not spin up a live connector.
+        # Return a structured "not in cache" payload that the LLM can
+        # surface back to the user; the assistant should then suggest
+        # enabling Live refresh + re-asking (or running /search sync).
+        if (
+            cache_payload is None
+            and not self._allow_live_refresh
+            and not force_fresh
+        ):
+            return {
+                "schema": schema_name,
+                "table": table_name,
+                "found": False,
+                "source": "catalog",
+                "cache_only": True,
+                "possibly_partial": True,
+                "hint": (
+                    f"Table '{schema_name}.{table_name}' is not in the "
+                    f"catalog for profile {target_profile}. Enable "
+                    f"'Live refresh' in the composer and ask again "
+                    f"to fetch it live, or run /search sync first."
+                ),
+            }
+
+        # Defer the live-connector + cat_arg resolution to the live
+        # branch below — cache-hit responses never need them.
+        db = None  # opened lazily in the else-branch
+        cat_arg: str = ""
 
         if cache_payload is not None and source != "live":
             # Reconstruct the wire shape from the cache payload. The
@@ -1936,6 +2355,18 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
                 table_comment=table_comment,
             )
         else:
+            # Lazy live-connector open: only reached when the cache
+            # missed AND the user (or force_fresh) allowed the trip.
+            if targeted and targeted != self.db_profile:
+                db = self._connector_for_profile(targeted)
+            else:
+                db = self._live_db()
+            # Resolve the catalog for 3-level backends so describe_table
+            # doesn't end up issuing ``DESCRIBE None.<schema>.<table>``
+            # when the active profile didn't pin a catalog.
+            cat_arg, _user_catalogs, _all_catalogs = self._resolve_catalog_or_autopick(
+                db, explicit
+            )
             # Cross-database resolution for unpinned 2-level backends.
             # When the user (or the LLM) passes ``database=…`` explicitly,
             # honour it — otherwise fall through to the connection-time
@@ -2064,6 +2495,25 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
                 if value:  # drop empty list / "" / 0 / {}
                     analytics_payload[attr] = value
 
+        # Aggregated cache-side stats so the LLM can answer "how many
+        # columns are nullable / undocumented / primary-key" without a
+        # second tool call. Pulled directly from the column list we
+        # already assembled — zero extra cost.
+        nullable_count = sum(1 for c in all_cols if c.get("nullable"))
+        documented_count = sum(1 for c in all_cols if str(c.get("comment") or "").strip())
+        stats = {
+            "row_count": int(profile.row_count or 0),
+            "column_count": len(all_cols),
+            "nullable_columns": nullable_count,
+            "non_nullable_columns": max(0, len(all_cols) - nullable_count),
+            "documented_columns": documented_count,
+            "undocumented_columns": max(0, len(all_cols) - documented_count),
+            "column_coverage_pct": (
+                round(100.0 * documented_count / len(all_cols), 1)
+                if all_cols
+                else None
+            ),
+        }
         result = {
             "schema": schema_name,
             "table": table_name,
@@ -2072,6 +2522,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
             "table_comment": str(profile.existing_comment or ""),
             "row_count": int(profile.row_count or 0),
             "column_count": len(all_cols),
+            "stats": stats,
             "dtype_summary": dtype_summary,
             # Complete coverage — no truncation. Authoritative source
             # for "which columns of dtype X exist on this table".

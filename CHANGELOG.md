@@ -6,6 +6,156 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Catalog cache no longer auto-expires after 7 days.**
+  ``SearchCatalog.is_profile_fully_synced()`` previously returned
+  ``False`` whenever ``last_full_sync_at`` was older than a week,
+  which silently forced sidebar / Ask / drift surfaces to fall
+  through to the live DB on any week-old profile. The cache now
+  lives forever: a profile with ``state='done'`` is fully synced
+  regardless of age. The ``/api/catalog/freshness`` pill still
+  flags profiles past one week (was 24 h) as ``stale: true`` so
+  the user has a visible nudge to ``/search sync`` at their own
+  pace — no more silent live-DB hits.
+
+### Fixed
+
+- **Scheduler daemon installation actually loads the daemon on
+  modern macOS.** ``launchctl load <plist>`` was deprecated in
+  Big Sur and returns 0 without doing anything on Darwin 24+, so
+  ``Install daemon`` clicks wrote the plist to disk but never
+  registered it with launchd — schedules silently never fired.
+  ``install_daemon()`` now uses the modern
+  ``launchctl bootout`` → ``bootstrap gui/<uid>`` → ``enable`` →
+  ``kickstart`` sequence, falls back to the legacy ``load`` for
+  pre-Big-Sur, and surfaces ``launchctl``'s stderr in the
+  install-result message instead of swallowing it. The Linux
+  systemd path is unchanged (already uses the right API).
+- **Scheduler status detection distinguishes "installed" from
+  "loaded".** ``detect_daemon_state()`` previously reported
+  ``installed=True`` whenever the plist / service file existed,
+  including the silent-failure case where the plist sat on disk
+  but launchd never bootstrapped it. The status response now
+  carries a separate ``loaded: bool`` flag (and ``log_size_bytes``
+  / ``log_mtime`` for the next-tick UI) so Studio's Schedules
+  page can render *"Installed but not loaded — click Reload"*
+  instead of misleading *"Installed ✓"*.
+
+### Added
+
+- **Three new cache-only Ask tools** that answer the most-asked
+  question families from the catalog without touching the live
+  database:
+  - `catalog_coverage_summary` — per-profile + per-schema counts of
+    described vs undescribed tables and columns from
+    `catalog_entities`. Sub-50 ms; the canonical "how many tables
+    don't have comments?" path.
+  - `catalog_inventory` — distinct databases / schemas pulled from
+    the catalog cache. Replaces `list_catalogs` / `list_databases` /
+    `list_server_databases` in cache-only mode.
+  - `describe_column` — single column lookup (dtype, nullable,
+    primary-key / foreign-key flag, description) from the catalog
+    cache. Saves an entire `describe_table` round-trip when the user
+    only asks about one column.
+- **`tests/test_tool_freshness_contract.py`** regression test
+  enumerates every `cache_ok` tool and dispatches it against a
+  ToolBox whose `_live_db()` / `_connector_for_profile()` raise on
+  access. Any tool that wrongly reaches the live path fails the test
+  before it can ship — the kind of regression that produced the
+  `find_assets_missing_comment` mis-classification.
+- **1-second LLM heartbeat** during every `llm.chat` round.
+  `tool_agent.py` wraps each call in `_llm_round_heartbeat` and the
+  SSE bus emits `llm.round.started` / `heartbeat` / `finished`
+  events with `{round, phase, elapsed_ms}`. The AskChat
+  `LiveStatusLine` reads them to render
+  *"⚙ kimi-k2.6 round 1 — picking tools · 12 s"* — the user is
+  never blind during a long LLM round-trip again.
+- **"Enable Live refresh & retry" button** on assistant turns where
+  a tool refused with `needs_live_refresh`. One click flips the
+  Live refresh toggle on and re-submits the same question, so the
+  user never has to retype.
+- **`catalog_sync_status` tool.** Single-call freshness report for every
+  DB profile in scope — reads `catalog_profile_state` (zero live-DB
+  queries) and returns `state`, `last_synced_at`, `age_seconds`,
+  `is_fresh_24h`, `is_fresh_7d`, `processed_tables`, `total_tables`
+  per profile. Annotated `freshness="cache_ok"` so it is always
+  available, including in cache-only Ask mode. The system prompt
+  routes every "are my tables synced / up to date / fresh / stale"
+  variation to this tool first instead of letting the LLM hypothesise
+  with `list_schemas` → `list_tables_in_schema` → `describe_table`
+  loops.
+- **Real-time activity feed in Ask.** Each tool dispatch now emits a
+  `tool.started` SSE event before the handler runs; the post-call
+  `tool.call` summary is enriched with `source` (catalog / live /
+  blocked_cache_only) and `elapsed_ms`. The Studio Ask composer
+  renders a live `ActivityFeed` row per call ("⟳ Reading cache ·
+  catalog_sync_status" → "✓ Cache hit · 30 ms") with `aria-live`
+  for accessibility, so the user is no longer staring at a silent
+  "Reasoning…" spinner for the entire tool turn.
+
+### Changed
+
+- **Live-only tools stay visible in cache-only mode and return a
+  structured `needs_live_refresh` envelope** instead of being hidden
+  from the LLM's menu. The LLM sees the tool name + arguments it
+  would have run, so it can quote them verbatim ("This needs live
+  database access. Enable Live refresh and ask again — I'll run
+  `check_uniqueness(orders, [order_id])` and answer right after.")
+  and the SPA can render the one-click retry button with full
+  context. Replaces the earlier "hide from schema" approach that
+  pushed the LLM into vague "I don't have a direct tool" prose.
+- **`describe_table` cache path is fully lazy.** The live connector
+  and `cat_arg` resolution are now deferred to the live branch so a
+  cache hit no longer touches a SQLAlchemy engine — fixes a hidden
+  regression caught by the new freshness contract test.
+- **`describe_table` response carries a `stats` block** computed
+  from the cached column list (column count, nullable count,
+  documented vs undocumented count, column-coverage percentage),
+  so the agent can answer simple aggregate questions without a
+  follow-up tool call.
+- **Cache-only Ask now widens to every live-only tool.** Tool schemas
+  carry a `freshness` annotation (`cache_ok` vs `live_only`); when the
+  Ask composer's Live refresh toggle is OFF, `ToolBox.available_schemas()`
+  hides every `live_only` tool from the LLM's menu — `list_catalogs`,
+  `list_server_databases`, `list_volumes`, `list_databases`,
+  `check_uniqueness`, `inspect_data_quality`, `sample_column_values`,
+  `detect_scd_pattern`, `detect_dimensional_role`, `find_joinable_tables`,
+  `find_joinable_across_profiles`. `ToolBox.invoke()` carries a
+  belt-and-braces guard that returns a structured
+  `live_only_tool_disabled` payload if an old session's tool_call
+  message asks for one of them. Cache-ok read tools
+  (`list_schemas`, `list_tables_in_schema`) also stop falling through
+  to live DB on a partial sync — they return the cached rows tagged
+  `cache_only=true, possibly_partial=true` so the LLM tells the user
+  to enable Live refresh instead of silently bypassing the toggle.
+- **Ask is now cache-only by default.** A question submitted from
+  Studio's Ask panel no longer fires the background drift probe or
+  honours tool-level `force_fresh=true` from the LLM. Both paths are
+  gated behind a new per-question **"Live refresh"** toggle in the
+  composer footer (default OFF, persisted to localStorage). The
+  pre-existing `AMX_SKIP_DRIFT_PROBE=1` env var remains as the global
+  kill switch on top of the toggle. The system prompt's `force_fresh`
+  paragraph is updated so the LLM knows not to retry with the flag
+  when the user has the toggle off.
+
+### Fixed
+
+- **Databricks profile with no catalog no longer issues `SHOW TABLES
+  FROM \`None\`.<schema>`.** When the adapter's `list_tables` /
+  `list_views` is asked to enumerate a schema while the profile has
+  no Unity Catalog configured, it now returns `[]` with a warning
+  log instead of falling through to SQLAlchemy's inspector path,
+  which would emit the literal string `"None"` into the SQL and
+  trip a Spark `NO_SUCH_CATALOG_EXCEPTION`.
+- **Profile-save validation rejects blank required fields.** The
+  PUT `/api/profiles/db/{name}` route now runs every saved DB
+  profile through `validate_required_fields` from `profile_schema`
+  and returns a 400 with `hint=fill-required-fields` when a backend
+  spec field marked `required=True` is empty or null (the Databricks
+  catalog case being the canonical failure). The CLI wizard continues
+  to re-prompt as before.
+
 ## [0.15.0] - 2026-05-15
 
 ### Highlights

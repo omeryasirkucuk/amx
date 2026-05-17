@@ -29,7 +29,6 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from queue import Queue
 from typing import Any, Literal
 
 JobKind = Literal["run", "apply", "ask", "rerun"]
@@ -45,39 +44,93 @@ JobStatus = Literal["queued", "running", "cancelled", "done", "failed"]
 EVENT_BUFFER_MAX = 4000
 
 
-class BufferedQueue(Queue):
-    """``queue.Queue`` that also retains a bounded replay buffer.
+class BufferedQueue:
+    """Bounded, multi-consumer event stream backing every SSE channel.
 
     Every ``put_nowait`` (the path used by :func:`amx.web.progress_bus.emit`)
-    appends a copy of the event into ``buffer`` so a reconnecting SSE
-    consumer can re-hydrate the in-flight panel by replaying recent
-    events first, then resuming live drain. The buffer's deque already
-    enforces ``maxlen``; a separate lock guards both ``buffer`` and
-    ``buffer_seq`` so concurrent producers / consumers see consistent
-    snapshots.
+    appends a copy of the event into a bounded ``deque`` and bumps a
+    monotonic ``buffer_seq`` counter. SSE consumers read via the
+    cursor-based :meth:`tail_from` method which lets two or more
+    concurrent EventSource reconnects each track their own position
+    without racing — historically the legacy ``queue.Queue.get`` path
+    let the first consumer to wake steal an event the second consumer
+    needed, which is what the user saw as "garbled thinking" text:
+    the SPA only rendered the half of the chunks delivered to its
+    *current* EventSource while the other half went to the orphaned
+    pre-disconnect generator.
 
-    Reads (``get``, ``get_nowait``, ``empty``) inherit unchanged: the
-    SSE generator continues to consume new events through the queue;
-    the buffer is *additive* and lossless for the live consumer.
+    Browsers populate the ``Last-Event-ID`` header on auto-reconnect
+    when the prior stream's events carried an ``id:`` field. The
+    cursor-based API in this class is what makes that header useful:
+    the generator initialises its cursor from the header value, the
+    buffer replays the missing events with their original sequence
+    numbers, and only after the cursor catches up does the generator
+    wait on the condition for new emits.
     """
 
-    def __init__(self, maxsize: int = 0, *, buffer_max: int = EVENT_BUFFER_MAX) -> None:
-        super().__init__(maxsize=maxsize)
+    def __init__(self, *, buffer_max: int = EVENT_BUFFER_MAX) -> None:
         self.buffer: deque[dict[str, Any]] = deque(maxlen=buffer_max)
         self.buffer_seq: int = 0
-        self.buffer_lock = threading.Lock()
+        self._condition = threading.Condition()
 
-    def put_nowait(self, item: Any) -> None:  # type: ignore[override]
-        super().put_nowait(item)
-        if isinstance(item, dict):
-            with self.buffer_lock:
-                self.buffer.append(item)
-                self.buffer_seq += 1
+    def put_nowait(self, item: Any) -> None:
+        """Producer hook. Non-dict items are silently ignored — the
+        legacy ``queue.Queue`` parent accepted arbitrary objects but
+        the SSE channel only ever carries event dicts."""
+        if not isinstance(item, dict):
+            return
+        with self._condition:
+            self.buffer.append(item)
+            self.buffer_seq += 1
+            self._condition.notify_all()
 
     def buffer_snapshot(self) -> list[dict[str, Any]]:
         """Return a stable copy of the current replay buffer."""
-        with self.buffer_lock:
+        with self._condition:
             return list(self.buffer)
+
+    def tail_from(
+        self,
+        seq: int,
+        timeout: float,
+    ) -> list[tuple[int, dict[str, Any]]] | None:
+        """Cursor read: events with sequence number > *seq*.
+
+        Returns ``[(seq, event), ...]`` when one or more events with a
+        sequence > *seq* are present, otherwise blocks on the internal
+        condition for up to *timeout* seconds. Returns ``None`` on
+        timeout with no new events so the caller can decide whether
+        to emit a keepalive ping.
+
+        The buffer is bounded (``maxlen``) so older events may have
+        rolled off. When the cursor lags behind the oldest buffered
+        event, the caller silently receives the OLDEST surviving
+        events — preferable to a strict "out of range" failure for
+        a long-running job whose reconnecting browser was offline
+        long enough to lose the prefix. Returning even a partial tail
+        keeps the rendered stream coherent for everything still in
+        scope.
+        """
+        with self._condition:
+
+            def _collect() -> list[tuple[int, dict[str, Any]]]:
+                if self.buffer_seq <= seq or not self.buffer:
+                    return []
+                first_buffered = self.buffer_seq - len(self.buffer) + 1
+                start_seq = max(seq + 1, first_buffered)
+                start_idx = start_seq - first_buffered
+                return [
+                    (first_buffered + i, self.buffer[i]) for i in range(start_idx, len(self.buffer))
+                ]
+
+            ready = _collect()
+            if ready:
+                return ready
+            notified = self._condition.wait(timeout=timeout)
+            if not notified:
+                return None
+            ready = _collect()
+            return ready or None
 
 
 @dataclass

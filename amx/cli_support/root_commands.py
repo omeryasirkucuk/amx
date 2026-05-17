@@ -26,6 +26,50 @@ InteractiveDbBlock = Callable[[object], object]
 InteractiveLlmBlock = Callable[[object], object]
 
 
+def _catalog_distinct_schemas(profile: str, database: str | None) -> list[str] | None:
+    """Cache-first read for ``/db schemas``. Returns ``None`` when the
+    catalog has nothing recorded for the profile so the caller can
+    fall back to the live connector. Matches the Studio sidebar's
+    cache-first contract in ``amx/web/routers/live_db.py``."""
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+    except Exception:
+        return None
+    if cat is None:
+        return None
+    try:
+        rows = cat.fetch_distinct_schemas(profile, database_name=database)
+    except Exception:
+        return None
+    if not rows:
+        return None
+    return [str(r.get("name") or "") for r in rows if r.get("name")]
+
+
+def _catalog_distinct_tables(
+    profile: str, schema: str, database: str | None
+) -> list[str] | None:
+    """Cache-first read for ``/db tables <schema>``. Returns ``None``
+    on cache miss so the caller falls back to the live connector."""
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+    except Exception:
+        return None
+    if cat is None:
+        return None
+    try:
+        rows = cat.fetch_distinct_tables_in_schema(profile, schema, database_name=database)
+    except Exception:
+        return None
+    if not rows:
+        return None
+    return [str(r.get("name") or "") for r in rows if r.get("name")]
+
+
 def register_root_commands(
     main: click.Group,
     *,
@@ -242,32 +286,85 @@ def register_root_commands(
         cmd_tls(cfg, rest)
 
     @db.command("schemas")
+    @click.option(
+        "--live",
+        is_flag=True,
+        default=False,
+        help="Bypass the catalog cache and re-list against the live database.",
+    )
     @click.pass_obj
-    def db_schemas(cfg: AMXConfig) -> None:
-        """List available schemas."""
+    def db_schemas(cfg: AMXConfig, live: bool) -> None:
+        """List available schemas (cache-first, ``--live`` to force fresh)."""
+        active_profile = (cfg.active_db_profile or "default").strip() or "default"
+        scope = (
+            (cfg.db.database or "").strip()
+            or (cfg.db.catalog or "").strip()
+            or None
+        )
+        if not live:
+            cached = _catalog_distinct_schemas(active_profile, scope)
+            if cached:
+                with command_display(
+                    mode="db-schemas",
+                    provider=cfg.llm.provider,
+                    model=cfg.llm.model,
+                ):
+                    render_table(
+                        f"Schemas (catalog cache · profile {active_profile})",
+                        ["Schema Name"],
+                        [[s] for s in cached],
+                    )
+                return
         from amx.db.connector import DatabaseConnector
 
         db_conn = DatabaseConnector(cfg.db)
         with command_display(mode="db-schemas", provider=cfg.llm.provider, model=cfg.llm.model):
-            with step_spinner("Listing schemas"):
+            with step_spinner("Listing schemas (live DB)"):
                 schemas = db_conn.list_schemas()
-        render_table("Schemas", ["Schema Name"], [[s] for s in schemas])
+        render_table("Schemas (live)", ["Schema Name"], [[s] for s in schemas])
 
     @db.command("tables")
     @click.argument("schema")
+    @click.option(
+        "--live",
+        is_flag=True,
+        default=False,
+        help="Bypass the catalog cache and re-list against the live database.",
+    )
     @click.pass_obj
-    def db_tables(cfg: AMXConfig, schema: str) -> None:
-        """List all assets (tables, views, materialized views) in a schema."""
+    def db_tables(cfg: AMXConfig, schema: str, live: bool) -> None:
+        """List assets in a schema (cache-first, ``--live`` to force fresh)."""
+        active_profile = (cfg.active_db_profile or "default").strip() or "default"
+        scope = (
+            (cfg.db.database or "").strip()
+            or (cfg.db.catalog or "").strip()
+            or None
+        )
+        if not live:
+            cached = _catalog_distinct_tables(active_profile, schema, scope)
+            if cached:
+                with command_display(
+                    schema=schema,
+                    mode="db-tables",
+                    provider=cfg.llm.provider,
+                    model=cfg.llm.model,
+                ):
+                    render_table(
+                        f"Assets in {schema} (catalog cache · profile {active_profile})",
+                        ["Name", "Type"],
+                        [[name, "table"] for name in cached],
+                    )
+                return
         from amx.db.connector import DatabaseConnector
 
         db_conn = DatabaseConnector(cfg.db)
         with command_display(
             schema=schema, mode="db-tables", provider=cfg.llm.provider, model=cfg.llm.model
         ):
-            with step_spinner(f"Listing assets in {schema}"):
+            with step_spinner(f"Listing assets in {schema} (live DB)"):
                 assets = db_conn.list_assets(schema)
         render_table(
-            f"Assets in {schema}",
+            f"Assets in {schema} (live)",
             ["Name", "Type"],
             [[name, kind.label] for name, kind in assets],
         )
