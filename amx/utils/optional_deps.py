@@ -121,12 +121,14 @@ BUNDLES: dict[str, list[PackageSpec]] = {
         ("sentence_transformers", "sentence-transformers>=3.0"),
     ],
     # /lineage view-DDL parsing relies on sqlglot's column-lineage
-    # walker. graphviz wraps the OS ``dot`` binary that AMX shells out
-    # to for PNG/SVG/JPG render; the binary itself ships outside pip
-    # (brew/apt/winget) and AMX surfaces an install hint when missing.
+    # walker. networkx + matplotlib carry the diagram renderer — both
+    # pure-pip, no OS package, so /lineage works on a vanilla
+    # ``pip install amx-cli`` without brew/apt steps. AMX auto-installs
+    # this bundle on the first /lineage create.
     "lineage": [
         "sqlglot",
-        "graphviz",
+        "networkx",
+        "matplotlib",
     ],
 }
 

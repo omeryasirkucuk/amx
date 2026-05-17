@@ -1,10 +1,8 @@
-"""DOT builder + cross-platform helpers."""
+"""DOT builder + matplotlib renderer + cross-platform helpers."""
 
 from __future__ import annotations
 
 import os
-import subprocess
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -13,7 +11,6 @@ from amx.lineage.render import (
     HARD_NODE_LIMIT,
     SOFT_NODE_LIMIT,
     SUPPORTED_FORMATS,
-    DotBinaryNotFound,
     RenderInput,
     build_dot,
     count_nodes,
@@ -99,46 +96,65 @@ def test_scale_limits_are_sane_defaults():
     assert SUPPORTED_FORMATS == ("svg", "png", "jpg")
 
 
-def test_render_raises_when_dot_binary_missing(tmp_path):
-    with patch("amx.lineage.render.shutil.which", return_value=None):
-        with pytest.raises(DotBinaryNotFound):
-            render_lineage_image(
-                payload=RenderInput(
-                    edges=[],
-                    anchor=ColumnRef("", "public", "orders", ""),
-                    described_entities=set(),
-                ),
-                fmt="svg",
-                output_path=tmp_path / "x.svg",
-            )
-
-
-def test_render_uses_subprocess_list_argv(tmp_path):
-    captured: dict[str, object] = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["shell"] = kwargs.get("shell", False)
-        out = Path(cmd[cmd.index("-o") + 1])
-        out.write_text("ok")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    with (
-        patch("amx.lineage.render.shutil.which", return_value="dot"),
-        patch("amx.lineage.render.subprocess.run", side_effect=fake_run),
-    ):
-        out = render_lineage_image(
+def test_render_unsupported_format_raises():
+    with pytest.raises(ValueError):
+        render_lineage_image(
             payload=RenderInput(
                 edges=[],
                 anchor=ColumnRef("", "public", "orders", ""),
                 described_entities=set(),
             ),
-            fmt="svg",
-            output_path=tmp_path / "x.svg",
+            fmt="bmp",
+            output_path="x.bmp",
         )
-    assert isinstance(captured["cmd"], list)
-    assert captured["shell"] is False
-    assert out.exists()
+
+
+def test_render_writes_svg_with_matplotlib_backend(tmp_path):
+    """End-to-end render: matplotlib + networkx, no graphviz, no system binary."""
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("networkx")
+    out_path = tmp_path / "render.svg"
+    anchor = ColumnRef("", "public", "orders", "")
+    edges = [
+        Edge(
+            source=ColumnRef("", "public", "customers", "id"),
+            target=ColumnRef("", "public", "orders", "customer_id"),
+            relationship_type="lineage_fk",
+            extractor="fk",
+            confidence=1.0,
+            evidence="",
+        ),
+    ]
+    result = render_lineage_image(
+        payload=RenderInput(edges=edges, anchor=anchor, described_entities=set(), title="orders"),
+        fmt="svg",
+        output_path=out_path,
+    )
+    assert result == out_path
+    assert out_path.exists()
+    body = out_path.read_text(encoding="utf-8")
+    # Matplotlib emits an XML SVG header; node label text travels through verbatim.
+    assert body.startswith("<?xml") or "<svg" in body
+    assert "orders" in body
+
+
+def test_render_handles_png_output(tmp_path):
+    """PNG path exercises matplotlib's raster backend (Agg)."""
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("networkx")
+    out_path = tmp_path / "render.png"
+    render_lineage_image(
+        payload=RenderInput(
+            edges=[],
+            anchor=ColumnRef("", "public", "orders", ""),
+            described_entities=set(),
+        ),
+        fmt="png",
+        output_path=out_path,
+    )
+    assert out_path.exists()
+    # PNG magic header: 89 50 4E 47 0D 0A 1A 0A
+    assert out_path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_open_artifact_dispatches_per_platform(tmp_path):

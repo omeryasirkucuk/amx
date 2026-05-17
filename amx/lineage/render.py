@@ -1,29 +1,22 @@
-"""DOT generation + ``dot`` subprocess for lineage diagrams.
+"""Lineage diagram rendering — pip-installable, no system binaries.
 
-The DOT builder is a pure function that converts an edge set + metadata
-into a Graphviz DOT string — no I/O, fully testable. The render entry
-point shells out to the ``dot`` binary (resolved via
-:func:`shutil.which` so Windows / macOS / Linux work identically) to
-turn the DOT into the requested image format.
+The image render path uses ``networkx`` (graph + layout) and
+``matplotlib`` (rasterisation). Both ship as pip wheels on every
+supported platform, so the user never has to install Graphviz,
+Cairo, or any other OS package. AMX auto-installs the bundle via
+:func:`amx.utils.optional_deps.ensure("lineage")` on first render.
 
-Cross-platform contract:
-
-* Binary discovery uses ``shutil.which`` only — no hard-coded paths.
-* Subprocess invocation uses a list-form argv with ``shell=False`` —
-  identical quoting behavior on Windows.
-* Temp files live under :func:`tempfile.gettempdir` and are cleaned up
-  in a ``finally`` block.
-* Artifact open helper dispatches on :data:`sys.platform`:
-  ``os.startfile`` on Windows, ``open`` on macOS, ``xdg-open`` on Linux.
+A pure-string ``build_dot`` helper is kept for tests, debugging, and
+paste-into-graphviz.org workflows — but the user-facing image output
+does not depend on a ``dot`` binary anywhere.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
+from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,7 +33,7 @@ SUPPORTED_FORMATS = ("svg", "png", "jpg")
 
 
 class DotBinaryNotFound(RuntimeError):
-    """Raised when ``shutil.which('dot')`` returns ``None``."""
+    """Retained for backwards-compatibility; pip-only render never raises this."""
 
 
 @dataclass
@@ -48,7 +41,7 @@ class RenderInput:
     """Everything :func:`render_lineage_image` needs.
 
     ``described_entities`` is the set of entity FQNs that have a description —
-    used to draw the ✓/◌ badge on each node. ``partial_warning`` is the
+    used to draw the ✓/○ badge on each node. ``partial_warning`` is the
     footer banner string (empty when no partial-render banner is needed).
     """
 
@@ -59,10 +52,63 @@ class RenderInput:
     partial_warning: str = ""
 
 
-def build_dot(payload: RenderInput) -> str:
-    """Produce a Graphviz DOT string for the given edges + metadata.
+def render_lineage_image(
+    *,
+    payload: RenderInput,
+    fmt: str,
+    output_path: Path,
+) -> Path:
+    """Rasterise ``payload`` to ``output_path`` via matplotlib + networkx.
 
-    Side-effect free: no DB, no filesystem. Safe to call from tests.
+    ``fmt`` must be one of :data:`SUPPORTED_FORMATS`. Auto-installs the
+    ``lineage`` optional extra (``matplotlib`` + ``networkx`` + ``sqlglot``)
+    on first call so the only thing the user has to do is run
+    ``/lineage create``.
+    """
+    fmt = fmt.lower()
+    if fmt not in SUPPORTED_FORMATS:
+        raise ValueError(f"unsupported format {fmt!r}; expected one of {SUPPORTED_FORMATS}")
+    nx, plt = _load_render_stack()
+
+    output_path = Path(output_path).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    graph, anchor_id, node_attrs, edge_attrs = _build_graph(payload, nx)
+    positions = _hierarchical_layout(graph, anchor_id, nx)
+
+    fig, ax = plt.subplots(figsize=_figure_size(len(graph)))
+    ax.set_axis_off()
+    _draw_nodes(ax, positions, node_attrs)
+    _draw_edges(ax, positions, edge_attrs)
+    if payload.title:
+        ax.set_title(payload.title, fontsize=11, loc="left", pad=12)
+    if payload.partial_warning:
+        fig.text(
+            0.5,
+            0.02,
+            payload.partial_warning,
+            ha="center",
+            fontsize=9,
+            color="#856404",
+            bbox={
+                "boxstyle": "round,pad=0.4",
+                "facecolor": "#fff3cd",
+                "edgecolor": "#856404",
+            },
+        )
+
+    fig.tight_layout()
+    fig.savefig(output_path, format=fmt, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def build_dot(payload: RenderInput) -> str:
+    """Pure-string Graphviz DOT representation of ``payload``.
+
+    The user-facing render path no longer needs the ``dot`` binary, but
+    this helper is kept so callers can serialise a graph for tests,
+    debugging, or paste-into-graphviz.org workflows.
     """
     nodes: dict[str, dict[str, Any]] = {}
     anchor_id = _node_id(payload.anchor)
@@ -105,7 +151,6 @@ def build_dot(payload: RenderInput) -> str:
 
     footer_block = ""
     if payload.partial_warning:
-        # Render the warning as an isolated "banner" node with a soft fill.
         footer_block = (
             "  __partial__ [shape=note, fontsize=10, "
             'style="filled", fillcolor="#fff3cd", color="#856404", '
@@ -120,52 +165,6 @@ def build_dot(payload: RenderInput) -> str:
         '  edge [fontname="Helvetica", fontsize=9];\n'
         f"{title_block}" + "".join(node_lines) + "".join(edge_lines) + footer_block + "}\n"
     )
-
-
-def render_lineage_image(
-    *,
-    payload: RenderInput,
-    fmt: str,
-    output_path: Path,
-) -> Path:
-    """Convert ``payload`` to an image at ``output_path`` via ``dot``.
-
-    Returns the resolved output path. Raises :class:`DotBinaryNotFound`
-    when ``dot`` is not on PATH (callers surface an install hint).
-    """
-    fmt = fmt.lower()
-    if fmt not in SUPPORTED_FORMATS:
-        raise ValueError(f"unsupported format {fmt!r}; expected one of {SUPPORTED_FORMATS}")
-
-    dot_binary = shutil.which("dot")
-    if not dot_binary:
-        raise DotBinaryNotFound(
-            "graphviz `dot` is required. Install it: "
-            "macOS `brew install graphviz`; "
-            "Debian/Ubuntu `apt install graphviz`; "
-            "Windows `winget install graphviz` or download from https://graphviz.org/."
-        )
-
-    output_path = Path(output_path).expanduser().resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    dot_text = build_dot(payload)
-    tmpdir = Path(tempfile.gettempdir())
-    dot_file = tmpdir / f"amx-lineage-{os.getpid()}-{output_path.stem}.dot"
-    try:
-        dot_file.write_text(dot_text, encoding="utf-8")
-        cmd = [dot_binary, f"-T{fmt}", str(dot_file), "-o", str(output_path)]
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(
-            f"graphviz failed (exit {exc.returncode}): {exc.stderr.strip() or 'no stderr'}"
-        ) from exc
-    finally:
-        try:
-            dot_file.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return output_path
 
 
 def open_artifact(path: Path) -> bool:
@@ -201,7 +200,235 @@ def count_nodes(edges: Iterable[Edge], anchor: ColumnRef) -> int:
     return len(ids)
 
 
-# ── internal helpers ─────────────────────────────────────────────────────
+# ── internals: render stack loader ───────────────────────────────────────
+
+
+def _load_render_stack() -> tuple[Any, Any]:
+    """Return ``(networkx, matplotlib.pyplot)``. Auto-install on first call.
+
+    The ``lineage`` bundle in :mod:`amx.utils.optional_deps` carries
+    ``networkx`` and ``matplotlib`` so users never have to run pip by
+    hand. If install fails (offline, locked corp env), the underlying
+    ``ImportError`` propagates with the pip command the user can run.
+    """
+    try:
+        import networkx as nx  # type: ignore
+    except ImportError:
+        from amx.utils.optional_deps import ensure
+
+        ensure("lineage", feature="/lineage diagram renderer")
+        import networkx as nx  # type: ignore
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+    except ImportError:
+        from amx.utils.optional_deps import ensure
+
+        ensure("lineage", feature="/lineage diagram renderer")
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+
+    return nx, plt
+
+
+# ── internals: graph build + layout ──────────────────────────────────────
+
+
+def _build_graph(
+    payload: RenderInput, nx: Any
+) -> tuple[Any, str, dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Build a networkx DiGraph and attribute maps for nodes + edges."""
+    graph = nx.DiGraph()
+    anchor_id = _node_id(payload.anchor)
+    node_attrs: dict[str, dict[str, Any]] = {}
+
+    def _add_node(ref: ColumnRef, *, anchor: bool) -> str:
+        node_id = _node_id(ref)
+        if node_id not in node_attrs:
+            node_attrs[node_id] = {
+                "label": _node_label(
+                    ref, anchor=anchor, described=node_id in payload.described_entities
+                ),
+                "anchor": anchor,
+            }
+            graph.add_node(node_id)
+        elif anchor:
+            node_attrs[node_id]["anchor"] = True
+            node_attrs[node_id]["label"] = _node_label(
+                ref, anchor=True, described=node_id in payload.described_entities
+            )
+        return node_id
+
+    _add_node(payload.anchor, anchor=True)
+
+    edge_attrs: list[dict[str, Any]] = []
+    for edge in payload.edges:
+        src_id = _add_node(edge.source, anchor=False)
+        tgt_id = _add_node(edge.target, anchor=False)
+        graph.add_edge(src_id, tgt_id)
+        edge_attrs.append(
+            {
+                "src": src_id,
+                "tgt": tgt_id,
+                "style": _edge_style(edge),
+                "label": _edge_label(edge),
+            }
+        )
+
+    return graph, anchor_id, node_attrs, edge_attrs
+
+
+def _hierarchical_layout(graph: Any, anchor_id: str, nx: Any) -> dict[str, tuple[float, float]]:
+    """Left-right layout: upstream on the left, downstream on the right.
+
+    Walks the graph with BFS from the anchor along incoming and outgoing
+    edges separately to assign layer indices. Nodes sharing a layer are
+    spread evenly along the Y axis. Falls back to ``nx.spring_layout``
+    when the anchor sits in a disconnected node set we cannot layer.
+    """
+    if anchor_id not in graph:
+        return nx.spring_layout(graph, seed=7)
+
+    layers: dict[str, int] = {anchor_id: 0}
+
+    queue: deque[tuple[str, int]] = deque([(anchor_id, 0)])
+    while queue:
+        node, depth = queue.popleft()
+        for pred in graph.predecessors(node):
+            if pred not in layers:
+                layers[pred] = depth - 1
+                queue.append((pred, depth - 1))
+
+    queue = deque([(anchor_id, 0)])
+    while queue:
+        node, depth = queue.popleft()
+        for succ in graph.successors(node):
+            if succ not in layers:
+                layers[succ] = depth + 1
+                queue.append((succ, depth + 1))
+
+    for node in graph.nodes:
+        layers.setdefault(node, 0)
+
+    by_layer: dict[int, list[str]] = defaultdict(list)
+    for node, layer in layers.items():
+        by_layer[layer].append(node)
+
+    pos: dict[str, tuple[float, float]] = {}
+    x_spacing = 3.0
+    y_spacing = 1.4
+    for layer, nodes in by_layer.items():
+        x = layer * x_spacing
+        nodes_sorted = sorted(nodes)
+        n = len(nodes_sorted)
+        for i, node in enumerate(nodes_sorted):
+            y = (i - (n - 1) / 2.0) * y_spacing
+            pos[node] = (x, y)
+    return pos
+
+
+def _figure_size(node_count: int) -> tuple[float, float]:
+    """Pick a canvas size that scales gently with node count."""
+    base_w, base_h = 10.0, 6.0
+    w = base_w + min(node_count / 20.0, 6.0)
+    h = base_h + min(node_count / 40.0, 4.0)
+    return w, h
+
+
+def _draw_nodes(
+    ax: Any,
+    positions: dict[str, tuple[float, float]],
+    node_attrs: dict[str, dict[str, Any]],
+) -> None:
+    """Render labelled rounded boxes for every node."""
+    for node_id, (x, y) in positions.items():
+        attrs = node_attrs.get(node_id, {})
+        is_anchor = bool(attrs.get("anchor"))
+        label = attrs.get("label", node_id)
+        face = "#fff4e6" if is_anchor else "#f8f9fa"
+        edge_color = "#d97706" if is_anchor else "#cccccc"
+        ax.text(
+            x,
+            y,
+            label,
+            ha="center",
+            va="center",
+            fontsize=9,
+            bbox={
+                "boxstyle": "round,pad=0.4",
+                "facecolor": face,
+                "edgecolor": edge_color,
+                "linewidth": 1.6 if is_anchor else 0.8,
+            },
+        )
+
+
+def _draw_edges(
+    ax: Any,
+    positions: dict[str, tuple[float, float]],
+    edge_attrs: list[dict[str, Any]],
+) -> None:
+    """Render straight arrows for every edge with style hints baked in."""
+    for ea in edge_attrs:
+        src = positions.get(ea["src"])
+        tgt = positions.get(ea["tgt"])
+        if src is None or tgt is None:
+            continue
+        style = ea["style"]
+        ax.annotate(
+            "",
+            xy=tgt,
+            xytext=src,
+            arrowprops={
+                "arrowstyle": "->",
+                "linewidth": style["linewidth"],
+                "color": style["color"],
+                "linestyle": style["linestyle"],
+                "shrinkA": 14,
+                "shrinkB": 14,
+            },
+        )
+        mx = (src[0] + tgt[0]) / 2.0
+        my = (src[1] + tgt[1]) / 2.0
+        ax.text(
+            mx,
+            my,
+            ea["label"],
+            fontsize=7,
+            color=style["color"],
+            ha="center",
+            va="center",
+            bbox={
+                "boxstyle": "round,pad=0.1",
+                "facecolor": "white",
+                "edgecolor": "none",
+                "alpha": 0.85,
+            },
+        )
+
+
+# ── internals: per-edge / per-node styling shared with build_dot ─────────
+
+
+def _edge_style(edge: Edge) -> dict[str, Any]:
+    if edge.relationship_type == "lineage_name_match":
+        return {"color": "#9ca3af", "linewidth": 0.8, "linestyle": "dashed"}
+    return {"color": "#1f2937", "linewidth": 1.0, "linestyle": "solid"}
+
+
+def _edge_label(edge: Edge) -> str:
+    if edge.relationship_type == "lineage_name_match":
+        return "≈name"
+    if edge.relationship_type == "lineage_fk":
+        return "fk"
+    if edge.relationship_type == "lineage_view_ddl":
+        return "view"
+    return edge.extractor
 
 
 def _node_id(ref: ColumnRef) -> str:
@@ -209,7 +436,7 @@ def _node_id(ref: ColumnRef) -> str:
 
 
 def _node_label(ref: ColumnRef, *, anchor: bool, described: bool) -> str:
-    badge = "✓" if described else "○"  # ✓ vs ○ (ASCII-safe ring instead of ◌)
+    badge = "✓" if described else "○"
     main = ".".join(p for p in (ref.schema, ref.table) if p)
     if ref.column:
         main = f"{main}.{ref.column}" if main else ref.column
@@ -230,23 +457,17 @@ def _node_line(node_id: str, attrs: dict[str, Any]) -> str:
 
 
 def _edge_line(src_id: str, tgt_id: str, edge: Edge) -> str:
+    label_tag = _edge_label(edge)
     if edge.relationship_type == "lineage_name_match":
         style = ', style="dashed", color="#9ca3af"'
-        label_tag = "≈name"  # ≈name
-    elif edge.relationship_type == "lineage_fk":
+    elif edge.relationship_type in {"lineage_fk", "lineage_view_ddl"}:
         style = ', color="#1f2937"'
-        label_tag = "fk"
-    elif edge.relationship_type == "lineage_view_ddl":
-        style = ', color="#1f2937"'
-        label_tag = "view"
     else:
         style = ""
-        label_tag = edge.extractor
     return f"  {_dot_id(src_id)} -> {_dot_id(tgt_id)} [label={_dot_quote(label_tag)}{style}];\n"
 
 
 def _dot_id(node_id: str) -> str:
-    """Quote any non-trivial identifier."""
     return _dot_quote(node_id)
 
 

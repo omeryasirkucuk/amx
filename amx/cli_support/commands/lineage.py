@@ -125,11 +125,10 @@ def register_lineage_commands(
         if profile_name is None:
             return
 
-        database = _default_database(profile_cfg)
-        schema, table, column = _pick_anchor_location(
+        database, schema, table, column = _pick_anchor_location(
             hs,
             profile=profile_name,
-            database=database,
+            profile_default_db=_default_database(profile_cfg),
             raw_anchor=anchor,
             preset_column=column,
             require_column=False,
@@ -429,11 +428,10 @@ def register_lineage_commands(
         profile_name, profile_cfg = _pick_profile(cfg, profile_flag)
         if profile_name is None:
             return
-        database = _default_database(profile_cfg)
-        schema, table, column = _pick_anchor_location(
+        database, schema, table, column = _pick_anchor_location(
             hs,
             profile=profile_name,
-            database=database,
+            profile_default_db=_default_database(profile_cfg),
             raw_anchor=anchor,
             preset_column=column,
             require_column=False,
@@ -493,14 +491,21 @@ def _pick_anchor_location(
     hs: Any,
     *,
     profile: str,
-    database: str,
+    profile_default_db: str,
     raw_anchor: str | None,
     preset_column: str | None,
     require_column: bool,
-) -> tuple[str | None, str | None, str | None]:
-    """Pick (schema, table, column). ``raw_anchor`` short-circuits the wizard
-    when it's a fully-qualified path.
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Pick (database, schema, table, column). ``raw_anchor`` short-circuits
+    the wizard when it's a fully-qualified path.
+
+    Path parsing convention:
+      * ``table``                          → table
+      * ``schema.table``                   → schema + table
+      * ``schema.table.column``            → schema + table + column
+      * ``database.schema.table.column``   → fully qualified
     """
+    database = ""
     schema = ""
     table = ""
     column = preset_column
@@ -511,24 +516,34 @@ def _pick_anchor_location(
             table = parts[0]
         elif len(parts) == 2:
             schema, table = parts
-        elif len(parts) >= 3:
+        elif len(parts) == 3:
+            schema, table = parts[0], parts[1]
+            if not column:
+                column = parts[2]
+        elif len(parts) >= 4:
+            database = parts[-4]
             schema = parts[-3]
             table = parts[-2]
             if not column:
                 column = parts[-1]
 
+    if not database:
+        database = _pick_database(hs, profile, profile_default_db)
+        if database is None:
+            return None, None, None, None
+
     if not schema:
         schemas = _list_cached_schemas(hs, profile, database)
         if not schemas:
             error(
-                "No cached schemas found for this profile. "
+                f"No cached schemas under database {database!r}. "
                 "Run /db inspect first to populate the catalog."
             )
-            return None, None, None
+            return None, None, None, None
         schema = ask_choice("Pick a schema", schemas, default=schemas[0])
         if not schema:
             error("No schema picked.")
-            return None, None, None
+            return None, None, None, None
 
     if not table:
         tables = _list_cached_tables(hs, profile, database, schema)
@@ -536,11 +551,11 @@ def _pick_anchor_location(
             error(
                 f"No cached tables under schema {schema!r}. Run /db inspect on this schema first."
             )
-            return None, None, None
+            return None, None, None, None
         table = ask_choice("Pick a table", tables, default=tables[0])
         if not table:
             error("No table picked.")
-            return None, None, None
+            return None, None, None, None
 
     if not column:
         # Offer column-level anchor as an optional refinement.
@@ -552,9 +567,37 @@ def _pick_anchor_location(
                 column = picked
         elif require_column:
             error(f"No columns cached for {schema}.{table}.")
-            return None, None, None
+            return None, None, None, None
 
-    return schema, table, column
+    return database, schema, table, column
+
+
+def _pick_database(hs: Any, profile: str, profile_default: str) -> str | None:
+    """Resolve a database via the profile pin, sole-cached fallback, or picker.
+
+    Returns ``None`` when the user explicitly aborts the picker. An empty
+    string return means "no database scope" — flat backends (SQLite,
+    DuckDB single-file) carry no database hierarchy, so the downstream
+    catalog query is keyed on ``database_name = ''`` and still works.
+    """
+    if profile_default:
+        return profile_default
+    cached = _list_cached_databases(hs, profile)
+    if not cached:
+        # Nothing in the catalog — fall back to the empty-database scope
+        # so flat profiles keep working. The schema picker below will
+        # complain if nothing is cached there either.
+        return ""
+    if len(cached) == 1:
+        only = cached[0]
+        label = only or "(unspecified)"
+        info(f"Using database [bold]{label}[/bold] (only cached database for this profile).")
+        return only
+    picked = ask_choice("Pick a database", cached, default=cached[0])
+    if not picked:
+        error("No database picked.")
+        return None
+    return picked
 
 
 def _pick_format() -> str:
@@ -643,6 +686,26 @@ def _ask_output_path(out: str | None, slug: str, fmt: str) -> Path | None:
 
 
 # ── catalog readers (cache-only) ─────────────────────────────────────────
+
+
+def _list_cached_databases(hs: Any, profile: str) -> list[str]:
+    """Return distinct cached databases for the profile.
+
+    Empty-string ``database_name`` rows (flat backends) are folded into
+    a single empty entry the caller can present as "(unspecified)" or
+    silently use as the scope key.
+    """
+    with hs._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT database_name
+            FROM catalog_entities
+            WHERE db_profile = ?
+            ORDER BY database_name
+            """,
+            (profile,),
+        ).fetchall()
+    return [str(r[0] or "") for r in rows]
 
 
 def _list_cached_schemas(hs: Any, profile: str, database: str) -> list[str]:
