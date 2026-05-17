@@ -42,13 +42,24 @@ Reference selection follows a waterfall:
 from __future__ import annotations
 
 import json
-import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Any
 
+from amx.cli_support._quality_embedding import (  # noqa: PLC0414
+    _cosine as _cosine,
+)
+from amx.cli_support._quality_embedding import (
+    _load_sentence_embedder as _load_sentence_embedder,
+)
+from amx.cli_support._quality_embedding import (
+    embedding_agreement_for_asset as embedding_agreement_for_asset,
+)
+from amx.cli_support._quality_embedding import (
+    semantic_grounding_score as semantic_grounding_score,
+)
 from amx.cli_support._quality_metrics_reference import (  # noqa: PLC0414
     _silence_native_stderr as _silence_native_stderr,
 )
@@ -403,93 +414,6 @@ def _first_alternative(row: dict[str, Any]) -> str:
         except json.JSONDecodeError:
             return raw.strip()
     return ""
-
-
-# ── Tier 1 — local sentence embeddings ─────────────────────────────────────
-
-
-def _load_sentence_embedder(
-    model_name: str = "all-MiniLM-L6-v2",
-) -> Any | None:
-    """Lazy-load a sentence-transformers model. Returns ``None`` when
-    the package isn't installed (caller falls through gracefully).
-    """
-    try:
-        from amx.utils.optional_deps import ensure
-
-        ensure(
-            [("sentence_transformers", "sentence-transformers")],
-            feature="Compare quality embeddings",
-        )
-    except RuntimeError:
-        # ``ensure`` raises when pip install fails; treat as missing dep.
-        return None
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError:
-        return None
-    return SentenceTransformer(model_name)
-
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b, strict=False))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(x * x for x in b))
-    if na == 0.0 or nb == 0.0:
-        return 0.0
-    return dot / (na * nb)
-
-
-def embedding_agreement_for_asset(
-    descriptions_by_run: dict[int, str],
-    embedder: Any,
-) -> dict[int, float]:
-    """For each run, mean cosine similarity to every other run on the
-    same asset. High = the run agrees with the consensus; low = outlier.
-    Empty descriptions are skipped from the matrix.
-    """
-    valid = {rid: t for rid, t in descriptions_by_run.items() if t}
-    if len(valid) < 2:
-        return dict.fromkeys(descriptions_by_run, 0.0)
-    rids = sorted(valid.keys())
-    texts = [valid[r] for r in rids]
-    vectors = embedder.encode(texts, show_progress_bar=False).tolist()
-    by_run: dict[int, list[float]] = dict(zip(rids, vectors, strict=False))
-    agreement: dict[int, float] = {}
-    for rid in rids:
-        sims = [_cosine(by_run[rid], by_run[other]) for other in rids if other != rid]
-        agreement[rid] = sum(sims) / float(len(sims)) if sims else 0.0
-    # Runs whose description was empty get 0 agreement so the UI can
-    # differentiate "missing" from "outlier".
-    for rid in descriptions_by_run:
-        agreement.setdefault(rid, 0.0)
-    return agreement
-
-
-def semantic_grounding_score(
-    description: str,
-    *,
-    schema: str | None,
-    table: str | None,
-    column: str | None,
-    dtype: str | None,
-    embedder: Any,
-) -> float:
-    """Embedding-based version of schema grounding: how close is the
-    description to a synthetic schema-anchor sentence?
-    """
-    if not description:
-        return 0.0
-    parts = [p for p in (schema, table, column) if p]
-    anchor = ".".join(parts) if parts else ""
-    if dtype:
-        anchor = f"{anchor} ({dtype})"
-    if not anchor:
-        return 0.0
-    vec_anchor, vec_desc = embedder.encode([anchor, description], show_progress_bar=False).tolist()
-    return max(0.0, _cosine(vec_anchor, vec_desc))
 
 
 # ── Tier 2 — LLM-as-judge (G-Eval pairwise tournament) ─────────────────────
