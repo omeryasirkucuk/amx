@@ -588,7 +588,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
-        "freshness": "cache_ok",
+        "freshness": "live_only",
         "function": {
             "name": "find_assets_missing_comment",
             "description": (

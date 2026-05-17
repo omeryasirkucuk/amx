@@ -171,11 +171,17 @@ def agent_system_prompt(
         + scope_block
         + focus_block
         + "\nCache-vs-live provenance: every read tool surfaces `source` and `age_seconds`.\n"
+        "  CRITICAL: Describe HONESTLY where the data came from. NEVER write 'I scanned the live\n"
+        "  database', 'I queried the warehouse', 'I checked live', or any phrasing that implies a\n"
+        "  fresh DB hit when `source=catalog`. The correct phrasings are 'the catalog shows…' /\n"
+        "  'in the cached snapshot…' / 'from /search sync's index…'. A user who flipped the\n"
+        "  Live refresh toggle off explicitly does NOT want their question to hit the database;\n"
+        "  pretending otherwise is a trust violation.\n"
         "  `source=catalog` means the data came from /search sync's persisted index — surface\n"
         "  the age in one short hint when `age_seconds` is over a week ('catalog is X days old,\n"
         "  consider /search sync for fresh data') and continue with the question. `source=live_cache`\n"
         "  means we served from a 24h memo; treat as authoritative. `source=live` means we just\n"
-        "  incurred a live round-trip — quote the result confidently. Pass `force_fresh=true` ONLY\n"
+        "  incurred a live round-trip — only THEN may you say 'I queried the live database'. Pass `force_fresh=true` ONLY\n"
         "  when the user explicitly asks for the current live state ('right now', 'after my\n"
         "  apply', 'fresh from the warehouse') or when the cached age is incompatible with the\n"
         "  question. Don't add `force_fresh=true` defensively — it incurs a live DB round-trip.\n"
