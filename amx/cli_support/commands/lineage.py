@@ -689,23 +689,26 @@ def _ask_output_path(out: str | None, slug: str, fmt: str) -> Path | None:
 
 
 def _list_cached_databases(hs: Any, profile: str) -> list[str]:
-    """Return distinct cached databases for the profile.
+    """Return distinct, non-empty cached databases for the profile.
 
-    Empty-string ``database_name`` rows (flat backends) are folded into
-    a single empty entry the caller can present as "(unspecified)" or
-    silently use as the scope key.
+    Empty-string ``database_name`` rows are filtered out — they get
+    written by upstream callers that don't carry a database scope
+    (connection probes, schema-level entities). Surfacing them would
+    show up as a confusing blank picker entry. When *every* cached
+    row is empty (flat backends like SQLite) the caller falls back to
+    the empty scope on its own.
     """
     with hs._connect() as conn:
         rows = conn.execute(
             """
             SELECT DISTINCT database_name
             FROM catalog_entities
-            WHERE db_profile = ?
+            WHERE db_profile = ? AND database_name IS NOT NULL AND database_name <> ''
             ORDER BY database_name
             """,
             (profile,),
         ).fetchall()
-    return [str(r[0] or "") for r in rows]
+    return [str(r[0]) for r in rows]
 
 
 def _list_cached_schemas(hs: Any, profile: str, database: str) -> list[str]:
