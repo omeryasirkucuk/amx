@@ -29,6 +29,15 @@ class Edge:
 
     ``source`` feeds ``target``. Confidence is in [0, 1] with 1.0 reserved for
     deterministic extractors (FK, parsed view DDL); heuristics use < 1.0.
+
+    ``db_id`` is the ``catalog_relationships.id`` when this Edge was
+    sourced from the local catalog (FK / LLM / codebase / manual) so
+    the Studio canvas can issue PATCH / DELETE against the row. It
+    stays ``None`` for ephemeral edges (query_log co-occurrence,
+    view_ddl in-memory parse, name_match heuristic).
+    ``verdict`` mirrors the v3 S4 authoring column when set, so the
+    Studio UI can render approve / reject pills without a second
+    round-trip.
     """
 
     source: ColumnRef
@@ -37,6 +46,8 @@ class Edge:
     extractor: str  # 'fk' | 'view_ddl' | 'name_match'
     confidence: float
     evidence: str = ""  # short human-readable provenance hint
+    db_id: int | None = None
+    verdict: str = ""
 
 
 @dataclass(frozen=True)

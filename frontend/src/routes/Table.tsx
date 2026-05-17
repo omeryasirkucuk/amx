@@ -190,7 +190,14 @@ export default function Table() {
     mutationFn: async () => {
       if (!scope || !schema || !table) return null;
       const anchorPath = [schema, table].filter(Boolean).join(".");
-      const result = await lineageRefresh(anchorPath, { profile: scope.profile });
+      const result = await lineageRefresh(anchorPath, {
+        profile: scope.profile,
+        // Always pass the active database / catalog so the backend
+        // can look the anchor up correctly — without it the lookup
+        // falls back to profile.database which is empty for most
+        // multi-database backends and 404s.
+        database: scope.database || scope.catalog || undefined,
+      });
       const slug = `${schema}-${table}`.replace(/[^A-Za-z0-9_-]+/g, "_");
       return { slug, anchorPath, profile: scope.profile, result };
     },

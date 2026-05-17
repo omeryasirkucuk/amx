@@ -917,6 +917,23 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "UTC epoch seconds of the last sync that observed this edge. "
             "Edges not seen for >30 days are eligible for pruning."
         ),
+        "verdict": (
+            "Studio authoring verdict. v3 S4 lets users right-click an "
+            "inferred edge and tag it: '' (untouched), 'approved' "
+            "(the user explicitly OK'd it), 'rejected' (explicitly "
+            "dismissed; hidden from default rendering), or 'pending' "
+            "(LLM bulk run flagged it for review). Drives the LLM "
+            "feedback loop — approved/rejected examples fold back into "
+            "the next prompt."
+        ),
+        "audit_actor": (
+            "OS / Studio user who set the last verdict. Empty for "
+            "machine-emitted edges. Drives the audit trail tab."
+        ),
+        "audit_at": (
+            "UTC epoch seconds of the last verdict change. NULL when "
+            "the edge has not been touched by a user."
+        ),
     },
     # ── lineage_artifacts (local only) ────────────────────────────────────
     "lineage_artifacts": {

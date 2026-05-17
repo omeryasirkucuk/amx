@@ -104,12 +104,18 @@ def build_default_extractors(
     the LLMExtractor's ``cache_only`` mode when the caller composes
     a custom extractor list (e.g. the Studio service entry).
     """
-    from amx.lineage.extractors import QueryLogExtractor
+    from amx.lineage.extractors import (
+        CodebaseScanExtractor,
+        ManualEdgeExtractor,
+        QueryLogExtractor,
+    )
 
     return [
         FKExtractor(),
         ViewDDLExtractor(connector_factory=connector_factory),
         QueryLogExtractor(),
+        CodebaseScanExtractor(),
+        ManualEdgeExtractor(),
         NameMatchExtractor(),
     ]
 
@@ -621,12 +627,14 @@ def lineage_for_studio(
     for edge in edges:
         edge_payloads.append(
             {
+                "id": edge.db_id,
                 "from": _node_id(edge.source),
                 "to": _node_id(edge.target),
                 "type": edge.relationship_type,
                 "extractor": edge.extractor,
                 "confidence": round(float(edge.confidence), 3),
                 "evidence": edge.evidence,
+                "verdict": edge.verdict,
             }
         )
 
@@ -652,6 +660,23 @@ class LLMSuggestResult:
     edges: list[dict[str, Any]] = field(default_factory=list)
     persisted_count: int = 0
     model: str = ""
+    aborted: bool = False
+    abort_reason: str = ""
+
+
+@dataclass
+class BulkSuggestResult:
+    """Result of :func:`suggest_lineage_llm_bulk` — schema-wide rollup."""
+
+    profile: str = ""
+    schema: str = ""
+    model: str = ""
+    tables_examined: int = 0
+    tables_with_edges: int = 0
+    total_edges_persisted: int = 0
+    total_tokens_used: int = 0
+    halted_by: str = ""  # "" | "budget_tokens" | "budget_tables" | "no_more_tables" | "aborted"
+    per_table: list[dict[str, Any]] = field(default_factory=list)
     aborted: bool = False
     abort_reason: str = ""
 
@@ -713,6 +738,144 @@ def suggest_lineage_llm(
         persisted_count=len(edges_payload),
         model=model_name,
     )
+
+
+def suggest_lineage_llm_bulk(
+    hs: Any,
+    *,
+    profile: str,
+    schema: str,
+    database: str,
+    cfg: Any,
+    budget_tokens: int = 50_000,
+    budget_tables: int = 25,
+) -> BulkSuggestResult:
+    """Schema-wide AI suggestion with hard token + table budgets.
+
+    Iterates every catalogued table in ``schema``, calls the per-anchor
+    :func:`suggest_lineage_llm` flow, accumulates token spend from
+    :class:`amx.llm.provider.ChatResult.usage`, and halts as soon as
+    either budget hits zero. Returns a :class:`BulkSuggestResult` rollup
+    the CLI + Studio can render without re-walking the catalog.
+
+    Budgets default to 50k tokens and 25 tables — large enough to cover
+    a typical SAP-like schema slice, small enough that an accidental
+    bulk run cannot drain a user's monthly LLM allotment.
+    """
+    llm_cfg = getattr(cfg, "llm", None)
+    if llm_cfg is None:
+        return BulkSuggestResult(
+            profile=profile,
+            schema=schema,
+            aborted=True,
+            abort_reason="no active LLM profile configured",
+        )
+
+    try:
+        from amx.llm.provider import LLMProvider
+    except Exception as exc:
+        return BulkSuggestResult(
+            profile=profile,
+            schema=schema,
+            aborted=True,
+            abort_reason=f"LLM provider unavailable: {exc}",
+        )
+
+    provider = LLMProvider(llm_cfg)
+    model_name = f"{getattr(llm_cfg, 'provider', '')}/{getattr(llm_cfg, 'model', '')}"
+
+    tables = _list_schema_tables(hs, profile=profile, database=database, schema=schema)
+    if not tables:
+        return BulkSuggestResult(
+            profile=profile,
+            schema=schema,
+            model=model_name,
+            halted_by="no_more_tables",
+        )
+
+    tokens_used = 0
+    rollup = BulkSuggestResult(
+        profile=profile,
+        schema=schema,
+        model=model_name,
+        tables_examined=0,
+        tables_with_edges=0,
+        total_edges_persisted=0,
+        total_tokens_used=0,
+    )
+
+    from amx.lineage.extractors import LLMExtractor
+
+    def _call(messages: list[dict[str, str]]) -> str:
+        nonlocal tokens_used
+        try:
+            result = provider.chat(messages=messages, temperature=0.0, use_logprobs=False)
+        except Exception as exc:
+            rollup.aborted = True
+            rollup.abort_reason = f"LLM call failed: {exc}"
+            raise
+        usage = getattr(result, "usage", None) or {}
+        spent = int(usage.get("total_tokens") or 0)
+        tokens_used += spent
+        return getattr(result, "content", "") or ""
+
+    extractor = LLMExtractor(llm_callable=_call, model_name=model_name)
+
+    for table_name in tables:
+        if rollup.tables_examined >= budget_tables:
+            rollup.halted_by = "budget_tables"
+            break
+        if tokens_used >= budget_tokens:
+            rollup.halted_by = "budget_tokens"
+            break
+        scope = Scope(
+            profile=profile,
+            anchor=ColumnRef(database=database, schema=schema, table=table_name, column=""),
+            depth_up=1,
+            depth_down=1,
+            database=database,
+            schema=schema,
+        )
+        try:
+            extract_result = extractor.extract(hs=hs, scope=scope, mode="llm_suggest")
+        except Exception as exc:
+            rollup.per_table.append(
+                {
+                    "table": table_name,
+                    "edges": 0,
+                    "error": str(exc)[:200],
+                }
+            )
+            rollup.tables_examined += 1
+            if rollup.aborted:
+                break
+            continue
+        edge_count = len(extract_result.edges)
+        rollup.per_table.append({"table": table_name, "edges": edge_count})
+        rollup.tables_examined += 1
+        rollup.total_edges_persisted += edge_count
+        if edge_count > 0:
+            rollup.tables_with_edges += 1
+    else:
+        rollup.halted_by = rollup.halted_by or "no_more_tables"
+
+    rollup.total_tokens_used = tokens_used
+    return rollup
+
+
+def _list_schema_tables(hs: Any, *, profile: str, database: str, schema: str) -> list[str]:
+    with hs._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT table_name
+            FROM catalog_entities
+            WHERE db_profile = ? AND database_name = ? AND schema_name = ?
+              AND entity_kind = 'table' AND table_name <> ''
+            ORDER BY table_name
+            """,
+            (profile, database, schema),
+        ).fetchall()
+    return [str(r[0]) for r in rows]
 
 
 def _node_label_studio(ref: ColumnRef) -> str:
@@ -826,6 +989,7 @@ __all__ = [
     "ScaleVerdict",
     "LineageRunResult",
     "LLMSuggestResult",
+    "BulkSuggestResult",
     "FillDecision",
     "FillPrompt",
     "ConnectorHandle",
@@ -840,4 +1004,5 @@ __all__ = [
     "text_tree",
     "lineage_for_studio",
     "suggest_lineage_llm",
+    "suggest_lineage_llm_bulk",
 ]
