@@ -246,22 +246,35 @@ def test_backend_read_from_target_profile_not_active(
 def test_completeness_gate_window(
     fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A profile synced more than 7 days ago is no longer considered
-    fully synced — the gate forces a refresh."""
+    """The cache never auto-expires. A profile synced two weeks ago
+    is still ``fully_synced=True`` (the staleness warning is a
+    separate UI-only signal driven by ``get_profile_state``).
+
+    Pre-PR the helper rejected snapshots older than 7 days, which
+    forced every sidebar / Ask expand of a week-old profile to fall
+    through to the live DB. The user's contract now: cache lives
+    forever, warn but never invalidate."""
     connector = _StubConnector(schemas=["public"], assets={"public": [("t", "table")]})
     _stub_build_connector(monkeypatch, connector)
     sync_profile_skeleton(_StubCfg(), "prof-a", fresh_catalog)
     assert fresh_catalog.is_profile_fully_synced("prof-a") is True
 
-    # Force the stamp into the past.
-    eight_days_ago = time.time() - 8 * 24 * 60 * 60
+    # Force the stamp two weeks into the past.
+    fourteen_days_ago = time.time() - 14 * 24 * 60 * 60
     with fresh_catalog._connect() as conn:  # noqa: SLF001
         conn.execute(
             "UPDATE catalog_profile_state SET last_full_sync_at = ? WHERE db_profile = ?",
-            (eight_days_ago, "prof-a"),
+            (fourteen_days_ago, "prof-a"),
         )
 
-    assert fresh_catalog.is_profile_fully_synced("prof-a") is False
+    # Still fully synced — no 7-day cliff anymore.
+    assert fresh_catalog.is_profile_fully_synced("prof-a") is True
+
+    # But the age signal is still available for the UI staleness pill.
+    state = fresh_catalog.get_profile_state("prof-a")
+    assert state["state"] == "done"
+    assert state["last_full_sync_at"] is not None
+    assert time.time() - state["last_full_sync_at"] > 7 * 24 * 60 * 60
 
 
 class _MultiDBConnector:

@@ -29,10 +29,9 @@ import json
 import threading
 import time
 from collections.abc import Callable
-from queue import Empty
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
@@ -394,13 +393,21 @@ def get_apply_job(job_id: str, jobs: JobRegistry = Depends(get_jobs)) -> dict[st
 
 
 @router.get("/runs/{job_id}/events")
-def stream_run_events(job_id: str, jobs: JobRegistry = Depends(get_jobs)) -> EventSourceResponse:
-    return _events_endpoint(job_id, jobs)
+def stream_run_events(
+    job_id: str,
+    request: Request,
+    jobs: JobRegistry = Depends(get_jobs),
+) -> EventSourceResponse:
+    return _events_endpoint(job_id, request, jobs)
 
 
 @router.get("/apply/{job_id}/events")
-def stream_apply_events(job_id: str, jobs: JobRegistry = Depends(get_jobs)) -> EventSourceResponse:
-    return _events_endpoint(job_id, jobs)
+def stream_apply_events(
+    job_id: str,
+    request: Request,
+    jobs: JobRegistry = Depends(get_jobs),
+) -> EventSourceResponse:
+    return _events_endpoint(job_id, request, jobs)
 
 
 @router.post("/runs/{job_id}/cancel")
@@ -421,73 +428,86 @@ def cancel_apply(job_id: str, jobs: JobRegistry = Depends(get_jobs)) -> dict[str
 # ── Internals ──────────────────────────────────────────────────────────
 
 
-def _events_endpoint(job_id: str, jobs: JobRegistry) -> EventSourceResponse:
+#: Keep the SSE wire from going silent long enough for a proxy to
+#: reap it. See ``amx.web.routers.ask`` for the matching constants —
+#: held in sync deliberately so any future SSE-cadence tuning lands
+#: in both routers in one commit.
+_SSE_TAIL_TIMEOUT_SEC = 8.0
+_SSE_PING_INTERVAL_SEC = 7.0
+
+
+def _events_endpoint(
+    job_id: str,
+    request: Request,
+    jobs: JobRegistry,
+) -> EventSourceResponse:
     job = jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No job {job_id}")
-    return EventSourceResponse(_event_generator(job))
+    raw_last_id = request.headers.get("last-event-id") or "0"
+    try:
+        last_event_id = int(raw_last_id)
+    except (TypeError, ValueError):
+        last_event_id = 0
+    return EventSourceResponse(
+        _event_generator(job, last_event_id=last_event_id),
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
-def _event_generator(job: Job):
-    """Replay the buffered event trail, then drain new events.
+def _event_generator(job: Job, *, last_event_id: int = 0):
+    """Stream the job's event log to one SSE consumer.
 
-    On a fresh subscriber (page refresh, transient reconnect, or a
-    user opening the run page after work has already started), the
-    SSE consumer would otherwise see a blank "Live progress" panel —
-    the worker's events were already drained by the previous
-    ``EventSource`` connection. ``BufferedQueue`` retains the recent
-    tail so we can replay it here before falling back to the
-    live-drain loop.
+    Multi-consumer safe: two concurrent ``EventSource`` connections
+    against the same run each track their own cursor against
+    :meth:`BufferedQueue.tail_from`. The browser's auto-reconnect
+    populates ``Last-Event-ID`` from the prior stream's ``id:``
+    fields, which lets a transient disconnect resume cleanly instead
+    of stranding the run-detail panel with whatever fragments survived
+    the broken connection.
 
-    The two channels (replay buffer + live queue) carry overlapping
-    items, so the generator tracks which dict objects were yielded
-    during the replay phase by Python ``id()`` and skips re-yielding
-    the same dict when it later arrives via ``queue.get``. ``emit``
-    pushes the same dict instance into both channels so identity is
-    a stable dedup key for the lifetime of the connection.
-
-    Sends a periodic SSE comment line as a keepalive so corporate
-    proxies don't reap the connection during long worker steps.
+    Mirrors :mod:`amx.web.routers.ask._event_generator` deliberately —
+    duplicating the small generator is cheaper than introducing a
+    third "shared SSE helper" module before both call sites have a
+    matching shape. Drift in either direction is a yellow flag in
+    review.
     """
-    # ── Replay phase ─────────────────────────────────────────────────
-    # Snapshot the buffer first so a fresh subscriber re-hydrates the
-    # panel state even when the live queue is currently empty. If the
-    # buffer already contains a terminal event the worker has finished;
-    # there is nothing more to drain — exit immediately after replay.
-    replayed_terminal = False
-    replayed_ids: set[int] = set()
-    for event in job.queue.buffer_snapshot():
-        replayed_ids.add(id(event))
-        kind = str(event.get("type", ""))
-        yield {"event": kind, "data": json.dumps(event)}
-        if kind in {"job.done", "job.cancelled", "job.failed"}:
-            replayed_terminal = True
-    if replayed_terminal:
-        return
-
-    # ── Live drain phase ─────────────────────────────────────────────
+    cursor = max(0, int(last_event_id or 0))
     last_keepalive = time.monotonic()
     while True:
-        try:
-            event = job.queue.get(timeout=15)
-        except Empty:
+        ready = job.queue.tail_from(cursor, timeout=_SSE_TAIL_TIMEOUT_SEC)
+        if ready is None:
             now = time.monotonic()
-            if now - last_keepalive > 14:
-                yield {"event": "ping", "data": json.dumps({"t": now})}
+            if now - last_keepalive > _SSE_PING_INTERVAL_SEC:
+                yield {
+                    "id": str(cursor),
+                    "event": "ping",
+                    "data": json.dumps({"t": now}),
+                }
                 last_keepalive = now
             if job.status not in ("queued", "running"):
-                # Worker terminated without a final event (shouldn't
-                # happen, but ensures we don't tail an idle queue).
+                # Worker terminated without enqueuing a terminal event.
+                # Should not happen — ``runs`` workers emit terminal
+                # via the same emit_terminal contract as ask — but
+                # break cleanly to avoid tailing an idle queue.
                 break
             continue
-        if id(event) in replayed_ids:
-            # Already delivered via the replay snapshot; skip the
-            # duplicate copy that ``put_nowait`` left on the live queue.
-            replayed_ids.discard(id(event))
-            continue
-        kind = str(event.get("type", ""))
-        yield {"event": kind, "data": json.dumps(event)}
-        if kind in {"job.done", "job.cancelled", "job.failed"}:
+        terminal_seen = False
+        for seq, event in ready:
+            kind = str(event.get("type", ""))
+            yield {
+                "id": str(seq),
+                "event": kind,
+                "data": json.dumps(event),
+            }
+            cursor = seq
+            last_keepalive = time.monotonic()
+            if kind in {"job.done", "job.cancelled", "job.failed"}:
+                terminal_seen = True
+        if terminal_seen:
             break
 
 

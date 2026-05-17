@@ -271,46 +271,94 @@ def _active_scope_for_profile(cfg: AMXConfig, profile_name: str) -> dict[str, An
 @router.get("/catalogs")
 def list_catalogs(
     profile: str = Query(...),
+    force_live: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """Return ``SHOW CATALOGS`` (or backend equivalent) for 3-level
-    backends. 2-level backends return an empty list with
-    ``supports_catalogs=false`` so the SPA can collapse the catalog
-    rail in the asset tree.
+    """Return the catalog inventory for 3-level backends. Cache-first:
+    distinct ``database_name`` rows from ``catalog_entities`` answer
+    the sidebar without firing ``SHOW CATALOGS`` against Databricks
+    on every profile expand. ``?force_live=true`` opts back into the
+    live probe.
     """
     name = _require_profile(profile)
+    scope = _active_scope_for_profile(cfg, name)
+    if not force_live:
+        cached = _cached_catalog_inventory(name)
+        if cached is not None:
+            return {
+                "supports_catalogs": True,
+                "catalogs": cached,
+                "active_catalog": scope["active_catalog"],
+                "active_project": scope["active_project"],
+                "source": "catalog",
+                "possibly_partial": not _profile_is_fully_synced(name),
+            }
     db = _connector_for_scope(cfg, name)
     supports = _coerce_or_500("Probing catalog support", db.supports_catalogs)
     catalogs = _coerce_or_500("Listing catalogs", db.list_catalogs) if supports else []
-    scope = _active_scope_for_profile(cfg, name)
     return {
         "supports_catalogs": bool(supports),
         "catalogs": list(catalogs),
-        # ``active_catalog`` is the legacy field the SPA already reads;
-        # ``active_project`` is its BigQuery equivalent so the sidebar
-        # filter can handle both 3-level backends uniformly.
         "active_catalog": scope["active_catalog"],
         "active_project": scope["active_project"],
+        "source": "live",
     }
 
 
 @router.get("/databases")
 def list_databases(
     profile: str = Query(...),
+    force_live: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """``SHOW DATABASES`` for 2-level backends. Returns an empty list
-    on backends that don't expose a multi-database server (Databricks,
-    BigQuery — those use ``/api/live/catalogs`` instead).
+    """``SHOW DATABASES`` for 2-level backends. Cache-first: distinct
+    ``database_name`` rows from the catalog answer the sidebar without
+    re-listing live. Returns an empty list on backends that don't
+    expose a multi-database server (Databricks, BigQuery — those use
+    ``/api/live/catalogs`` instead). ``?force_live=true`` to bypass.
     """
     name = _require_profile(profile)
+    scope = _active_scope_for_profile(cfg, name)
+    if not force_live:
+        cached = _cached_catalog_inventory(name)
+        if cached is not None:
+            return {
+                "databases": cached,
+                "active_database": scope["active_database"],
+                "source": "catalog",
+                "possibly_partial": not _profile_is_fully_synced(name),
+            }
     db = _connector_for_scope(cfg, name)
     databases = _coerce_or_500("Listing databases", db.list_databases)
-    scope = _active_scope_for_profile(cfg, name)
     return {
         "databases": list(databases),
         "active_database": scope["active_database"],
+        "source": "live",
     }
+
+
+def _cached_catalog_inventory(profile: str) -> list[str] | None:
+    """Distinct database / catalog names from ``catalog_entities`` for
+    *profile*. Returns ``None`` when the cache is empty so the route
+    can fall through to a live probe. Used by ``/catalogs`` and
+    ``/databases`` to avoid re-firing ``SHOW CATALOGS`` /
+    ``SHOW DATABASES`` on every sidebar expand."""
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+    except Exception:
+        return None
+    if cat is None:
+        return None
+    try:
+        rows = cat.fetch_inventory(profile, scope="databases")
+    except Exception:
+        return None
+    if not rows:
+        return None
+    names = sorted({str(r.get("database") or "") for r in rows if r.get("database")})
+    return names or None
 
 
 @router.get("/schemas")
@@ -359,6 +407,12 @@ def list_schemas(
                 "active_schema": scope["active_schema"],
                 "active_dataset": scope["active_dataset"],
                 "source": "catalog",
+                # ``possibly_partial`` is True whenever the profile's
+                # sync hasn't been marked complete by /search sync.
+                # The sidebar uses it to render a small staleness hint
+                # next to the schema list so the user knows a manual
+                # refresh might add rows.
+                "possibly_partial": not _profile_is_fully_synced(name),
             }
     db = _connector_for_scope(cfg, name, database=database, catalog=catalog)
     schemas = _coerce_or_500("Listing schemas", db.list_schemas)
@@ -389,17 +443,20 @@ def _cached_schemas_for_profile(
     profile: str, database: str | None = None
 ) -> list[dict[str, Any]] | None:
     """Persistent-catalog read for the sidebar's schema list. Returns
-    ``None`` when the catalog is missing / empty OR when the profile
-    isn't fully synced — partial catalog must never be presented as
-    the complete picture, so we fall through to the live DB in those
-    cases.
+    ``None`` only when the catalog is missing / empty — partial sync
+    is OK now, the caller flags ``possibly_partial`` on the response
+    so the sidebar can show "Refresh" without blocking the user.
+
+    Pre-PR the function bailed when ``is_profile_fully_synced`` was
+    False; the result was that every expand on a half-synced or
+    week-old profile hit the live DB, racking up Databricks SQL
+    costs the user never asked for. The new contract: serve whatever
+    we have, mark it partial, let the explicit refresh button (and
+    ``?force_live=true``) be the only path that opens a connector.
 
     ``database`` scopes the lookup to a single database under the
-    profile (Postgres / MySQL / Snowflake etc. — 2-level backends —
-    OR a Databricks UC catalog / BigQuery project — 3-level). Without
-    this scope the cache would return every schema for the profile
-    regardless of which database the route was asking about, which is
-    the cross-database leak the user reported."""
+    profile (Postgres / MySQL / Snowflake — 2-level backends — OR a
+    Databricks UC catalog / BigQuery project — 3-level)."""
     try:
         from amx.search.catalog import SearchCatalog
 
@@ -407,15 +464,6 @@ def _cached_schemas_for_profile(
     except Exception:
         return None
     if cat is None:
-        return None
-    try:
-        # Completeness gate: if the profile isn't fully synced, we
-        # treat the catalog as untrusted and fall through. This is
-        # the single change that makes the sidebar honest about a
-        # half-finished sync.
-        if not cat.is_profile_fully_synced(profile):
-            return None
-    except Exception:
         return None
     try:
         rows = cat.fetch_distinct_schemas(profile, database_name=database)
@@ -430,13 +478,29 @@ def _cached_schemas_for_profile(
     return [{"name": str(r.get("name") or ""), "comment": ""} for r in rows if r.get("name")]
 
 
+def _profile_is_fully_synced(profile: str) -> bool:
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+    except Exception:
+        return False
+    if cat is None:
+        return False
+    try:
+        return bool(cat.is_profile_fully_synced(profile))
+    except Exception:
+        return False
+
+
 def _cached_assets_for_profile_schema(
     profile: str, schema: str, database: str | None = None
 ) -> list[dict[str, Any]] | None:
     """Persistent-catalog read for the sidebar's asset list under a
-    schema. Returns ``None`` when the catalog is missing / empty OR
-    when the profile isn't fully synced — partial catalog stays
-    behind the live DB so the user never sees an incomplete tree.
+    schema. Returns ``None`` only when the catalog has nothing for
+    the (profile, schema) — partial sync no longer hides the cache.
+    The route stamps ``possibly_partial`` so the sidebar can offer
+    a refresh without forcing a live trip on every expand.
 
     ``database`` scopes to a specific database under the profile so
     Postgres (and friends) don't leak tables across multi-database
@@ -448,11 +512,6 @@ def _cached_assets_for_profile_schema(
     except Exception:
         return None
     if cat is None:
-        return None
-    try:
-        if not cat.is_profile_fully_synced(profile):
-            return None
-    except Exception:
         return None
     try:
         rows = cat.fetch_distinct_tables_in_schema(profile, schema, database_name=database)
@@ -500,6 +559,7 @@ def list_assets(
                 "assets": cached,
                 "count": len(cached),
                 "source": "catalog",
+                "possibly_partial": not _profile_is_fully_synced(name),
             }
     db = _connector_for_scope(cfg, name, database=database, catalog=catalog)
     raw = _coerce_or_500(f"Listing assets in {schema}", lambda: db.list_assets(schema))
@@ -588,14 +648,50 @@ def list_columns(
     profile: str = Query(...),
     database: str | None = Query(default=None),
     catalog: str | None = Query(default=None),
+    force_live: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """Lightweight column metadata: name, dtype, nullable. No row
-    scan — fits the default Columns tab where we render the schema
-    skeleton instantly and only kick off ``profile_table`` when the
-    user clicks "Profile this table".
+    """Lightweight column metadata: name, dtype, nullable. Cache-first:
+    when ``/search sync`` has covered the table the catalog already
+    knows every column, so the sidebar expands without paying a live
+    round-trip per click. ``?force_live=true`` opts back into the
+    live inspector path (the sidebar's manual refresh affordance).
     """
     name = _require_profile(profile)
+    cache_scope = database or catalog
+    if not force_live:
+        try:
+            from amx.search.catalog import SearchCatalog
+
+            cat = SearchCatalog.from_history_store()
+        except Exception:
+            cat = None
+        if cat is not None:
+            try:
+                cached = cat.fetch_columns_for_table(
+                    name,
+                    schema_name=schema,
+                    table_name=table,
+                    database_name=cache_scope,
+                )
+            except Exception:
+                cached = []
+            if cached:
+                return {
+                    "schema": schema,
+                    "table": table,
+                    "columns": [
+                        {
+                            "name": c["name"],
+                            "dtype": c["dtype"],
+                            "nullable": c["nullable"],
+                        }
+                        for c in cached
+                    ],
+                    "count": len(cached),
+                    "source": "catalog",
+                    "possibly_partial": not _profile_is_fully_synced(name),
+                }
     db = _connector_for_scope(cfg, name, database=database, catalog=catalog)
     cols = _coerce_or_500(
         f"Listing columns of {schema}.{table}",
@@ -606,6 +702,7 @@ def list_columns(
         "table": table,
         "columns": [{"name": c.name, "dtype": c.dtype, "nullable": bool(c.nullable)} for c in cols],
         "count": len(cols),
+        "source": "live",
     }
 
 

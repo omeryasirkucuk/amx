@@ -20,7 +20,10 @@ against — so it doesn't have to hallucinate.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import threading
+import time as _llm_time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -219,11 +222,14 @@ def run_tool_agent(
     display: LiveDisplay | None = None,
     on_thinking_delta: Callable[[str], None] | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    on_tool_start: Callable[[dict[str, Any]], None] | None = None,
     on_content_delta: Callable[[str], None] | None = None,
+    on_llm_round: Callable[[dict[str, Any]], None] | None = None,
     cancel_token: threading.Event | None = None,
     db_profiles: list[str] | None = None,
     doc_profiles: list[str] | None = None,
     code_profiles: list[str] | None = None,
+    allow_live_refresh: bool = False,
 ) -> ToolAgentResult:
     """Run the tool-calling loop and return the final synthesised answer.
 
@@ -261,6 +267,15 @@ def run_tool_agent(
 
     All three are optional and default to ``None`` so existing
     callers (CLI ``/ask``, batch scripts) keep working unchanged.
+
+    ``allow_live_refresh`` (default ``False``) is the per-question
+    cache-only gate. When ``False``, every tool that takes a
+    ``force_fresh`` argument ignores it — the agent only sees cached
+    catalog metadata for the duration of the question. When ``True``,
+    ``force_fresh=true`` is honoured as before, letting the LLM pull
+    fresh data from the live DB. The Ask UI exposes a "Live refresh"
+    toggle that flips this bit; CLI ``/ask`` keeps the legacy
+    cache-only-default contract.
     """
     # Use ``with`` so the live DB connector (SQLAlchemy engine + connection
     # pool) is disposed at the end of every question. Without this, each
@@ -272,6 +287,7 @@ def run_tool_agent(
         db_profiles=db_profiles,
         doc_profiles=doc_profiles,
         code_profiles=code_profiles,
+        allow_live_refresh=allow_live_refresh,
     ) as toolbox:
         return _run_tool_loop(
             toolbox=toolbox,
@@ -283,9 +299,94 @@ def run_tool_agent(
             display=display,
             on_thinking_delta=on_thinking_delta,
             on_tool_call=on_tool_call,
+            on_tool_start=on_tool_start,
             on_content_delta=on_content_delta,
+            on_llm_round=on_llm_round,
             cancel_token=cancel_token,
         )
+
+
+@contextlib.contextmanager
+def _llm_round_heartbeat(
+    *,
+    on_llm_round: Callable[[dict[str, Any]], None] | None,
+    round_id: int,
+    phase: str,
+    cancel_token: threading.Event | None,
+    interval_sec: float = 1.0,
+):
+    """Emit ``llm.round.started`` / ``llm.round.heartbeat`` /
+    ``llm.round.finished`` events around a single ``llm.chat`` call.
+
+    Why: the OpenRouter / kimi-k2.6 path streams reasoning_content too
+    slowly to repaint the SPA's status line — users used to stare at
+    a static "Talking to LLM…" for 5–70 seconds with no feedback. A
+    daemon thread ticks every second so the SPA's LiveStatusLine can
+    show *"⚙ LLM round 1 — picking tools · 12 s"* and the user knows
+    AMX is alive.
+
+    The thread bails the moment ``cancel_token`` flips so a Cancel
+    click does not leak a hot ticker.
+    """
+    if on_llm_round is None:
+        yield
+        return
+    start = _llm_time.monotonic()
+    stop = threading.Event()
+    try:
+        on_llm_round(
+            {
+                "phase_event": "started",
+                "round": round_id,
+                "phase": phase,
+                "elapsed_ms": 0,
+            }
+        )
+    except Exception:
+        pass
+
+    def _tick() -> None:
+        while not stop.is_set():
+            if cancel_token is not None and cancel_token.is_set():
+                return
+            stop.wait(timeout=interval_sec)
+            if stop.is_set():
+                return
+            try:
+                on_llm_round(
+                    {
+                        "phase_event": "heartbeat",
+                        "round": round_id,
+                        "phase": phase,
+                        "elapsed_ms": int((_llm_time.monotonic() - start) * 1000),
+                    }
+                )
+            except Exception:
+                # Never let a UI hook crash the heartbeat thread —
+                # silently drop and keep ticking; the next tick is
+                # one second away.
+                continue
+
+    ticker = threading.Thread(
+        target=_tick, name=f"amx-llm-heartbeat-{round_id}", daemon=True
+    )
+    ticker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        ticker.join(timeout=interval_sec * 2)
+        try:
+            on_llm_round(
+                {
+                    "phase_event": "finished",
+                    "round": round_id,
+                    "phase": phase,
+                    "elapsed_ms": int((_llm_time.monotonic() - start) * 1000),
+                }
+            )
+        except Exception:
+            pass
 
 
 def _compute_focus_profile(
@@ -334,7 +435,9 @@ def _run_tool_loop(
     display: LiveDisplay | None = None,
     on_thinking_delta: Callable[[str], None] | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    on_tool_start: Callable[[dict[str, Any]], None] | None = None,
     on_content_delta: Callable[[str], None] | None = None,
+    on_llm_round: Callable[[dict[str, Any]], None] | None = None,
     cancel_token: threading.Event | None = None,
 ) -> ToolAgentResult:
     # Pre-fetch the schema list once; if it succeeds we put it into the
@@ -388,7 +491,11 @@ def _run_tool_loop(
     finish_reason: str | None = None
     last_thinking_content: str = ""
     iterations = 0
-    tools_schema = ToolBox.schemas()
+    # Use the instance method so cache-only mode hides every
+    # ``live_only`` tool from the LLM's menu. ``ToolBox.schemas()`` (the
+    # static accessor) still returns the full list for callers that
+    # want the inventory.
+    tools_schema = toolbox.available_schemas()
 
     # Single closure shared across iterations so the thinking panel keeps
     # streaming continuously even as we hop between LLM calls + tool calls.
@@ -438,21 +545,27 @@ def _run_tool_loop(
                 # Never let a UI hook crash the agent loop.
                 pass
 
-        result = llm.chat(
-            chat_messages,
-            temperature=0.0,
-            max_tokens=_AGENT_MAX_TOKENS,
-            use_logprobs=False,
-            tools=tools_schema,
-            tool_choice="auto",
-            on_thinking=on_thinking,
-            on_content=_forward_content if on_content_delta is not None else None,
-            # Threading the cancel token through ``llm.chat`` means the
-            # stream consumer can bail between chunks, not just at the
-            # next iteration boundary. Without this a Cancel click during
-            # a long streamed answer waits for the whole answer to drain.
+        with _llm_round_heartbeat(
+            on_llm_round=on_llm_round,
+            round_id=iterations,
+            phase="picking-tools",
             cancel_token=cancel_token,
-        )
+        ):
+            result = llm.chat(
+                chat_messages,
+                temperature=0.0,
+                max_tokens=_AGENT_MAX_TOKENS,
+                use_logprobs=False,
+                tools=tools_schema,
+                tool_choice="auto",
+                on_thinking=on_thinking,
+                on_content=_forward_content if on_content_delta is not None else None,
+                # Threading the cancel token through ``llm.chat`` means the
+                # stream consumer can bail between chunks, not just at the
+                # next iteration boundary. Without this a Cancel click during
+                # a long streamed answer waits for the whole answer to drain.
+                cancel_token=cancel_token,
+            )
         # Per-step record so the Run detail Metrics card can render
         # an honest tool_agent.iter row -- the previous wiring summed
         # ``aggregated_usage`` for the SSE answer.final event but never
@@ -497,12 +610,88 @@ def _run_tool_loop(
             }
         )
         for tc in result.tool_calls:
+            # Announce the dispatch BEFORE the handler runs so the SPA
+            # can render a live activity row immediately — the user
+            # used to stare at "Reasoning…" for the whole tool turn.
+            if on_tool_start is not None:
+                try:
+                    # Decide cache-vs-live hint from the tool schema's
+                    # freshness annotation. ``cache_ok`` is the
+                    # happy-path indicator; ``live_only`` would have
+                    # been refused upstream when cache-only mode is
+                    # active, so seeing it here means the toggle is
+                    # ON.
+                    source_hint = "cache"
+                    try:
+                        from amx.search._tool_schemas import tool_schemas as _ts
+
+                        for entry in _ts():
+                            if entry.get("function", {}).get("name") == tc.name:
+                                source_hint = (
+                                    "live"
+                                    if entry.get("freshness") == "live_only"
+                                    else "cache"
+                                )
+                                break
+                    except Exception:
+                        source_hint = "unknown"
+                    on_tool_start(
+                        {
+                            "name": tc.name,
+                            "arguments": tc.arguments or "{}",
+                            "source_hint": source_hint,
+                            "scope_profiles": list(toolbox.db_profiles),
+                        }
+                    )
+                except Exception:
+                    pass
             tool_t0 = _time.monotonic()
             tool_result = toolbox.invoke(tc.name, tc.arguments or "{}")
             tool_elapsed_ms = int((_time.monotonic() - tool_t0) * 1000)
             per_tool_latency_ms[tc.name] = per_tool_latency_ms.get(tc.name, 0) + tool_elapsed_ms
             summary = _summarise_tool_call(tc, tool_result)
             summary["latency_ms"] = tool_elapsed_ms
+            # Extract the final source the handler chose (catalog vs
+            # live vs live_only_tool_disabled) from the payload so the
+            # SPA can finalise the activity row.
+            try:
+                parsed = json.loads(tool_result) if isinstance(tool_result, str) else {}
+                if isinstance(parsed, dict):
+                    if parsed.get("needs_live_refresh") is True or parsed.get(
+                        "error"
+                    ) == "live_only_tool_disabled":
+                        summary["source"] = "blocked_cache_only"
+                        # Surface the structured envelope to the SPA so
+                        # the AskChat retry button knows which tool +
+                        # args would have run.
+                        summary["needs_live_refresh"] = True
+                        if isinstance(parsed.get("arguments"), dict):
+                            summary["blocked_arguments"] = parsed["arguments"]
+                        if isinstance(parsed.get("reason"), str):
+                            summary["blocked_reason"] = parsed["reason"]
+                        if isinstance(parsed.get("user_action"), str):
+                            summary["blocked_user_action"] = parsed["user_action"]
+                    elif parsed.get("cache_only"):
+                        summary["source"] = "catalog"
+                    elif isinstance(parsed.get("source"), str):
+                        summary["source"] = parsed["source"]
+                    elif parsed.get("multi_profile") and isinstance(
+                        parsed.get("profiles"), dict
+                    ):
+                        sources = {
+                            v.get("source")
+                            for v in parsed["profiles"].values()
+                            if isinstance(v, dict) and v.get("source")
+                        }
+                        if sources == {"catalog"}:
+                            summary["source"] = "catalog"
+                        elif sources == {"live"}:
+                            summary["source"] = "live"
+                        else:
+                            summary["source"] = "mixed"
+                    summary["elapsed_ms"] = tool_elapsed_ms
+            except Exception:
+                pass
             tool_call_log.append(summary)
             if on_tool_call is not None:
                 try:
@@ -557,13 +746,19 @@ def _run_tool_loop(
             }
         ]
         est = estimate_tokens(closing_messages)
-        result = llm.chat(
-            closing_messages,
-            temperature=0.0,
-            max_tokens=_AGENT_MAX_TOKENS,
-            use_logprobs=False,
-            on_thinking=on_thinking,
-        )
+        with _llm_round_heartbeat(
+            on_llm_round=on_llm_round,
+            round_id=iterations + 1,
+            phase="synthesising",
+            cancel_token=cancel_token,
+        ):
+            result = llm.chat(
+                closing_messages,
+                temperature=0.0,
+                max_tokens=_AGENT_MAX_TOKENS,
+                use_logprobs=False,
+                on_thinking=on_thinking,
+            )
         token_tracker.record_for(
             "tool_agent.final",
             est,

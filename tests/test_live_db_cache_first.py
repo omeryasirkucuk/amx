@@ -108,17 +108,27 @@ def test_cached_assets_helper_returns_none_on_miss(seeded_history_store: Path) -
     assert out is None
 
 
-def test_cache_helpers_fall_through_when_sync_incomplete(
+def test_cache_helpers_serve_partial_sync_data(
     seeded_history_store: Path,
 ) -> None:
     """A profile that has rows in ``catalog_entities`` but no
-    ``state='done'`` row in ``catalog_profile_state`` must fall
-    through to the live DB. Without this gate the sidebar would
-    serve partial data as if it were the complete picture — the
-    user-reported bug behind this PR."""
+    ``state='done'`` row in ``catalog_profile_state`` now serves the
+    cached rows (the caller stamps ``possibly_partial`` on the
+    response). Pre-PR the helper bailed and the sidebar hit the live
+    DB on every expand of a half-synced or week-old profile — that's
+    exactly the cost the user reported."""
     _seed_catalog(seeded_history_store, "prof-a", ["public"], fully_synced=False)
-    assert live_db._cached_schemas_for_profile("prof-a") is None  # noqa: SLF001
-    assert (
-        live_db._cached_assets_for_profile_schema("prof-a", "public")  # noqa: SLF001
-        is None
+    schemas = live_db._cached_schemas_for_profile("prof-a")  # noqa: SLF001
+    assert schemas is not None
+    assert {row["name"] for row in schemas} == {"public"}
+    assets = live_db._cached_assets_for_profile_schema(  # noqa: SLF001
+        "prof-a", "public"
     )
+    assert assets is not None
+    # Seeded fixture writes one table named ``public_table`` under
+    # each schema (see _seed_catalog above). What matters is that
+    # *something* came back from the cache instead of None.
+    assert len(assets) >= 1
+    # The fully-synced probe should still report False so the route
+    # can flag ``possibly_partial`` in the SSE response.
+    assert live_db._profile_is_fully_synced("prof-a") is False  # noqa: SLF001

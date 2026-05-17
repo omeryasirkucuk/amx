@@ -431,16 +431,25 @@ class EntityCrudMixin:
         }
 
     def is_profile_fully_synced(self, db_profile: str) -> bool:
-        """``True`` iff the catalog can safely stand in for the live
-        DB. Reads ``catalog_profile_state``; requires ``state='done'``
-        AND ``last_full_sync_at`` within the last 7 days. Anything else
-        means a cache-first reader should fall through to the live
-        connector so the user never sees a partial slice.
+        """``True`` iff a full skeleton sync has ever finished for
+        *db_profile*. Reads ``catalog_profile_state``; requires
+        ``state='done'`` only. The cache NEVER auto-expires — pre-PR
+        the helper rejected snapshots older than 7 days, which forced
+        sidebar / Ask / drift surfaces to fall through to the live DB
+        on any week-old profile. The user's contract now: keep
+        cached data forever, surface a UI staleness pill instead of
+        invalidating.
 
-        Returns ``False`` when the table doesn't exist yet (legacy
-        catalog from a pre-v0.15 install) so existing users keep
-        seeing the live DB until they run a fresh skeleton sync — the
-        UI's Sync-all button handles that.
+        Returns ``False`` when:
+        - the table doesn't exist (legacy catalog from a pre-v0.15
+          install — keeps existing users on the live DB until they
+          run a fresh skeleton sync)
+        - the state row exists but `state != 'done'` (sync still
+          running, failed, or never started)
+
+        Use :meth:`get_profile_state` from ``SyncMixin`` to read
+        ``last_full_sync_at`` when a UI surface wants to render a
+        "synced N days ago" pill.
         """
         try:
             with self._connect() as conn:
@@ -460,9 +469,7 @@ class EntityCrudMixin:
         last = row["last_full_sync_at"]
         if state != "done" or last is None:
             return False
-        # 7-day staleness window — past this, force the user to
-        # re-sync rather than serve increasingly drifted data.
-        return (time.time() - float(last)) < 7 * 24 * 60 * 60
+        return True
 
     def fetch_distinct_schemas(
         self, db_profile: str, database_name: str | None = None
@@ -555,6 +562,291 @@ class EntityCrudMixin:
             }
             for r in rows
             if r["table_name"]
+        ]
+
+    def fetch_coverage_summary(
+        self,
+        db_profile: str | list[str],
+        *,
+        schema_name: str | None = None,
+    ) -> list[dict]:
+        """Per-profile + per-schema description-coverage counts.
+
+        Powers the ``catalog_coverage_summary`` Ask tool: the agent
+        used to chain ``describe_table`` for every entity to answer
+        coverage questions, which is why "how many tables don't have
+        comments" used to take 70+ seconds. A single GROUP BY against
+        ``catalog_entities`` answers it in sub-50 ms because the
+        canonical effective-description pointer
+        (``effective_description_id``) is exactly the field we need
+        to count for "missing" — NULL means no comment.
+
+        Returns one row per (db_profile, database_name, schema_name)
+        with ``total_tables``, ``undocumented_tables``,
+        ``total_columns``, ``undocumented_columns`` and the freshest
+        ``last_synced_at`` from the underlying entity rows. Empty
+        schemas are omitted so the LLM doesn't waste a sentence
+        narrating zero-sized groups.
+
+        ``db_profile`` accepts the scalar / list shape the rest of
+        the catalog helpers use (matches ``DBProfileFilter`` from
+        the search module). ``schema_name`` filters to one schema
+        for "is THIS schema covered?" questions.
+        """
+        from amx.search._catalog._db_profile_clause import build_db_profile_clause
+
+        clause, binds = build_db_profile_clause(db_profile, column="db_profile")
+        sql_parts = [
+            "SELECT db_profile, database_name, schema_name, "
+            "       SUM(CASE WHEN entity_kind = 'table' THEN 1 ELSE 0 END) AS total_tables, "
+            "       SUM(CASE WHEN entity_kind = 'table' "
+            "                AND effective_description_id IS NULL THEN 1 ELSE 0 END) "
+            "         AS undocumented_tables, "
+            "       SUM(CASE WHEN entity_kind = 'column' THEN 1 ELSE 0 END) AS total_columns, "
+            "       SUM(CASE WHEN entity_kind = 'column' "
+            "                AND effective_description_id IS NULL THEN 1 ELSE 0 END) "
+            "         AS undocumented_columns, "
+            "       MAX(last_synced_at) AS last_synced_at "
+            "FROM catalog_entities "
+            f"WHERE {clause} "
+            "  AND schema_name != ''",
+        ]
+        params: list[object] = list(binds)
+        if schema_name:
+            sql_parts.append("  AND schema_name = ?")
+            params.append(schema_name)
+        sql_parts.append(
+            " GROUP BY db_profile, database_name, schema_name "
+            " HAVING total_tables > 0 OR total_columns > 0 "
+            " ORDER BY db_profile, database_name, schema_name"
+        )
+        sql = "\n".join(sql_parts)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            total_tables = int(row["total_tables"] or 0)
+            undocumented_tables = int(row["undocumented_tables"] or 0)
+            total_columns = int(row["total_columns"] or 0)
+            undocumented_columns = int(row["undocumented_columns"] or 0)
+            documented_tables = max(0, total_tables - undocumented_tables)
+            documented_columns = max(0, total_columns - undocumented_columns)
+            out.append(
+                {
+                    "db_profile": str(row["db_profile"] or ""),
+                    "database": str(row["database_name"] or "") or None,
+                    "schema": str(row["schema_name"] or ""),
+                    "total_tables": total_tables,
+                    "undocumented_tables": undocumented_tables,
+                    "documented_tables": documented_tables,
+                    "total_columns": total_columns,
+                    "undocumented_columns": undocumented_columns,
+                    "documented_columns": documented_columns,
+                    "table_coverage_pct": (
+                        round(100.0 * documented_tables / total_tables, 1)
+                        if total_tables > 0
+                        else None
+                    ),
+                    "column_coverage_pct": (
+                        round(100.0 * documented_columns / total_columns, 1)
+                        if total_columns > 0
+                        else None
+                    ),
+                    "last_synced_at": float(row["last_synced_at"] or 0.0) or None,
+                }
+            )
+        return out
+
+    def fetch_columns_for_table(
+        self,
+        db_profile: str,
+        *,
+        schema_name: str,
+        table_name: str,
+        database_name: str | None = None,
+    ) -> list[dict]:
+        """Return every column the catalog has recorded for one table.
+
+        Powers the Studio sidebar's column list — used to be a live DB
+        round-trip on every "expand this table" click, even though
+        ``/search sync`` already wrote every column row into the
+        catalog. Single SQLite read.
+        """
+        with self._connect() as conn:
+            if database_name:
+                rows = conn.execute(
+                    """
+                    SELECT column_name, dtype, nullable, pk_flag, fk_flag,
+                           last_synced_at
+                    FROM catalog_entities
+                    WHERE db_profile = ? AND database_name = ?
+                      AND lower(schema_name) = lower(?)
+                      AND lower(table_name) = lower(?)
+                      AND entity_kind = 'column'
+                      AND column_name IS NOT NULL AND column_name != ''
+                    ORDER BY column_name
+                    """,
+                    (db_profile, database_name, schema_name, table_name),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT column_name, dtype, nullable, pk_flag, fk_flag,
+                           last_synced_at
+                    FROM catalog_entities
+                    WHERE db_profile = ?
+                      AND lower(schema_name) = lower(?)
+                      AND lower(table_name) = lower(?)
+                      AND entity_kind = 'column'
+                      AND column_name IS NOT NULL AND column_name != ''
+                    ORDER BY column_name
+                    """,
+                    (db_profile, schema_name, table_name),
+                ).fetchall()
+        return [
+            {
+                "name": str(r["column_name"] or ""),
+                "dtype": str(r["dtype"] or ""),
+                "nullable": bool(r["nullable"]),
+                "pk_flag": bool(r["pk_flag"]),
+                "fk_flag": bool(r["fk_flag"]),
+                "last_synced_at": float(r["last_synced_at"] or 0.0) or None,
+            }
+            for r in rows
+        ]
+
+    def fetch_column_detail(
+        self,
+        db_profile: str | list[str],
+        *,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+    ) -> list[dict]:
+        """Return matching ``catalog_entities`` column row(s) with
+        their joined description text, for the ``describe_column``
+        Ask tool. Multi-profile fan-out returns one row per profile
+        that has the (schema, table, column) tuple — the agent can
+        disambiguate when the same column exists across profiles.
+        """
+        from amx.search._catalog._db_profile_clause import build_db_profile_clause
+
+        clause, binds = build_db_profile_clause(db_profile, column="ce.db_profile")
+        sql = (
+            "SELECT ce.db_profile, ce.database_name, ce.schema_name, "
+            "       ce.table_name, ce.column_name, ce.dtype, ce.nullable, "
+            "       ce.pk_flag, ce.fk_flag, ce.last_synced_at, "
+            "       cd.description_text AS description "
+            "FROM catalog_entities ce "
+            "LEFT JOIN catalog_descriptions cd "
+            "       ON cd.id = ce.effective_description_id "
+            f"WHERE {clause} "
+            "  AND ce.entity_kind = 'column' "
+            "  AND lower(ce.schema_name) = lower(?) "
+            "  AND lower(ce.table_name) = lower(?) "
+            "  AND lower(ce.column_name) = lower(?) "
+            "ORDER BY ce.db_profile, ce.database_name"
+        )
+        params: list[object] = list(binds) + [schema_name, table_name, column_name]
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            {
+                "db_profile": str(r["db_profile"] or ""),
+                "database": str(r["database_name"] or "") or None,
+                "schema": str(r["schema_name"] or ""),
+                "table": str(r["table_name"] or ""),
+                "column": str(r["column_name"] or ""),
+                "dtype": str(r["dtype"] or ""),
+                "nullable": bool(r["nullable"]),
+                "pk_flag": bool(r["pk_flag"]),
+                "fk_flag": bool(r["fk_flag"]),
+                "description": str(r["description"] or ""),
+                "last_synced_at": float(r["last_synced_at"] or 0.0) or None,
+            }
+            for r in rows
+        ]
+
+    def fetch_inventory(
+        self,
+        db_profile: str | list[str],
+        *,
+        scope: str = "schemas",
+    ) -> list[dict]:
+        """Distinct catalog / database / schema rows from the cache.
+
+        Replaces three live-only inventory tools (``list_catalogs``,
+        ``list_server_databases``, ``list_databases``) with a single
+        cache-served query the agent can call in cache-only mode.
+        Each row carries a freshness signal (``last_synced_at``)
+        and the parent profile so multi-profile fan-out questions
+        ("which databases do we have across both profiles?")
+        answer in one shot.
+
+        ``scope`` is one of:
+
+        * ``"databases"`` — distinct (profile, database_name).
+        * ``"schemas"`` — distinct (profile, database_name, schema_name).
+
+        Empty database / schema names are filtered out; the catalog
+        carries them only for higher-level entity-kind rows.
+        """
+        from amx.search._catalog._db_profile_clause import build_db_profile_clause
+
+        scope_norm = (scope or "schemas").strip().lower()
+        if scope_norm not in {"databases", "schemas"}:
+            scope_norm = "schemas"
+        clause, binds = build_db_profile_clause(db_profile, column="db_profile")
+        if scope_norm == "databases":
+            sql = (
+                "SELECT db_profile, database_name, "
+                "       MAX(last_synced_at) AS last_synced_at, "
+                "       COUNT(DISTINCT schema_name) AS schema_count, "
+                "       SUM(CASE WHEN entity_kind = 'table' THEN 1 ELSE 0 END) "
+                "         AS table_count "
+                "FROM catalog_entities "
+                f"WHERE {clause} "
+                "  AND database_name != '' "
+                "GROUP BY db_profile, database_name "
+                "ORDER BY db_profile, database_name"
+            )
+            with self._connect() as conn:
+                rows = conn.execute(sql, binds).fetchall()
+            return [
+                {
+                    "db_profile": str(r["db_profile"] or ""),
+                    "database": str(r["database_name"] or ""),
+                    "schema_count": int(r["schema_count"] or 0),
+                    "table_count": int(r["table_count"] or 0),
+                    "last_synced_at": float(r["last_synced_at"] or 0.0) or None,
+                }
+                for r in rows
+                if r["database_name"]
+            ]
+        # scope == "schemas"
+        sql = (
+            "SELECT db_profile, database_name, schema_name, "
+            "       MAX(last_synced_at) AS last_synced_at, "
+            "       SUM(CASE WHEN entity_kind = 'table' THEN 1 ELSE 0 END) "
+            "         AS table_count "
+            "FROM catalog_entities "
+            f"WHERE {clause} "
+            "  AND schema_name != '' "
+            "GROUP BY db_profile, database_name, schema_name "
+            "ORDER BY db_profile, database_name, schema_name"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(sql, binds).fetchall()
+        return [
+            {
+                "db_profile": str(r["db_profile"] or ""),
+                "database": str(r["database_name"] or "") or None,
+                "schema": str(r["schema_name"] or ""),
+                "table_count": int(r["table_count"] or 0),
+                "last_synced_at": float(r["last_synced_at"] or 0.0) or None,
+            }
+            for r in rows
+            if r["schema_name"]
         ]
 
     def search_entities(

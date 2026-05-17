@@ -131,28 +131,79 @@ def _systemd_timer_path(suffix: str) -> Path:
 
 
 def detect_daemon_state() -> dict[str, Any]:
-    """Return ``{installed: bool, path: str | None, last_tick_log: str | None}``.
+    """Return ``{installed, loaded, path, last_tick_log, log_size_bytes,
+    log_mtime}``.
 
-    Pure introspection -- never starts or stops anything.
+    ``installed``: the plist / service file exists on disk.
+    ``loaded``: the daemon is currently registered with the OS
+    scheduler. Pre-PR the function only checked the file; the user's
+    scheduler.log staying at 0 bytes after a successful "install"
+    click was exactly because the plist was on disk but launchd
+    never bootstrapped it. Now we distinguish the two so the SPA
+    can render a clear "Installed but not loaded — click to fix"
+    state instead of a misleading "Installed ✓" badge.
+
+    Pure introspection — never starts or stops anything.
     """
     label, suffix = _label_and_suffix()
     cfg = _config_dir()
     log_path = cfg / "logs" / "scheduler.log"
     log_str = str(log_path) if log_path.exists() else None
+    log_size = log_path.stat().st_size if log_path.exists() else 0
+    log_mtime = log_path.stat().st_mtime if log_path.exists() else None
     system = platform.system()
+
+    def _result(
+        installed: bool, loaded: bool, path: str | None
+    ) -> dict[str, Any]:
+        return {
+            "installed": installed,
+            "loaded": loaded,
+            "path": path,
+            "last_tick_log": log_str,
+            "log_size_bytes": log_size,
+            "log_mtime": log_mtime,
+        }
+
     if system == "Darwin":
         plist = _macos_plist_path(label)
-        if plist.exists():
-            return {"installed": True, "path": str(plist), "last_tick_log": log_str}
-        return {"installed": False, "path": None, "last_tick_log": log_str}
+        installed = plist.exists()
+        loaded = False
+        if installed:
+            target = f"gui/{os.getuid()}/{label}"
+            try:
+                # ``launchctl print`` exits 0 when the service is
+                # registered AND its plist is bootstrapped, non-zero
+                # otherwise. ``capture_output=True`` swallows the
+                # multi-line dump which we don't need.
+                result = subprocess.run(
+                    ["launchctl", "print", target],
+                    check=False,
+                    capture_output=True,
+                )
+                loaded = result.returncode == 0
+            except FileNotFoundError:
+                loaded = False
+        return _result(installed, loaded, str(plist) if installed else None)
     if system == "Linux":
         service = _systemd_service_path(suffix)
         timer = _systemd_timer_path(suffix)
-        if service.exists() and timer.exists():
-            return {"installed": True, "path": str(timer), "last_tick_log": log_str}
-        return {"installed": False, "path": None, "last_tick_log": log_str}
+        installed = service.exists() and timer.exists()
+        loaded = False
+        if installed:
+            try:
+                # ``systemctl --user is-active <timer>`` returns 0 when
+                # the timer is currently armed.
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-active", timer.name],
+                    check=False,
+                    capture_output=True,
+                )
+                loaded = result.returncode == 0
+            except FileNotFoundError:
+                loaded = False
+        return _result(installed, loaded, str(timer) if installed else None)
     if system == "Windows":
-        # ``schtasks /query`` returns 0 when the task exists.
         try:
             result = subprocess.run(
                 ["schtasks", "/query", "/tn", label],
@@ -160,15 +211,11 @@ def detect_daemon_state() -> dict[str, Any]:
                 capture_output=True,
             )
             if result.returncode == 0:
-                return {
-                    "installed": True,
-                    "path": label,
-                    "last_tick_log": log_str,
-                }
+                return _result(True, True, label)
         except FileNotFoundError:
             pass
-        return {"installed": False, "path": None, "last_tick_log": log_str}
-    return {"installed": False, "path": None, "last_tick_log": log_str}
+        return _result(False, False, None)
+    return _result(False, False, None)
 
 
 def install_daemon() -> dict[str, Any]:
@@ -192,25 +239,55 @@ def install_daemon() -> dict[str, Any]:
                 log_path=str(log_path),
             )
         )
-        # Unload first in case an older plist (pointing at the now-
-        # unreachable ``amx scheduler tick`` shell entry) is still
-        # loaded -- launchctl ``load`` is a no-op when the label is
-        # already present.
-        try:
-            subprocess.run(
-                ["launchctl", "unload", str(plist_path)],
-                check=False,
-                capture_output=True,
-            )
-            subprocess.run(
-                ["launchctl", "load", str(plist_path)],
-                check=False,
-                capture_output=True,
-            )
-        except FileNotFoundError:
-            pass
+        # macOS Big Sur deprecated ``launchctl load`` — on modern
+        # systems it returns 0 and silently does nothing, so the
+        # plist sits on disk but the daemon never runs. The user's
+        # scheduler.log staying at 0 bytes after a successful
+        # "Install daemon" click is exactly that. Switch to the
+        # modern ``bootstrap`` / ``enable`` / ``kickstart`` triple.
+        target = f"gui/{os.getuid()}/{label}"
+        domain = f"gui/{os.getuid()}"
+        errors: list[str] = []
+
+        def _run(cmd: list[str], *, ignore_fail: bool = False) -> int:
+            try:
+                result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            except FileNotFoundError:
+                return -1
+            if result.returncode != 0 and not ignore_fail:
+                stderr = (result.stderr or "").strip()
+                if stderr:
+                    errors.append(f"{' '.join(cmd)}: {stderr}")
+            return result.returncode
+
+        # 1. Unload any previous incarnation. ``bootout`` is the
+        #    modern replacement; ``unload`` is the legacy fallback.
+        #    Both no-op cleanly when the label isn't loaded.
+        _run(["launchctl", "bootout", target], ignore_fail=True)
+        _run(["launchctl", "unload", str(plist_path)], ignore_fail=True)
+        # 2. Load + activate via the modern API. Capture stderr so
+        #    a real failure (e.g. unsigned binary, missing python
+        #    path) surfaces to the caller instead of being swallowed.
+        rc_bootstrap = _run(["launchctl", "bootstrap", domain, str(plist_path)])
+        if rc_bootstrap != 0:
+            # Legacy fallback — older macOS (Catalina and earlier)
+            # only understands ``load``. ``bootstrap`` returns
+            # non-zero there; fall through silently and try the
+            # old command, which is correct on those systems.
+            _run(["launchctl", "load", str(plist_path)])
+        # 3. Make sure the service isn't disabled by a prior
+        #    ``launchctl disable`` (some user-config managers leave
+        #    these stuck).
+        _run(["launchctl", "enable", target], ignore_fail=True)
+        # 4. Fire the first run immediately so the user doesn't wait
+        #    up to 60s for the next interval tick after install.
+        _run(["launchctl", "kickstart", "-k", target], ignore_fail=True)
+
+        message = f"Installed launchd daemon {label}."
+        if errors:
+            message += " (warnings: " + "; ".join(errors) + ")"
         return {
-            "message": f"Installed launchd daemon {label}.",
+            "message": message,
             "path": str(plist_path),
         }
 

@@ -19,10 +19,9 @@ from __future__ import annotations
 import json
 import threading
 import time
-from queue import Empty
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -83,6 +82,17 @@ class AskRequest(BaseModel):
         default=None,
         description=(
             "Explicit code-profile selection for THIS question. Same semantics as ``doc_profiles``."
+        ),
+    )
+    allow_live_refresh: bool = Field(
+        default=False,
+        description=(
+            "Opt-in for live-DB reads on this question. When False (the "
+            "default) Ask serves cached catalog metadata only: the "
+            "background drift probe is skipped and any tool-level "
+            "``force_fresh`` argument the LLM might pass is suppressed. "
+            "Set to True from the Ask UI 'Live refresh' toggle to allow "
+            "a single turn to refresh against the live database."
         ),
     )
 
@@ -209,19 +219,23 @@ def submit_ask(
 
     scope_profiles = _resolve_ask_scope(cfg, body.scope_profiles, session_scope)
 
-    # Fire a background drift probe for every profile in scope. If a
-    # table was created / dropped since the last ``/search sync``, the
-    # probe enqueues an async sync so the NEXT /ask reflects the new
-    # schema. The current call uses whatever catalog state is there —
-    # the probe is intentionally fire-and-forget. ``AMX_SKIP_DRIFT_PROBE=1``
-    # opts out, and the helper applies a per-profile cooldown so
-    # back-to-back /ask calls don't hammer the live DB.
-    try:
-        from amx.search.drift import fire_drift_probe
+    # Cache-only by default: only fire the background drift probe when
+    # the user has explicitly enabled "Live refresh" for this turn.
+    # Without the toggle, the probe would hit every in-scope profile's
+    # live DB on every question and enqueue auto-syncs — a side-effect
+    # the user never authorised. ``AMX_SKIP_DRIFT_PROBE=1`` remains
+    # the operator-level global kill switch on top of this gate.
+    if body.allow_live_refresh:
+        try:
+            from amx.search.drift import fire_drift_probe
 
-        fire_drift_probe(cfg, scope_profiles)
-    except Exception as exc:  # pragma: no cover - best-effort
-        log.debug("fire_drift_probe failed: %s", exc)
+            fire_drift_probe(cfg, scope_profiles)
+        except Exception as exc:  # pragma: no cover - best-effort
+            log.debug("fire_drift_probe failed: %s", exc)
+    else:
+        log.debug(
+            "drift probe suppressed for ask job (allow_live_refresh=False)",
+        )
 
     job = jobs.new_job("ask")
     thread = threading.Thread(
@@ -235,6 +249,7 @@ def submit_ask(
             scope_profiles,
             body.doc_profiles,
             body.code_profiles,
+            body.allow_live_refresh,
         ),
         name=f"amx-studio-ask-{job.id}",
         daemon=True,
@@ -495,11 +510,37 @@ def get_ask_job(job_id: str, jobs: JobRegistry = Depends(get_jobs)) -> dict[str,
 
 
 @router.get("/{job_id}/events")
-def stream_ask_events(job_id: str, jobs: JobRegistry = Depends(get_jobs)) -> EventSourceResponse:
+def stream_ask_events(
+    job_id: str,
+    request: Request,
+    jobs: JobRegistry = Depends(get_jobs),
+) -> EventSourceResponse:
     job = jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No job {job_id}")
-    return EventSourceResponse(_event_generator(job))
+    # Browsers populate ``Last-Event-ID`` automatically on auto-reconnect
+    # when prior events carried an ``id:`` field — see
+    # ``_event_generator`` for the matching emit. Reading it here lets a
+    # reconnected stream pick up exactly where the previous one left off
+    # instead of starting from the live tail and shredding the rendered
+    # output across two competing consumers.
+    raw_last_id = request.headers.get("last-event-id") or "0"
+    try:
+        last_event_id = int(raw_last_id)
+    except (TypeError, ValueError):
+        last_event_id = 0
+    return EventSourceResponse(
+        _event_generator(job, last_event_id=last_event_id),
+        headers={
+            # Hint to Nginx / sse-starlette / proxies that this body
+            # must not be buffered. Belt-and-braces — most reverse
+            # proxies in front of Studio (development, prod, hosted
+            # variants) honour this header to pass SSE through
+            # without coalescing frames.
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/{job_id}/cancel")
@@ -522,25 +563,88 @@ def _session_store_or_none() -> ChatSessionStore | None:
     return ChatSessionStore(hs)
 
 
-def _event_generator(job: Job):
-    """Tail the job's queue until a terminal event arrives. SSE
-    keepalives ride alongside so corporate proxies don't reap idle
-    streams while the agent is mid-LLM-call."""
+#: How long the SSE generator parks in ``tail_from`` between event
+#: arrivals before forcing a keepalive ping out the wire. Sized below
+#: the 30 s idle timeouts most corporate proxies enforce so a long
+#: LLM-thinking phase never lets the stream go silent long enough for
+#: an intermediary to reap it.
+_SSE_TAIL_TIMEOUT_SEC = 8.0
+#: Cap on time between data frames before forcing a ping. Slightly
+#: less than ``_SSE_TAIL_TIMEOUT_SEC`` so a tight loop that keeps
+#: returning empty tails still emits something useful every cycle.
+_SSE_PING_INTERVAL_SEC = 7.0
+
+
+def _event_generator(job: Job, *, last_event_id: int = 0):
+    """Stream the job's event log to one SSE consumer.
+
+    The generator is **multi-consumer safe** by design — two
+    concurrent EventSource connections against the same job each track
+    their own ``cursor`` against :meth:`BufferedQueue.tail_from` and
+    receive the FULL ordered history independently. That is the fix
+    for the "garbled thinking" reproduction: in the legacy ``queue.get``
+    consumer the two generators raced over one queue, each taking
+    roughly half the in-flight events, so the SPA only ever rendered
+    the half delivered to its current connection.
+
+    ``last_event_id`` is the sequence number of the last event the
+    browser has already seen, taken from the ``Last-Event-ID`` request
+    header. Replay starts from ``last_event_id + 1`` against the
+    bounded buffer; events older than the buffer's window are
+    irretrievable (best-effort, see :meth:`BufferedQueue.tail_from`).
+    Every yielded frame carries ``id: <seq>`` so the browser's
+    auto-reconnect path can pick up cleanly on the next disconnect.
+
+    Keepalive pings ride alongside on a tight 7-second cadence so
+    long thinking phases never let the stream go silent long enough
+    for a proxy to reap it. Pings are stamped with the current cursor
+    rather than a fresh id so a reconnect does not have to "replay"
+    the ping itself.
+    """
+    cursor = max(0, int(last_event_id or 0))
     last_keepalive = time.monotonic()
     while True:
-        try:
-            event = job.queue.get(timeout=15)
-        except Empty:
+        ready = job.queue.tail_from(cursor, timeout=_SSE_TAIL_TIMEOUT_SEC)
+        if ready is None:
+            # tail_from timed out with no new events. Force a keepalive
+            # ping if the wire has been quiet long enough.
             now = time.monotonic()
-            if now - last_keepalive > 14:
-                yield {"event": "ping", "data": json.dumps({"t": now})}
+            if now - last_keepalive > _SSE_PING_INTERVAL_SEC:
+                yield {
+                    "id": str(cursor),
+                    "event": "ping",
+                    "data": json.dumps({"t": now}),
+                }
                 last_keepalive = now
             if job.status not in ("queued", "running"):
+                # Worker terminated without enqueuing a terminal event.
+                # ``_ask_worker``'s try/finally synth fallback (PR #498)
+                # is supposed to catch this, but keep the diagnostic
+                # log so a regression that bypasses the fallback is
+                # still investigable.
+                log.warning(
+                    "ask SSE generator exiting on terminal-without-event: "
+                    "job_id=%s status=%s cursor=%s buffer_seq=%s",
+                    job.id,
+                    job.status,
+                    cursor,
+                    job.queue.buffer_seq,
+                )
                 break
             continue
-        kind = str(event.get("type", ""))
-        yield {"event": kind, "data": json.dumps(event)}
-        if kind in {"job.done", "job.cancelled", "job.failed"}:
+        terminal_seen = False
+        for seq, event in ready:
+            kind = str(event.get("type", ""))
+            yield {
+                "id": str(seq),
+                "event": kind,
+                "data": json.dumps(event),
+            }
+            cursor = seq
+            last_keepalive = time.monotonic()
+            if kind in {"job.done", "job.cancelled", "job.failed"}:
+                terminal_seen = True
+        if terminal_seen:
             break
 
 
@@ -630,6 +734,83 @@ def _ask_worker(
     scope_profiles: list[str],
     doc_profiles_override: list[str] | None = None,
     code_profiles_override: list[str] | None = None,
+    allow_live_refresh: bool = False,
+) -> None:
+    """Run the tool-calling agent and guarantee a terminal SSE event.
+
+    Wraps :func:`_ask_worker_impl` in a try/finally so that any
+    unhandled exception on a path that does not already emit a
+    terminal still produces a ``job.failed`` SSE frame. Without this
+    belt-and-suspenders, a regression like the historical
+    ``_load_catalog`` raise inside ``CollectionIdentityMismatch``
+    silently killed the worker thread and the SPA hung on
+    "Reasoning…" until the browser eventually reported
+    "Connection lost. Reconnecting (attempt 1/5)…".
+    """
+    try:
+        _ask_worker_impl(
+            cfg,
+            job,
+            question,
+            session_id,
+            db_profile,
+            scope_profiles,
+            doc_profiles_override,
+            code_profiles_override,
+            allow_live_refresh,
+        )
+    except Exception:
+        # Last-resort safety net. The two real paths
+        # (``_ask_worker_impl`` happy + named-exception branches)
+        # already emit clean terminal frames; this only fires when
+        # something escapes them.
+        log.exception(
+            "ask worker crashed without emitting a terminal event: job_id=%s",
+            job.id,
+        )
+    finally:
+        if job.status in ("queued", "running"):
+            # No terminal event was emitted — the thread died on a path
+            # the explicit handlers did not cover. Synthesize a
+            # ``job.failed`` so the SPA renders an actionable error
+            # state instead of hanging until the browser SSE proxy
+            # gives up.
+            job.status = "failed"
+            job.error = job.error or (
+                "Internal error: the ask worker exited without "
+                "emitting a terminal event. See ~/.amx/logs/amx.log."
+            )
+            job.ended_at = time.time()
+            try:
+                emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
+            except Exception:
+                pass
+            log.warning(
+                "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=synth-fallback",
+                job.id,
+                job.status,
+                time.time() - job.started_at,
+            )
+            try:
+                emit_terminal(
+                    job.queue,
+                    "job.failed",
+                    {"error": job.error, "hint": "internal-error"},
+                )
+            except Exception:
+                pass
+
+
+def _ask_worker_impl(
+    cfg: AMXConfig,
+    job: Job,
+    question: str,
+    session_id: int | None,
+    db_profile: str,
+    scope_profiles: list[str],
+    doc_profiles_override: list[str] | None = None,
+    code_profiles_override: list[str] | None = None,
+    allow_live_refresh: bool = False,
 ) -> None:
     """Run the tool-calling agent + stream every reasoning chunk and
     tool result back to the SSE consumer. Persists the assistant
@@ -639,6 +820,11 @@ def _ask_worker(
     (per-question body override > session sticky > config default).
     Passed through to ``run_tool_agent`` which threads it into every
     catalog tool call.
+
+    Wrapped by :func:`_ask_worker` so an unhandled exception on a code
+    path that does not already emit a terminal still produces a
+    ``job.failed`` SSE event instead of silently killing the worker
+    thread and stranding the SPA on a hung stream.
     """
     job.status = "running"
     emit(job.queue, "activity.added", {"idx": 0, "label": "Thinking"})
@@ -711,13 +897,52 @@ def _ask_worker(
         except Exception as exc:  # pragma: no cover - best-effort
             log.warning("Could not finalise tokens_json for ask run %s: %s", run_id, exc)
 
-    catalog = _load_catalog()
+    # ``_load_catalog`` can raise when the user's chromadb collection was
+    # indexed under one embedding identity and the active embedding
+    # profile points at a different one (the canonical signal is
+    # ``"Vector collection was indexed with a different embedding
+    # identity"``). Without this try/except the exception bubbled out
+    # of the worker thread before any terminal event was emitted, so
+    # the SSE consumer hung indefinitely and the browser eventually
+    # reported "Connection lost. Reconnecting (attempt 1/5)..." with
+    # no recovery path. Surface the failure as a clean ``job.failed``
+    # event with the original message so the SPA can render the
+    # actionable hint ("run /search rebuild").
+    try:
+        catalog = _load_catalog()
+    except Exception as exc:
+        message = str(exc) or exc.__class__.__name__
+        job.status = "failed"
+        job.error = f"Search catalog could not be opened: {message}"
+        job.ended_at = time.time()
+        emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
+        _finish(status_value="failed", error_text=job.error)
+        hint = "rebuild-catalog" if "embedding identity" in message.lower() else "sync-catalog"
+        log.info(
+            "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=catalog-load-failed hint=%s",
+            job.id,
+            job.status,
+            time.time() - job.started_at,
+            hint,
+        )
+        emit_terminal(
+            job.queue,
+            "job.failed",
+            {"error": job.error, "hint": hint},
+        )
+        return
     if catalog is None:
         job.status = "failed"
         job.error = "Search catalog isn't initialised yet — run /search sync first."
         job.ended_at = time.time()
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
         _finish(status_value="failed", error_text=job.error)
+        log.info(
+            "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=catalog-not-initialised",
+            job.id,
+            job.status,
+            time.time() - job.started_at,
+        )
         emit_terminal(
             job.queue,
             "job.failed",
@@ -743,6 +968,12 @@ def _ask_worker(
         job.ended_at = time.time()
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
         _finish(status_value="failed", error_text=job.error)
+        log.info(
+            "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=llm-init-failed",
+            job.id,
+            job.status,
+            time.time() - job.started_at,
+        )
         emit_terminal(
             job.queue,
             "job.failed",
@@ -781,7 +1012,54 @@ def _ask_worker(
         # expander instead of the truncated single-line preview.
         if "citations" in summary:
             payload["citations"] = list(summary.get("citations") or [])
+        if "source" in summary:
+            payload["source"] = summary["source"]
+        if "elapsed_ms" in summary:
+            payload["elapsed_ms"] = summary["elapsed_ms"]
+        # Forward the needs_live_refresh envelope so AskChat can render
+        # the "Enable Live refresh & retry" button on the bubble.
+        if summary.get("needs_live_refresh"):
+            payload["needs_live_refresh"] = True
+            for key in ("blocked_arguments", "blocked_reason", "blocked_user_action"):
+                if key in summary:
+                    payload[key] = summary[key]
         emit(job.queue, "tool.call", payload)
+
+    def _on_llm_round(event: dict[str, Any]) -> None:
+        """Forward LLM-round phase events onto the SSE bus.
+
+        The heartbeat context manager in ``tool_agent.py`` emits
+        ``started`` / ``heartbeat`` / ``finished`` for every ``llm.chat``
+        invocation. We rename the SSE event so the SPA can filter
+        cleanly: ``llm.round.started`` / ``llm.round.heartbeat`` /
+        ``llm.round.finished``.
+        """
+        phase_event = str(event.get("phase_event") or "heartbeat").lower()
+        if phase_event not in {"started", "heartbeat", "finished"}:
+            phase_event = "heartbeat"
+        payload: dict[str, Any] = {
+            "round": int(event.get("round") or 0),
+            "phase": str(event.get("phase") or ""),
+            "elapsed_ms": int(event.get("elapsed_ms") or 0),
+        }
+        emit(job.queue, f"llm.round.{phase_event}", payload)
+
+    def _on_tool_start(announcement: dict[str, Any]) -> None:
+        """Fired the moment a tool is about to dispatch, BEFORE the
+        Python handler runs. Lets the SPA render a live activity row
+        ("Reading cache · list_tables_in_schema on dbr-oyk") instead
+        of the user staring at a 'Reasoning…' spinner for the entire
+        tool turn. Carries ``source_hint`` so the row can preview
+        cache-vs-live before the handler decides for real.
+        """
+        payload: dict[str, Any] = {
+            "name": announcement.get("name", ""),
+            "arguments": announcement.get("arguments", "{}"),
+            "source_hint": announcement.get("source_hint", "unknown"),
+        }
+        if "scope_profiles" in announcement:
+            payload["scope_profiles"] = list(announcement.get("scope_profiles") or [])
+        emit(job.queue, "tool.started", payload)
 
     # Hydrate the prior-turn context so a resumed chat can resolve
     # follow-up references ("that table", "the second one"). Pulled
@@ -801,11 +1079,14 @@ def _ask_worker(
             display=None,
             on_thinking_delta=_on_thinking,
             on_tool_call=_on_tool_call,
+            on_tool_start=_on_tool_start,
             on_content_delta=_on_content_delta,
+            on_llm_round=_on_llm_round,
             cancel_token=job.cancel,
             db_profiles=list(scope_profiles) if scope_profiles else None,
             doc_profiles=doc_profiles_override,
             code_profiles=code_profiles_override,
+            allow_live_refresh=allow_live_refresh,
         )
     except RunCancelled:
         job.status = "cancelled"
@@ -833,6 +1114,12 @@ def _ask_worker(
                         session_id,
                         exc,
                     )
+        log.info(
+            "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=cancelled",
+            job.id,
+            job.status,
+            time.time() - job.started_at,
+        )
         emit_terminal(job.queue, "job.cancelled", {})
         return
     except Exception as exc:
@@ -877,6 +1164,12 @@ def _ask_worker(
         payload: dict[str, Any] = {"error": job.error}
         if hint:
             payload["hint"] = hint
+        log.info(
+            "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=run_tool_agent-exception",
+            job.id,
+            job.status,
+            time.time() - job.started_at,
+        )
         emit_terminal(job.queue, "job.failed", payload)
         return
 
@@ -976,6 +1269,12 @@ def _ask_worker(
             "scope_profiles": list(result.scope_profiles or []),
             "focus_profile": result.focus_profile,
         },
+    )
+    log.info(
+        "ask worker terminal: job_id=%s status=%s elapsed=%.2fs",
+        job.id,
+        job.status,
+        time.time() - job.started_at,
     )
     emit_terminal(job.queue, "job.done", {"summary": job.summary})
 

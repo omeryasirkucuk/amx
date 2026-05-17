@@ -144,10 +144,21 @@ class SearchIndex:
         # RAG's /code-refresh in semantics.
         self._identity = _resolve_search_identity(embedding_function, cfg=cfg)
         self._collections: dict[str, Any] = {}
-        # Eagerly construct the legacy collection (empty profile key) so the
-        # historical ``self.collection`` attribute keeps working for callers
-        # and tests that have not adopted the per-profile API.
-        self.collection = self._collection_for("")
+
+    @property
+    def collection(self) -> Any:
+        """Legacy (empty-profile) collection, opened lazily.
+
+        Earlier versions opened this in ``__init__``. The eager open
+        meant every ``/ask`` request absorbed the chroma init cost and
+        — worse — surfaced a ``CollectionIdentityMismatch`` at worker
+        startup even when the user had explicitly turned both Docs
+        and Code RAG off and the legacy collection was never going to
+        be queried. Opening lazily defers ``reconcile_identity`` to
+        the first call site that actually needs the collection, so
+        non-RAG questions never touch the on-disk vector store.
+        """
+        return self._collection_for("")
 
     def _collection_for(self, db_profile: str) -> Any:
         """Get or create the Chroma collection for *db_profile*.
@@ -251,11 +262,34 @@ class SearchIndex:
                 continue
 
     def reset_profile(self, db_profile: str) -> None:
-        col = self._collection_for(db_profile)
-        rows = col.get(include=[])
-        ids = rows.get("ids") or []
-        if ids:
-            col.delete(ids=ids)
+        """Drop the per-profile collection so the next open reseeds
+        the identity metadata.
+
+        The previous body deleted documents one id at a time but left
+        the collection's identity metadata (``embedding_provider`` /
+        ``embedding_model`` / ``embedding_dim``) in place. After an
+        ``/embeddings`` swap that meant the user could run
+        ``/search rebuild`` and STILL hit
+        :class:`CollectionIdentityMismatch` on the next ``/ask`` — the
+        rebuild deleted vectors but did not invalidate the stamped
+        identity, so the new MiniLM/MiniLM-L6-v2 active config kept
+        clashing with the old (e.g. ``sentence_transformers`` /
+        ``gte-small``) recorded triple. Dropping the collection
+        outright forces the next ``_collection_for`` call to
+        ``get_or_create_collection`` with the active identity.
+        """
+        name = _collection_name_for(db_profile)
+        # Drop the in-process cache first so the next access creates
+        # a fresh collection handle bound to the new on-disk state.
+        self._collections.pop(db_profile or "", None)
+        try:
+            self.client.delete_collection(name=name)
+        except Exception as exc:
+            # The collection may not exist yet (first ``rebuild`` on a
+            # fresh install) — that is fine. We log at debug instead
+            # of swallowing silently so a genuine Chroma error during
+            # rebuild is still investigable from the log.
+            log.debug("reset_profile: delete_collection(%s) skipped: %s", name, exc)
 
     def query(
         self,

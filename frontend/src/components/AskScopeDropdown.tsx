@@ -165,7 +165,7 @@ export default function AskScopeDropdown({
         <ChevronDown size={12} className="opacity-70" />
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1 w-72 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
+        <div className="absolute bottom-full right-0 z-30 mb-1 w-72 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
           <button
             type="button"
             onClick={selectAll}

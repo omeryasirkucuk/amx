@@ -1900,7 +1900,15 @@ class CatalogDiscoveryToolsTests(unittest.TestCase):
         cfg.db.catalog = pinned_catalog
         cfg.db.database = pinned_database
         catalog = MagicMock()
-        return ToolBox(cfg, catalog, db_factory=lambda: fake_db)
+        # Catalog-discovery tests exercise the LIVE path on purpose
+        # (FakeDB.list_catalogs / list_schemas). Opt in to live mode
+        # so the new cache-only gate doesn't short-circuit them.
+        return ToolBox(
+            cfg,
+            catalog,
+            db_factory=lambda: fake_db,
+            allow_live_refresh=True,
+        )
 
     def test_list_schemas_returns_catalog_list_when_multiple_user_catalogs(self) -> None:
         """When a 3-level backend has no catalog pinned and the workspace

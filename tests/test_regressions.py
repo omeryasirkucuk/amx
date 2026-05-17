@@ -4433,7 +4433,13 @@ class SearchIndexEmbeddingTests(unittest.TestCase):
                 return FakeCollection()
 
         with patch("chromadb.PersistentClient", FakeClient):
-            index_module.SearchIndex(persist_dir=self._tempdir.name)
+            idx = index_module.SearchIndex(persist_dir=self._tempdir.name)
+            # ``SearchIndex`` opens the legacy collection lazily, so the
+            # ``get_or_create_collection`` call only fires when a caller
+            # actually reaches for ``.collection`` (or any per-profile
+            # collection). Triggering it here keeps the embedding-wiring
+            # contract under test.
+            _ = idx.collection
 
         # Default behaviour: no embedding_function → Chroma uses MiniLM.
         self.assertNotIn("embedding_function", captured)
@@ -4462,6 +4468,9 @@ class SearchIndexEmbeddingTests(unittest.TestCase):
                 persist_dir=self._tempdir.name,
                 embedding_function=sentinel_ef,  # type: ignore[arg-type]
             )
+            # Legacy collection now opens lazily; touch it so the
+            # ``get_or_create_collection`` kwargs are captured.
+            _ = idx.collection
 
         self.assertIs(captured.get("embedding_function"), sentinel_ef)
         self.assertIs(idx.embedding_function, sentinel_ef)
@@ -5036,7 +5045,10 @@ class EmbeddingFactoryRegistryTests(unittest.TestCase):
         self.embeddings_module.set_embedding_function("code", lambda: code_sentinel)
         with tempfile.TemporaryDirectory() as td:
             with patch("chromadb.PersistentClient", FakeClient):
-                index_module.SearchIndex(persist_dir=td)
+                idx = index_module.SearchIndex(persist_dir=td)
+                # Legacy collection opens lazily — touch it to trigger
+                # the ``get_or_create_collection`` we are asserting on.
+                _ = idx.collection
 
         # Docs sentinel got wired in, NOT the code sentinel.
         self.assertIs(captured.get("embedding_function"), docs_sentinel)
@@ -5060,10 +5072,11 @@ class EmbeddingFactoryRegistryTests(unittest.TestCase):
         self.embeddings_module.set_embedding_function("docs", lambda: object())
         with tempfile.TemporaryDirectory() as td:
             with patch("chromadb.PersistentClient", FakeClient):
-                index_module.SearchIndex(
+                idx = index_module.SearchIndex(
                     persist_dir=td,
                     embedding_function=explicit,  # type: ignore[arg-type]
                 )
+                _ = idx.collection  # legacy collection now opens lazily
 
         self.assertIs(captured.get("embedding_function"), explicit)
 

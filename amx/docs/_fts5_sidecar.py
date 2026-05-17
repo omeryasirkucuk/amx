@@ -181,6 +181,24 @@ class FTS5Sidecar:
             log.warning("FTS5 sidecar delete_by_ids failed: %s", exc)
             return 0
 
+    def clear(self) -> int:
+        """Remove every row from the FTS5 table.
+
+        Used by ``RAGStore.reset_collection`` so that after a docs
+        embedding-model swap the BM25 channel cannot resurface chunks
+        from the dropped Chroma collection. Returns the row count
+        before the wipe (best-effort, 0 on any error).
+        """
+        if self._conn is None:
+            return 0
+        try:
+            before = self._conn.execute(f"SELECT COUNT(*) FROM {_TABLE_NAME}").fetchone()
+            self._conn.execute(f"DELETE FROM {_TABLE_NAME}")
+            return int(before[0]) if before else 0
+        except sqlite3.Error as exc:  # pragma: no cover — rare
+            log.warning("FTS5 sidecar clear failed: %s", exc)
+            return 0
+
     def delete_by_source(self, source: str) -> int:
         """Delete all rows for the given ``source`` path. Used by
         ``RAGStore.delete_chunks_for_sources`` and by the orphan-

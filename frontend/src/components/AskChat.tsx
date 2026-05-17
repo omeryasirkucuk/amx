@@ -79,6 +79,13 @@ export interface SubmittedTurn {
     /** PR E: per-call citations (only present on ``search_docs``). */
     citations?: Citation[];
   }>;
+  /** Set when at least one tool the assistant tried to use was blocked
+   *  by cache-only mode. Drives the "Enable Live refresh & retry"
+   *  button on the persisted bubble. */
+  needsLiveRefresh?: {
+    question: string;
+    blockedTool: string;
+  };
   /** Multi-profile observability stamped on assistant turns. */
   scopeProfiles?: string[];
   focusProfile?: string | null;
@@ -152,6 +159,12 @@ export default function AskChat({
   const [turns, setTurns] = useState<SubmittedTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [activeJob, setActiveJob] = useState<string | null>(null);
+  // Wall-clock when the current ask job started — used to show a
+  // live elapsed-time tick in the response bubble so the user is
+  // never staring at a static "Reasoning…" for 5+ seconds without
+  // any signal that AMX is actually working.
+  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+  const [tick, setTick] = useState<number>(0);
   // ``cancelling`` flips to true the instant the user clicks Cancel,
   // ahead of the SSE ``job.cancelled`` event. The backend can't abort
   // an in-flight LLM HTTP call (LiteLLM is synchronous), so cancellation
@@ -194,6 +207,30 @@ export default function AskChat({
   const [docProfilesOverride, setDocProfilesOverride] = useState<string[] | null>([]);
   const [codeProfilesOverride, setCodeProfilesOverride] = useState<string[] | null>([]);
 
+  // "Live refresh" toggle — default OFF means Ask serves cached
+  // catalog metadata only and never hits the live DB. Flipping it
+  // ON sends ``allow_live_refresh: true`` for the next question,
+  // which lets the backend fire the drift probe AND honour any
+  // tool-level ``force_fresh`` the LLM asks for. Persisted to
+  // localStorage so the choice survives a page reload, but the
+  // default for every fresh browser stays cache-only by design.
+  const ALLOW_LIVE_REFRESH_KEY = "amx.ask.allowLiveRefresh";
+  const [allowLiveRefresh, setAllowLiveRefresh] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(ALLOW_LIVE_REFRESH_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(ALLOW_LIVE_REFRESH_KEY, allowLiveRefresh ? "1" : "0");
+    } catch {
+      // localStorage unavailable (private mode, embedded view) —
+      // the toggle still works for this tab, just won't persist.
+    }
+  }, [allowLiveRefresh]);
+
   // Read the active LLM profile / model from the shared ``["context"]``
   // cache so the inline picker mirrors whatever the sidebar shows.
   // ``ProfilePicker``'s activate mutation invalidates this key, so
@@ -207,11 +244,23 @@ export default function AskChat({
   const activeLlmProfile = ctxForLlm.data?.active_llm_profile ?? null;
   const activeLlmModel = ctxForLlm.data?.llm_model ?? null;
 
+  // Drive an interval timer while a job is running so the live
+  // "elapsed seconds" tick in the response bubble re-renders every
+  // 200 ms. The tick state is otherwise unused — just a render trigger.
+  useEffect(() => {
+    if (!activeJob || jobStartedAt == null) {
+      return;
+    }
+    const handle = window.setInterval(() => setTick((n) => n + 1), 200);
+    return () => window.clearInterval(handle);
+  }, [activeJob, jobStartedAt]);
+
   // Reseed history when the parent picks a different session.
   useEffect(() => {
     setSessionId(selectedSessionId);
     setTurns(seedTurns ?? []);
     setActiveJob(null);
+    setJobStartedAt(null);
     setSubmitError(null);
     setSubmitErrorHint(null);
     // Drop the "_new_" scratch entry when the parent transitions us
@@ -245,6 +294,20 @@ export default function AskChat({
           if (cancelled || !stillThis()) return;
           if (status.status === "running" || status.status === "queued") {
             setActiveJob(savedJobId);
+            // Recover the original start time so the live timer keeps
+            // ticking through the reload instead of restarting at 0.
+            let recovered = NaN;
+            try {
+              const raw = localStorage.getItem(
+                `amx.ask.jobStartedAt.${savedJobId}`,
+              );
+              if (raw) recovered = Number(raw);
+            } catch {
+              recovered = NaN;
+            }
+            setJobStartedAt(
+              Number.isFinite(recovered) ? recovered : Date.now(),
+            );
           } else {
             // Worker terminated while we were away. The assistant turn
             // (or failure) is already persisted to chat_sessions; ask
@@ -281,7 +344,7 @@ export default function AskChat({
   });
 
   // Aggregate streamed events into the assistant's turn.
-  const { thinking, streamingAnswer, finalAnswer, toolCalls, finalMeta, finalCitations, jobFailure, wasCancelled } = useMemo(() => {
+  const { thinking, streamingAnswer, finalAnswer, toolCalls, activity, llmRound, finalMeta, finalCitations, jobFailure, wasCancelled } = useMemo(() => {
     const thinkingChunks: string[] = [];
     const tools: Array<{
       name: string;
@@ -290,6 +353,32 @@ export default function AskChat({
       latency_ms?: number;
       citations?: Citation[];
     }> = [];
+    // Real-time activity rows for the response card. ``tool.started``
+    // pushes a row with ``phase: "pending"``; the matching
+    // ``tool.call`` flips it to ``phase: "done"`` with the resolved
+    // source (catalog / live / blocked_cache_only) and elapsed ms.
+    // The user sees each step as it happens — no more 4-minute black
+    // box.
+    const activityRows: Array<{
+      key: string;
+      name: string;
+      arguments: string;
+      phase: "pending" | "done";
+      sourceHint?: "cache" | "live" | "unknown" | "blocked_cache_only";
+      source?: "catalog" | "live" | "live_cache" | "mixed" | "blocked_cache_only";
+      scopeProfiles?: string[];
+      elapsedMs?: number;
+      needsLiveRefresh?: boolean;
+      blockedArguments?: Record<string, unknown>;
+      blockedReason?: string;
+      blockedUserAction?: string;
+    }> = [];
+    let llmRoundState: {
+      round: number;
+      phase: string;
+      elapsedMs: number;
+      status: "active" | "finished";
+    } | null = null;
     // ``answerChunks`` accumulates ``answer.delta`` events into the
     // streaming assistant bubble. Cleared whenever a ``tool.call``
     // event arrives — any content emitted before a tool call is
@@ -312,17 +401,108 @@ export default function AskChat({
         thinkingChunks.push(event.text);
       } else if (event.type === "answer.delta" && typeof event.text === "string") {
         answerChunks.push(event.text);
+      } else if (
+        event.type === "llm.round.started" ||
+        event.type === "llm.round.heartbeat" ||
+        event.type === "llm.round.finished"
+      ) {
+        const status =
+          event.type === "llm.round.finished" ? "finished" : "active";
+        llmRoundState = {
+          round:
+            typeof event.round === "number" ? (event.round as number) : 0,
+          phase: String(event.phase || ""),
+          elapsedMs:
+            typeof event.elapsed_ms === "number"
+              ? (event.elapsed_ms as number)
+              : 0,
+          status,
+        };
+      } else if (event.type === "tool.started") {
+        // A tool is about to dispatch. Push a pending activity row so
+        // the UI shows the user what's happening BEFORE the handler
+        // runs — kills the "Reasoning…" black hole.
+        const name = String(event.name || "");
+        const args = String(event.arguments || "");
+        const hint = String(event.source_hint || "unknown") as
+          | "cache"
+          | "live"
+          | "unknown";
+        activityRows.push({
+          key: `act_${activityRows.length}_${name}`,
+          name,
+          arguments: args,
+          phase: "pending",
+          sourceHint: hint,
+          scopeProfiles: Array.isArray(event.scope_profiles)
+            ? (event.scope_profiles as string[])
+            : undefined,
+        });
       } else if (event.type === "tool.call") {
         // Interim narration before a tool call is not the final answer;
         // reset the streaming-answer accumulator so the bubble starts
         // fresh for the next iteration's content.
         answerChunks = [];
+        const name = String(event.name || "");
+        const args = String(event.arguments || "");
+        const elapsedMs =
+          typeof event.elapsed_ms === "number"
+            ? (event.elapsed_ms as number)
+            : typeof event.latency_ms === "number"
+              ? (event.latency_ms as number)
+              : undefined;
+        const source =
+          typeof event.source === "string"
+            ? (event.source as
+                | "catalog"
+                | "live"
+                | "live_cache"
+                | "mixed"
+                | "blocked_cache_only")
+            : undefined;
+        const needsLive = event.needs_live_refresh === true;
+        const blockedArgs =
+          event.blocked_arguments && typeof event.blocked_arguments === "object"
+            ? (event.blocked_arguments as Record<string, unknown>)
+            : undefined;
+        const blockedReason =
+          typeof event.blocked_reason === "string"
+            ? (event.blocked_reason as string)
+            : undefined;
+        const blockedUserAction =
+          typeof event.blocked_user_action === "string"
+            ? (event.blocked_user_action as string)
+            : undefined;
+        // Resolve the pending activity row this call completes.
+        // Match the LATEST pending row whose name + args agree — the
+        // tool agent loops sequentially so first-pending-first-out
+        // is the right ordering.
+        for (let i = activityRows.length - 1; i >= 0; i -= 1) {
+          const row = activityRows[i];
+          if (
+            row.phase === "pending" &&
+            row.name === name &&
+            row.arguments === args
+          ) {
+            activityRows[i] = {
+              ...row,
+              phase: "done",
+              source,
+              elapsedMs,
+              needsLiveRefresh: needsLive,
+              blockedArguments: blockedArgs,
+              blockedReason,
+              blockedUserAction,
+            };
+            break;
+          }
+        }
         tools.push({
-          name: String(event.name || ""),
-          arguments: String(event.arguments || ""),
+          name,
+          arguments: args,
           result_preview: String(event.result_preview || ""),
           latency_ms:
-            typeof event.latency_ms === "number" ? event.latency_ms : undefined,
+            typeof event.latency_ms === "number" ? event.latency_ms : elapsedMs,
           citations: Array.isArray(event.citations)
             ? (event.citations as Citation[])
             : undefined,
@@ -366,6 +546,8 @@ export default function AskChat({
       streamingAnswer: answerChunks.join(""),
       finalAnswer: finalText,
       toolCalls: tools,
+      activity: activityRows,
+      llmRound: llmRoundState,
       finalMeta: meta,
       finalCitations: citations,
       jobFailure: failure,
@@ -382,9 +564,25 @@ export default function AskChat({
   useEffect(() => {
     if (!closed) return;
     if (finalAnswer != null) {
+      // Detect cache-only refusals so the persisted turn can render the
+      // "Enable Live refresh & retry" button. We pick the FIRST blocked
+      // tool — usually there is only one per turn anyway, since the
+      // LLM is now instructed to stop on the first needs_live_refresh
+      // envelope.
+      const blockedActivity = activity.find((row) => row.needsLiveRefresh);
+      const blockedTool = blockedActivity?.name ?? "";
       setTurns((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === "assistant" && last.content === finalAnswer) return prev;
+        // Find the preceding user turn so the retry button can resubmit
+        // the SAME question with Live refresh ON.
+        let lastUserQuestion = "";
+        for (let i = prev.length - 1; i >= 0; i -= 1) {
+          if (prev[i].role === "user") {
+            lastUserQuestion = prev[i].content;
+            break;
+          }
+        }
         return [
           ...prev,
           {
@@ -395,10 +593,15 @@ export default function AskChat({
             focusProfile: finalMeta.focusProfile ?? null,
             totalLatencyMs: finalMeta.totalLatencyMs,
             citations: finalCitations.length > 0 ? finalCitations : undefined,
+            needsLiveRefresh:
+              blockedActivity && lastUserQuestion
+                ? { question: lastUserQuestion, blockedTool }
+                : undefined,
           },
         ];
       });
       setActiveJob(null);
+      setJobStartedAt(null);
       setCancelling(false);
       clearAskActiveJob(sessionKey);
       return;
@@ -410,6 +613,7 @@ export default function AskChat({
       // submitError block below replaces it with the clean error
       // surface so we don't leave an orphaned user-only bubble.
       setActiveJob(null);
+      setJobStartedAt(null);
       setCancelling(false);
       clearAskActiveJob(sessionKey);
       return;
@@ -441,6 +645,7 @@ export default function AskChat({
       setSubmitErrorHint("configure-llm");
     }
     setActiveJob(null);
+    setJobStartedAt(null);
     setCancelling(false);
     clearAskActiveJob(sessionKey);
   }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta, finalCitations, sessionKey, clearAskActiveJob, cancelling, wasCancelled]);
@@ -472,6 +677,9 @@ export default function AskChat({
       if (codeProfilesOverride !== null) {
         body.code_profiles = codeProfilesOverride;
       }
+      // Cache-only by default; only opt in to live-DB reads when the
+      // user has flipped the toggle below the composer for this turn.
+      body.allow_live_refresh = allowLiveRefresh;
       const result = await apiFetch<SubmitResponse>("/api/ask", {
         method: "POST",
         body: JSON.stringify(body),
@@ -491,6 +699,17 @@ export default function AskChat({
       }
       setSessionId(result.session_id);
       setActiveJob(result.job_id);
+      const startedAt = Date.now();
+      setJobStartedAt(startedAt);
+      try {
+        localStorage.setItem(
+          `amx.ask.jobStartedAt.${result.job_id}`,
+          String(startedAt),
+        );
+      } catch {
+        // localStorage unavailable — timer resets on reload, but the
+        // job itself keeps running on the backend.
+      }
       // Persist the in-flight job under the resolved session key so a
       // navigation-away-and-back can reattach the SSE stream. For a
       // brand-new session we know the real id from the response — use
@@ -657,6 +876,31 @@ export default function AskChat({
                 turn.citations.length > 0 && (
                   <CitationsList citations={turn.citations} />
                 )}
+              {turn.role === "assistant" && turn.needsLiveRefresh && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAllowLiveRefresh(true);
+                    void submitText(turn.needsLiveRefresh!.question);
+                  }}
+                  disabled={!!activeJob}
+                  className={cn(
+                    "mt-2 inline-flex items-center gap-1.5 rounded-full",
+                    "border border-warning/40 bg-warning-soft/30 px-3 py-1",
+                    "text-xs font-medium text-warning hover:bg-warning-soft/50",
+                    "transition-colors",
+                    !!activeJob && "cursor-not-allowed opacity-50",
+                  )}
+                  title={
+                    turn.needsLiveRefresh.blockedTool
+                      ? `Re-run with Live refresh — calls ${turn.needsLiveRefresh.blockedTool}`
+                      : "Re-run this question with Live refresh enabled"
+                  }
+                >
+                  <span aria-hidden>⚡</span>
+                  Enable Live refresh &amp; retry
+                </button>
+              )}
               {turn.role === "assistant" &&
                 (turn.scopeProfiles?.length || turn.totalLatencyMs != null) && (
                   <AnswerMeta
@@ -675,14 +919,21 @@ export default function AskChat({
                 <CircleStop size={11} /> Cancelling…
               </div>
             )}
-            {thinking && !cancelling ? <ThinkingBlock text={thinking} /> : null}
-            {streamingAnswer ? (
-              <MarkdownBody text={streamingAnswer} />
-            ) : (
-              !thinking && !cancelling && (
-                <span className="text-sm text-ink-dim">Reasoning…</span>
-              )
+            {!cancelling && (
+              <LiveStatusLine
+                jobStartedAt={jobStartedAt}
+                tick={tick}
+                hasThinking={!!thinking}
+                hasActivity={activity.length > 0}
+                pendingActivity={activity.some((row) => row.phase === "pending")}
+                hasStreamingAnswer={!!streamingAnswer}
+                llmModel={activeLlmModel ?? activeLlmProfile ?? null}
+                llmRound={llmRound}
+              />
             )}
+            {activity.length > 0 && <ActivityFeed rows={activity} />}
+            {thinking && !cancelling ? <ThinkingBlock text={thinking} /> : null}
+            {streamingAnswer && <MarkdownBody text={streamingAnswer} />}
             {toolCalls.length > 0 && <ToolCallList calls={toolCalls} live />}
             {finalCitations.length > 0 && (
               <CitationsList citations={finalCitations} />
@@ -712,6 +963,39 @@ export default function AskChat({
             disabled={!!activeJob}
           />
           <div className="ml-auto flex items-center gap-2">
+            {/* Cache-only Ask is the default — this toggle is the
+                single per-question opt-in for live-DB reads. When OFF
+                (default) the backend skips the background drift probe
+                AND suppresses any tool-level ``force_fresh`` the LLM
+                might pass. When ON, the next question is allowed to
+                refresh against the live database. */}
+            <button
+              type="button"
+              onClick={() => setAllowLiveRefresh((prev) => !prev)}
+              disabled={!!activeJob}
+              aria-pressed={allowLiveRefresh}
+              title={
+                allowLiveRefresh
+                  ? "Live refresh ON — this question may read the live DB."
+                  : "Live refresh OFF — answers come from cached catalog metadata only."
+              }
+              className={cn(
+                "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors",
+                allowLiveRefresh
+                  ? "border-accent/60 bg-accent/15 text-accent hover:bg-accent/25"
+                  : "border-border bg-surface-raised text-ink-dim hover:bg-surface-raised/80",
+                !!activeJob && "cursor-not-allowed opacity-60",
+              )}
+            >
+              <span
+                aria-hidden
+                className={cn(
+                  "inline-block h-1.5 w-1.5 rounded-full",
+                  allowLiveRefresh ? "bg-accent" : "bg-ink-dim/60",
+                )}
+              />
+              <span>Live refresh: {allowLiveRefresh ? "on" : "off"}</span>
+            </button>
             {/* The sidebar already exposes the LLM profile, but users
                 landing on /ask via a deep link or working full-width
                 often miss it. Mirroring the picker here keeps the
@@ -725,6 +1009,7 @@ export default function AskChat({
               kind="llm"
               label="LLM"
               variant="pill"
+              placement="top"
               activeName={activeLlmProfile}
               tooltip={activeLlmModel ?? undefined}
             />
@@ -961,6 +1246,189 @@ function ThinkingBlock({ text }: { text: string }) {
       >
         {text}
       </div>
+    </div>
+  );
+}
+
+type ActivityRow = {
+  key: string;
+  name: string;
+  arguments: string;
+  phase: "pending" | "done";
+  sourceHint?: "cache" | "live" | "unknown" | "blocked_cache_only";
+  source?: "catalog" | "live" | "live_cache" | "mixed" | "blocked_cache_only";
+  scopeProfiles?: string[];
+  elapsedMs?: number;
+};
+
+function LiveStatusLine({
+  jobStartedAt,
+  tick: _tick,
+  hasThinking,
+  hasActivity,
+  pendingActivity,
+  hasStreamingAnswer,
+  llmModel,
+  llmRound,
+}: {
+  jobStartedAt: number | null;
+  tick: number;
+  hasThinking: boolean;
+  hasActivity: boolean;
+  pendingActivity: boolean;
+  hasStreamingAnswer: boolean;
+  llmModel: string | null;
+  llmRound: {
+    round: number;
+    phase: string;
+    elapsedMs: number;
+    status: "active" | "finished";
+  } | null;
+}) {
+  // Always-on status row at the top of the live response bubble.
+  // The user used to stare at a static "Reasoning…" for ~5 s before
+  // the first SSE event arrived; this row updates every 200 ms with
+  // elapsed time + a phase label so the system never looks frozen.
+  const elapsedSec =
+    jobStartedAt != null
+      ? Math.max(0, (Date.now() - jobStartedAt) / 1000)
+      : 0;
+  const elapsedLabel =
+    elapsedSec >= 10
+      ? `${elapsedSec.toFixed(0)}s`
+      : `${elapsedSec.toFixed(1)}s`;
+  // LLM round info — when present and still active, surface
+  // "⚙ LLM round N — phase · Xs" so the user knows AMX is waiting on
+  // the model right now (not stuck). The heartbeat ticks every second
+  // from the backend so the elapsedMs the SSE carries stays fresh.
+  const roundActive = llmRound && llmRound.status === "active";
+  let label: string;
+  if (hasStreamingAnswer) {
+    label = "Writing answer";
+  } else if (pendingActivity) {
+    label = "Running tool";
+  } else if (hasActivity && !roundActive) {
+    label = "Picking next step";
+  } else if (roundActive) {
+    const phaseLabel =
+      llmRound.phase === "picking-tools"
+        ? "picking tools"
+        : llmRound.phase === "synthesising"
+          ? "synthesising answer"
+          : llmRound.phase || "thinking";
+    const modelLabel = llmModel ? llmModel.split("/").slice(-1)[0] : "LLM";
+    label = `${modelLabel} round ${llmRound.round || "?"} — ${phaseLabel}`;
+  } else if (hasThinking) {
+    label = "Reasoning";
+  } else {
+    label = llmModel ? `Talking to ${llmModel}` : "Talking to LLM";
+  }
+  return (
+    <div
+      aria-live="polite"
+      className="mb-2 flex items-center gap-2 text-xs text-ink-muted"
+    >
+      <span
+        aria-hidden
+        className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+      />
+      <span className="font-medium text-ink">{label}…</span>
+      <span className="ml-auto font-mono text-ink-dim">{elapsedLabel}</span>
+    </div>
+  );
+}
+
+function ActivityFeed({ rows }: { rows: ActivityRow[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <div
+      aria-live="polite"
+      aria-atomic="false"
+      className="mb-2 flex flex-col gap-1.5 rounded-lg border border-surface-border bg-surface-subtle/40 p-2"
+    >
+      {rows.map((row) => {
+        const isPending = row.phase === "pending";
+        // Final source wins; before the tool completes we fall back
+        // to the hint the backend computed from the schema's freshness.
+        const finalSource: ActivityRow["source"] | undefined = row.source;
+        const previewedLive =
+          finalSource === "live" ||
+          finalSource === "live_cache" ||
+          finalSource === "mixed" ||
+          (isPending && row.sourceHint === "live");
+        const blocked = finalSource === "blocked_cache_only";
+        const labelPrefix = blocked
+          ? "Blocked"
+          : isPending
+            ? previewedLive
+              ? "Live query"
+              : "Reading cache"
+            : previewedLive
+              ? "Live query"
+              : "Cache hit";
+        const dotColor = blocked
+          ? "bg-critical"
+          : isPending
+            ? previewedLive
+              ? "bg-warning"
+              : "bg-accent"
+            : previewedLive
+              ? "bg-warning"
+              : "bg-success";
+        const elapsedText =
+          typeof row.elapsedMs === "number"
+            ? row.elapsedMs >= 1000
+              ? `${(row.elapsedMs / 1000).toFixed(1)} s`
+              : `${row.elapsedMs} ms`
+            : null;
+        return (
+          <div
+            key={row.key}
+            className="flex items-start gap-2 text-xs text-ink-muted"
+          >
+            <span
+              aria-hidden
+              className={cn(
+                "mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full",
+                dotColor,
+                isPending && "animate-pulse",
+              )}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-baseline gap-x-2">
+                <span
+                  className={cn(
+                    "font-medium",
+                    blocked
+                      ? "text-critical"
+                      : isPending
+                        ? "text-ink"
+                        : previewedLive
+                          ? "text-warning"
+                          : "text-success",
+                  )}
+                >
+                  {isPending ? "⟳" : blocked ? "⨯" : "✓"} {labelPrefix}
+                </span>
+                <span className="font-mono text-ink-muted">{row.name}</span>
+                {row.scopeProfiles && row.scopeProfiles.length > 0 && (
+                  <span className="text-ink-dim">
+                    on {row.scopeProfiles.join(", ")}
+                  </span>
+                )}
+                {elapsedText && (
+                  <span className="ml-auto text-ink-dim">{elapsedText}</span>
+                )}
+              </div>
+              {row.arguments && row.arguments !== "{}" && (
+                <pre className="mt-0.5 max-w-full overflow-x-hidden whitespace-pre-wrap break-all text-[10px] text-ink-dim">
+                  {row.arguments}
+                </pre>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1376,7 +1844,10 @@ function AskDocCodePicker({
         <ChevronDown size={12} className="opacity-70" />
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-30 mt-1 w-80 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
+        // Anchored to the bottom of the trigger so the menu grows
+        // UPWARDS — the composer sits at the bottom of the viewport
+        // and a downward menu used to be clipped off-screen.
+        <div className="absolute bottom-full left-0 z-30 mb-1 w-80 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
           <DocCodeSection
             heading="Doc profiles"
             emptyHint="No doc profiles configured."

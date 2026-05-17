@@ -1080,8 +1080,15 @@ export interface SchedulerStatusResponse {
   next_fire: ScheduleRow | null;
   daemon: {
     installed: boolean;
+    /** ``true`` when the daemon is registered with the OS scheduler
+     *  AND ticking. Distinct from ``installed``: a plist can be on
+     *  disk without being bootstrapped, which is the silent-failure
+     *  state the modern macOS launchctl path produced. */
+    loaded?: boolean;
     path: string | null;
     last_tick_log: string | null;
+    log_size_bytes?: number;
+    log_mtime?: number | null;
   };
 }
 

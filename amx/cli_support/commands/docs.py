@@ -306,6 +306,92 @@ def register_docs_commands(
         finally:
             cleanup_scan_artifacts(documents)
 
+    @docs.command("reindex")
+    @click.option(
+        "--doc-profile",
+        "doc_profile",
+        default=None,
+        help="Use paths from this named document profile when no paths are given.",
+    )
+    @click.argument("paths", nargs=-1)
+    @click.pass_obj
+    def docs_reindex(
+        cfg: AMXConfig,
+        paths: tuple[str, ...],
+        doc_profile: str | None,
+    ) -> None:
+        """Drop the docs vector store and re-ingest with the active
+        embedding profile.
+
+        Use this after ``/embeddings`` swaps the docs embedding model
+        — ``/docs ingest --refresh`` only deletes documents and
+        leaves the recorded identity intact, so the next open raises
+        ``EmbeddingProviderMismatch`` and blocks ``/ask`` retrieval.
+        Reindex drops the Chroma collection outright (and the FTS5
+        sidecar), then re-runs the full ingest so the rebuilt
+        collection is stamped with the active provider/model/dim.
+        """
+        from amx.docs.rag import EmbeddingProviderMismatch, RAGStore
+        from amx.docs.scanner import (
+            cleanup_scan_artifacts,
+            scan_all_sources,
+            total_size_mb,
+        )
+
+        try:
+            all_paths = list(paths) if paths else cfg.resolve_doc_paths(doc_profile, [])
+        except KeyError as exc:
+            error(str(exc))
+            return
+        if not all_paths:
+            warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="reindex")
+            return
+
+        documents = []
+        try:
+            with command_display(
+                mode="docs-ingest", provider=cfg.llm.provider, model=cfg.llm.model
+            ):
+                with step_spinner("Scanning document sources"):
+                    documents = scan_all_sources(all_paths)
+                _render_scan_failures(documents)
+                size = total_size_mb(documents)
+                info(f"Found {len(documents)} documents ({size:.1f} MB)")
+                if size > 100:
+                    warn(f"Large document set ({size:.1f} MB). This will take some time.")
+                    if not confirm("Continue?"):
+                        return
+
+                # If the on-disk collection already has a mismatched
+                # identity stamp, ``RAGStore()`` raises on construction.
+                # In that case force-drop the collection by hand and
+                # then construct a fresh store that re-stamps with
+                # the active identity.
+                try:
+                    store = RAGStore()
+                except EmbeddingProviderMismatch:
+                    import chromadb
+
+                    persist = str(Path.home() / ".amx" / "chroma_db")
+                    client = chromadb.PersistentClient(path=persist)
+                    try:
+                        client.delete_collection(name="amx_docs")
+                    except Exception:
+                        pass
+                    store = RAGStore()
+
+                store.reset_collection()
+                with step_spinner("Re-ingesting documents into RAG store"):
+                    summary = store.ingest(documents, refresh=False)
+                _render_ingest_summary(summary, total_files=len(documents))
+                success(
+                    f"Reindexed: {summary.chunk_count} chunks rebuilt under "
+                    f"{store.embedding_provider}/{store.embedding_model} "
+                    f"({store.doc_count} total chunks)"
+                )
+        finally:
+            cleanup_scan_artifacts(documents)
+
     @docs.command("search-docs")
     @click.argument("question")
     @click.option("-n", "--results", default=5, help="Number of results.")

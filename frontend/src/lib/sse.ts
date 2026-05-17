@@ -60,8 +60,13 @@ const NAMED_EVENTS = [
   "thinking.delta",
   "thinking.stop",
   "tool.call",
+  "tool.started",
   "tool.result",
+  "answer.delta",
   "answer.final",
+  "llm.round.started",
+  "llm.round.heartbeat",
+  "llm.round.finished",
   "tokens",
   "tokens.snapshot",
   // Fine-grained sub-step events bridged from the CLI's LiveDisplay

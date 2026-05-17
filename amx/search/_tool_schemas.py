@@ -6,12 +6,29 @@ JSON-schema argument shapes for every tool the ``/ask`` agent can call.
 The list is duplicated (deep-copied) on every access via ``tool_schemas()``
 so callers can mutate it without poisoning the shared source. The
 existing ``ToolBox.schemas()`` static method delegates here.
+
+Each entry carries a sibling ``freshness`` annotation:
+
+* ``"cache_ok"`` — the tool answers from the catalog cache for the
+  common path. Always available, including in cache-only Ask mode.
+* ``"live_only"`` — the tool's body can only answer with a live-DB
+  round-trip. Hidden from the LLM's menu when Ask is in cache-only
+  mode so the agent never proposes a call we'd refuse anyway.
+
+The key is a sibling of ``type`` / ``function`` on each entry. OpenAI's
+function-calling JSON schema ignores unknown top-level keys, so this is
+pure metadata.
 """
 
 from __future__ import annotations
 
 import copy
 from typing import Any
+
+#: Freshness annotation values — exported as a constant so the ToolBox
+#: filter and the test suite agree on the literal strings.
+FRESHNESS_CACHE_OK = "cache_ok"
+FRESHNESS_LIVE_ONLY = "live_only"
 
 # The single source of truth. Defined as a module-level constant so it is
 # constructed exactly once at import time; ``tool_schemas()`` returns a
@@ -20,6 +37,181 @@ from typing import Any
 _TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "describe_column",
+            "description": (
+                "Look up one column from the catalog: dtype, nullable, "
+                "primary-key / foreign-key flag, and the effective "
+                "description text. Sub-50 ms SQLite read — use this for "
+                "'what type is column X', 'is column Y nullable', 'is this "
+                "a primary key', 'does this column have a description'. "
+                "Do NOT chain describe_table for a single column question; "
+                "this tool is the focused answer."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schema": {
+                        "type": "string",
+                        "description": "Schema name (case-insensitive).",
+                    },
+                    "table": {
+                        "type": "string",
+                        "description": "Table name (case-insensitive).",
+                    },
+                    "column": {
+                        "type": "string",
+                        "description": "Column name (case-insensitive).",
+                    },
+                    "db_profile": {
+                        "type": "string",
+                        "description": (
+                            "Optional: target one profile. Omit to fan out "
+                            "across the current Ask scope."
+                        ),
+                    },
+                },
+                "required": ["schema", "table", "column"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "catalog_inventory",
+            "description": (
+                "Return the catalog's recorded inventory of databases / "
+                "schemas per profile — distinct rows pulled from the "
+                "``catalog_entities`` cache. Sub-50 ms. Use this for "
+                "'which databases do I have', 'show all schemas', 'list "
+                "the catalogs we know about', 'what schemas exist under "
+                "profile X'. NO live DB hit — the answer is whatever "
+                "/search sync recorded.\n\n"
+                "``scope='databases'`` returns one row per (profile, "
+                "database) with `schema_count` and `table_count`. "
+                "``scope='schemas'`` returns one row per (profile, "
+                "database, schema) with `table_count`. Each row also "
+                "carries `last_synced_at` so you can flag stale entries."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["databases", "schemas"],
+                        "description": (
+                            "What to enumerate. Default ``'schemas'`` — "
+                            "use ``'databases'`` only when the user "
+                            "explicitly asked about databases / catalogs."
+                        ),
+                    },
+                    "db_profile": {
+                        "type": "string",
+                        "description": (
+                            "Optional: limit to one profile. Omit to "
+                            "fan out across the current Ask scope."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "catalog_coverage_summary",
+            "description": (
+                "CACHE tool — instant counts of described vs undescribed "
+                "tables / columns per profile + schema. One SQL GROUP BY "
+                "against the catalog cache; sub-50 ms; always available "
+                "(cache-only Ask never blocks it).\n\n"
+                "ALWAYS pick this for COUNT / coverage / 'how many' "
+                "questions: 'how many tables don't have comments?', "
+                "'how many columns are documented?', "
+                "'what's our description coverage?', "
+                "'is this schema covered?', 'how complete is our "
+                "documentation?', 'what fraction is described?'.\n\n"
+                "PREFER OVER ``find_assets_missing_comment`` for any "
+                "question that wants a NUMBER. ``find_assets_missing_comment`` "
+                "is for NAMED LISTS only ('list the tables that are missing "
+                "comments') and is live-only, so it gets refused in "
+                "cache-only mode anyway.\n\n"
+                "Response shape: ``{\"profiles\": [{\"db_profile\", "
+                "\"database\", \"schema\", \"total_tables\", "
+                "\"undocumented_tables\", \"documented_tables\", "
+                "\"total_columns\", \"undocumented_columns\", "
+                "\"documented_columns\", \"table_coverage_pct\", "
+                "\"column_coverage_pct\", \"last_synced_at\"}], "
+                "\"totals\": {…}, \"scope\": [profiles], "
+                "\"source\": \"catalog\"}``. Quote `totals.undocumented_tables` "
+                "and per-schema breakdowns directly; do not chain anything else."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "db_profile": {
+                        "type": "string",
+                        "description": (
+                            "Optional: limit to one profile. Omit to get "
+                            "every profile in the current Ask scope."
+                        ),
+                    },
+                    "schema": {
+                        "type": "string",
+                        "description": (
+                            "Optional: limit to one schema (case-sensitive). "
+                            "Use for 'is schema X covered?' questions."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "catalog_sync_status",
+            "description": (
+                "Return the catalog's sync state and last-sync timestamp for "
+                "every DB profile in the current Ask scope. Read directly "
+                "from ``catalog_profile_state`` — no live database query, "
+                "one round-trip, ~30 ms.\n\n"
+                "Call this FIRST whenever the user asks any variation of "
+                "'are my tables synced / up to date / fresh / stale', 'is my "
+                "catalog still good', 'when did we last sync', or any other "
+                "freshness question. Answer directly from the response; do "
+                "NOT chain ``list_schemas`` / ``list_tables_in_schema`` / "
+                "``describe_table`` to 'verify' — the catalog state IS the "
+                "answer.\n\n"
+                "Response: ``{\"profiles\": [{\"db_profile\", \"state\", "
+                "\"last_synced_at\", \"age_seconds\", \"is_fresh_24h\", "
+                "\"is_fresh_7d\", \"processed_tables\", \"total_tables\", "
+                "\"last_error\"}]}``."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "db_profile": {
+                        "type": "string",
+                        "description": (
+                            "Optional: limit the response to a single "
+                            "profile. Omit to get every profile in scope."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
         "function": {
             "name": "list_schemas",
             "description": (
@@ -73,6 +265,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "list_tables_in_schema",
             "description": (
@@ -123,6 +316,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "find_table_by_name",
             "description": (
@@ -167,6 +361,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "describe_table",
             "description": (
@@ -266,6 +461,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "search_tables_by_concept",
             "description": (
@@ -295,6 +491,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "search_columns_by_concept",
             "description": (
@@ -327,6 +524,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "get_join_candidates",
             "description": (
@@ -352,6 +550,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "list_databases",
             "description": (
@@ -397,6 +596,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "list_catalogs",
             "description": (
@@ -414,6 +614,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "list_server_databases",
             "description": (
@@ -432,6 +633,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "list_volumes",
             "description": (
@@ -474,6 +676,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "find_columns_by_dtype",
             "description": (
@@ -522,20 +725,23 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "find_assets_missing_comment",
             "description": (
-                "Return tables and/or columns that have NO comment in the live "
-                "database (queries the DB directly, NOT the catalog). Use this for "
-                "'are there any tables without a description?', 'which tables are "
-                "missing comments?', 'tables without descriptions', 'undocumented assets'. "
-                "Catalog data may be stale right after a /run-apply, so always use "
-                "this live-DB check for coverage questions instead of the concept "
-                "search tools. By default, system / extension assets (e.g. "
-                "pg_stat_statements, pg_statio_*) are filtered out — same rule "
-                "the /run flow uses; AMX never describes those. Set "
-                "``include_system=True`` only if the user EXPLICITLY asks about "
-                "system tables (e.g. 'including system views')."
+                "LIVE-DB tool: enumerate the SPECIFIC tables / columns whose "
+                "comments are NULL right now in the warehouse. Queries the DB "
+                "directly per asset; takes seconds and is BLOCKED in cache-only "
+                "Ask mode (the user must enable Live refresh first).\n\n"
+                "Use this ONLY when the user asks for a NAMED LIST: 'list the "
+                "tables that are missing comments', 'show me which columns have "
+                "no description', 'name the undocumented assets'. The user "
+                "expects asset names back, not a count.\n\n"
+                "DO NOT use this for COUNT / coverage / 'how many' questions — "
+                "those are answered instantly by ``catalog_coverage_summary`` "
+                "from the cache. Picking this tool for a count question "
+                "burns 30-60 seconds of LLM round-trip AND gets refused in "
+                "cache-only mode."
             ),
             "parameters": {
                 "type": "object",
@@ -573,6 +779,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "check_uniqueness",
             "description": (
@@ -608,6 +815,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "detect_dimensional_role",
             "description": (
@@ -654,6 +862,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "detect_scd_pattern",
             "description": (
@@ -706,6 +915,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "sample_column_values",
             "description": (
@@ -745,6 +955,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "inspect_data_quality",
             "description": (
@@ -781,6 +992,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "find_joinable_tables",
             "description": (
@@ -844,6 +1056,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "live_only",
         "function": {
             "name": "find_joinable_across_profiles",
             "description": (
@@ -889,6 +1102,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "list_past_runs",
             "description": (
@@ -939,6 +1153,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "describe_run",
             "description": (
@@ -1001,6 +1216,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "compare_runs",
             "description": (
@@ -1096,6 +1312,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "list_chat_sessions",
             "description": (
@@ -1134,6 +1351,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "search_docs",
             "description": (
@@ -1172,6 +1390,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "search_code",
             "description": (
@@ -1222,6 +1441,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     # schedule` CLI for those actions.
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "list_schedules",
             "description": (
@@ -1255,6 +1475,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "freshness": "cache_ok",
         "function": {
             "name": "get_schedule",
             "description": (

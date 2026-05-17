@@ -319,13 +319,28 @@ class DatabricksAdapter(DatabaseAdapter):
         when no USE CATALOG was issued — the v0.10.11 catalog picker
         sets ``cfg.catalog`` but doesn't run USE CATALOG on the
         engine, so this override carries the catalog explicitly.
-        Returns ``None`` (fallback) when no catalog is available so
-        legacy hive_metastore-only workspaces keep working.
+
+        When no catalog is configured we return ``[]`` (NOT ``None``)
+        so the ``DatabaseConnector`` short-circuits without falling
+        through to the SQLAlchemy inspector, which would issue the
+        broken ``SHOW TABLES FROM `None`.<schema>`` against the
+        warehouse. The empty list is the correct semantic answer for
+        "this profile is mis-configured" — pair it with a warning so
+        the operator notices.
         """
         cat = (catalog or "").strip()
         sch = (schema or "").strip()
-        if not cat or not sch:
+        if not sch:
             return None
+        if not cat:
+            log.warning(
+                "Databricks list_tables called with no catalog for "
+                "schema=%s; profile is missing 'catalog'. Returning [] "
+                "instead of falling back to SQLAlchemy's None-catalog "
+                "SHOW TABLES — configure the profile catalog and retry.",
+                sch,
+            )
+            return []
         try:
             with engine.connect() as conn:
                 rows = conn.execute(text(f"SHOW TABLES IN `{cat}`.`{sch}`")).fetchall()
@@ -342,11 +357,23 @@ class DatabricksAdapter(DatabaseAdapter):
         schema: str,
         catalog: str = "",
     ) -> list[str] | None:
-        """``SHOW VIEWS IN <catalog>.<schema>`` — same pattern as list_tables."""
+        """``SHOW VIEWS IN <catalog>.<schema>`` — same pattern as list_tables.
+
+        Returns ``[]`` when no catalog is configured (same reasoning as
+        ``list_tables``) so we don't fall back to SQLAlchemy's
+        ``SHOW VIEWS FROM `None`.<schema>``.
+        """
         cat = (catalog or "").strip()
         sch = (schema or "").strip()
-        if not cat or not sch:
+        if not sch:
             return None
+        if not cat:
+            log.warning(
+                "Databricks list_views called with no catalog for "
+                "schema=%s; profile is missing 'catalog'. Returning [].",
+                sch,
+            )
+            return []
         try:
             with engine.connect() as conn:
                 rows = conn.execute(text(f"SHOW VIEWS IN `{cat}`.`{sch}`")).fetchall()
