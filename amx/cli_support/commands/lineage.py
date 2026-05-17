@@ -456,6 +456,94 @@ def register_lineage_commands(
         for line in service.text_tree(hs=hs, scope=scope):
             click.echo(line)
 
+    @lineage.command("suggest")
+    @click.argument("anchor", required=False)
+    @click.option("--profile", "profile_flag", default=None, help="Override active DB profile.")
+    @pass_config
+    def lineage_suggest(
+        cfg: AMXConfig,
+        anchor: str | None,
+        profile_flag: str | None,
+    ) -> None:
+        """Ask the active LLM to propose lineage edges for an anchor table.
+
+        Strictly opt-in: this is the only command in the namespace that
+        spends LLM tokens. Edges are persisted into
+        ``catalog_relationships`` with ``source='llm'`` so subsequent
+        cache_only reads (CLI, Studio) surface them without a second
+        round-trip.
+        """
+        hs = history_store()
+        if hs is None:
+            error("History store not initialised — run /db first.")
+            return
+        heading("Lineage · AI suggest")
+        profile_name, profile_cfg = _pick_profile(cfg, profile_flag)
+        if profile_name is None:
+            return
+        database, schema, table, _ = _pick_anchor_location(
+            hs,
+            profile=profile_name,
+            profile_default_db=_default_database(profile_cfg),
+            raw_anchor=anchor,
+            preset_column=None,
+            require_column=False,
+        )
+        if schema is None or table is None:
+            return
+        anchor_ref = ColumnRef(database=database, schema=schema, table=table, column="")
+        scope = Scope(
+            profile=profile_name,
+            anchor=anchor_ref,
+            depth_up=1,
+            depth_down=1,
+            database=database,
+            schema=schema,
+        )
+        if not confirm(
+            f"This will call the active LLM ({getattr(cfg.llm, 'provider', '?')}/"
+            f"{getattr(cfg.llm, 'model', '?')}) once for {_ref_to_str(anchor_ref)!r}. Continue?",
+            default=True,
+        ):
+            warn("Cancelled.")
+            return
+        try:
+            result = service.suggest_lineage_llm(hs=hs, scope=scope, cfg=cfg)
+        except Exception as exc:
+            error(f"LLM suggestion failed: {exc}")
+            return
+        if result.aborted:
+            warn(f"Aborted: {result.abort_reason}")
+            return
+        if not result.edges:
+            info("LLM returned no edges meeting the confidence threshold.")
+            log_event(
+                event_type="lineage.suggest",
+                status="ok",
+                command="/lineage suggest",
+                details={"anchor": _ref_to_str(anchor_ref), "persisted": 0},
+            )
+            return
+        success(
+            f"Persisted {result.persisted_count} LLM-suggested edge(s) for "
+            f"{_ref_to_str(anchor_ref)!r} using {result.model}."
+        )
+        for edge in result.edges:
+            info(
+                f"  {edge['from']} → {edge['to']}   "
+                f"conf={edge['confidence']:.2f}   {edge['evidence']}"
+            )
+        log_event(
+            event_type="lineage.suggest",
+            status="ok",
+            command="/lineage suggest",
+            details={
+                "anchor": _ref_to_str(anchor_ref),
+                "persisted": result.persisted_count,
+                "model": result.model,
+            },
+        )
+
     return lineage
 
 

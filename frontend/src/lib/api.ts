@@ -1174,3 +1174,131 @@ export interface ResultRow {
   user_instructions: string | null;
   alternatives_mode: AlternativesMode | null;
 }
+
+// ── Lineage (v2) ────────────────────────────────────────────────────────
+
+export interface LineageNode {
+  id: string;
+  label: string;
+  kind: "table" | "column";
+  anchor: boolean;
+  described: boolean;
+}
+
+export interface LineageEdge {
+  from: string;
+  to: string;
+  type: string;
+  extractor: string;
+  confidence: number;
+  evidence: string;
+}
+
+export interface LineagePayload {
+  anchor: {
+    database: string;
+    schema: string;
+    table: string;
+    column: string | null;
+  };
+  nodes: LineageNode[];
+  edges: LineageEdge[];
+  partial: boolean;
+  extractors_used: string[];
+  generated_at: number;
+}
+
+export interface LineageArtifact {
+  id: number;
+  name: string;
+  db_profile: string;
+  anchor_entity_id: number;
+  depth_up: number;
+  depth_down: number;
+  format: string;
+  output_path: string;
+  edge_set_hash: string;
+  node_count: number;
+  edge_count: number;
+  generated_at: number;
+  extractors_used: string[];
+  extractors_partial: boolean;
+}
+
+export interface LineageArtifactList {
+  artifacts: LineageArtifact[];
+  count: number;
+}
+
+export interface LineageRefreshResponse {
+  ok: boolean;
+  artifact_id: number;
+  node_count: number;
+  edge_count: number;
+  extractors_used: string[];
+  extractors_partial: boolean;
+  aborted: boolean;
+  abort_reason: string;
+}
+
+export interface LineageSuggestResponse {
+  edges: LineageEdge[];
+  persisted: number;
+  model: string;
+}
+
+function encodeAnchorPath(anchor: string): string {
+  // Each segment is URL-encoded; dots stay as dots so FastAPI's
+  // ``{anchor_path:path}`` route matcher receives ``schema.table``
+  // verbatim.
+  return anchor
+    .split(".")
+    .map((part) => encodeURIComponent(part))
+    .join(".");
+}
+
+export async function lineageList(profile?: string): Promise<LineageArtifactList> {
+  const qs = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+  return apiFetch<LineageArtifactList>(`/api/lineage${qs}`);
+}
+
+export async function lineageFetch(
+  anchor: string,
+  opts: { profile?: string; depthUp?: number; depthDown?: number } = {},
+): Promise<LineagePayload> {
+  const params = new URLSearchParams();
+  if (opts.profile) params.set("profile", opts.profile);
+  if (opts.depthUp !== undefined) params.set("depth_up", String(opts.depthUp));
+  if (opts.depthDown !== undefined) params.set("depth_down", String(opts.depthDown));
+  const qs = params.toString();
+  return apiFetch<LineagePayload>(
+    `/api/lineage/${encodeAnchorPath(anchor)}${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export async function lineageRefresh(
+  anchor: string,
+  opts: { profile?: string; noCache?: boolean } = {},
+): Promise<LineageRefreshResponse> {
+  const params = new URLSearchParams();
+  if (opts.profile) params.set("profile", opts.profile);
+  if (opts.noCache) params.set("no_cache", "true");
+  const qs = params.toString();
+  return apiFetch<LineageRefreshResponse>(
+    `/api/lineage/${encodeAnchorPath(anchor)}/refresh${qs ? `?${qs}` : ""}`,
+    { method: "POST" },
+  );
+}
+
+export async function lineageSuggest(
+  anchor: string,
+  opts: { profile?: string } = {},
+): Promise<LineageSuggestResponse> {
+  const params = new URLSearchParams();
+  if (opts.profile) params.set("profile", opts.profile);
+  const qs = params.toString();
+  return apiFetch<LineageSuggestResponse>(
+    `/api/lineage/${encodeAnchorPath(anchor)}/suggest${qs ? `?${qs}` : ""}`,
+    { method: "POST" },
+  );
+}
