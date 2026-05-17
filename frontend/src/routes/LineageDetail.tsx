@@ -31,6 +31,7 @@ import {
   lineageFetch,
   lineageList,
   lineageRefresh,
+  lineagePatchOperator,
   lineageSetVerdict,
   lineageSuggest,
   type LineageArtifact,
@@ -185,6 +186,22 @@ export default function LineageDetail() {
     onSuccess: invalidateCanvas,
     onError: (e: Error) => {
       toast.push({ title: "Delete failed", description: e.message, tone: "error" });
+    },
+  });
+
+  const editOperator = useMutation({
+    mutationFn: ({ id, expression }: { id: number; expression: string }) =>
+      lineagePatchOperator({ operatorId: id, expression }),
+    onSuccess: () => {
+      invalidateCanvas();
+      toast.push({
+        title: "Operator updated",
+        description: "Expression saved.",
+        tone: "success",
+      });
+    },
+    onError: (e: Error) => {
+      toast.push({ title: "Operator save failed", description: e.message, tone: "error" });
     },
   });
 
@@ -433,6 +450,9 @@ export default function LineageDetail() {
                 onCreateEdge={handleCreateEdge}
                 onEdgeAction={handleEdgeAction}
                 onColumnClick={(nodeId, column) => setTracedColumn({ nodeId, column })}
+                onEditOperator={(id, expression) =>
+                  editOperator.mutate({ id, expression })
+                }
                 tracedColumn={tracedColumn}
               />
             </>

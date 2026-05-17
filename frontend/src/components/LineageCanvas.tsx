@@ -103,6 +103,7 @@ function layout(
         label: n.label,
         op_kind: n.op_kind,
         expression: n.expression,
+        operator_id: n.operator_id ?? null,
       };
       return {
         id: n.id,
@@ -252,6 +253,9 @@ interface Props {
   /** Called when the user clicks a column row inside any TableNode.
    *  Wired by the canvas's parent route to open the trace panel. */
   onColumnClick?: (nodeId: string, column: string) => void;
+  /** v4 S5 — called when an OperatorNode editor commits a new
+   *  expression for a persisted operator entity. */
+  onEditOperator?: (operatorId: number, expression: string) => void;
   className?: string;
 }
 
@@ -264,6 +268,7 @@ export const LineageCanvas = forwardRef<LineageCanvasHandle, Props>(
       onEdgeAction,
       tracedColumn,
       onColumnClick,
+      onEditOperator,
       className,
     }: Props,
     ref,
@@ -292,6 +297,7 @@ export const LineageCanvas = forwardRef<LineageCanvasHandle, Props>(
           onEdgeAction={onEdgeAction}
           tracedColumn={tracedColumn ?? null}
           onColumnClick={onColumnClick}
+          onEditOperator={onEditOperator}
           className={className}
         />
       </ReactFlowProvider>
@@ -307,6 +313,7 @@ const CanvasInner = forwardRef<LineageCanvasHandle, Props>(function CanvasInner(
     onEdgeAction,
     tracedColumn = null,
     onColumnClick,
+    onEditOperator,
     className,
   }: Props,
   ref,
@@ -320,19 +327,32 @@ const CanvasInner = forwardRef<LineageCanvasHandle, Props>(function CanvasInner(
     [payload, tracedColumn],
   );
   const baseNodes = useMemo<RFNode[]>(() => {
-    if (!onColumnClick) return layoutResult.nodes;
+    if (!onColumnClick && !onEditOperator) return layoutResult.nodes;
     return layoutResult.nodes.map((n) => {
-      if (n.type !== "amxTable") return n;
-      const data = n.data as TableNodeData;
-      return {
-        ...n,
-        data: {
-          ...data,
-          onColumnClick: (col: string) => onColumnClick(n.id, col),
-        },
-      };
+      if (n.type === "amxTable" && onColumnClick) {
+        const data = n.data as TableNodeData;
+        return {
+          ...n,
+          data: {
+            ...data,
+            onColumnClick: (col: string) => onColumnClick(n.id, col),
+          },
+        };
+      }
+      if (n.type === "amxOperator" && onEditOperator) {
+        const data = n.data as OperatorNodeData;
+        return {
+          ...n,
+          data: {
+            ...data,
+            onEditExpression: (id: number, expr: string) =>
+              onEditOperator(id, expr),
+          },
+        };
+      }
+      return n;
     });
-  }, [layoutResult.nodes, onColumnClick]);
+  }, [layoutResult.nodes, onColumnClick, onEditOperator]);
   const baseEdges = layoutResult.edges;
   const [highlightedNode, setHighlightedNode] = useState<string | null>(null);
 

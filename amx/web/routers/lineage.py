@@ -443,9 +443,15 @@ def get_lineage(
     database: str = Query(default=""),
     depth_up: int = Query(default=1, ge=0, le=5),
     depth_down: int = Query(default=1, ge=0, le=5),
+    include_heuristics: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """Cache-only lineage read — JSON nodes + edges for ``anchor_path``."""
+    """Cache-only lineage read — JSON nodes + edges for ``anchor_path``.
+
+    v4 S5 — ``include_heuristics`` toggles :class:`NameMatchExtractor`.
+    Off by default to keep the default canvas free of name-based
+    false positives; users opt in for noisy-but-broader discovery.
+    """
     hs = history_store()
     if hs is None:
         raise HTTPException(
@@ -460,7 +466,9 @@ def get_lineage(
         depth_down=depth_down,
         explicit_database=database,
     )
-    payload = lineage_service.lineage_for_studio(hs=hs, scope=scope)
+    payload = lineage_service.lineage_for_studio(
+        hs=hs, scope=scope, include_heuristics=include_heuristics
+    )
     return payload
 
 
