@@ -1186,12 +1186,17 @@ export interface LineageNode {
 }
 
 export interface LineageEdge {
+  /** ``catalog_relationships.id`` when sourced from the local catalog
+   *  (FK / LLM / codebase / manual). Null for ephemeral edges. */
+  id: number | null;
   from: string;
   to: string;
   type: string;
   extractor: string;
   confidence: number;
   evidence: string;
+  /** S4 authoring verdict: '', 'approved', 'rejected', 'pending'. */
+  verdict?: string;
 }
 
 export interface LineagePayload {
@@ -1343,5 +1348,47 @@ export async function lineageDiscover(
   return apiFetch<LineageDiscoverResponse>(
     `/api/lineage/discover${qs ? `?${qs}` : ""}`,
     { method: "POST" },
+  );
+}
+
+// ── Authoring — v3 S4 ──────────────────────────────────────────────────
+
+export interface LineageManualEdgeResponse {
+  id: number;
+  from: string;
+  to: string;
+  verdict: string;
+  audit_actor: string;
+  audit_at: number;
+}
+
+export async function lineageCreateEdge(payload: {
+  profile: string;
+  source_fqn: string;
+  target_fqn: string;
+  notes?: string;
+}): Promise<LineageManualEdgeResponse> {
+  return apiFetch<LineageManualEdgeResponse>("/api/lineage/edges", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function lineageDeleteEdge(edgeId: number): Promise<void> {
+  await apiFetch<void>(`/api/lineage/edges/${edgeId}`, { method: "DELETE" });
+}
+
+export async function lineageSetVerdict(
+  edgeId: number,
+  verdict: "approved" | "rejected" | "pending" | "",
+): Promise<{ id: number; verdict: string }> {
+  return apiFetch<{ id: number; verdict: string }>(
+    `/api/lineage/edges/${edgeId}/verdict`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ verdict }),
+    },
   );
 }

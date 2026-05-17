@@ -24,18 +24,25 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, RefreshCcw, Sparkles, Zap } from "lucide-react";
 
 import {
+  lineageCreateEdge,
+  lineageDeleteEdge,
   lineageFetch,
   lineageList,
   lineageRefresh,
+  lineageSetVerdict,
   lineageSuggest,
   type LineageArtifact,
   type LineageEdge,
 } from "../lib/api";
-import { LineageCanvas, type LineageCanvasHandle } from "../components/LineageCanvas";
+import {
+  LineageCanvas,
+  type EdgeAction,
+  type LineageCanvasHandle,
+} from "../components/LineageCanvas";
 import LineageSearchInput from "../components/LineageSearchInput";
 import LineageTabBar from "../components/LineageTabBar";
 import { EdgePanel } from "../components/EdgePanel";
-import { Badge, Button } from "../components/ui";
+import { Badge, Button, useToast } from "../components/ui";
 
 export default function LineageDetail() {
   const { profile = "", anchor = "" } = useParams<{ profile: string; anchor: string }>();
@@ -119,6 +126,84 @@ export default function LineageDetail() {
       });
     },
   });
+
+  const toast = useToast();
+
+  const invalidateCanvas = () => {
+    qc.invalidateQueries({
+      queryKey: ["lineage-payload", profileName, anchorDatabase, anchorPath],
+    });
+  };
+
+  const createEdge = useMutation({
+    mutationFn: ({ source, target }: { source: string; target: string }) =>
+      lineageCreateEdge({
+        profile: profileName,
+        source_fqn: source,
+        target_fqn: target,
+      }),
+    onSuccess: invalidateCanvas,
+    onError: (e: Error) => {
+      toast.push({
+        title: "Could not save edge",
+        description: e.message,
+        tone: "error",
+      });
+    },
+  });
+
+  const verdictMut = useMutation({
+    mutationFn: ({ id, verdict }: { id: number; verdict: "approved" | "rejected" }) =>
+      lineageSetVerdict(id, verdict),
+    onSuccess: invalidateCanvas,
+    onError: (e: Error) => {
+      toast.push({ title: "Verdict failed", description: e.message, tone: "error" });
+    },
+  });
+
+  const deleteEdge = useMutation({
+    mutationFn: (id: number) => lineageDeleteEdge(id),
+    onSuccess: invalidateCanvas,
+    onError: (e: Error) => {
+      toast.push({ title: "Delete failed", description: e.message, tone: "error" });
+    },
+  });
+
+  const handleEdgeAction = (edge: LineageEdge, action: EdgeAction) => {
+    if (action === "delete") {
+      if (edge.id == null) {
+        toast.push({
+          title: "Cannot delete this edge",
+          description:
+            "Ephemeral edges (heuristic / query log) are re-derived each refresh; mark them as rejected instead.",
+          tone: "info",
+        });
+        return;
+      }
+      deleteEdge.mutate(edge.id);
+      return;
+    }
+    if (edge.id == null) {
+      toast.push({
+        title: "Cannot tag this edge",
+        description:
+          "Ephemeral edges have no persisted row to attach a verdict to. Run /refresh first to materialise.",
+        tone: "info",
+      });
+      return;
+    }
+    verdictMut.mutate({
+      id: edge.id,
+      verdict: action === "approve" ? "approved" : "rejected",
+    });
+  };
+
+  const handleCreateEdge = (sourceId: string, targetId: string) => {
+    // Source / target are node ids — i.e. "schema.table" or
+    // "database.schema.table". The backend resolver accepts either
+    // shape via _resolve_entity_id_strict.
+    createEdge.mutate({ source: sourceId, target: targetId });
+  };
 
   const goToTab = useCallback(
     (next: string) => {
@@ -255,6 +340,8 @@ export default function LineageDetail() {
                 ref={canvasRef}
                 payload={lineage.data}
                 onSelectEdge={setSelectedEdge}
+                onCreateEdge={handleCreateEdge}
+                onEdgeAction={handleEdgeAction}
               />
             </>
           )}

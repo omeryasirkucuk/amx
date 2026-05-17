@@ -104,13 +104,18 @@ def build_default_extractors(
     the LLMExtractor's ``cache_only`` mode when the caller composes
     a custom extractor list (e.g. the Studio service entry).
     """
-    from amx.lineage.extractors import CodebaseScanExtractor, QueryLogExtractor
+    from amx.lineage.extractors import (
+        CodebaseScanExtractor,
+        ManualEdgeExtractor,
+        QueryLogExtractor,
+    )
 
     return [
         FKExtractor(),
         ViewDDLExtractor(connector_factory=connector_factory),
         QueryLogExtractor(),
         CodebaseScanExtractor(),
+        ManualEdgeExtractor(),
         NameMatchExtractor(),
     ]
 
@@ -622,12 +627,14 @@ def lineage_for_studio(
     for edge in edges:
         edge_payloads.append(
             {
+                "id": edge.db_id,
                 "from": _node_id(edge.source),
                 "to": _node_id(edge.target),
                 "type": edge.relationship_type,
                 "extractor": edge.extractor,
                 "confidence": round(float(edge.confidence), 3),
                 "evidence": edge.evidence,
+                "verdict": edge.verdict,
             }
         )
 

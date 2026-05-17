@@ -35,6 +35,8 @@ const Schedules = lazy(() => import("./routes/Schedules"));
 const Pricing = lazy(() => import("./routes/Pricing"));
 const DbCache = lazy(() => import("./routes/DbCache"));
 const Lineage = lazy(() => import("./routes/Lineage"));
+const LineageSaved = lazy(() => import("./routes/LineageSaved"));
+const LineageNew = lazy(() => import("./routes/LineageNew"));
 const LineageDetail = lazy(() => import("./routes/LineageDetail"));
 
 // Suspense fallback is intentionally minimal — chunk fetches over
@@ -90,6 +92,8 @@ export default function App() {
               <Route path="pricing" element={<Pricing />} />
               <Route path="db-cache" element={<DbCache />} />
               <Route path="lineage" element={<Lineage />} />
+              <Route path="lineage/saved" element={<LineageSaved />} />
+              <Route path="lineage/new" element={<LineageNew />} />
               <Route path="lineage/:profile/:anchor" element={<LineageDetail />} />
               <Route path="runs/schedules" element={<Schedules />} />
               <Route

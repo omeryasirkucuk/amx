@@ -29,11 +29,13 @@ import ReactFlow, {
   MarkerType,
   ReactFlowProvider,
   useReactFlow,
+  type Connection,
   type Edge as RFEdge,
   type EdgeMouseHandler,
   type Node as RFNode,
   type NodeMouseHandler,
 } from "reactflow";
+import { Check, Trash2, X } from "lucide-react";
 import "reactflow/dist/style.css";
 import dagre from "dagre";
 
@@ -176,14 +178,26 @@ export interface LineageCanvasHandle {
   focusNode: (nodeId: string) => void;
 }
 
+export type EdgeVerdict = "approved" | "rejected" | "pending" | "";
+export type EdgeAction = "approve" | "reject" | "delete";
+
 interface Props {
   payload: LineagePayload;
   onSelectEdge?: (edge: LineageEdge | null) => void;
+  /** When provided, the canvas enables drag-to-connect; new edges are
+   *  surfaced here so the parent can POST them.
+   */
+  onCreateEdge?: (sourceId: string, targetId: string) => void;
+  /** When provided, right-clicking an edge surfaces a floating action
+   *  bar (Approve / Reject / Delete). The parent is responsible for the
+   *  actual mutation + refetch.
+   */
+  onEdgeAction?: (edge: LineageEdge, action: EdgeAction) => void;
   className?: string;
 }
 
 export const LineageCanvas = forwardRef<LineageCanvasHandle, Props>(function LineageCanvas(
-  { payload, onSelectEdge, className }: Props,
+  { payload, onSelectEdge, onCreateEdge, onEdgeAction, className }: Props,
   ref,
 ) {
   if (payload.nodes.length === 0) {
@@ -206,6 +220,8 @@ export const LineageCanvas = forwardRef<LineageCanvasHandle, Props>(function Lin
         ref={ref}
         payload={payload}
         onSelectEdge={onSelectEdge}
+        onCreateEdge={onCreateEdge}
+        onEdgeAction={onEdgeAction}
         className={className}
       />
     </ReactFlowProvider>
@@ -213,7 +229,7 @@ export const LineageCanvas = forwardRef<LineageCanvasHandle, Props>(function Lin
 });
 
 const CanvasInner = forwardRef<LineageCanvasHandle, Props>(function CanvasInner(
-  { payload, onSelectEdge, className }: Props,
+  { payload, onSelectEdge, onCreateEdge, onEdgeAction, className }: Props,
   ref,
 ) {
   const flow = useReactFlow();
@@ -282,16 +298,37 @@ const CanvasInner = forwardRef<LineageCanvasHandle, Props>(function CanvasInner(
     });
   }, [baseEdges, chain]);
 
+  const [contextEdge, setContextEdge] = useState<{
+    edge: LineageEdge;
+    x: number;
+    y: number;
+  } | null>(null);
+
   const handleEdgeClick: EdgeMouseHandler = (_, edge) => {
     onSelectEdge?.((edge.data as LineageEdge) ?? null);
+  };
+  const handleEdgeContextMenu: EdgeMouseHandler = (event, edge) => {
+    if (!onEdgeAction) return;
+    event.preventDefault();
+    const data = edge.data as LineageEdge | undefined;
+    if (!data) return;
+    setContextEdge({ edge: data, x: event.clientX, y: event.clientY });
   };
   const handleNodeClick: NodeMouseHandler = (_, node) => {
     setHighlightedNode((prev) => (prev === node.id ? null : node.id));
   };
   const handlePaneClick = () => {
     setHighlightedNode(null);
+    setContextEdge(null);
     onSelectEdge?.(null);
   };
+  const handleConnect = (connection: Connection) => {
+    if (!onCreateEdge) return;
+    if (!connection.source || !connection.target) return;
+    if (connection.source === connection.target) return;
+    onCreateEdge(connection.source, connection.target);
+  };
+  const dismissContext = () => setContextEdge(null);
 
   const focusNode = useCallback(
     (nodeId: string) => {
@@ -322,16 +359,62 @@ const CanvasInner = forwardRef<LineageCanvasHandle, Props>(function CanvasInner(
         fitView
         fitViewOptions={{ padding: 0.2 }}
         nodesDraggable={false}
-        nodesConnectable={false}
+        nodesConnectable={Boolean(onCreateEdge)}
         elementsSelectable
+        onConnect={handleConnect}
         onNodeClick={handleNodeClick}
         onEdgeClick={handleEdgeClick}
+        onEdgeContextMenu={handleEdgeContextMenu}
         onPaneClick={handlePaneClick}
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={20} color="#e2e8f0" />
         <Controls showInteractive={false} position="bottom-right" />
       </ReactFlow>
+      {contextEdge && onEdgeAction && (
+        <div
+          className="pointer-events-auto absolute z-20 flex items-center gap-1 rounded-md border border-surface-border bg-surface-raised px-2 py-1 text-xs shadow-md"
+          style={{ left: contextEdge.x - 60, top: contextEdge.y - 60 }}
+          onMouseLeave={dismissContext}
+        >
+          <span className="px-1 font-mono text-fg-muted">
+            {edgeLabel(contextEdge.edge)}
+          </span>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-emerald-700 hover:bg-emerald-50"
+            onClick={() => {
+              onEdgeAction(contextEdge.edge, "approve");
+              dismissContext();
+            }}
+            title="Mark as approved — folds into LLM feedback"
+          >
+            <Check className="h-3 w-3" /> approve
+          </button>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-amber-700 hover:bg-amber-50"
+            onClick={() => {
+              onEdgeAction(contextEdge.edge, "reject");
+              dismissContext();
+            }}
+            title="Mark as rejected — hidden by default + folds into LLM feedback"
+          >
+            <X className="h-3 w-3" /> reject
+          </button>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-rose-700 hover:bg-rose-50"
+            onClick={() => {
+              onEdgeAction(contextEdge.edge, "delete");
+              dismissContext();
+            }}
+            title="Hard-delete the edge (inferred edges may reappear on refresh)"
+          >
+            <Trash2 className="h-3 w-3" /> delete
+          </button>
+        </div>
+      )}
     </div>
   );
 });

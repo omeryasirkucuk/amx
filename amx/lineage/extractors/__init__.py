@@ -10,6 +10,7 @@ from __future__ import annotations
 from amx.lineage.extractors.codebase_scan import CodebaseScanExtractor
 from amx.lineage.extractors.fk import FKExtractor
 from amx.lineage.extractors.llm import LLMExtractor
+from amx.lineage.extractors.manual import ManualEdgeExtractor
 from amx.lineage.extractors.name_match import NameMatchExtractor
 from amx.lineage.extractors.query_log import QueryLogExtractor
 from amx.lineage.extractors.view_ddl import ViewDDLExtractor
@@ -18,6 +19,7 @@ __all__ = [
     "CodebaseScanExtractor",
     "FKExtractor",
     "LLMExtractor",
+    "ManualEdgeExtractor",
     "NameMatchExtractor",
     "QueryLogExtractor",
     "ViewDDLExtractor",
