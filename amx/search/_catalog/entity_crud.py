@@ -467,9 +467,7 @@ class EntityCrudMixin:
             return False
         state = str(row["state"] or "")
         last = row["last_full_sync_at"]
-        if state != "done" or last is None:
-            return False
-        return True
+        return state == "done" and last is not None
 
     def fetch_distinct_schemas(
         self, db_profile: str, database_name: str | None = None

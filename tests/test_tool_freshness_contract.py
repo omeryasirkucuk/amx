@@ -24,7 +24,6 @@ re-classify it as live_only.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -33,7 +32,6 @@ from amx.search._tool_schemas import (
     FRESHNESS_LIVE_ONLY,
     tool_schemas,
 )
-
 
 # Per-tool minimal arguments. Tools not listed here get an empty dict;
 # the tool body should still not reach the live DB even when arguments
@@ -97,9 +95,7 @@ def seeded_catalog(tmp_path_factory):
             column_name=None,
             entity_kind="table",
             asset_kind="table",
-            description=(
-                f"Demo description for {schema}.{table}" if has_desc else ""
-            ),
+            description=(f"Demo description for {schema}.{table}" if has_desc else ""),
         )
     return cat
 
@@ -122,9 +118,7 @@ def cache_only_toolbox(seeded_catalog):
     )
 
     def _raise_live(*_args, **_kwargs):
-        raise AssertionError(
-            "cache_ok tool reached a live connector — re-classify or fix"
-        )
+        raise AssertionError("cache_ok tool reached a live connector — re-classify or fix")
 
     box._live_db = _raise_live  # type: ignore[method-assign]
     box._connector_for_profile = _raise_live  # type: ignore[method-assign]

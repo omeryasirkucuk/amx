@@ -227,13 +227,16 @@ def upsert_db(
     (forwards-compatible)."""
     existing = cfg.db_profiles.get(name) or DBConfig()
     merged = _merge_db_patch(existing, body)
-    # Reject saves that would leave a required field blank (e.g. a
-    # Databricks profile with no ``catalog``). Surfacing this here
-    # converts what used to be a confusing mid-question ``Catalog
-    # 'None' was not found`` runtime error into a clear 400 at save
-    # time so the user knows exactly which field to fill.
-    backend_name = (merged.backend or existing.backend or "").strip()
-    if backend_name:
+    # Surgical Databricks-only check: reject a save that would leave
+    # ``catalog`` blank, which is the specific misconfiguration that
+    # produced the ``SHOW TABLES FROM `None`.<schema>`` Spark crash.
+    # The full per-backend required-field sweep
+    # (:func:`validate_required_fields`) is reserved for the CLI
+    # wizard so the route stays permissive — Studio's profile form
+    # already enforces field-level requirements before submit, and a
+    # half-saved profile in localStorage shouldn't 400 here.
+    backend_name = (merged.backend or existing.backend or "").strip().lower()
+    if backend_name == "databricks":
         try:
             validate_required_fields(backend_name, asdict(merged))
         except ProfileValidationError as exc:

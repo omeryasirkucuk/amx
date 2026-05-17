@@ -140,14 +140,14 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "is for NAMED LISTS only ('list the tables that are missing "
                 "comments') and is live-only, so it gets refused in "
                 "cache-only mode anyway.\n\n"
-                "Response shape: ``{\"profiles\": [{\"db_profile\", "
-                "\"database\", \"schema\", \"total_tables\", "
-                "\"undocumented_tables\", \"documented_tables\", "
-                "\"total_columns\", \"undocumented_columns\", "
-                "\"documented_columns\", \"table_coverage_pct\", "
-                "\"column_coverage_pct\", \"last_synced_at\"}], "
-                "\"totals\": {…}, \"scope\": [profiles], "
-                "\"source\": \"catalog\"}``. Quote `totals.undocumented_tables` "
+                'Response shape: ``{"profiles": [{"db_profile", '
+                '"database", "schema", "total_tables", '
+                '"undocumented_tables", "documented_tables", '
+                '"total_columns", "undocumented_columns", '
+                '"documented_columns", "table_coverage_pct", '
+                '"column_coverage_pct", "last_synced_at"}], '
+                '"totals": {…}, "scope": [profiles], '
+                '"source": "catalog"}``. Quote `totals.undocumented_tables` '
                 "and per-schema breakdowns directly; do not chain anything else."
             ),
             "parameters": {
@@ -189,10 +189,10 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "NOT chain ``list_schemas`` / ``list_tables_in_schema`` / "
                 "``describe_table`` to 'verify' — the catalog state IS the "
                 "answer.\n\n"
-                "Response: ``{\"profiles\": [{\"db_profile\", \"state\", "
-                "\"last_synced_at\", \"age_seconds\", \"is_fresh_24h\", "
-                "\"is_fresh_7d\", \"processed_tables\", \"total_tables\", "
-                "\"last_error\"}]}``."
+                'Response: ``{"profiles": [{"db_profile", "state", '
+                '"last_synced_at", "age_seconds", "is_fresh_24h", '
+                '"is_fresh_7d", "processed_tables", "total_tables", '
+                '"last_error"}]}``.'
             ),
             "parameters": {
                 "type": "object",

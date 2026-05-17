@@ -153,9 +153,7 @@ def detect_daemon_state() -> dict[str, Any]:
     log_mtime = log_path.stat().st_mtime if log_path.exists() else None
     system = platform.system()
 
-    def _result(
-        installed: bool, loaded: bool, path: str | None
-    ) -> dict[str, Any]:
+    def _result(installed: bool, loaded: bool, path: str | None) -> dict[str, Any]:
         return {
             "installed": installed,
             "loaded": loaded,

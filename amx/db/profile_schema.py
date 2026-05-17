@@ -367,9 +367,7 @@ class ProfileValidationError(ValueError):
         self.backend = backend
         self.missing = list(missing)
         labels = ", ".join(missing)
-        super().__init__(
-            f"Profile for backend {backend!r} is missing required field(s): {labels}."
-        )
+        super().__init__(f"Profile for backend {backend!r} is missing required field(s): {labels}.")
 
 
 def validate_required_fields(backend: str, payload: dict) -> None:

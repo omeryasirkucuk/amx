@@ -36,6 +36,14 @@ class _FakeToolbox:
     def schemas():
         return []
 
+    def available_schemas(self):
+        # PR #501 routed the tool-loop through this instance method
+        # so cache-only Ask can filter ``freshness="live_only"`` tools
+        # out of the LLM's menu. The fake mirrors the contract by
+        # returning the full ``schemas()`` list — no filtering needed
+        # for the tests that exercise the agent-callback wiring.
+        return self.schemas()
+
     def __init__(self, *args, **kwargs):
         # Mirror the public scope attributes the multi-profile-aware
         # tool_loop reads off ToolBox so the fake stays drop-in.
