@@ -42,8 +42,21 @@ export default function Lineage() {
     onSuccess: (data) => setDiscovery(data),
   });
 
-  const openDiscoveredAnchor = (anchor: { fqn: string }, profile: string) => {
-    const slug = anchor.fqn.replace(/\./g, "-").replace(/[^A-Za-z0-9_-]+/g, "_");
+  const openDiscoveredAnchor = async (
+    anchor: { fqn: string; database: string; schema: string; table: string },
+    profile: string,
+  ) => {
+    // Refresh first so an artifact exists for this anchor + the
+    // returned slug links to a known row.
+    const anchorPath = [anchor.schema, anchor.table].filter(Boolean).join(".");
+    try {
+      await import("../lib/api").then((m) =>
+        m.lineageRefresh(anchorPath, { profile, database: anchor.database }),
+      );
+    } catch {
+      /* fall through — the canvas page will surface the error */
+    }
+    const slug = `${anchor.schema}-${anchor.table}`.replace(/[^A-Za-z0-9_-]+/g, "_");
     navigate(`/lineage/${encodeURIComponent(profile)}/${encodeURIComponent(slug)}`);
   };
 

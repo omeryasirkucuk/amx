@@ -75,9 +75,15 @@ def _scope(
     anchor_path: str,
     depth_up: int = 1,
     depth_down: int = 1,
+    explicit_database: str = "",
 ) -> Scope:
     name = _resolve_profile(cfg, profile)
     database, schema, table, column = _parse_anchor_path(anchor_path)
+    # Explicit ``?database=…`` overrides everything — the Studio wizard
+    # picks a database without baking it into the URL slug so the path
+    # stays human-readable.
+    if explicit_database:
+        database = explicit_database
     if not database:
         database = _default_database(cfg, name)
     anchor = ColumnRef(database=database, schema=schema, table=table, column=column)
@@ -96,7 +102,12 @@ def list_artifacts(
     profile: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """List rendered lineage artifacts. Optional ``?profile=`` filter."""
+    """List rendered lineage artifacts. Optional ``?profile=`` filter.
+
+    Each row is enriched with the anchor's ``(database, schema, table,
+    column)`` so the Studio canvas can construct subsequent API calls
+    without re-fetching the catalog row.
+    """
     hs = history_store()
     if hs is None:
         raise HTTPException(
@@ -104,7 +115,41 @@ def list_artifacts(
             detail="History store not initialised.",
         )
     rows = lineage_store.list_lineage_artifacts(hs, db_profile=profile or "")
+    if rows:
+        anchor_ids = {int(r["anchor_entity_id"]) for r in rows}
+        anchors = _bulk_anchor_fqns(hs, anchor_ids)
+        for row in rows:
+            anchor = anchors.get(int(row["anchor_entity_id"]))
+            if anchor:
+                row["anchor_database"] = anchor["database"]
+                row["anchor_schema"] = anchor["schema"]
+                row["anchor_table"] = anchor["table"]
+                row["anchor_column"] = anchor["column"]
     return {"artifacts": rows, "count": len(rows)}
+
+
+def _bulk_anchor_fqns(hs: Any, anchor_ids: set[int]) -> dict[int, dict[str, str]]:
+    if not anchor_ids:
+        return {}
+    placeholders = ",".join("?" for _ in anchor_ids)
+    with hs._connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, database_name, schema_name, table_name, column_name
+            FROM catalog_entities
+            WHERE id IN ({placeholders})
+            """,
+            tuple(anchor_ids),
+        ).fetchall()
+    return {
+        int(r[0]): {
+            "database": str(r[1] or ""),
+            "schema": str(r[2] or ""),
+            "table": str(r[3] or ""),
+            "column": str(r[4] or ""),
+        }
+        for r in rows
+    }
 
 
 @router.post("/discover")
@@ -153,6 +198,7 @@ def post_discover(
 def get_lineage(
     anchor_path: str,
     profile: str | None = Query(default=None),
+    database: str = Query(default=""),
     depth_up: int = Query(default=1, ge=0, le=5),
     depth_down: int = Query(default=1, ge=0, le=5),
     cfg: AMXConfig = Depends(get_cfg),
@@ -170,6 +216,7 @@ def get_lineage(
         anchor_path=anchor_path,
         depth_up=depth_up,
         depth_down=depth_down,
+        explicit_database=database,
     )
     payload = lineage_service.lineage_for_studio(hs=hs, scope=scope)
     return payload
@@ -179,6 +226,7 @@ def get_lineage(
 def post_refresh(
     anchor_path: str,
     profile: str | None = Query(default=None),
+    database: str = Query(default=""),
     no_cache: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
@@ -195,7 +243,7 @@ def post_refresh(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="History store not initialised.",
         )
-    scope = _scope(cfg, profile=profile, anchor_path=anchor_path)
+    scope = _scope(cfg, profile=profile, anchor_path=anchor_path, explicit_database=database)
     # Try to find an existing artifact for this anchor + run refresh
     # against it. If no artifact yet, fall back to a fresh create.
     anchor_id = lineage_service.resolve_anchor_entity_id(
@@ -302,6 +350,7 @@ def post_suggest_bulk(
 def post_suggest(
     anchor_path: str,
     profile: str | None = Query(default=None),
+    database: str = Query(default=""),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Run a single on-demand LLM call for ``anchor_path``.
@@ -317,7 +366,7 @@ def post_suggest(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="History store not initialised.",
         )
-    scope = _scope(cfg, profile=profile, anchor_path=anchor_path)
+    scope = _scope(cfg, profile=profile, anchor_path=anchor_path, explicit_database=database)
     result = lineage_service.suggest_lineage_llm(hs=hs, scope=scope, cfg=cfg)
     if result.aborted:
         raise HTTPException(

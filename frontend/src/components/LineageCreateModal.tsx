@@ -147,7 +147,13 @@ export default function LineageCreateModal({ open, onClose }: Props) {
   const create = useMutation({
     mutationFn: async () => {
       const anchorPath = [schema, table].filter(Boolean).join(".");
-      await lineageRefresh(anchorPath, { profile });
+      // Pass database explicitly — without it, the backend falls back
+      // to the profile's pinned database which is empty for postgres
+      // profiles where the user picks the DB per request. The 404
+      // "Anchor X.Y not found in catalog" only fires when this is
+      // dropped.
+      const effectiveDb = supportsCatalogs ? catalog : database;
+      await lineageRefresh(anchorPath, { profile, database: effectiveDb });
       const slug = `${schema}-${table}`.replace(/[^A-Za-z0-9_-]+/g, "_");
       return { profile, slug };
     },

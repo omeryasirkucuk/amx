@@ -81,26 +81,42 @@ export default function LineageDetail() {
     [artifacts.data, slug],
   );
   const anchorPath = useMemo(() => buildAnchorPath(artifact), [artifact]);
+  // The artifact list is enriched with the catalog row's database so
+  // the canvas can pass it on every subsequent call — without this
+  // the backend can't find the anchor on profiles whose catalog
+  // entries carry an explicit database (postgres with multi-db,
+  // bigquery, etc.).
+  const anchorDatabase = artifact?.anchor_database ?? "";
 
   const lineage = useQuery({
-    queryKey: ["lineage-payload", profileName, anchorPath],
-    queryFn: () => lineageFetch(anchorPath, { profile: profileName }),
+    queryKey: ["lineage-payload", profileName, anchorDatabase, anchorPath],
+    queryFn: () =>
+      lineageFetch(anchorPath, { profile: profileName, database: anchorDatabase }),
     enabled: !!anchorPath,
   });
 
   const refresh = useMutation({
     mutationFn: (noCache: boolean) =>
-      lineageRefresh(anchorPath, { profile: profileName, noCache }),
+      lineageRefresh(anchorPath, {
+        profile: profileName,
+        database: anchorDatabase,
+        noCache,
+      }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["lineage-payload", profileName, anchorPath] });
+      qc.invalidateQueries({
+        queryKey: ["lineage-payload", profileName, anchorDatabase, anchorPath],
+      });
       qc.invalidateQueries({ queryKey: ["lineage-artifacts", profileName] });
     },
   });
 
   const suggest = useMutation({
-    mutationFn: () => lineageSuggest(anchorPath, { profile: profileName }),
+    mutationFn: () =>
+      lineageSuggest(anchorPath, { profile: profileName, database: anchorDatabase }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["lineage-payload", profileName, anchorPath] });
+      qc.invalidateQueries({
+        queryKey: ["lineage-payload", profileName, anchorDatabase, anchorPath],
+      });
     },
   });
 

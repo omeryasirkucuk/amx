@@ -1223,6 +1223,13 @@ export interface LineageArtifact {
   generated_at: number;
   extractors_used: string[];
   extractors_partial: boolean;
+  /** Enrichments added by the router from `catalog_entities` so the
+   *  Studio canvas can rebuild the anchor scope without a second
+   *  lookup. Optional because legacy rows may not carry them. */
+  anchor_database?: string;
+  anchor_schema?: string;
+  anchor_table?: string;
+  anchor_column?: string;
 }
 
 export interface LineageArtifactList {
@@ -1264,10 +1271,11 @@ export async function lineageList(profile?: string): Promise<LineageArtifactList
 
 export async function lineageFetch(
   anchor: string,
-  opts: { profile?: string; depthUp?: number; depthDown?: number } = {},
+  opts: { profile?: string; database?: string; depthUp?: number; depthDown?: number } = {},
 ): Promise<LineagePayload> {
   const params = new URLSearchParams();
   if (opts.profile) params.set("profile", opts.profile);
+  if (opts.database) params.set("database", opts.database);
   if (opts.depthUp !== undefined) params.set("depth_up", String(opts.depthUp));
   if (opts.depthDown !== undefined) params.set("depth_down", String(opts.depthDown));
   const qs = params.toString();
@@ -1278,10 +1286,11 @@ export async function lineageFetch(
 
 export async function lineageRefresh(
   anchor: string,
-  opts: { profile?: string; noCache?: boolean } = {},
+  opts: { profile?: string; database?: string; noCache?: boolean } = {},
 ): Promise<LineageRefreshResponse> {
   const params = new URLSearchParams();
   if (opts.profile) params.set("profile", opts.profile);
+  if (opts.database) params.set("database", opts.database);
   if (opts.noCache) params.set("no_cache", "true");
   const qs = params.toString();
   return apiFetch<LineageRefreshResponse>(
@@ -1292,10 +1301,11 @@ export async function lineageRefresh(
 
 export async function lineageSuggest(
   anchor: string,
-  opts: { profile?: string } = {},
+  opts: { profile?: string; database?: string } = {},
 ): Promise<LineageSuggestResponse> {
   const params = new URLSearchParams();
   if (opts.profile) params.set("profile", opts.profile);
+  if (opts.database) params.set("database", opts.database);
   const qs = params.toString();
   return apiFetch<LineageSuggestResponse>(
     `/api/lineage/${encodeAnchorPath(anchor)}/suggest${qs ? `?${qs}` : ""}`,
