@@ -128,3 +128,20 @@
   background: var(--lcv-accent);
   border: 1px solid rgb(var(--bg));
 }
+
+/* Rich-text label placeholder — contentEditable has no native
+   placeholder, so we paint it via a ::before pseudo-element bound to
+   the data-placeholder attribute, only when the editor is empty. */
+.lcv-text-editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--lcv-ink-dim);
+  pointer-events: none;
+}
+.lcv-text-editor ul {
+  margin: 0;
+  padding-left: 1.25rem;
+  list-style: disc outside;
+}
+.lcv-text-editor li {
+  margin: 0;
+}
