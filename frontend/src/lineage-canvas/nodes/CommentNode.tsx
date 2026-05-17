@@ -26,6 +26,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { NodeProps, NodeResizer, useReactFlow } from "reactflow";
 import clsx from "clsx";
 import DOMPurify from "dompurify";
+import { GripVertical, X } from "lucide-react";
 
 import { TextToolbar } from "../components/TextToolbar";
 import { COMMENT_COLORS } from "../constants";
@@ -123,15 +124,17 @@ function CommentNodeImpl({ id, data, selected }: NodeProps<CommentNodeData>) {
     return (
       <div
         className={clsx(
-          "relative h-full w-full",
-          selected && "ring-1 ring-accent-default/60 ring-offset-1 ring-offset-bg",
+          "lcv-text-node group relative h-full w-full rounded-md",
+          selected
+            ? "ring-1 ring-accent-default/70 ring-offset-1 ring-offset-bg"
+            : "ring-1 ring-transparent",
         )}
-        style={{ minWidth: 80, minHeight: 28 }}
+        style={{ minWidth: 100, minHeight: 36 }}
       >
         <NodeResizer
           isVisible={selected}
-          minWidth={80}
-          minHeight={28}
+          minWidth={100}
+          minHeight={36}
           lineStyle={{ borderColor: "rgb(var(--accent))" }}
         />
         <TextToolbar
@@ -140,6 +143,37 @@ function CommentNodeImpl({ id, data, selected }: NodeProps<CommentNodeData>) {
           onChange={commitRichHtml}
           onDelete={deleteSelf}
         />
+
+        {/* Mini header — drag handle on the left, trash on the right.
+            Idle: invisible. Hover or selected: fades in so the user
+            always has a tactile way to move or delete the node
+            without first clicking-outside-to-deselect. */}
+        <div
+          className={clsx(
+            "lcv-text-topbar pointer-events-none absolute inset-x-0 top-0",
+            "flex h-4 items-center justify-between px-1",
+            "opacity-0 transition-opacity duration-150",
+            "group-hover:opacity-100",
+            selected && "opacity-100",
+          )}
+        >
+          <span
+            className="lcv-comment-grip pointer-events-auto inline-flex h-4 cursor-grab items-center text-fg-muted hover:text-ink"
+            title="Drag to move"
+          >
+            <GripVertical size={10} />
+          </span>
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={deleteSelf}
+            className="nodrag pointer-events-auto inline-flex h-4 w-4 items-center justify-center rounded text-fg-muted hover:bg-critical-soft hover:text-critical"
+            title="Delete (Backspace)"
+          >
+            <X size={11} />
+          </button>
+        </div>
+
         <div
           ref={editorRef}
           contentEditable
@@ -148,8 +182,8 @@ function CommentNodeImpl({ id, data, selected }: NodeProps<CommentNodeData>) {
           onInput={commitRichHtml}
           data-placeholder="Text…"
           className={clsx(
-            "lcv-text-editor lcv-comment-grip nodrag nowheel",
-            "block min-h-[28px] w-full cursor-text bg-transparent p-1 leading-snug text-ink outline-none",
+            "lcv-text-editor nodrag nowheel",
+            "block min-h-[28px] w-full cursor-text bg-transparent px-2 pb-1 pt-3 leading-snug text-ink outline-none",
             "text-[15px] font-medium",
           )}
           style={{
