@@ -352,7 +352,12 @@ def register_code_commands(
     def code_refresh_cmd(cfg: AMXConfig, code_profile: str | None) -> None:
         """Clear persisted codebase scan cache and the semantic ``amx_code`` Chroma index."""
         from amx.codebase.cache import invalidate_cache
-        from amx.codebase.code_rag import delete_code_collection
+        from amx.codebase.code_rag import (
+            CodeEmbeddingMismatch,
+            _open_collection,
+            _resolve_code_embedding,
+            delete_code_collection,
+        )
 
         try:
             code_path = cfg.resolve_code_path((code_profile or "").strip() or None, None)
@@ -365,10 +370,53 @@ def register_code_commands(
         profile_nm = (
             (code_profile or "").strip() or cfg.active_code_profile or "default"
         ).strip() or "default"
+
+        # Probe the on-disk collection's identity against the active
+        # config — but only if a collection already exists. ``/embeddings``
+        # swapping the code embedding model leaves the stamped identity
+        # in place, and partial deletes never refresh it, so the next
+        # ``/ask`` keeps hitting :class:`CodeEmbeddingMismatch`. Detect
+        # that here and drop the whole collection so the next scan
+        # re-stamps cleanly. The probe must be side-effect free: if no
+        # collection exists yet (fresh install, no scan yet) we skip
+        # the probe entirely rather than risk creating one as a side
+        # effect of detection.
+        identity_mismatch = False
+        try:
+            chromadb_mod = __import__("chromadb")
+            persist_dir = str(Path.home() / ".amx" / "chroma_db")
+            client = chromadb_mod.PersistentClient(path=persist_dir)
+            existing_names = {getattr(c, "name", str(c)) for c in client.list_collections()}
+            from amx.codebase.code_rag import COLLECTION as _CODE_COLL
+
+            if _CODE_COLL in existing_names:
+                provider, model, ef = _resolve_code_embedding(cfg)
+                _open_collection(
+                    client,
+                    embedding_provider=provider,
+                    embedding_model=model,
+                    embedding_function=ef,
+                )
+        except CodeEmbeddingMismatch:
+            identity_mismatch = True
+        except Exception:
+            # Anything else (chromadb not installed, fresh install, etc.)
+            # falls back to the same per-path delete behaviour we had
+            # before; mismatch recovery is the only special case.
+            pass
+
         with command_display(mode="code-refresh", provider=cfg.llm.provider, model=cfg.llm.model):
             with step_spinner("Clearing cached code scan"):
                 invalidate_cache(profile_nm, code_path)
-                delete_code_collection(source_filters=[code_path])
+                if identity_mismatch:
+                    # Force a full drop. The stamped identity on the
+                    # existing collection no longer matches the active
+                    # embedding profile; per-source deletes would leave
+                    # the mismatch in place and ``/ask`` would keep
+                    # failing.
+                    delete_code_collection(source_filters=None)
+                else:
+                    delete_code_collection(source_filters=[code_path])
         try:
             from amx.search.catalog import SearchCatalog
 

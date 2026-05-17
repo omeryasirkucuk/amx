@@ -476,6 +476,49 @@ class RAGStore:
                 log.info("Deleted %d chunks for source %s", len(ids), src)
         return removed
 
+    def reset_collection(self) -> None:
+        """Drop the docs vector store and rebuild it with the active
+        identity.
+
+        ``ingest(refresh=True)`` removes documents one source at a
+        time but leaves the Chroma collection's identity metadata
+        (``embedding_provider`` / ``embedding_model`` /
+        ``embedding_dim``) intact. After an ``/embeddings`` swap that
+        leaves the user stuck — the next ``RAGStore()`` open reads
+        the stale identity and raises
+        :class:`EmbeddingProviderMismatch`. ``reset_collection``
+        drops the Chroma collection outright AND clears the FTS5
+        sidecar so the next ingest stamps fresh identity metadata
+        and the BM25 channel cannot resurface chunks from the dropped
+        collection.
+
+        The instance keeps working after the reset: ``self.collection``
+        is rebound to a freshly opened Chroma collection with the
+        active triple.
+        """
+        name = self.collection.name if hasattr(self.collection, "name") else "amx_docs"
+        try:
+            self.client.delete_collection(name=name)
+        except Exception as exc:
+            log.debug("reset_collection: delete_collection(%s) skipped: %s", name, exc)
+        try:
+            self._fts.clear()
+        except Exception as exc:
+            log.debug("reset_collection: fts clear failed: %s", exc)
+        kwargs: dict[str, Any] = {
+            "name": name,
+            "metadata": {
+                "hnsw:space": "cosine",
+                "embedding_provider": self.embedding_provider,
+                "embedding_model": self.embedding_model,
+                "embedding_dim": int(self.embedding_dim),
+                "amx_schema_version": _AMX_RAG_SCHEMA_VERSION,
+            },
+        }
+        if self.embedding_function is not None:
+            kwargs["embedding_function"] = self.embedding_function
+        self.collection = self.client.get_or_create_collection(**kwargs)
+
     def ingest(
         self,
         docs: list[DocInfo],
