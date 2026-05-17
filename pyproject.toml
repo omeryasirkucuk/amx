@@ -127,6 +127,16 @@ pdf = [
     "weasyprint>=60",
     "jinja2>=3.1",
 ]
+# /lineage view-DDL parsing + Graphviz rendering. Auto-installed by
+# amx.utils.optional_deps the first time the user runs /lineage
+# create with a view-DDL extractor cache miss. The ``dot`` binary is
+# *not* in this extra — it is an OS package the user installs via
+# brew / apt / winget. AMX surfaces a platform-aware install hint
+# when the binary is missing.
+lineage = [
+    "sqlglot>=23",
+    "graphviz>=0.20",
+]
 # Reference-based and reference-free text-quality metrics for the
 # /history compare flow. Lazy-installed by amx.utils.optional_deps
 # the first time the user opts into Tier 0 quality analysis (CLI

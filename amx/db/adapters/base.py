@@ -450,6 +450,23 @@ class DatabaseAdapter(ABC):
         """Backend-specific view listing. ``None`` → SQLAlchemy fallback."""
         return None
 
+    def list_views_with_definitions(
+        self,
+        engine: Engine,
+        schema: str,
+    ) -> list[dict[str, Any]]:
+        """Views in ``schema`` paired with their DDL text.
+
+        Used by ``/lineage`` to populate ``view_definitions_cache``. Return
+        shape mirrors the "extended object types" convention: each entry is
+        ``{name, type='view', definition, comment, metadata}``. Adapters that
+        don't expose view definitions return ``[]``; the lineage extractor
+        treats that as "no view-level signal for this schema" rather than an
+        error. The call MUST be safe to make from a cache-fill path
+        triggered by user confirmation — no implicit writes.
+        """
+        return []
+
     # ── Extended object types ─────────────────────────────────────────────
     #
     # Each ``list_<object>()`` returns an empty list by default. Adapters

@@ -120,6 +120,14 @@ BUNDLES: dict[str, list[PackageSpec]] = {
     "local_embeddings": [
         ("sentence_transformers", "sentence-transformers>=3.0"),
     ],
+    # /lineage view-DDL parsing relies on sqlglot's column-lineage
+    # walker. graphviz wraps the OS ``dot`` binary that AMX shells out
+    # to for PNG/SVG/JPG render; the binary itself ships outside pip
+    # (brew/apt/winget) and AMX surfaces an install hint when missing.
+    "lineage": [
+        "sqlglot",
+        "graphviz",
+    ],
 }
 
 #: Human-readable labels surfaced in the install banner when a bundle
@@ -127,6 +135,7 @@ BUNDLES: dict[str, list[PackageSpec]] = {
 BUNDLE_LABELS: dict[str, str] = {
     "rag": "shared RAG core (/docs, /search, /code)",
     "docs-extended": "document RAG (/docs ingest)",
+    "lineage": "/lineage view-DDL parser + Graphviz wrapper",
 }
 
 #: Bundles whose total install footprint is large enough (sentence-

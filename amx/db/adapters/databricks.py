@@ -382,6 +382,40 @@ class DatabricksAdapter(DatabaseAdapter):
         except Exception:
             return None
 
+    def list_views_with_definitions(
+        self,
+        engine: Engine,
+        schema: str,
+    ) -> list[dict[str, Any]]:
+        # Unity Catalog: ``system.information_schema.views`` carries the
+        # view definition. Hive-metastore profiles return ``[]`` since the
+        # legacy metastore exposes only ``SHOW VIEWS`` (name list).
+        if not schema:
+            return []
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(
+                    text(
+                        "SELECT table_name, view_definition "
+                        "FROM system.information_schema.views "
+                        "WHERE table_schema = :schema "
+                        "ORDER BY table_name"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+            except Exception:
+                return []
+        return [
+            {
+                "name": str(r[0]),
+                "type": "view",
+                "definition": str(r[1]) if r[1] else None,
+                "comment": None,
+                "metadata": {},
+            }
+            for r in rows
+        ]
+
     # ── Bulk catalog metadata ─────────────────────────────────────────────
 
     def bulk_catalog_metadata(
