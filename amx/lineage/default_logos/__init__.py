@@ -27,41 +27,77 @@ Category = Literal["cloud", "warehouse", "bi", "tooling"]
 
 @dataclass(frozen=True)
 class DefaultLogo:
-    """One row in the default library."""
+    """One row in the default library.
+
+    ``simpleicons_slug`` is the brand's slug on https://simpleicons.org —
+    we serve the real brand mark via the CDN
+    (``https://cdn.simpleicons.org/<slug>/<hex>``) so users see actual
+    logos, not initials. The ``color`` field is reused as the
+    foreground tint passed to the CDN; SimpleIcons icons are
+    monochrome by design so this is the right knob.
+
+    ``initials`` survives as a fallback for offline mode + for the
+    text-stub renderer (:func:`render_logo_svg`) — useful as a backup
+    if a slug ever 404s or the user disables network access.
+    """
 
     key: str
     label: str
     category: Category
-    color: str  # background fill (CSS hex)
-    initials: str  # rendered in white in the center
+    color: str  # CSS hex without "#" — also used as SimpleIcons tint
+    initials: str  # offline / fallback initials
+    simpleicons_slug: str  # https://simpleicons.org/?q=<slug>
 
 
 DEFAULT_LOGOS: tuple[DefaultLogo, ...] = (
     # Cloud providers
-    DefaultLogo("aws", "Amazon Web Services", "cloud", "#FF9900", "AWS"),
-    DefaultLogo("gcp", "Google Cloud", "cloud", "#4285F4", "GCP"),
-    DefaultLogo("azure", "Microsoft Azure", "cloud", "#0078D4", "AZ"),
+    DefaultLogo("aws", "Amazon Web Services", "cloud", "#FF9900", "AWS", "amazonwebservices"),
+    DefaultLogo("gcp", "Google Cloud", "cloud", "#4285F4", "GCP", "googlecloud"),
+    DefaultLogo("azure", "Microsoft Azure", "cloud", "#0078D4", "AZ", "microsoftazure"),
     # Warehouses + databases
-    DefaultLogo("snowflake", "Snowflake", "warehouse", "#29B5E8", "SF"),
-    DefaultLogo("databricks", "Databricks", "warehouse", "#FF3621", "DB"),
-    DefaultLogo("bigquery", "BigQuery", "warehouse", "#669DF6", "BQ"),
-    DefaultLogo("postgres", "PostgreSQL", "warehouse", "#336791", "PG"),
-    DefaultLogo("mysql", "MySQL", "warehouse", "#00758F", "MY"),
-    DefaultLogo("redshift", "Amazon Redshift", "warehouse", "#C8232C", "RS"),
+    DefaultLogo("snowflake", "Snowflake", "warehouse", "#29B5E8", "SF", "snowflake"),
+    DefaultLogo("databricks", "Databricks", "warehouse", "#FF3621", "DB", "databricks"),
+    DefaultLogo("bigquery", "BigQuery", "warehouse", "#669DF6", "BQ", "googlebigquery"),
+    DefaultLogo("postgres", "PostgreSQL", "warehouse", "#336791", "PG", "postgresql"),
+    DefaultLogo("mysql", "MySQL", "warehouse", "#00758F", "MY", "mysql"),
+    DefaultLogo("redshift", "Amazon Redshift", "warehouse", "#C8232C", "RS", "amazonredshift"),
     # BI / sinks
-    DefaultLogo("powerbi", "Power BI", "bi", "#F2C811", "PB"),
-    DefaultLogo("tableau", "Tableau", "bi", "#1F77B4", "TB"),
-    DefaultLogo("looker", "Looker", "bi", "#4285F4", "LK"),
-    DefaultLogo("metabase", "Metabase", "bi", "#509EE3", "MB"),
-    DefaultLogo("superset", "Apache Superset", "bi", "#20A7C9", "SS"),
+    DefaultLogo("powerbi", "Power BI", "bi", "#F2C811", "PB", "powerbi"),
+    DefaultLogo("tableau", "Tableau", "bi", "#1F77B4", "TB", "tableau"),
+    DefaultLogo("looker", "Looker", "bi", "#4285F4", "LK", "looker"),
+    DefaultLogo("metabase", "Metabase", "bi", "#509EE3", "MB", "metabase"),
+    DefaultLogo("superset", "Apache Superset", "bi", "#20A7C9", "SS", "apachesuperset"),
     # Data tooling
-    DefaultLogo("dbt", "dbt", "tooling", "#FF694A", "dbt"),
-    DefaultLogo("airflow", "Apache Airflow", "tooling", "#E32A77", "AF"),
-    DefaultLogo("fivetran", "Fivetran", "tooling", "#0073B6", "FT"),
-    DefaultLogo("kafka", "Apache Kafka", "tooling", "#231F20", "KA"),
-    DefaultLogo("spark", "Apache Spark", "tooling", "#E25A1C", "SP"),
-    DefaultLogo("iceberg", "Apache Iceberg", "tooling", "#0E7C7B", "IB"),
+    DefaultLogo("dbt", "dbt", "tooling", "#FF694A", "dbt", "dbt"),
+    DefaultLogo("airflow", "Apache Airflow", "tooling", "#E32A77", "AF", "apacheairflow"),
+    DefaultLogo("fivetran", "Fivetran", "tooling", "#0073B6", "FT", "fivetran"),
+    DefaultLogo("kafka", "Apache Kafka", "tooling", "#231F20", "KA", "apachekafka"),
+    DefaultLogo("spark", "Apache Spark", "tooling", "#E25A1C", "SP", "apachespark"),
+    DefaultLogo("iceberg", "Apache Iceberg", "tooling", "#0E7C7B", "IB", "apacheiceberg"),
+    # External collaboration / consulting
+    DefaultLogo(
+        "sharepoint",
+        "Microsoft SharePoint",
+        "tooling",
+        "#0078D4",
+        "SP",
+        "microsoftsharepoint",
+    ),
+    # ``dfive`` has no SimpleIcons entry — empty slug routes through the
+    # placeholder SVG renderer in :func:`seed_default_logos`. Users who
+    # want the real Dfive mark replace it via the picker's custom upload.
+    DefaultLogo("dfive", "Dfive", "tooling", "#1B9AAA", "D5", ""),
 )
+
+
+def simpleicons_url(logo: DefaultLogo) -> str:
+    """Build the SimpleIcons CDN URL for the brand mark, tinted by color.
+
+    Returns the URL the frontend's ``<img src>`` consumes directly.
+    Color hex is passed without ``#`` per the CDN's contract.
+    """
+    color_hex = logo.color.lstrip("#")
+    return f"https://cdn.simpleicons.org/{logo.simpleicons_slug}/{color_hex}"
 
 
 def render_logo_svg(logo: DefaultLogo) -> str:
