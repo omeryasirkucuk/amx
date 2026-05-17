@@ -1392,3 +1392,31 @@ export async function lineageSetVerdict(
     },
   );
 }
+
+export interface LineageAuditEntry {
+  edge_id: number;
+  relationship_type: string;
+  verdict: string;
+  actor: string;
+  at: number;
+  source: string;
+  from: string;
+  to: string;
+  note: string;
+}
+
+export interface LineageAuditResponse {
+  profile: string;
+  entries: LineageAuditEntry[];
+  count: number;
+}
+
+export async function lineageAudit(
+  opts: { profile?: string; limit?: number } = {},
+): Promise<LineageAuditResponse> {
+  const params = new URLSearchParams();
+  if (opts.profile) params.set("profile", opts.profile);
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return apiFetch<LineageAuditResponse>(`/api/lineage/audit${qs ? `?${qs}` : ""}`);
+}

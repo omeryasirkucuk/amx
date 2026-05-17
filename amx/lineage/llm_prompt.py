@@ -69,19 +69,39 @@ class SuggestedEdge:
     confidence: float
 
 
+@dataclass(frozen=True)
+class FeedbackExample:
+    """One previously-verdicted edge to fold into the next prompt."""
+
+    from_fqn: str
+    to_fqn: str
+    note: str = ""  # e.g. "FK pattern", "spurious join" — short reason
+
+
 def build_messages(
     anchor: AnchorContext,
     candidates: list[CandidateTable],
     *,
     max_candidates: int = 30,
+    approved_examples: list[FeedbackExample] | None = None,
+    rejected_examples: list[FeedbackExample] | None = None,
+    max_examples_each: int = 5,
 ) -> list[dict[str, str]]:
     """Return a ``[{role, content}]`` chat messages list for LLM client.
 
     Candidates are truncated to ``max_candidates`` to keep prompt size
     bounded — the caller picks the best subset (e.g. by name-prefix
     match or co-occurrence frequency).
+
+    ``approved_examples`` and ``rejected_examples`` (v3 S5 feedback
+    loop) fold previously-verdicted edges into the system prompt as
+    positive / negative few-shot examples so the LLM converges on the
+    user's taste. Each list is capped at ``max_examples_each`` to keep
+    token spend predictable.
     """
     candidates = candidates[:max_candidates]
+    approved = list(approved_examples or [])[:max_examples_each]
+    rejected = list(rejected_examples or [])[:max_examples_each]
     user_payload = {
         "anchor": {
             "table": anchor.fqn,
@@ -97,8 +117,31 @@ def build_messages(
             for c in candidates
         ],
     }
+    feedback_blocks: list[str] = []
+    if approved:
+        feedback_blocks.append(
+            "User has previously **approved** these edges in this catalogue. "
+            "Treat them as ground truth — mirror their reasoning style:\n"
+            + "\n".join(
+                f"  - {e.from_fqn} → {e.to_fqn}" + (f"  ({e.note})" if e.note else "")
+                for e in approved
+            )
+        )
+    if rejected:
+        feedback_blocks.append(
+            "User has previously **rejected** these edges in this catalogue. "
+            "Do not propose anything analogous:\n"
+            + "\n".join(
+                f"  - {e.from_fqn} → {e.to_fqn}" + (f"  ({e.note})" if e.note else "")
+                for e in rejected
+            )
+        )
+    feedback_section = "\n\n" + "\n\n".join(feedback_blocks) if feedback_blocks else ""
     return [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {
+            "role": "system",
+            "content": _SYSTEM_PROMPT + feedback_section,
+        },
         {
             "role": "user",
             "content": (
@@ -206,6 +249,7 @@ def to_column_ref(anchor: ColumnRef, fqn: str) -> ColumnRef:
 __all__ = [
     "AnchorContext",
     "CandidateTable",
+    "FeedbackExample",
     "SuggestedEdge",
     "build_messages",
     "parse_response",

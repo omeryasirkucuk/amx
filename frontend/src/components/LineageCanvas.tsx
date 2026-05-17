@@ -367,6 +367,10 @@ const CanvasInner = forwardRef<LineageCanvasHandle, Props>(function CanvasInner(
         onEdgeContextMenu={handleEdgeContextMenu}
         onPaneClick={handlePaneClick}
         proOptions={{ hideAttribution: true }}
+        // v3 S5 — virtualize when the graph passes the soft node limit
+        // so large discovery results stay interactive.
+        onlyRenderVisibleElements={baseNodes.length > 200}
+        minZoom={0.05}
       >
         <Background gap={20} color="#e2e8f0" />
         <Controls showInteractive={false} position="bottom-right" />
