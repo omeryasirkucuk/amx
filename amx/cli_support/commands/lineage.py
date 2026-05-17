@@ -459,24 +459,105 @@ def register_lineage_commands(
     @lineage.command("suggest")
     @click.argument("anchor", required=False)
     @click.option("--profile", "profile_flag", default=None, help="Override active DB profile.")
+    @click.option(
+        "--schema",
+        "schema_flag",
+        default=None,
+        help="Bulk mode: AI-suggest every table in this schema (budget-gated).",
+    )
+    @click.option(
+        "--budget-tokens",
+        "budget_tokens",
+        type=int,
+        default=50_000,
+        help="Bulk mode: hard token spend cap (default 50000).",
+    )
+    @click.option(
+        "--budget-tables",
+        "budget_tables",
+        type=int,
+        default=25,
+        help="Bulk mode: hard table-count cap (default 25).",
+    )
+    @click.option("--yes", "skip_confirm", is_flag=True, help="Skip confirm prompts.")
     @pass_config
     def lineage_suggest(
         cfg: AMXConfig,
         anchor: str | None,
         profile_flag: str | None,
+        schema_flag: str | None,
+        budget_tokens: int,
+        budget_tables: int,
+        skip_confirm: bool,
     ) -> None:
-        """Ask the active LLM to propose lineage edges for an anchor table.
+        """Ask the active LLM to propose lineage edges for an anchor or whole schema.
 
         Strictly opt-in: this is the only command in the namespace that
-        spends LLM tokens. Edges are persisted into
-        ``catalog_relationships`` with ``source='llm'`` so subsequent
-        cache_only reads (CLI, Studio) surface them without a second
-        round-trip.
+        spends LLM tokens. Single-anchor mode (default) calls the LLM
+        once for the picked table. Bulk mode (``--schema X``) iterates
+        every catalogued table in the schema, hard-stops on the first
+        of ``--budget-tokens`` / ``--budget-tables`` exceeded.
         """
         hs = history_store()
         if hs is None:
             error("History store not initialised — run /db first.")
             return
+
+        # Bulk mode — schema-wide AI suggest.
+        if schema_flag:
+            heading("Lineage · AI suggest (bulk)")
+            profile_name, profile_cfg = _pick_profile(cfg, profile_flag)
+            if profile_name is None:
+                return
+            database = _default_database(profile_cfg)
+            if not skip_confirm and not confirm(
+                f"Bulk AI-suggest every table in {schema_flag!r} via "
+                f"{getattr(cfg.llm, 'provider', '?')}/{getattr(cfg.llm, 'model', '?')} "
+                f"(budget: {budget_tokens} tokens / {budget_tables} tables). Continue?",
+                default=False,
+            ):
+                warn("Cancelled.")
+                return
+            try:
+                bulk = service.suggest_lineage_llm_bulk(
+                    hs=hs,
+                    profile=profile_name,
+                    schema=schema_flag,
+                    database=database,
+                    cfg=cfg,
+                    budget_tokens=budget_tokens,
+                    budget_tables=budget_tables,
+                )
+            except Exception as exc:
+                error(f"Bulk suggestion failed: {exc}")
+                return
+            if bulk.aborted:
+                warn(f"Aborted: {bulk.abort_reason}")
+                return
+            success(
+                f"Examined {bulk.tables_examined} table(s); "
+                f"{bulk.tables_with_edges} carried edges; "
+                f"{bulk.total_edges_persisted} edges persisted; "
+                f"{bulk.total_tokens_used} tokens spent. "
+                f"Halted by: {bulk.halted_by or 'completed'}."
+            )
+            log_event(
+                event_type="lineage.suggest_bulk",
+                status="ok",
+                command="/lineage suggest --schema",
+                details={
+                    "profile": profile_name,
+                    "schema": schema_flag,
+                    "model": bulk.model,
+                    "tables_examined": bulk.tables_examined,
+                    "tables_with_edges": bulk.tables_with_edges,
+                    "edges": bulk.total_edges_persisted,
+                    "tokens": bulk.total_tokens_used,
+                    "halted_by": bulk.halted_by,
+                },
+            )
+            return
+
         heading("Lineage · AI suggest")
         profile_name, profile_cfg = _pick_profile(cfg, profile_flag)
         if profile_name is None:

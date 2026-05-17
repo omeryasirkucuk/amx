@@ -7,15 +7,20 @@
  * so the deep-link from a fresh visit works without extra round-trips
  * once the SPA already loaded the list.
  *
- * Three top-row actions:
- *   • Refresh   — POSTs /refresh (cache-only)
- *   • Force fresh — POSTs /refresh?no_cache=true (DB hit)
- *   • AI suggest  — POSTs /suggest, persists, refetches
+ * v3 additions:
+ * - Multi-tab support via URL hash `#tabs=schema.table_a,schema.table_b`.
+ *   The active anchor is the path param; the hash holds the background
+ *   tabs. A small tab bar above the canvas lets users swap + close.
+ * - LineageSearchInput pinned top-left of the canvas; ⌘K opens it.
+ * - Chain highlight is baked into the canvas (click any node → its
+ *   upstream + downstream highlight, rest fades).
+ *
+ * Top-row actions stay: Refresh, Force fresh, AI suggest.
  */
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, RefreshCcw, Sparkles, Zap } from "lucide-react";
 
 import {
@@ -26,16 +31,43 @@ import {
   type LineageArtifact,
   type LineageEdge,
 } from "../lib/api";
-import { LineageCanvas } from "../components/LineageCanvas";
+import { LineageCanvas, type LineageCanvasHandle } from "../components/LineageCanvas";
+import LineageSearchInput from "../components/LineageSearchInput";
+import LineageTabBar from "../components/LineageTabBar";
 import { EdgePanel } from "../components/EdgePanel";
 import { Badge, Button } from "../components/ui";
 
 export default function LineageDetail() {
   const { profile = "", anchor = "" } = useParams<{ profile: string; anchor: string }>();
+  const navigate = useNavigate();
+  const location = useLocation();
   const profileName = decodeURIComponent(profile);
   const slug = decodeURIComponent(anchor);
   const qc = useQueryClient();
+  const canvasRef = useRef<LineageCanvasHandle | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<LineageEdge | null>(null);
+  const [searchSignal, setSearchSignal] = useState(0);
+
+  const tabs = useMemo(() => parseTabHash(location.hash), [location.hash]);
+  const allTabs = useMemo(() => {
+    const list = tabs.slice();
+    if (!list.includes(slug)) list.unshift(slug);
+    return list;
+  }, [tabs, slug]);
+
+  // ⌘K / Ctrl-K opens the canvas search input. Registered locally
+  // (not via the global CommandPalette) so the shortcut is scoped to
+  // this route — avoids stealing ⌘K when the user is in /ask or /runs.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setSearchSignal((n) => n + 1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Resolve the artifact slug to a concrete anchor path. List endpoint
   // is cheap (small SQLite query); UI shows a "Loading anchor" spinner
@@ -72,13 +104,45 @@ export default function LineageDetail() {
     },
   });
 
+  const goToTab = useCallback(
+    (next: string) => {
+      const others = allTabs.filter((t) => t !== next);
+      const hash = others.length ? `#tabs=${others.join(",")}` : "";
+      navigate(`/lineage/${encodeURIComponent(profileName)}/${encodeURIComponent(next)}${hash}`);
+    },
+    [allTabs, navigate, profileName],
+  );
+
+  const closeTab = useCallback(
+    (target: string) => {
+      const remaining = allTabs.filter((t) => t !== target);
+      if (remaining.length === 0) {
+        navigate("/lineage");
+        return;
+      }
+      if (target === slug) {
+        goToTab(remaining[0]);
+      } else {
+        const others = remaining.filter((t) => t !== slug);
+        const hash = others.length ? `#tabs=${others.join(",")}` : "";
+        navigate(
+          `/lineage/${encodeURIComponent(profileName)}/${encodeURIComponent(slug)}${hash}`,
+          { replace: true },
+        );
+      }
+    },
+    [allTabs, goToTab, navigate, profileName, slug],
+  );
+
   if (artifacts.isLoading) {
     return <div className="p-6 text-sm text-fg-muted">Loading lineage artifact…</div>;
   }
   if (!artifact) {
     return (
       <div className="flex flex-col gap-3 p-6 text-sm">
-        <p>Artifact <code className="font-mono">{slug}</code> not found.</p>
+        <p>
+          Artifact <code className="font-mono">{slug}</code> not found.
+        </p>
         <Link className="text-accent-default" to="/lineage">
           ← Back to lineage list
         </Link>
@@ -141,6 +205,15 @@ export default function LineageDetail() {
         </div>
       </div>
 
+      {allTabs.length > 1 && (
+        <LineageTabBar
+          tabs={allTabs}
+          activeTab={slug}
+          onPick={goToTab}
+          onClose={closeTab}
+        />
+      )}
+
       {lineage.data?.partial && (
         <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           Partial render — some extractors had cache misses. Click <strong>Force fresh</strong> to
@@ -148,15 +221,26 @@ export default function LineageDetail() {
         </div>
       )}
 
-      <div className="grid h-[calc(100vh-220px)] grid-cols-[minmax(0,1fr)_320px] gap-3">
-        <div className="overflow-hidden rounded-xl border border-surface-border bg-surface-raised">
+      <div className="grid h-[calc(100vh-260px)] grid-cols-[minmax(0,1fr)_320px] gap-3">
+        <div className="relative overflow-hidden rounded-xl border border-surface-border bg-surface-raised">
           {lineage.isLoading && (
             <div className="flex h-full items-center justify-center text-sm text-fg-muted">
               Loading lineage payload…
             </div>
           )}
           {lineage.data && (
-            <LineageCanvas payload={lineage.data} onSelectEdge={setSelectedEdge} />
+            <>
+              <LineageSearchInput
+                nodes={lineage.data.nodes}
+                onPick={(id) => canvasRef.current?.focusNode(id)}
+                openSignal={searchSignal}
+              />
+              <LineageCanvas
+                ref={canvasRef}
+                payload={lineage.data}
+                onSelectEdge={setSelectedEdge}
+              />
+            </>
           )}
         </div>
         <EdgePanel edge={selectedEdge} />
@@ -174,7 +258,15 @@ function buildAnchorPath(artifact: LineageArtifact | undefined): string {
   // convert dashes back to dots so the FastAPI route sees the
   // canonical "schema.table" path.
   if (!artifact) return "";
-  // Slug → dots heuristic (good-enough for v1; S4 could persist the
-  // canonical path on the artifact row to avoid this round-trip).
   return artifact.name.replace(/-/g, ".");
+}
+
+function parseTabHash(hash: string): string[] {
+  if (!hash) return [];
+  const match = /[#&]tabs=([^&]+)/.exec(hash);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((s) => decodeURIComponent(s.trim()))
+    .filter(Boolean);
 }

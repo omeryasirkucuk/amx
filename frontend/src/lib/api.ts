@@ -1302,3 +1302,36 @@ export async function lineageSuggest(
     { method: "POST" },
   );
 }
+
+export interface LineageDiscoveredAnchor {
+  database: string;
+  schema: string;
+  table: string;
+  fqn: string;
+  edge_count: number;
+  extractors_used: string[];
+  partial: boolean;
+}
+
+export interface LineageDiscoverResponse {
+  profile: string;
+  anchors: LineageDiscoveredAnchor[];
+  tables_examined: number;
+  tables_with_edges: number;
+  total_edges: number;
+  truncated: boolean;
+  duration_sec: number;
+}
+
+export async function lineageDiscover(
+  opts: { profile?: string; maxTables?: number } = {},
+): Promise<LineageDiscoverResponse> {
+  const params = new URLSearchParams();
+  if (opts.profile) params.set("profile", opts.profile);
+  if (opts.maxTables !== undefined) params.set("max_tables", String(opts.maxTables));
+  const qs = params.toString();
+  return apiFetch<LineageDiscoverResponse>(
+    `/api/lineage/discover${qs ? `?${qs}` : ""}`,
+    { method: "POST" },
+  );
+}

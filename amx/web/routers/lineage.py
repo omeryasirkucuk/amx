@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from amx.config import AMXConfig
 from amx.lineage import service as lineage_service
 from amx.lineage import store as lineage_store
+from amx.lineage.discover import discover_profile_lineage
 from amx.lineage.types import ColumnRef, Scope
 from amx.storage.sqlite_store import history_store
 from amx.web.deps import get_cfg
@@ -104,6 +105,48 @@ def list_artifacts(
         )
     rows = lineage_store.list_lineage_artifacts(hs, db_profile=profile or "")
     return {"artifacts": rows, "count": len(rows)}
+
+
+@router.post("/discover")
+def post_discover(
+    profile: str | None = Query(default=None),
+    max_tables: int = Query(default=500, ge=1, le=2000),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Walk cached tables for the profile and return anchors with edges.
+
+    Cache-only — never opens the wire. Returns the ranked list so the
+    Studio browse page can surface the most lineage-rich anchors as
+    one-click open targets.
+    """
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    name = _resolve_profile(cfg, profile)
+    result = discover_profile_lineage(hs=hs, profile=name, max_tables=max_tables)
+    return {
+        "profile": result.profile,
+        "anchors": [
+            {
+                "database": a.database,
+                "schema": a.schema,
+                "table": a.table,
+                "fqn": a.fqn(),
+                "edge_count": a.edge_count,
+                "extractors_used": a.extractors_used,
+                "partial": a.partial,
+            }
+            for a in result.anchors
+        ],
+        "tables_examined": result.tables_examined,
+        "tables_with_edges": result.tables_with_edges,
+        "total_edges": result.total_edges,
+        "truncated": result.truncated,
+        "duration_sec": result.duration_sec,
+    }
 
 
 @router.get("/{anchor_path:path}")
@@ -202,6 +245,56 @@ def post_refresh(
         "extractors_partial": result.extractors_partial,
         "aborted": result.aborted,
         "abort_reason": result.abort_reason,
+    }
+
+
+@router.post("/suggest-bulk")
+def post_suggest_bulk(
+    profile: str | None = Query(default=None),
+    schema: str = Query(..., min_length=1),
+    database: str = Query(default=""),
+    budget_tokens: int = Query(default=50_000, ge=100, le=2_000_000),
+    budget_tables: int = Query(default=25, ge=1, le=500),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Run AI suggest across every table in ``schema``.
+
+    Hard-stops as soon as either ``budget_tokens`` or ``budget_tables``
+    is reached. Synchronous in v3: returns the full rollup once
+    finished. SSE-streamed progress is on the S5 roadmap.
+    """
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    name = _resolve_profile(cfg, profile)
+    db = database or _default_database(cfg, name)
+    rollup = lineage_service.suggest_lineage_llm_bulk(
+        hs=hs,
+        profile=name,
+        schema=schema,
+        database=db,
+        cfg=cfg,
+        budget_tokens=budget_tokens,
+        budget_tables=budget_tables,
+    )
+    if rollup.aborted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=rollup.abort_reason,
+        )
+    return {
+        "profile": rollup.profile,
+        "schema": rollup.schema,
+        "model": rollup.model,
+        "tables_examined": rollup.tables_examined,
+        "tables_with_edges": rollup.tables_with_edges,
+        "total_edges_persisted": rollup.total_edges_persisted,
+        "total_tokens_used": rollup.total_tokens_used,
+        "halted_by": rollup.halted_by,
+        "per_table": rollup.per_table,
     }
 
 

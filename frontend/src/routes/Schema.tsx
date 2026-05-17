@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
-import { Database, FileText, Layers, Sparkles, Table as TableIcon } from "lucide-react";
+import { Database, FileText, Layers, Sparkles, Table as TableIcon, Workflow } from "lucide-react";
 
-import { api } from "../lib/api";
+import { api, apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
 import { useScope, scopePath } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
@@ -159,6 +159,47 @@ export default function Schema() {
     },
   });
 
+  // S3.8 — schema-wide AI suggest. Hard-budgeted on the backend so a
+  // single click cannot drain the user's LLM allotment. Result toast
+  // surfaces the rollup so the user sees how many tables actually
+  // produced edges.
+  const bulkSuggest = useMutation({
+    mutationFn: async () => {
+      if (!scope || !schema) return null;
+      const params = new URLSearchParams({
+        profile: scope.profile,
+        schema,
+        budget_tokens: "50000",
+        budget_tables: "25",
+      });
+      if (scope.database) params.set("database", scope.database);
+      return apiFetch<{
+        tables_examined: number;
+        tables_with_edges: number;
+        total_edges_persisted: number;
+        total_tokens_used: number;
+        halted_by: string;
+        model: string;
+      }>(`/api/lineage/suggest-bulk?${params.toString()}`, { method: "POST" });
+    },
+    onSuccess: (rollup) => {
+      if (!rollup) return;
+      toast.push({
+        title: "AI suggest completed",
+        description: `${rollup.tables_with_edges}/${rollup.tables_examined} tables produced edges (${rollup.total_edges_persisted} persisted, ${rollup.total_tokens_used} tokens spent, halted by ${rollup.halted_by || "completion"}).`,
+        tone: "success",
+        duration: 5000,
+      });
+    },
+    onError: (e: Error) => {
+      toast.push({
+        title: "Bulk AI suggest failed",
+        description: e.message,
+        tone: "error",
+      });
+    },
+  });
+
   if (!scope || !schema) {
     return (
       <EmptyState
@@ -195,15 +236,32 @@ export default function Schema() {
           />
         }
         actions={
-          <Button
-            variant="primary"
-            size="md"
-            leadingIcon={<Sparkles size={14} />}
-            loading={generateSchemaOnly.isPending || generate.isPending}
-            onClick={() => setConfirmGenerate(true)}
-          >
-            Generate description
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="md"
+              leadingIcon={<Workflow size={14} />}
+              loading={bulkSuggest.isPending}
+              onClick={() => {
+                const ok = window.confirm(
+                  `Run AI suggest across every table in ${schema} (budget: 50000 tokens, 25 tables)? Spends LLM tokens on the active profile.`,
+                );
+                if (ok) bulkSuggest.mutate();
+              }}
+              title="Schema-wide AI suggest — hard-stops at 50000 tokens or 25 tables"
+            >
+              AI suggest schema
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              leadingIcon={<Sparkles size={14} />}
+              loading={generateSchemaOnly.isPending || generate.isPending}
+              onClick={() => setConfirmGenerate(true)}
+            >
+              Generate description
+            </Button>
+          </div>
         }
       />
 
