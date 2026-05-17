@@ -271,46 +271,94 @@ def _active_scope_for_profile(cfg: AMXConfig, profile_name: str) -> dict[str, An
 @router.get("/catalogs")
 def list_catalogs(
     profile: str = Query(...),
+    force_live: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """Return ``SHOW CATALOGS`` (or backend equivalent) for 3-level
-    backends. 2-level backends return an empty list with
-    ``supports_catalogs=false`` so the SPA can collapse the catalog
-    rail in the asset tree.
+    """Return the catalog inventory for 3-level backends. Cache-first:
+    distinct ``database_name`` rows from ``catalog_entities`` answer
+    the sidebar without firing ``SHOW CATALOGS`` against Databricks
+    on every profile expand. ``?force_live=true`` opts back into the
+    live probe.
     """
     name = _require_profile(profile)
+    scope = _active_scope_for_profile(cfg, name)
+    if not force_live:
+        cached = _cached_catalog_inventory(name)
+        if cached is not None:
+            return {
+                "supports_catalogs": True,
+                "catalogs": cached,
+                "active_catalog": scope["active_catalog"],
+                "active_project": scope["active_project"],
+                "source": "catalog",
+                "possibly_partial": not _profile_is_fully_synced(name),
+            }
     db = _connector_for_scope(cfg, name)
     supports = _coerce_or_500("Probing catalog support", db.supports_catalogs)
     catalogs = _coerce_or_500("Listing catalogs", db.list_catalogs) if supports else []
-    scope = _active_scope_for_profile(cfg, name)
     return {
         "supports_catalogs": bool(supports),
         "catalogs": list(catalogs),
-        # ``active_catalog`` is the legacy field the SPA already reads;
-        # ``active_project`` is its BigQuery equivalent so the sidebar
-        # filter can handle both 3-level backends uniformly.
         "active_catalog": scope["active_catalog"],
         "active_project": scope["active_project"],
+        "source": "live",
     }
 
 
 @router.get("/databases")
 def list_databases(
     profile: str = Query(...),
+    force_live: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """``SHOW DATABASES`` for 2-level backends. Returns an empty list
-    on backends that don't expose a multi-database server (Databricks,
-    BigQuery — those use ``/api/live/catalogs`` instead).
+    """``SHOW DATABASES`` for 2-level backends. Cache-first: distinct
+    ``database_name`` rows from the catalog answer the sidebar without
+    re-listing live. Returns an empty list on backends that don't
+    expose a multi-database server (Databricks, BigQuery — those use
+    ``/api/live/catalogs`` instead). ``?force_live=true`` to bypass.
     """
     name = _require_profile(profile)
+    scope = _active_scope_for_profile(cfg, name)
+    if not force_live:
+        cached = _cached_catalog_inventory(name)
+        if cached is not None:
+            return {
+                "databases": cached,
+                "active_database": scope["active_database"],
+                "source": "catalog",
+                "possibly_partial": not _profile_is_fully_synced(name),
+            }
     db = _connector_for_scope(cfg, name)
     databases = _coerce_or_500("Listing databases", db.list_databases)
-    scope = _active_scope_for_profile(cfg, name)
     return {
         "databases": list(databases),
         "active_database": scope["active_database"],
+        "source": "live",
     }
+
+
+def _cached_catalog_inventory(profile: str) -> list[str] | None:
+    """Distinct database / catalog names from ``catalog_entities`` for
+    *profile*. Returns ``None`` when the cache is empty so the route
+    can fall through to a live probe. Used by ``/catalogs`` and
+    ``/databases`` to avoid re-firing ``SHOW CATALOGS`` /
+    ``SHOW DATABASES`` on every sidebar expand."""
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+    except Exception:
+        return None
+    if cat is None:
+        return None
+    try:
+        rows = cat.fetch_inventory(profile, scope="databases")
+    except Exception:
+        return None
+    if not rows:
+        return None
+    names = sorted({str(r.get("database") or "") for r in rows if r.get("database")})
+    return names or None
 
 
 @router.get("/schemas")
