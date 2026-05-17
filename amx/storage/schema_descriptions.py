@@ -997,6 +997,139 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "filled the misses. Renderer adds a footer banner when 1."
         ),
     },
+    # ── lineage_artifact_nodes (local only) ───────────────────────────────
+    "lineage_artifact_nodes": {
+        "__table__": (
+            "Per-canvas node placement for a saved lineage artifact. "
+            "One row per node on the canvas. Carries its own db_profile so "
+            "a single canvas can host nodes from multiple DB profiles "
+            "(cross-profile lineage). x/y persist the user's manual layout "
+            "so re-open restores the same arrangement without re-running "
+            "dagre."
+        ),
+        "id": "Surrogate INT primary key.",
+        "artifact_id": (
+            "lineage_artifacts.id this node belongs to. Cascades on artifact "
+            "delete so orphan node rows cannot accumulate."
+        ),
+        "entity_id": (
+            "catalog_entities.id of the table, view, or operator the node represents on the canvas."
+        ),
+        "db_profile": (
+            "DB profile the entity belongs to. Stored per-node (not just on "
+            "the parent artifact) so cross-profile canvases can render each "
+            "node with its own profile context."
+        ),
+        "x": "Canvas x coordinate in ReactFlow units.",
+        "y": "Canvas y coordinate in ReactFlow units.",
+        "width": "Rendered node width in ReactFlow units.",
+        "height": "Rendered node height in ReactFlow units.",
+        "z_index": (
+            "Stacking order. Higher z renders on top of lower z when nodes "
+            "visually overlap. Defaults to 0."
+        ),
+        "logo_key": (
+            "Optional override for the table node's header logo badge. "
+            "References lineage_logos.key. Empty string = no override; "
+            "the frontend falls back to the backend-derived auto-bound "
+            "logo (postgres profile -> 'postgres' logo, etc.)."
+        ),
+    },
+    # ── lineage_logos (local only) ────────────────────────────────────────
+    "lineage_logos": {
+        "__table__": (
+            "Registry of brand / system logos available to the lineage "
+            "canvas. Two flavours: 'default' rows are seeded once at "
+            "init from the bundled SVG library (aws, gcp, powerbi, …) "
+            "and cannot be deleted by users; 'custom' rows are uploaded "
+            "via the Studio's logo picker as either inline data URLs "
+            "or external URLs."
+        ),
+        "id": "Surrogate INT primary key.",
+        "key": (
+            "Stable identifier for the logo (e.g. 'aws', 'powerbi'). "
+            "Used by canvas nodes to reference a logo without "
+            "depending on the surrogate id."
+        ),
+        "label": "Human-readable label shown under the icon in the picker.",
+        "category": (
+            "Bucket for the picker tabs: 'cloud' | 'warehouse' | 'bi' | 'tooling' | 'custom'."
+        ),
+        "source": (
+            "Origin: 'default' for rows seeded from the bundled SVG "
+            "library; 'custom' for user uploads. Defaults are read-only "
+            "via the API."
+        ),
+        "data_url": (
+            "Base64-encoded data URL (data:image/...). Populated for "
+            "default rows and for custom uploads done via file picker."
+        ),
+        "url": (
+            "External URL (https://...). Populated only when the user "
+            "added the logo by pasting a URL instead of uploading."
+        ),
+        "created_at": "UTC epoch seconds when the row was inserted.",
+    },
+    # ── lineage_logo_nodes (local only) ───────────────────────────────────
+    "lineage_logo_nodes": {
+        "__table__": (
+            "Standalone logo nodes placed on a saved lineage canvas. A "
+            "logo node represents an external system AMX has no "
+            "connector for (Power BI, Tableau, S3, …) so the user can "
+            "draw end-to-end flows that cross the AMX-visible boundary. "
+            "Cascades on artifact delete."
+        ),
+        "id": "Surrogate INT primary key.",
+        "artifact_id": (
+            "lineage_artifacts.id this logo node belongs to. Cascades on artifact delete."
+        ),
+        "logo_id": (
+            "lineage_logos.id of the logo this node renders. Foreign key "
+            "into the registry table; logo deletion is forbidden when "
+            "any logo_nodes reference the row (enforced at the API)."
+        ),
+        "label": (
+            "Optional inline override for the node label. Empty string "
+            "falls back to the logo's registry label."
+        ),
+        "x": "Canvas x coordinate in ReactFlow units.",
+        "y": "Canvas y coordinate in ReactFlow units.",
+        "width": "Rendered node width in ReactFlow units. Default 120.",
+        "height": "Rendered node height in ReactFlow units. Default 120.",
+        "created_at": "UTC epoch seconds when the node was placed.",
+        "updated_at": "UTC epoch seconds of the most recent move / resize.",
+    },
+    # ── lineage_comments (local only) ─────────────────────────────────────
+    "lineage_comments": {
+        "__table__": (
+            "Sticky-note annotations attached to a saved lineage canvas. "
+            "Comments are free-floating notes that never participate in "
+            "edge resolution; they live alongside the canvas and cascade "
+            "on artifact delete."
+        ),
+        "id": "Surrogate INT primary key.",
+        "artifact_id": (
+            "lineage_artifacts.id this comment belongs to. Cascades on artifact delete."
+        ),
+        "x": "Canvas x coordinate in ReactFlow units.",
+        "y": "Canvas y coordinate in ReactFlow units.",
+        "width": "Rendered note width in ReactFlow units.",
+        "height": "Rendered note height in ReactFlow units.",
+        "color": (
+            "Background color palette key: amber | rose | emerald | sky | "
+            "violet | slate. The frontend resolves the key to the actual "
+            "rendered color so the palette can evolve without a migration."
+        ),
+        "text": "Free-form note body. Plain text with @-mention support in the UI.",
+        "style": (
+            "Render mode: 'note' (default) is the colored sticky-note "
+            "with a header band; 'text' is a transparent plain-text "
+            "label without background or border, used for canvas "
+            "section headings and free-form annotations."
+        ),
+        "created_at": "UTC epoch seconds when the comment was first saved.",
+        "updated_at": "UTC epoch seconds of the most recent edit.",
+    },
     # ── catalog_usage_evidence (local only) ───────────────────────────────
     "catalog_usage_evidence": {
         "__table__": (

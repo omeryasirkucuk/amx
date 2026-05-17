@@ -974,6 +974,108 @@ def suggest_lineage_llm(
     )
 
 
+def stream_suggest_lineage(
+    hs: Any,
+    scope: Scope,
+    cfg: Any,
+):
+    """Yield SSE chunks one batch at a time as extractors complete.
+
+    Order:
+      1. FK (deterministic, instant)
+      2. View DDL (cache-first)
+      3. Query log + codebase + manual (cache-only batch)
+      4. LLM suggest (slowest, only fires when an LLM profile is active)
+
+    Each yielded string is a single SSE message ready to write to the
+    response body — the router wraps this in a :class:`StreamingResponse`.
+    """
+    import json as _json
+
+    from amx.lineage.extractors import (
+        CodebaseScanExtractor,
+        ManualEdgeExtractor,
+        QueryLogExtractor,
+    )
+
+    def _emit(extractor: str, edges_iter: list[Edge], partial: bool = False) -> str:
+        payload = {
+            "extractor": extractor,
+            "partial": partial,
+            "edges": [
+                {
+                    "from": _node_id(edge.source),
+                    "to": _node_id(edge.target),
+                    "from_column": edge.source.column,
+                    "to_column": edge.target.column,
+                    "type": edge.relationship_type,
+                    "extractor": edge.extractor,
+                    "confidence": round(float(edge.confidence), 3),
+                    "operator": (
+                        {
+                            "op_kind": edge.operator.op_kind,
+                            "expression": edge.operator.expression,
+                        }
+                        if getattr(edge, "operator", None) is not None
+                        else None
+                    ),
+                }
+                for edge in edges_iter
+            ],
+        }
+        return f"event: edges-batch\ndata: {_json.dumps(payload)}\n\n"
+
+    total = 0
+    # 1) FK
+    try:
+        fk = FKExtractor().extract(hs=hs, scope=scope, mode="cache_only")
+        if fk.edges:
+            total += len(fk.edges)
+            yield _emit("fk", list(fk.edges))
+    except Exception as exc:  # pragma: no cover - defensive
+        yield (f"event: error\ndata: {_json.dumps({'message': f'fk: {exc}'})}\n\n")
+
+    # 2) View DDL (cache-first; respects existing TTL semantics)
+    try:
+        view_ddl = ViewDDLExtractor().extract(hs=hs, scope=scope, mode="cache_only")
+        if view_ddl.edges:
+            total += len(view_ddl.edges)
+            yield _emit("view_ddl", list(view_ddl.edges))
+    except Exception as exc:  # pragma: no cover
+        yield (f"event: error\ndata: {_json.dumps({'message': f'view_ddl: {exc}'})}\n\n")
+
+    # 3) Cache-only deterministic extractors as one batch
+    try:
+        deterministic: list[Edge] = []
+        for ext in (QueryLogExtractor(), CodebaseScanExtractor(), ManualEdgeExtractor()):
+            r = ext.extract(hs=hs, scope=scope, mode="cache_only")
+            deterministic.extend(r.edges)
+        if deterministic:
+            total += len(deterministic)
+            yield _emit("deterministic", deterministic)
+    except Exception as exc:  # pragma: no cover
+        yield (f"event: error\ndata: {_json.dumps({'message': f'deterministic: {exc}'})}\n\n")
+
+    # 4) LLM suggest — slowest; gated by config.
+    if getattr(cfg, "llm", None) is not None:
+        try:
+            llm_result = suggest_lineage_llm(hs, scope=scope, cfg=cfg)
+            if llm_result.edges and not llm_result.aborted:
+                total += len(llm_result.edges)
+                yield (
+                    "event: edges-batch\n"
+                    f"data: {_json.dumps({'extractor': 'llm', 'partial': False, 'edges': llm_result.edges})}\n\n"
+                )
+            elif llm_result.aborted:
+                yield (
+                    f"event: warning\ndata: {_json.dumps({'message': llm_result.abort_reason})}\n\n"
+                )
+        except Exception as exc:  # pragma: no cover
+            yield (f"event: error\ndata: {_json.dumps({'message': f'llm: {exc}'})}\n\n")
+
+    yield f"event: done\ndata: {_json.dumps({'total_edges': total})}\n\n"
+
+
 def suggest_lineage_llm_bulk(
     hs: Any,
     *,
