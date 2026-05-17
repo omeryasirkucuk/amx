@@ -224,6 +224,7 @@ def run_tool_agent(
     db_profiles: list[str] | None = None,
     doc_profiles: list[str] | None = None,
     code_profiles: list[str] | None = None,
+    allow_live_refresh: bool = False,
 ) -> ToolAgentResult:
     """Run the tool-calling loop and return the final synthesised answer.
 
@@ -261,6 +262,15 @@ def run_tool_agent(
 
     All three are optional and default to ``None`` so existing
     callers (CLI ``/ask``, batch scripts) keep working unchanged.
+
+    ``allow_live_refresh`` (default ``False``) is the per-question
+    cache-only gate. When ``False``, every tool that takes a
+    ``force_fresh`` argument ignores it — the agent only sees cached
+    catalog metadata for the duration of the question. When ``True``,
+    ``force_fresh=true`` is honoured as before, letting the LLM pull
+    fresh data from the live DB. The Ask UI exposes a "Live refresh"
+    toggle that flips this bit; CLI ``/ask`` keeps the legacy
+    cache-only-default contract.
     """
     # Use ``with`` so the live DB connector (SQLAlchemy engine + connection
     # pool) is disposed at the end of every question. Without this, each
@@ -272,6 +282,7 @@ def run_tool_agent(
         db_profiles=db_profiles,
         doc_profiles=doc_profiles,
         code_profiles=code_profiles,
+        allow_live_refresh=allow_live_refresh,
     ) as toolbox:
         return _run_tool_loop(
             toolbox=toolbox,

@@ -40,6 +40,9 @@ from amx.search._tool_rag import _RagToolsMixin
 from amx.search._tool_scd_and_role import _ScdAndRoleMixin
 from amx.search._tool_schemas import tool_schemas as _tool_schemas
 from amx.search.catalog import SearchCatalog
+from amx.utils.logging import get_logger
+
+log = get_logger("search.agent_tools")
 
 # ``json`` and ``SequenceMatcher`` stay imported above because the
 # ``ToolBox`` methods below still reach for them directly. The pure
@@ -126,9 +129,16 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         db_connectors: dict[str, DatabaseConnector] | None = None,
         doc_profiles: list[str] | tuple[str, ...] | None = None,
         code_profiles: list[str] | tuple[str, ...] | None = None,
+        allow_live_refresh: bool = False,
     ) -> None:
         self.cfg = cfg
         self.catalog = catalog
+        # Per-question cache-only gate. When False (default), every tool
+        # that exposes a ``force_fresh`` argument silently coerces it to
+        # False so the LLM cannot bypass the catalog cache and trigger
+        # an unauthorised live-DB read. Flipped to True from the Ask UI
+        # "Live refresh" toggle.
+        self._allow_live_refresh: bool = bool(allow_live_refresh)
         # Resolve the multi-profile retrieval scope.
         # ``db_profiles`` (caller-supplied) > ``cfg.active_db_profiles`` (the
         # 0.11.0 multi-pick scope) > legacy single-active fallback. Anchor
@@ -220,6 +230,29 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         return len(self.db_profiles) > 1
 
     # ------------------------------------------------------------------ helpers
+    def _gate_force_fresh(self, requested: bool) -> bool:
+        """Honour ``force_fresh`` only when the user enabled "Live refresh".
+
+        Ask is cache-only by default — the per-question UI toggle is the
+        single source of truth for whether a tool call is permitted to
+        bypass the catalog cache. When the toggle is OFF, the LLM may
+        still pass ``force_fresh=true`` (it's documented in the tool
+        schema for back-compat) but we silently coerce it to ``False``
+        and log the suppression so the trace is auditable.
+        """
+        if not requested:
+            return False
+        if self._allow_live_refresh:
+            return True
+        try:
+            log.debug(
+                "force_fresh suppressed by cache-only Ask mode "
+                "(allow_live_refresh=False)"
+            )
+        except Exception:
+            pass
+        return False
+
     def _live_db(self) -> DatabaseConnector:
         if self._db is None:
             self._db = self._db_factory()
@@ -1162,6 +1195,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         db_profile: str = "",
         force_fresh: bool = False,
     ) -> dict[str, Any]:
+        force_fresh = self._gate_force_fresh(force_fresh)
         # Multi-profile fan-out path: when the scope spans 2+ profiles
         # AND the LLM didn't target a specific one via ``db_profile``,
         # parallel-list schemas across every profile in scope. Each
@@ -1314,6 +1348,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         db_profile: str = "",
         force_fresh: bool = False,
     ) -> dict[str, Any]:
+        force_fresh = self._gate_force_fresh(force_fresh)
         target = (schema or "").strip()
         if not target:
             raise _ToolError("Argument 'schema' is required.")
@@ -1611,6 +1646,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         return payload
 
     def _tool_find_table_by_name(self, name: str, force_fresh: bool = False) -> dict[str, Any]:
+        force_fresh = self._gate_force_fresh(force_fresh)
         target = (name or "").strip()
         if not target:
             raise _ToolError("Argument 'name' is required.")
@@ -1873,6 +1909,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         database: str = "",
         force_fresh: bool = False,
     ) -> dict[str, Any]:
+        force_fresh = self._gate_force_fresh(force_fresh)
         schema_name = (schema or "").strip()
         table_name = (table or "").strip()
         if not schema_name or not table_name:

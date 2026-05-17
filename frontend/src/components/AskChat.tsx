@@ -194,6 +194,30 @@ export default function AskChat({
   const [docProfilesOverride, setDocProfilesOverride] = useState<string[] | null>([]);
   const [codeProfilesOverride, setCodeProfilesOverride] = useState<string[] | null>([]);
 
+  // "Live refresh" toggle — default OFF means Ask serves cached
+  // catalog metadata only and never hits the live DB. Flipping it
+  // ON sends ``allow_live_refresh: true`` for the next question,
+  // which lets the backend fire the drift probe AND honour any
+  // tool-level ``force_fresh`` the LLM asks for. Persisted to
+  // localStorage so the choice survives a page reload, but the
+  // default for every fresh browser stays cache-only by design.
+  const ALLOW_LIVE_REFRESH_KEY = "amx.ask.allowLiveRefresh";
+  const [allowLiveRefresh, setAllowLiveRefresh] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(ALLOW_LIVE_REFRESH_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(ALLOW_LIVE_REFRESH_KEY, allowLiveRefresh ? "1" : "0");
+    } catch {
+      // localStorage unavailable (private mode, embedded view) —
+      // the toggle still works for this tab, just won't persist.
+    }
+  }, [allowLiveRefresh]);
+
   // Read the active LLM profile / model from the shared ``["context"]``
   // cache so the inline picker mirrors whatever the sidebar shows.
   // ``ProfilePicker``'s activate mutation invalidates this key, so
@@ -472,6 +496,9 @@ export default function AskChat({
       if (codeProfilesOverride !== null) {
         body.code_profiles = codeProfilesOverride;
       }
+      // Cache-only by default; only opt in to live-DB reads when the
+      // user has flipped the toggle below the composer for this turn.
+      body.allow_live_refresh = allowLiveRefresh;
       const result = await apiFetch<SubmitResponse>("/api/ask", {
         method: "POST",
         body: JSON.stringify(body),
@@ -712,6 +739,39 @@ export default function AskChat({
             disabled={!!activeJob}
           />
           <div className="ml-auto flex items-center gap-2">
+            {/* Cache-only Ask is the default — this toggle is the
+                single per-question opt-in for live-DB reads. When OFF
+                (default) the backend skips the background drift probe
+                AND suppresses any tool-level ``force_fresh`` the LLM
+                might pass. When ON, the next question is allowed to
+                refresh against the live database. */}
+            <button
+              type="button"
+              onClick={() => setAllowLiveRefresh((prev) => !prev)}
+              disabled={!!activeJob}
+              aria-pressed={allowLiveRefresh}
+              title={
+                allowLiveRefresh
+                  ? "Live refresh ON — this question may read the live DB."
+                  : "Live refresh OFF — answers come from cached catalog metadata only."
+              }
+              className={cn(
+                "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors",
+                allowLiveRefresh
+                  ? "border-accent/60 bg-accent/15 text-accent hover:bg-accent/25"
+                  : "border-border bg-surface-raised text-ink-dim hover:bg-surface-raised/80",
+                !!activeJob && "cursor-not-allowed opacity-60",
+              )}
+            >
+              <span
+                aria-hidden
+                className={cn(
+                  "inline-block h-1.5 w-1.5 rounded-full",
+                  allowLiveRefresh ? "bg-accent" : "bg-ink-dim/60",
+                )}
+              />
+              <span>Live refresh: {allowLiveRefresh ? "on" : "off"}</span>
+            </button>
             {/* The sidebar already exposes the LLM profile, but users
                 landing on /ask via a deep link or working full-width
                 often miss it. Mirroring the picker here keeps the

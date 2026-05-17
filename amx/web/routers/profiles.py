@@ -30,7 +30,13 @@ from amx.config import (
     EmbeddingConfig,
     LLMConfig,
 )
-from amx.db.profile_schema import FieldSpec, spec_for, supported_backends
+from amx.db.profile_schema import (
+    FieldSpec,
+    ProfileValidationError,
+    spec_for,
+    supported_backends,
+    validate_required_fields,
+)
 from amx.storage.secrets import get_default_store, is_secret_reference, parse_reference
 from amx.web.deps import get_cfg
 
@@ -221,6 +227,25 @@ def upsert_db(
     (forwards-compatible)."""
     existing = cfg.db_profiles.get(name) or DBConfig()
     merged = _merge_db_patch(existing, body)
+    # Reject saves that would leave a required field blank (e.g. a
+    # Databricks profile with no ``catalog``). Surfacing this here
+    # converts what used to be a confusing mid-question ``Catalog
+    # 'None' was not found`` runtime error into a clear 400 at save
+    # time so the user knows exactly which field to fill.
+    backend_name = (merged.backend or existing.backend or "").strip()
+    if backend_name:
+        try:
+            validate_required_fields(backend_name, asdict(merged))
+        except ProfileValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": str(exc),
+                    "backend": exc.backend,
+                    "missing": exc.missing,
+                    "hint": "fill-required-fields",
+                },
+            ) from exc
     cfg.upsert_db_profile(name, merged)
     cfg.save()
     # A profile edit (host / catalog / database / password / token /

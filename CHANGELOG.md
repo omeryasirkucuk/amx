@@ -6,6 +6,35 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Ask is now cache-only by default.** A question submitted from
+  Studio's Ask panel no longer fires the background drift probe or
+  honours tool-level `force_fresh=true` from the LLM. Both paths are
+  gated behind a new per-question **"Live refresh"** toggle in the
+  composer footer (default OFF, persisted to localStorage). The
+  pre-existing `AMX_SKIP_DRIFT_PROBE=1` env var remains as the global
+  kill switch on top of the toggle. The system prompt's `force_fresh`
+  paragraph is updated so the LLM knows not to retry with the flag
+  when the user has the toggle off.
+
+### Fixed
+
+- **Databricks profile with no catalog no longer issues `SHOW TABLES
+  FROM \`None\`.<schema>`.** When the adapter's `list_tables` /
+  `list_views` is asked to enumerate a schema while the profile has
+  no Unity Catalog configured, it now returns `[]` with a warning
+  log instead of falling through to SQLAlchemy's inspector path,
+  which would emit the literal string `"None"` into the SQL and
+  trip a Spark `NO_SUCH_CATALOG_EXCEPTION`.
+- **Profile-save validation rejects blank required fields.** The
+  PUT `/api/profiles/db/{name}` route now runs every saved DB
+  profile through `validate_required_fields` from `profile_schema`
+  and returns a 400 with `hint=fill-required-fields` when a backend
+  spec field marked `required=True` is empty or null (the Databricks
+  catalog case being the canonical failure). The CLI wizard continues
+  to re-prompt as before.
+
 ## [0.15.0] - 2026-05-15
 
 ### Highlights

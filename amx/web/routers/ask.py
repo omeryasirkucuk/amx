@@ -84,6 +84,17 @@ class AskRequest(BaseModel):
             "Explicit code-profile selection for THIS question. Same semantics as ``doc_profiles``."
         ),
     )
+    allow_live_refresh: bool = Field(
+        default=False,
+        description=(
+            "Opt-in for live-DB reads on this question. When False (the "
+            "default) Ask serves cached catalog metadata only: the "
+            "background drift probe is skipped and any tool-level "
+            "``force_fresh`` argument the LLM might pass is suppressed. "
+            "Set to True from the Ask UI 'Live refresh' toggle to allow "
+            "a single turn to refresh against the live database."
+        ),
+    )
 
 
 class UpdateSessionRequest(BaseModel):
@@ -208,19 +219,23 @@ def submit_ask(
 
     scope_profiles = _resolve_ask_scope(cfg, body.scope_profiles, session_scope)
 
-    # Fire a background drift probe for every profile in scope. If a
-    # table was created / dropped since the last ``/search sync``, the
-    # probe enqueues an async sync so the NEXT /ask reflects the new
-    # schema. The current call uses whatever catalog state is there —
-    # the probe is intentionally fire-and-forget. ``AMX_SKIP_DRIFT_PROBE=1``
-    # opts out, and the helper applies a per-profile cooldown so
-    # back-to-back /ask calls don't hammer the live DB.
-    try:
-        from amx.search.drift import fire_drift_probe
+    # Cache-only by default: only fire the background drift probe when
+    # the user has explicitly enabled "Live refresh" for this turn.
+    # Without the toggle, the probe would hit every in-scope profile's
+    # live DB on every question and enqueue auto-syncs — a side-effect
+    # the user never authorised. ``AMX_SKIP_DRIFT_PROBE=1`` remains
+    # the operator-level global kill switch on top of this gate.
+    if body.allow_live_refresh:
+        try:
+            from amx.search.drift import fire_drift_probe
 
-        fire_drift_probe(cfg, scope_profiles)
-    except Exception as exc:  # pragma: no cover - best-effort
-        log.debug("fire_drift_probe failed: %s", exc)
+            fire_drift_probe(cfg, scope_profiles)
+        except Exception as exc:  # pragma: no cover - best-effort
+            log.debug("fire_drift_probe failed: %s", exc)
+    else:
+        log.debug(
+            "drift probe suppressed for ask job (allow_live_refresh=False)",
+        )
 
     job = jobs.new_job("ask")
     thread = threading.Thread(
@@ -234,6 +249,7 @@ def submit_ask(
             scope_profiles,
             body.doc_profiles,
             body.code_profiles,
+            body.allow_live_refresh,
         ),
         name=f"amx-studio-ask-{job.id}",
         daemon=True,
@@ -718,6 +734,7 @@ def _ask_worker(
     scope_profiles: list[str],
     doc_profiles_override: list[str] | None = None,
     code_profiles_override: list[str] | None = None,
+    allow_live_refresh: bool = False,
 ) -> None:
     """Run the tool-calling agent and guarantee a terminal SSE event.
 
@@ -740,6 +757,7 @@ def _ask_worker(
             scope_profiles,
             doc_profiles_override,
             code_profiles_override,
+            allow_live_refresh,
         )
     except Exception:
         # Last-resort safety net. The two real paths
@@ -792,6 +810,7 @@ def _ask_worker_impl(
     scope_profiles: list[str],
     doc_profiles_override: list[str] | None = None,
     code_profiles_override: list[str] | None = None,
+    allow_live_refresh: bool = False,
 ) -> None:
     """Run the tool-calling agent + stream every reasoning chunk and
     tool result back to the SSE consumer. Persists the assistant
@@ -1018,6 +1037,7 @@ def _ask_worker_impl(
             db_profiles=list(scope_profiles) if scope_profiles else None,
             doc_profiles=doc_profiles_override,
             code_profiles=code_profiles_override,
+            allow_live_refresh=allow_live_refresh,
         )
     except RunCancelled:
         job.status = "cancelled"
