@@ -440,7 +440,12 @@ export default function LineageDetail() {
             <>
               <LineageSearchInput
                 nodes={filteredPayload.nodes}
-                onPick={(id) => canvasRef.current?.focusNode(id)}
+                onPick={(id, column) => {
+                  canvasRef.current?.focusNode(id);
+                  if (column) {
+                    setTracedColumn({ nodeId: id, column });
+                  }
+                }}
                 openSignal={searchSignal}
               />
               <LineageCanvas
