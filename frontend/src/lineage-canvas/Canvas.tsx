@@ -258,7 +258,23 @@ function CanvasInner() {
       position: { x: 120, y: 120 },
       width: 220,
       height: 140,
-      data: { kind: "comment", id, color: "amber", text: "" },
+      data: { kind: "comment", id, color: "amber", text: "", style: "note" },
+      dragHandle: ".lcv-comment-grip",
+    };
+    setNodes((nds) => [...nds, node]);
+  }
+
+  function addTextNode() {
+    // Plain-text label — same backend table as comments but with
+    // ``style='text'`` so CommentNode skips the sticky-note chrome.
+    const id = `text-tmp-${Date.now()}`;
+    const node: CanvasNode = {
+      id,
+      type: "comment",
+      position: { x: 160, y: 160 },
+      width: 220,
+      height: 36,
+      data: { kind: "comment", id, color: "amber", text: "", style: "text" },
       dragHandle: ".lcv-comment-grip",
     };
     setNodes((nds) => [...nds, node]);
@@ -619,6 +635,7 @@ function CanvasInner() {
     else if (k === "g") addOperatorNode("aggregate");
     else if (k === "j") addOperatorNode("join");
     else if (k === "c") addCommentNode();
+    else if (k === "t") addTextNode();
     else if (k === "i") setLogoPickerOpen(true);
     else if (k === "l") handleAutoLayout();
   }
@@ -643,6 +660,7 @@ function CanvasInner() {
         onAddAggregate={() => addOperatorNode("aggregate")}
         onAddFunction={() => addOperatorNode("function")}
         onAddComment={addCommentNode}
+        onAddText={addTextNode}
         onAddLogo={() => setLogoPickerOpen(true)}
         onUndo={() => toast.push({ title: "Undo/Redo wiring in progress" })}
         onRedo={() => toast.push({ title: "Undo/Redo wiring in progress" })}

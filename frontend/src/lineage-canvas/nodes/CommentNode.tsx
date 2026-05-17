@@ -1,12 +1,19 @@
 /**
- * CommentNode — resizable sticky-note annotation.
+ * CommentNode — canvas annotation (two render modes).
  *
- * The textarea uses ``nodrag`` so the canvas drag handler doesn't
- * steal pointerdown; the color swatch row carries
- * ``lcv-comment-grip`` (the node's drag handle, see registry.ts) so
- * the user can still drag the note from its header band. Every keystroke
- * commits back to canvas state via :func:`useReactFlow().setNodes` so
- * Save persists the latest text.
+ * Both modes share the same backend table (``lineage_comments``) and
+ * the same React Flow data shape; only visuals differ:
+ *
+ *   - ``data.style === "note"`` (default) — resizable sticky note with
+ *     a colored background, header band, color-picker swatch.
+ *   - ``data.style === "text"`` — minimal plain-text label: no
+ *     background, no border, no header band. Used for canvas
+ *     section headings ("Production pipeline", "Staging") and free-
+ *     form labels.
+ *
+ * The textarea uses ``nodrag`` so canvas drag doesn't steal
+ * pointerdown. Each keystroke commits back to canvas state via
+ * :func:`useReactFlow().setNodes` so Save persists the latest text.
  */
 
 import { memo, useState } from "react";
@@ -33,6 +40,7 @@ function CommentNodeImpl({ id, data, selected }: NodeProps<CommentNodeData>) {
     (data.color as keyof typeof COMMENT_COLORS) || "amber",
   );
   const palette = COMMENT_COLORS[color] ?? COMMENT_COLORS.amber;
+  const style = data.style || "note";
 
   function commitText(next: string) {
     setText(next);
@@ -50,6 +58,33 @@ function CommentNodeImpl({ id, data, selected }: NodeProps<CommentNodeData>) {
       nodes.map((n) =>
         n.id === id ? { ...n, data: { ...n.data, color: next } } : n,
       ),
+    );
+  }
+
+  if (style === "text") {
+    // Minimal plain-text label — no chrome, just an editable area.
+    // Resizable like the sticky variant but without any background.
+    return (
+      <div
+        className={clsx(
+          "relative h-full w-full",
+          selected && "ring-1 ring-accent-default/60 ring-offset-1 ring-offset-bg",
+        )}
+      >
+        <NodeResizer
+          isVisible={selected}
+          minWidth={80}
+          minHeight={28}
+          lineStyle={{ borderColor: "rgb(var(--accent))" }}
+        />
+        <textarea
+          value={text}
+          onChange={(e) => commitText(e.target.value)}
+          spellCheck={false}
+          placeholder="Text…"
+          className="lcv-comment-grip nodrag nowheel block h-full w-full cursor-text resize-none border-0 bg-transparent p-1 text-center text-[15px] font-medium leading-snug text-ink outline-none placeholder:text-ink-dim"
+        />
+      </div>
     );
   }
 

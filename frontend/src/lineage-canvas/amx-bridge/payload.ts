@@ -47,6 +47,8 @@ export function convertLoadedCanvas(loaded: LoadedCanvas): ConvertedCanvas {
   );
 
   // Comments are RFNodes too (NodeResizer + custom CommentNode).
+  // Both styles ("note" sticky + "text" plain label) share the same
+  // node type — the component branches on data.style.
   for (const c of loaded.comments) {
     nodes.push({
       id: `comment-${c.id}`,
@@ -60,6 +62,7 @@ export function convertLoadedCanvas(loaded: LoadedCanvas): ConvertedCanvas {
         commentId: c.id,
         color: (c.color as keyof typeof import("../constants").COMMENT_COLORS) || "amber",
         text: c.text,
+        style: c.style === "text" ? "text" : "note",
       },
       dragHandle: ".lcv-comment-grip",
     });
