@@ -11,6 +11,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Plus, Sparkles, Workflow } from "lucide-react";
 
 import {
+  lineageAudit,
   lineageDiscover,
   lineageList,
   type LineageArtifact,
@@ -237,7 +238,67 @@ export default function LineageSaved() {
         </div>
       )}
 
+      <AuditTrailCard />
+
       <LineageCreateModal open={createOpen} onClose={() => setCreateOpen(false)} />
+    </div>
+  );
+}
+
+function AuditTrailCard() {
+  const audit = useQuery({
+    queryKey: ["lineage-audit"],
+    queryFn: () => lineageAudit({ limit: 20 }),
+    retry: false,
+  });
+  const entries = audit.data?.entries ?? [];
+  if (audit.isLoading) {
+    return (
+      <div className="rounded-md border border-surface-border bg-surface-raised px-4 py-3 text-xs text-fg-muted">
+        Loading audit trail…
+      </div>
+    );
+  }
+  if (audit.error) return null;
+  if (entries.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-surface-border bg-surface-muted px-4 py-3 text-xs text-fg-muted">
+        No edge verdicts or manual edges yet. Right-click any edge on the canvas to mark
+        it approved / rejected — entries will land here.
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-xl border border-surface-border bg-surface-raised">
+      <div className="border-b border-surface-border px-4 py-2 text-sm font-medium text-fg-default">
+        Audit trail · last {entries.length}
+      </div>
+      <ul className="max-h-72 divide-y divide-surface-border overflow-y-auto text-xs">
+        {entries.map((e) => (
+          <li
+            key={`${e.edge_id}-${e.at}`}
+            className="flex items-center justify-between px-4 py-2"
+          >
+            <div className="flex flex-col">
+              <span className="font-mono">
+                {e.from} → {e.to}
+              </span>
+              <span className="text-fg-muted">
+                {e.relationship_type} · {e.source || "—"}
+                {e.note && <> · {e.note}</>}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge tone={e.verdict === "rejected" ? "warning" : "neutral"}>
+                {e.verdict || "edge"}
+              </Badge>
+              <span className="text-fg-muted">
+                {e.actor || "unknown"} · {new Date(e.at * 1000).toLocaleString()}
+              </span>
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
