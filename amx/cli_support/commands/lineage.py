@@ -3,6 +3,11 @@
 Cache-first by construction: no command opens a live DB connection
 without the user explicitly answering ``y`` to the cost-confirm prompt
 (or passing ``--prefetch`` / ``--no-cache``).
+
+Wizard-first by construction: every subcommand, when invoked bare,
+walks through ``ask_choice`` / ``ask`` pickers for profile → database
+→ schema → table → column → format → cache strategy. Flags stay
+available for power users but are never required.
 """
 
 from __future__ import annotations
@@ -43,6 +48,13 @@ LogEvent = Callable[..., None]
 
 _DEFAULT_FORMAT = "svg"
 _DEFAULT_DEPTH = 1
+
+_CACHE_STRATEGY_LABELS = {
+    "cache-only": "use only cached data, never call the DB (safest, fastest)",
+    "ask if needed": "if a cache miss occurs, prompt for permission before any DB call",
+    "fetch from DB": "fill cache misses immediately (auto-confirm; pulls fresh DDL)",
+    "force fresh (no cache)": "invalidate cached view DDL and re-pull from DB",
+}
 
 
 def register_lineage_commands(
@@ -108,48 +120,52 @@ def register_lineage_commands(
             error("--cache-only is mutually exclusive with --prefetch / --no-cache.")
             return
 
-        profile_name, profile_cfg = _resolve_profile(cfg, profile_flag)
+        heading("Lineage · create")
+        profile_name, profile_cfg = _pick_profile(cfg, profile_flag)
         if profile_name is None:
-            error("No DB profile available. Run /db add-profile first.")
-            return
-
-        if not anchor:
-            anchor = ask("Anchor table (schema.table or schema.table.column)").strip()
-            if not anchor:
-                error("Anchor is required.")
-                return
-
-        parts = [p for p in re.split(r"[./]", anchor) if p]
-        if len(parts) == 1:
-            schema = ""
-            table = parts[0]
-        elif len(parts) == 2:
-            schema, table = parts
-        elif len(parts) >= 3:
-            schema = parts[-3]
-            table = parts[-2]
-            if not column:
-                column = parts[-1]
-        else:
-            error(f"Could not parse anchor {anchor!r}.")
             return
 
         database = _default_database(profile_cfg)
-        anchor_ref = ColumnRef(database=database, schema=schema, table=table, column=column or "")
+        schema, table, column = _pick_anchor_location(
+            hs,
+            profile=profile_name,
+            database=database,
+            raw_anchor=anchor,
+            preset_column=column,
+            require_column=False,
+        )
+        if schema is None or table is None:
+            return
 
-        fmt = (fmt or _DEFAULT_FORMAT).lower()
+        fmt = _pick_format() if fmt is None else fmt.lower()
         if fmt not in SUPPORTED_FORMATS:
             error(f"Unsupported format {fmt!r}. Choose one of {SUPPORTED_FORMATS}.")
             return
 
-        depth_up = depth_up if depth_up is not None else _DEFAULT_DEPTH
-        depth_down = depth_down if depth_down is not None else _DEFAULT_DEPTH
-        slug = name or _default_slug(anchor_ref)
+        if depth_up is None:
+            depth_up = _pick_depth("Upstream hop limit", default=_DEFAULT_DEPTH)
+        if depth_down is None:
+            depth_down = _pick_depth("Downstream hop limit", default=_DEFAULT_DEPTH)
 
-        output_path = _resolve_output_path(out, slug, fmt)
+        anchor_ref = ColumnRef(database=database, schema=schema, table=table, column=column or "")
+        slug = name or _ask_slug(anchor_ref)
+        output_path = _ask_output_path(out, slug, fmt)
         if output_path is None:
-            error("Output path is invalid or not writable.")
             return
+
+        strategy = _pick_cache_strategy(cache_only, no_cache, prefetch)
+        fill_decision: FillDecision | None
+        if strategy == "cache-only":
+            fill_decision = "skip"
+            no_cache = False
+        elif strategy == "fetch from DB":
+            fill_decision = "fill"
+            no_cache = False
+        elif strategy == "force fresh (no cache)":
+            fill_decision = "fill"
+            no_cache = True
+        else:
+            fill_decision = None  # 'ask if needed' → interactive prompt mid-run
 
         scope = Scope(
             profile=profile_name,
@@ -160,13 +176,11 @@ def register_lineage_commands(
             schema=schema,
         )
 
-        fill_decision: FillDecision | None
-        if cache_only:
-            fill_decision = "skip"
-        elif prefetch or no_cache:
-            fill_decision = "fill"
-        else:
-            fill_decision = None  # interactive prompt below
+        if no_cache:
+            # User chose force-fresh from the wizard; invalidate this scope.
+            lineage_store.invalidate_view_definitions(
+                hs, db_profile=profile_name, database=database, schema=schema
+            )
 
         connector_factory = _build_connector_factory(cfg)
 
@@ -219,7 +233,7 @@ def register_lineage_commands(
             return
         rows = lineage_store.list_lineage_artifacts(hs, db_profile=profile_flag or "")
         if not rows:
-            info("No lineage artifacts yet. Try /lineage create <table>.")
+            info("No lineage artifacts yet. Try /lineage create.")
             return
         render_table(
             "Lineage artifacts",
@@ -255,16 +269,15 @@ def register_lineage_commands(
         )
 
     @lineage.command("open")
-    @click.argument("name_or_id", required=True)
+    @click.argument("name_or_id", required=False)
     @pass_config
-    def lineage_open(cfg: AMXConfig, name_or_id: str) -> None:
+    def lineage_open(cfg: AMXConfig, name_or_id: str | None) -> None:
         hs = history_store()
         if hs is None:
             error("History store not initialised — run /db first.")
             return
-        artifact = lineage_store.lookup_lineage_artifact(hs, name_or_id=name_or_id)
+        artifact = _pick_artifact(hs, name_or_id, verb="open")
         if artifact is None:
-            error(f"No artifact named {name_or_id!r}.")
             return
         path = Path(artifact["output_path"])
         if not path.exists():
@@ -276,7 +289,7 @@ def register_lineage_commands(
             info(f"Path: {path}")
 
     @lineage.command("refresh")
-    @click.argument("name_or_id", required=True)
+    @click.argument("name_or_id", required=False)
     @click.option(
         "--no-cache", is_flag=True, help="Invalidate view-cache and force fresh DB fetch."
     )
@@ -287,7 +300,7 @@ def register_lineage_commands(
     @pass_config
     def lineage_refresh(
         cfg: AMXConfig,
-        name_or_id: str,
+        name_or_id: str | None,
         no_cache: bool,
         cache_only: bool,
         prefetch: bool,
@@ -301,9 +314,9 @@ def register_lineage_commands(
         if cache_only and (prefetch or no_cache):
             error("--cache-only is mutually exclusive with --prefetch / --no-cache.")
             return
-        artifact = lineage_store.lookup_lineage_artifact(hs, name_or_id=name_or_id)
+        heading("Lineage · refresh")
+        artifact = _pick_artifact(hs, name_or_id, verb="refresh")
         if artifact is None:
-            error(f"No artifact named {name_or_id!r}.")
             return
         if not yes and not confirm(
             f"This will overwrite {artifact['output_path']}. Continue?",
@@ -312,13 +325,20 @@ def register_lineage_commands(
             warn("Cancelled.")
             return
 
+        strategy = _pick_cache_strategy(cache_only, no_cache, prefetch)
         fill_decision: FillDecision | None
-        if cache_only:
+        if strategy == "cache-only":
             fill_decision = "skip"
-        elif prefetch:
+            no_cache_effective = False
+        elif strategy == "fetch from DB":
             fill_decision = "fill"
+            no_cache_effective = False
+        elif strategy == "force fresh (no cache)":
+            fill_decision = "fill"
+            no_cache_effective = True
         else:
             fill_decision = None
+            no_cache_effective = False
 
         connector_factory = _build_connector_factory(cfg)
         try:
@@ -327,7 +347,7 @@ def register_lineage_commands(
                 artifact=artifact,
                 fill_prompt=_make_fill_prompt(),
                 fill_decision=fill_decision,
-                no_cache=no_cache,
+                no_cache=no_cache_effective,
                 force_scale=force,
                 soft_confirm=_make_soft_confirm(),
                 connector_factory=connector_factory,
@@ -352,17 +372,17 @@ def register_lineage_commands(
         )
 
     @lineage.command("delete")
-    @click.argument("name_or_id", required=True)
+    @click.argument("name_or_id", required=False)
     @click.option("--yes", is_flag=True, help="Skip confirmation.")
     @pass_config
-    def lineage_delete(cfg: AMXConfig, name_or_id: str, yes: bool) -> None:
+    def lineage_delete(cfg: AMXConfig, name_or_id: str | None, yes: bool) -> None:
         hs = history_store()
         if hs is None:
             error("History store not initialised — run /db first.")
             return
-        artifact = lineage_store.lookup_lineage_artifact(hs, name_or_id=name_or_id)
+        heading("Lineage · delete")
+        artifact = _pick_artifact(hs, name_or_id, verb="delete")
         if artifact is None:
-            error(f"No artifact named {name_or_id!r}.")
             return
         path = Path(artifact["output_path"])
         if not yes and not confirm(
@@ -385,52 +405,54 @@ def register_lineage_commands(
         )
 
     @lineage.command("show")
-    @click.argument("anchor", required=True)
+    @click.argument("anchor", required=False)
     @click.option("--column", "column", default=None, help="Restrict anchor to a specific column.")
+    @click.option("--depth-up", "depth_up", type=int, default=None, help="Upstream hop limit.")
     @click.option(
-        "--depth-up", "depth_up", type=int, default=_DEFAULT_DEPTH, help="Upstream hop limit."
-    )
-    @click.option(
-        "--depth-down", "depth_down", type=int, default=_DEFAULT_DEPTH, help="Downstream hop limit."
+        "--depth-down", "depth_down", type=int, default=None, help="Downstream hop limit."
     )
     @click.option("--profile", "profile_flag", default=None, help="Override active DB profile.")
     @pass_config
     def lineage_show(
         cfg: AMXConfig,
-        anchor: str,
+        anchor: str | None,
         column: str | None,
-        depth_up: int,
-        depth_down: int,
+        depth_up: int | None,
+        depth_down: int | None,
         profile_flag: str | None,
     ) -> None:
         hs = history_store()
         if hs is None:
             error("History store not initialised — run /db first.")
             return
-        profile_name, profile_cfg = _resolve_profile(cfg, profile_flag)
+        heading("Lineage · show")
+        profile_name, profile_cfg = _pick_profile(cfg, profile_flag)
         if profile_name is None:
-            error("No DB profile available.")
             return
-        parts = [p for p in re.split(r"[./]", anchor) if p]
-        if len(parts) == 1:
-            schema, table = "", parts[0]
-        elif len(parts) == 2:
-            schema, table = parts
-        else:
-            schema, table = parts[-3], parts[-2]
-            column = column or parts[-1]
-        anchor_ref = ColumnRef(
-            database=_default_database(profile_cfg),
-            schema=schema,
-            table=table,
-            column=column or "",
+        database = _default_database(profile_cfg)
+        schema, table, column = _pick_anchor_location(
+            hs,
+            profile=profile_name,
+            database=database,
+            raw_anchor=anchor,
+            preset_column=column,
+            require_column=False,
         )
+        if schema is None or table is None:
+            return
+
+        if depth_up is None:
+            depth_up = _pick_depth("Upstream hop limit", default=_DEFAULT_DEPTH)
+        if depth_down is None:
+            depth_down = _pick_depth("Downstream hop limit", default=_DEFAULT_DEPTH)
+
+        anchor_ref = ColumnRef(database=database, schema=schema, table=table, column=column or "")
         scope = Scope(
             profile=profile_name,
             anchor=anchor_ref,
             depth_up=depth_up,
             depth_down=depth_down,
-            database=anchor_ref.database,
+            database=database,
             schema=schema,
         )
         for line in service.text_tree(hs=hs, scope=scope):
@@ -439,24 +461,240 @@ def register_lineage_commands(
     return lineage
 
 
-# ── helpers ─────────────────────────────────────────────────────────────
+# ── wizard pickers ───────────────────────────────────────────────────────
 
 
-def _resolve_profile(cfg: AMXConfig, flag: str | None) -> tuple[str | None, DBConfig | None]:
-    """Return (profile_name, DBConfig) or (None, None) when no profile resolves."""
+def _pick_profile(cfg: AMXConfig, flag: str | None) -> tuple[str | None, DBConfig | None]:
+    """Resolve a profile via flag, sole-profile fallback, active profile, or picker."""
     profiles = getattr(cfg, "db_profiles", {}) or {}
+    if not profiles:
+        error("No DB profile available. Run /db add-profile first.")
+        return None, None
     if flag:
         if flag in profiles:
             return flag, profiles[flag]
+        error(f"Unknown profile {flag!r}. Available: {', '.join(sorted(profiles))}.")
         return None, None
-    active = getattr(cfg, "active_db_profile", "") or ""
-    if active and active in profiles:
-        return active, profiles[active]
-    # Fall back to the only-profile case (common on fresh installs).
     if len(profiles) == 1:
-        only = next(iter(profiles.items()))
-        return only[0], only[1]
-    return None, None
+        name, cfg_obj = next(iter(profiles.items()))
+        info(f"Using DB profile [bold]{name}[/bold] (only profile configured).")
+        return name, cfg_obj
+    names = sorted(profiles)
+    active = (getattr(cfg, "active_db_profile", "") or "").strip()
+    default = active if active in names else names[0]
+    picked = ask_choice("Pick a DB profile", names, default=default)
+    if not picked:
+        error("No profile picked.")
+        return None, None
+    return picked, profiles[picked]
+
+
+def _pick_anchor_location(
+    hs: Any,
+    *,
+    profile: str,
+    database: str,
+    raw_anchor: str | None,
+    preset_column: str | None,
+    require_column: bool,
+) -> tuple[str | None, str | None, str | None]:
+    """Pick (schema, table, column). ``raw_anchor`` short-circuits the wizard
+    when it's a fully-qualified path.
+    """
+    schema = ""
+    table = ""
+    column = preset_column
+
+    if raw_anchor:
+        parts = [p for p in re.split(r"[./]", raw_anchor) if p]
+        if len(parts) == 1:
+            table = parts[0]
+        elif len(parts) == 2:
+            schema, table = parts
+        elif len(parts) >= 3:
+            schema = parts[-3]
+            table = parts[-2]
+            if not column:
+                column = parts[-1]
+
+    if not schema:
+        schemas = _list_cached_schemas(hs, profile, database)
+        if not schemas:
+            error(
+                "No cached schemas found for this profile. "
+                "Run /db inspect first to populate the catalog."
+            )
+            return None, None, None
+        schema = ask_choice("Pick a schema", schemas, default=schemas[0])
+        if not schema:
+            error("No schema picked.")
+            return None, None, None
+
+    if not table:
+        tables = _list_cached_tables(hs, profile, database, schema)
+        if not tables:
+            error(
+                f"No cached tables under schema {schema!r}. Run /db inspect on this schema first."
+            )
+            return None, None, None
+        table = ask_choice("Pick a table", tables, default=tables[0])
+        if not table:
+            error("No table picked.")
+            return None, None, None
+
+    if not column:
+        # Offer column-level anchor as an optional refinement.
+        columns = _list_cached_columns(hs, profile, database, schema, table)
+        if columns:
+            options = ["(whole table)", *columns]
+            picked = ask_choice("Anchor on a column? (optional)", options, default="(whole table)")
+            if picked and picked != "(whole table)":
+                column = picked
+        elif require_column:
+            error(f"No columns cached for {schema}.{table}.")
+            return None, None, None
+
+    return schema, table, column
+
+
+def _pick_format() -> str:
+    return ask_choice(
+        "Output format",
+        list(SUPPORTED_FORMATS),
+        default=_DEFAULT_FORMAT,
+        descriptions={
+            "svg": "scalable vector — best for browsers + design tools (default)",
+            "png": "raster bitmap — best for slide decks",
+            "jpg": "compressed raster — smaller file, lossy",
+        },
+    )
+
+
+def _pick_depth(label: str, *, default: int) -> int:
+    raw = ask(f"{label} (Enter for {default})", default=str(default)).strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+        return max(1, min(value, 5))
+    except ValueError:
+        warn(f"Could not parse {raw!r} as int — using default {default}.")
+        return default
+
+
+def _pick_cache_strategy(cache_only: bool, no_cache: bool, prefetch: bool) -> str:
+    """Pick a cache strategy. Flags short-circuit the wizard."""
+    if cache_only:
+        return "cache-only"
+    if no_cache:
+        return "force fresh (no cache)"
+    if prefetch:
+        return "fetch from DB"
+    options = list(_CACHE_STRATEGY_LABELS.keys())
+    return ask_choice(
+        "Cache strategy",
+        options,
+        default="cache-only",
+        descriptions=_CACHE_STRATEGY_LABELS,
+    )
+
+
+def _pick_artifact(hs: Any, name_or_id: str | None, *, verb: str) -> dict[str, Any] | None:
+    """Resolve an existing artifact via id/slug or interactive picker."""
+    if name_or_id:
+        artifact = lineage_store.lookup_lineage_artifact(hs, name_or_id=name_or_id)
+        if artifact is None:
+            error(f"No artifact named {name_or_id!r}.")
+        return artifact
+    rows = lineage_store.list_lineage_artifacts(hs)
+    if not rows:
+        info("No lineage artifacts to pick from. Run /lineage create first.")
+        return None
+    labels = [
+        f"{r['id']}: {r['name']}  ({_anchor_display(hs, r['anchor_entity_id'])}, "
+        f"{r['format']}, {_fmt_time(r['generated_at'])})"
+        for r in rows
+    ]
+    picked_label = ask_choice(f"Pick artifact to {verb}", labels, default=labels[0])
+    if not picked_label:
+        error("No artifact picked.")
+        return None
+    return rows[labels.index(picked_label)]
+
+
+def _ask_slug(ref: ColumnRef) -> str:
+    default = _default_slug(ref)
+    raw = ask(f"Artifact slug (Enter for {default!r})", default=default).strip()
+    return raw or default
+
+
+def _ask_output_path(out: str | None, slug: str, fmt: str) -> Path | None:
+    if out is None:
+        from amx.config import _resolve_config_dir as resolve_config_dir
+
+        base = Path(resolve_config_dir()) / "lineage"
+        suggested = base / f"{slug}.{fmt}"
+        raw = ask(
+            f"Output path (Enter for {suggested})",
+            default=str(suggested),
+        ).strip()
+        out = raw or str(suggested)
+    return _resolve_output_path(out, slug, fmt)
+
+
+# ── catalog readers (cache-only) ─────────────────────────────────────────
+
+
+def _list_cached_schemas(hs: Any, profile: str, database: str) -> list[str]:
+    with hs._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT schema_name
+            FROM catalog_entities
+            WHERE db_profile = ? AND database_name = ?
+              AND schema_name <> ''
+            ORDER BY schema_name
+            """,
+            (profile, database),
+        ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+def _list_cached_tables(hs: Any, profile: str, database: str, schema: str) -> list[str]:
+    with hs._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT table_name
+            FROM catalog_entities
+            WHERE db_profile = ? AND database_name = ? AND schema_name = ?
+              AND table_name <> '' AND entity_kind = 'table'
+            ORDER BY table_name
+            """,
+            (profile, database, schema),
+        ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+def _list_cached_columns(
+    hs: Any, profile: str, database: str, schema: str, table: str
+) -> list[str]:
+    with hs._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT column_name
+            FROM catalog_entities
+            WHERE db_profile = ? AND database_name = ? AND schema_name = ?
+              AND table_name = ?
+              AND column_name IS NOT NULL AND column_name <> ''
+              AND entity_kind = 'column'
+            ORDER BY column_name
+            """,
+            (profile, database, schema, table),
+        ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+# ── shared helpers ───────────────────────────────────────────────────────
 
 
 def _default_database(profile_cfg: DBConfig | None) -> str:
@@ -540,14 +778,14 @@ def _resolve_output_path(out: str | None, slug: str, fmt: str) -> Path | None:
     if out:
         path = Path(out).expanduser()
     else:
-        # Default under the AMX config dir so the file survives /clear.
-        from amx.config import resolve_config_dir
+        from amx.config import _resolve_config_dir as resolve_config_dir
 
         base = Path(resolve_config_dir()) / "lineage"
         path = base / f"{slug}.{fmt}"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
+        error(f"Cannot create parent directory for {path}.")
         return None
     return path.resolve()
 
