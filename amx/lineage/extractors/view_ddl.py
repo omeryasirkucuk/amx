@@ -22,9 +22,11 @@ from amx.lineage.types import (
     Edge,
     ExtractMode,
     ExtractResult,
+    OperatorMeta,
     Scope,
     ScopeFragment,
 )
+from amx.lineage.view_ddl_operators import classify_projection
 
 # Adapter dialect → sqlglot dialect tag. Adapters that already match
 # sqlglot's name are absent from this map (sqlglot accepts the same
@@ -223,7 +225,14 @@ def _parse_view_lineage(
             if not alias:
                 continue
             sources = _collect_source_columns(sqlglot, projection, alias_map)
-            out.append({"target": str(alias), "sources": sources})
+            entry: dict[str, Any] = {"target": str(alias), "sources": sources}
+            op_meta = classify_projection(sqlglot, projection)
+            if op_meta is not None:
+                entry["operator"] = {
+                    "op_kind": op_meta.op_kind,
+                    "expression": op_meta.expression,
+                }
+            out.append(entry)
         return out, "ok", ""
     except Exception as exc:  # defensive
         return None, "parse_failed", str(exc).splitlines()[0][:200]
@@ -335,7 +344,14 @@ def _edges_from_cached(
     database: str,
     schema: str,
 ) -> Any:
-    """Emit ``Edge``s from already-parsed cache rows."""
+    """Emit ``Edge``s from already-parsed cache rows.
+
+    When the cached entry carries an ``operator`` payload (v4
+    parsed_lineage shape), every edge produced for that target
+    column carries the same :class:`OperatorMeta` so the Studio
+    canvas can draw an inline operator node between the source and
+    the target.
+    """
     for row in cached_rows:
         if row.get("parse_status") != "ok":
             continue
@@ -348,6 +364,7 @@ def _edges_from_cached(
             target_ref = ColumnRef(
                 database=database, schema=schema, table=view_name, column=target_col
             )
+            op_meta = _operator_from_entry(col_entry)
             for src in col_entry.get("sources") or []:
                 src_table = str(src.get("table") or "")
                 src_col = str(src.get("column") or "")
@@ -362,7 +379,24 @@ def _edges_from_cached(
                     extractor="view_ddl",
                     confidence=1.0,
                     evidence=f"view {schema}.{view_name}",
+                    operator=op_meta,
                 )
+
+
+def _operator_from_entry(col_entry: dict[str, Any]) -> OperatorMeta | None:
+    """Lift the cached operator payload back into an OperatorMeta.
+
+    Returns ``None`` for v1 cache rows (no ``operator`` key) so
+    backward compatibility holds without forcing a re-extraction.
+    """
+    raw = col_entry.get("operator")
+    if not isinstance(raw, dict):
+        return None
+    op_kind = str(raw.get("op_kind") or "").strip()
+    expression = str(raw.get("expression") or "").strip()
+    if not op_kind:
+        return None
+    return OperatorMeta(op_kind=op_kind, expression=expression)
 
 
 __all__ = ["ViewDDLExtractor", "ConnectorHandle", "ConnectorFactory"]

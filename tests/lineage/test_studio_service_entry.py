@@ -48,3 +48,27 @@ def test_lineage_for_studio_only_anchor_when_catalog_empty(hs):
     payload = lineage_for_studio(hs=hs, scope=scope)
     assert len(payload["nodes"]) == 1
     assert payload["edges"] == []
+
+
+def test_lineage_for_studio_edges_carry_column_and_operator_fields(hs):
+    """v4 — edges now expose from_column/to_column always, operator
+    when the extractor saw a transform on that flow."""
+    orders_id = seed_table_entity(hs, schema="public", table="orders")
+    customers_id = seed_table_entity(hs, schema="public", table="customers")
+    seed_foreign_key_relationship(
+        hs,
+        from_table_id=orders_id,
+        to_table_id=customers_id,
+        constrained_columns=["customer_id"],
+        referred_columns=["id"],
+        referred_table="customers",
+    )
+    scope = Scope(profile="p", anchor=ColumnRef("", "public", "orders", ""))
+    payload = lineage_for_studio(hs=hs, scope=scope)
+    fk_edges = [e for e in payload["edges"] if e["extractor"] == "fk"]
+    assert fk_edges, "expected at least one FK-sourced edge"
+    e = fk_edges[0]
+    # Column round-trip — FK columns flow through to the payload.
+    assert {e["from_column"], e["to_column"]} == {"customer_id", "id"}
+    # Plain FK has no operator wrapper.
+    assert "operator" not in e
