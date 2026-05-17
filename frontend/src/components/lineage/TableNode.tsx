@@ -17,9 +17,14 @@
  */
 
 import { memo } from "react";
-import { Handle, Position, type NodeProps } from "reactflow";
+import { Handle, Position, type NodeProps, useStore } from "reactflow";
 
 import type { LineageNodeColumn } from "../../lib/api";
+
+/** v4 S6 — collapse columns into a header+count summary when the
+ *  zoom falls below this threshold. Pulled out so the OperatorNode
+ *  rendering can read the same threshold if needed. */
+const LOD_ZOOM_CUTOFF = 0.55;
 
 export interface TableNodeData {
   label: string;
@@ -48,6 +53,11 @@ function dtypeBadge(dtype: string): string {
 
 function TableNodeImpl({ data }: NodeProps<TableNodeData>) {
   const cols = data.columns ?? [];
+  // v4 S6 — collapse rows when the canvas is zoomed out far enough
+  // that text would be unreadable anyway. Keeps 1000-column scenes
+  // responsive without losing the table outline.
+  const zoom = useStore((s) => s.transform[2]);
+  const collapsed = zoom < LOD_ZOOM_CUTOFF;
   const headerCls = data.anchor
     ? "border-amber-500 bg-amber-50 text-amber-900"
     : "border-slate-700 bg-slate-900 text-slate-50";
@@ -74,6 +84,27 @@ function TableNodeImpl({ data }: NodeProps<TableNodeData>) {
       {cols.length === 0 ? (
         <div className="bg-slate-800 px-3 py-2 text-[10px] italic text-slate-400">
           No columns cached yet.
+        </div>
+      ) : collapsed ? (
+        <div className="flex items-center justify-between bg-slate-900 px-3 py-1.5 text-[10px] text-slate-400">
+          <span>{cols.length} cols</span>
+          <span className="text-slate-500" aria-hidden="true">
+            ⤓
+          </span>
+          {/* Keep at least one source + target handle so dangling
+              edges still render correctly even while collapsed. */}
+          <Handle
+            id="__lod_in"
+            type="target"
+            position={Position.Left}
+            className="!h-2 !w-2 !rounded-full !border-slate-500 !bg-slate-700"
+          />
+          <Handle
+            id="__lod_out"
+            type="source"
+            position={Position.Right}
+            className="!h-2 !w-2 !rounded-full !border-slate-500 !bg-slate-700"
+          />
         </div>
       ) : (
         <ul className="divide-y divide-slate-800 bg-slate-900">

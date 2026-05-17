@@ -17,10 +17,23 @@ import { Search, X } from "lucide-react";
 
 import type { LineageNode } from "../lib/api";
 
+interface Match {
+  /** Node id to focus. */
+  nodeId: string;
+  /** Display label — full FQN, "table.column" when the match was on a
+   *  per-column row. */
+  label: string;
+  /** When non-null, the consumer should also surface the column in
+   *  the trace panel. */
+  column: string | null;
+}
+
 interface Props {
   nodes: LineageNode[];
-  /** Pass-through callback when the user picks a node. */
-  onPick: (nodeId: string) => void;
+  /** Pass-through callback when the user picks a match. ``column``
+   *  is non-null when the matched row was a per-column entry inside
+   *  a TableNode (v4 S6 — datapav "Track attribute by name"). */
+  onPick: (nodeId: string, column: string | null) => void;
   /** Set true to render the dropdown expanded immediately (⌘K). */
   openSignal?: number;
 }
@@ -41,18 +54,40 @@ export default function LineageSearchInput({ nodes, onPick, openSignal }: Props)
     });
   }, [openSignal]);
 
-  const matches = useMemo(() => {
+  const matches = useMemo<Match[]>(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return nodes.slice(0, 20);
-    const startsWith: LineageNode[] = [];
-    const contains: LineageNode[] = [];
+    if (!q) {
+      return nodes
+        .slice(0, 20)
+        .map((n) => ({ nodeId: n.id, label: n.label, column: null }));
+    }
+    const startsWith: Match[] = [];
+    const contains: Match[] = [];
     for (const n of nodes) {
+      // Match against the node label first.
       const hay = (n.id + " " + n.label).toLowerCase();
-      if (!hay.includes(q)) continue;
-      if (n.id.toLowerCase().startsWith(q) || n.label.toLowerCase().startsWith(q)) {
-        startsWith.push(n);
-      } else {
-        contains.push(n);
+      if (hay.includes(q)) {
+        const entry: Match = { nodeId: n.id, label: n.label, column: null };
+        if (n.id.toLowerCase().startsWith(q) || n.label.toLowerCase().startsWith(q)) {
+          startsWith.push(entry);
+        } else {
+          contains.push(entry);
+        }
+      }
+      // v4 S6 — match individual column rows so the user can jump
+      // directly to "orders_raw.amount" instead of just "orders_raw".
+      if (n.kind === "table" && n.columns) {
+        for (const col of n.columns) {
+          if (col.name.toLowerCase().includes(q)) {
+            const label = `${n.label}.${col.name}`;
+            const entry: Match = { nodeId: n.id, label, column: col.name };
+            if (col.name.toLowerCase().startsWith(q)) {
+              startsWith.push(entry);
+            } else {
+              contains.push(entry);
+            }
+          }
+        }
       }
     }
     return [...startsWith, ...contains].slice(0, 20);
@@ -73,7 +108,7 @@ export default function LineageSearchInput({ nodes, onPick, openSignal }: Props)
       e.preventDefault();
       const pick = matches[active];
       if (pick) {
-        onPick(pick.id);
+        onPick(pick.nodeId, pick.column);
         setOpen(false);
         setQuery("");
       }
@@ -116,12 +151,12 @@ export default function LineageSearchInput({ nodes, onPick, openSignal }: Props)
       {open && matches.length > 0 && (
         <ul className="mt-1 max-h-72 overflow-y-auto rounded-md border border-surface-border bg-surface-raised text-xs shadow-md">
           {matches.map((m, i) => (
-            <li key={m.id}>
+            <li key={`${m.nodeId}:${m.column ?? ""}`}>
               <button
                 type="button"
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  onPick(m.id);
+                  onPick(m.nodeId, m.column);
                   setOpen(false);
                   setQuery("");
                 }}
@@ -130,7 +165,12 @@ export default function LineageSearchInput({ nodes, onPick, openSignal }: Props)
                   (i === active ? "bg-accent-default/10 text-accent-default" : "")
                 }
               >
-                <span className="font-mono">{m.id}</span>
+                <span className="font-mono">{m.label}</span>
+                {m.column && (
+                  <span className="ml-2 text-[9px] uppercase tracking-wide text-fg-muted">
+                    column
+                  </span>
+                )}
               </button>
             </li>
           ))}
