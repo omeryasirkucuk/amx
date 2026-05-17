@@ -34,11 +34,6 @@ from amx.cli_support._compare_export import (
 from amx.cli_support._compare_export import (
     _export_markdown as _export_markdown,
 )
-
-# Re-export the pure formatters that used to live in this file so the
-# existing call sites (and tests that import private helpers) keep working
-# unchanged. The ``as X`` aliasing is the canonical idiom Ruff
-# recognises for an intentional re-export (PLC0414).
 from amx.cli_support._compare_format import (  # noqa: PLC0414
     _BAND_GLYPH as _BAND_GLYPH,
 )
@@ -72,6 +67,23 @@ from amx.cli_support._compare_format import (
 from amx.cli_support._compare_format import (
     _truncate as _truncate,
 )
+
+# Re-export the pure formatters that used to live in this file so the
+# existing call sites (and tests that import private helpers) keep working
+# unchanged. The ``as X`` aliasing is the canonical idiom Ruff
+# recognises for an intentional re-export (PLC0414).
+from amx.cli_support._compare_runs import (  # noqa: PLC0414
+    _BY_DIMENSIONS as _BY_DIMENSIONS,
+)
+from amx.cli_support._compare_runs import (
+    _BY_TO_RUN_KEY as _BY_TO_RUN_KEY,
+)
+from amx.cli_support._compare_runs import (
+    _detect_by as _detect_by,
+)
+from amx.cli_support._compare_runs import (
+    _resolve_runs as _resolve_runs,
+)
 from amx.config import AMXConfig
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import (
@@ -85,93 +97,6 @@ from amx.utils.console import (
 from amx.utils.terminal_theme import info_color
 
 LogEvent = Callable[..., None]
-
-# Dimensions a user might want to vary across runs. Auto-detection
-# walks them in order and picks the first one with >1 distinct value.
-_BY_DIMENSIONS: tuple[str, ...] = (
-    "llm_profile",
-    "doc_profile",
-    "code_profile",
-    "llm_model",
-    "db_profile",
-    "run",
-)
-
-_BY_TO_RUN_KEY: dict[str, str] = {
-    "model": "llm_model",
-    "llm_model": "llm_model",
-    "llm_profile": "llm_profile",
-    "doc_profile": "doc_profile",
-    "code_profile": "code_profile",
-    "db_profile": "db_profile",
-    "run": "id",
-}
-
-
-def _detect_by(runs: list[dict[str, Any]]) -> str:
-    """Pick the first dimension that varies across the resolved runs.
-
-    Falls back to ``"run"`` (so each run column gets a header but no
-    cell-level highlighting) when every dimension is uniform.
-    """
-    for dim in _BY_DIMENSIONS:
-        if dim == "run":
-            continue
-        values = {(r.get(dim) or "") for r in runs}
-        if len(values) > 1:
-            return dim
-    return "run"
-
-
-def _resolve_runs(
-    *,
-    cfg: AMXConfig,
-    run_ids: tuple[str, ...],
-    schema: str,
-    table: str,
-    last_n: int,
-    command_filter: str,
-) -> list[dict[str, Any]]:
-    """Resolve which runs to compare — positional IDs > scope+last_n > current scope."""
-    hs = history_store()
-    if hs is None:
-        error("History store is not initialized.")
-        return []
-
-    if run_ids:
-        out: list[dict[str, Any]] = []
-        for raw in run_ids:
-            try:
-                rid = int(str(raw).lstrip("#"))
-            except ValueError:
-                warn(f"Skipping non-integer run id '{raw}'.")
-                continue
-            row = hs.get_run(rid)
-            if row is None:
-                warn(f"Run #{rid} not found — skipping.")
-                continue
-            out.append(row)
-        # Newest-first to match the --last path.
-        out.sort(key=lambda r: float(r.get("started_at") or 0.0), reverse=True)
-        return out
-
-    eff_schema = (schema or cfg.current_schema or "").strip()
-    eff_table = (table or cfg.current_table or "").strip()
-    cmd = command_filter if command_filter and command_filter != "all" else None
-
-    if not eff_schema and not eff_table:
-        error(
-            "No scope to compare — pass run IDs or use --schema/--table. "
-            "Example: /compare --schema sales --last 3."
-        )
-        return []
-
-    return hs.find_runs_for_scope(
-        schema=eff_schema or None,
-        table=eff_table or None,
-        command_filter=cmd,
-        limit=max(1, int(last_n)),
-    )
 
 
 def _column_key(row: dict[str, Any]) -> tuple[str, str, str]:
