@@ -34,6 +34,11 @@ interface Props {
   tooltip?: string | undefined;
   /** Trigger style — "pill" for compact TopBar, "row" for full-width sidebar. */
   variant?: "pill" | "row";
+  /** Where the dropdown panel anchors relative to the trigger.
+   *  Default ``"bottom"`` opens downward; ``"top"`` opens upward
+   *  for triggers that sit at the bottom of the viewport (e.g. the
+   *  Ask composer footer where a downward menu was clipped). */
+  placement?: "bottom" | "top";
 }
 
 /**
@@ -49,6 +54,7 @@ export default function ProfilePicker({
   activeName,
   tooltip,
   variant = "pill",
+  placement = "bottom",
 }: Props) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -212,8 +218,12 @@ export default function ProfilePicker({
       {open && (
         <div
           className={cn(
-            "absolute z-30 mt-1 w-72 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in",
+            "absolute z-30 w-72 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in",
             variant === "row" ? "left-0" : "right-0",
+            // Anchor up or down based on ``placement``. Top placement
+            // is used in the Ask composer footer where a downward
+            // menu used to be clipped under the viewport.
+            placement === "top" ? "bottom-full mb-1" : "mt-1",
           )}
         >
           <button

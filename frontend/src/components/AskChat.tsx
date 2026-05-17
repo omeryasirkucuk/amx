@@ -1009,6 +1009,7 @@ export default function AskChat({
               kind="llm"
               label="LLM"
               variant="pill"
+              placement="top"
               activeName={activeLlmProfile}
               tooltip={activeLlmModel ?? undefined}
             />
@@ -1843,7 +1844,10 @@ function AskDocCodePicker({
         <ChevronDown size={12} className="opacity-70" />
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-30 mt-1 w-80 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
+        // Anchored to the bottom of the trigger so the menu grows
+        // UPWARDS — the composer sits at the bottom of the viewport
+        // and a downward menu used to be clipped off-screen.
+        <div className="absolute bottom-full left-0 z-30 mb-1 w-80 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
           <DocCodeSection
             heading="Doc profiles"
             emptyHint="No doc profiles configured."
