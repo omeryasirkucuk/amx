@@ -1197,6 +1197,11 @@ export interface LineageNode {
   /** v4 operator nodes only — the SQL fragment + classification. */
   op_kind?: string;
   expression?: string;
+  /** v4 S5 — catalog_entities.id of the persisted operator entity.
+   *  Null for purely synthetic operators created on-the-fly by the
+   *  service-layer split of an extractor edge. The editor stays
+   *  disabled until the operator has a real id. */
+  operator_id?: number | null;
 }
 
 export interface LineageEdgeOperator {
@@ -1449,6 +1454,17 @@ export async function lineageTrace(payload: {
   return apiFetch<LineageTraceResponse>(
     `/api/lineage/column-trace/${encodeAnchorPath(payload.anchorPath)}?${params.toString()}`,
   );
+}
+
+export async function lineagePatchOperator(payload: {
+  operatorId: number;
+  expression: string;
+}): Promise<{ operator_id: number; expression: string; operator_path: string }> {
+  return apiFetch(`/api/lineage/operators/${payload.operatorId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expression: payload.expression }),
+  });
 }
 
 export async function lineageDeleteEdge(edgeId: number): Promise<void> {

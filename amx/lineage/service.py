@@ -91,6 +91,8 @@ class LineageRunResult:
 
 def build_default_extractors(
     connector_factory: ConnectorFactory | None = None,
+    *,
+    include_heuristics: bool = False,
 ) -> list[Any]:
     """The default extractors in dispatch order.
 
@@ -103,6 +105,11 @@ def build_default_extractors(
     because they live in ``catalog_relationships`` and are exposed via
     the LLMExtractor's ``cache_only`` mode when the caller composes
     a custom extractor list (e.g. the Studio service entry).
+
+    v4 S5 — :class:`NameMatchExtractor` is gated behind
+    ``include_heuristics=True``. The default canvas keeps it off so
+    name-based false positives stop polluting the result set; CLI +
+    Studio surfaces opt-in via an explicit flag / checkbox.
     """
     from amx.lineage.extractors import (
         CodebaseScanExtractor,
@@ -110,14 +117,16 @@ def build_default_extractors(
         QueryLogExtractor,
     )
 
-    return [
+    extractors: list[Any] = [
         FKExtractor(),
         ViewDDLExtractor(connector_factory=connector_factory),
         QueryLogExtractor(),
         CodebaseScanExtractor(),
         ManualEdgeExtractor(),
-        NameMatchExtractor(),
     ]
+    if include_heuristics:
+        extractors.append(NameMatchExtractor())
+    return extractors
 
 
 def resolve_anchor_entity_id(
@@ -566,6 +575,7 @@ def lineage_for_studio(
     scope: Scope,
     connector_factory: ConnectorFactory | None = None,
     include_llm_cached: bool = True,
+    include_heuristics: bool = False,
 ) -> dict[str, Any]:
     """Return a JSON-serialisable lineage payload for the Studio endpoint.
 
@@ -589,7 +599,10 @@ def lineage_for_studio(
     """
     from amx.lineage.extractors import LLMExtractor
 
-    extractors = build_default_extractors(connector_factory=connector_factory)
+    extractors = build_default_extractors(
+        connector_factory=connector_factory,
+        include_heuristics=include_heuristics,
+    )
     if include_llm_cached:
         extractors.append(LLMExtractor())
 
@@ -651,6 +664,9 @@ def lineage_for_studio(
     # that appeared in any edge endpoint plus the catalogged columns
     # for the anchor table itself.
     _attach_table_columns(hs, scope, nodes_by_id)
+    # v4 S5 — match synthetic operator nodes to persisted
+    # catalog_entities rows so the inline editor can PATCH them.
+    _attach_operator_entity_ids(hs, scope, nodes_by_id)
 
     return {
         "anchor": {
@@ -665,6 +681,54 @@ def lineage_for_studio(
         "extractors_used": sorted({e.extractor for e in edges}),
         "generated_at": time.time(),
     }
+
+
+def _attach_operator_entity_ids(
+    hs: Any,
+    scope: Scope,
+    nodes_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Tag operator nodes with their persisted catalog_entities.id.
+
+    The synthetic split in :func:`_emit_operator_chain` produces an
+    operator id that's a stable string (op:fqn:kind:hash) but does
+    not carry the entity id, so the editor can't PATCH it. Match by
+    (table, op_kind, expression) — if the persisted entity matches,
+    the node gets ``operator_id`` populated and becomes editable.
+    """
+    pending = [
+        (nid, node)
+        for nid, node in nodes_by_id.items()
+        if node.get("kind") == "operator" and "operator_id" not in node
+    ]
+    if not pending:
+        return
+    with hs._connect() as conn:
+        for _nid, node in pending:
+            kind = str(node.get("op_kind") or "")
+            expr = str(node.get("expression") or "")
+            if not kind:
+                continue
+            row = conn.execute(
+                """
+                SELECT id FROM catalog_entities
+                WHERE db_profile = ? AND entity_kind = 'operator'
+                  AND search_text LIKE ? AND search_text LIKE ?
+                LIMIT 1
+                """,
+                (
+                    scope.profile,
+                    f'%"op_kind":"{kind}"%',
+                    f'%"expression":"{_escape_json_like(expr)}"%',
+                ),
+            ).fetchone()
+            if row:
+                node["operator_id"] = int(row[0])
+
+
+def _escape_json_like(text: str) -> str:
+    """Escape SQL LIKE wildcards inside a JSON expression fragment."""
+    return text.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
 
 def _emit_operator_chain(
