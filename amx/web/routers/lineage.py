@@ -155,6 +155,65 @@ def _bulk_anchor_fqns(hs: Any, anchor_ids: set[int]) -> dict[int, dict[str, str]
     }
 
 
+@router.get("/audit")
+def get_audit_trail(
+    profile: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Recent verdict + manual-edge actions for the profile.
+
+    Returns rows sorted by ``audit_at`` desc — consumed by the audit
+    trail card on the Lineage browse page.
+    """
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    name = _resolve_profile(cfg, profile)
+    with hs._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT cr.id, cr.relationship_type, cr.verdict, cr.audit_actor, cr.audit_at,
+                   cr.source, cr.details_json,
+                   src.schema_name, src.table_name,
+                   tgt.schema_name, tgt.table_name
+            FROM catalog_relationships cr
+            JOIN catalog_entities src ON src.id = cr.from_entity_id
+            JOIN catalog_entities tgt ON tgt.id = cr.to_entity_id
+            WHERE src.db_profile = ? AND cr.audit_at IS NOT NULL
+            ORDER BY cr.audit_at DESC
+            LIMIT ?
+            """,
+            (name, limit),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            details = json.loads(row[6] or "{}")
+        except (TypeError, ValueError):
+            details = {}
+        note = ""
+        if isinstance(details, dict):
+            note = str(details.get("notes") or details.get("reasoning") or "")[:200]
+        out.append(
+            {
+                "edge_id": int(row[0]),
+                "relationship_type": str(row[1]),
+                "verdict": str(row[2] or ""),
+                "actor": str(row[3] or ""),
+                "at": float(row[4] or 0.0),
+                "source": str(row[5] or ""),
+                "from": f"{row[7]}.{row[8]}",
+                "to": f"{row[9]}.{row[10]}",
+                "note": note,
+            }
+        )
+    return {"profile": name, "entries": out, "count": len(out)}
+
+
 @router.post("/discover")
 def post_discover(
     profile: str | None = Query(default=None),

@@ -77,7 +77,14 @@ class LLMExtractor:
         if not candidates:
             return ExtractResult(edges=[], cache_status="hit")
 
-        messages = prompt_mod.build_messages(anchor_ctx, candidates, max_candidates=_MAX_CANDIDATES)
+        approved, rejected = _verdict_examples(hs, scope)
+        messages = prompt_mod.build_messages(
+            anchor_ctx,
+            candidates,
+            max_candidates=_MAX_CANDIDATES,
+            approved_examples=approved,
+            rejected_examples=rejected,
+        )
         prompt_hash = hashlib.sha256(
             json.dumps(messages, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
@@ -353,6 +360,53 @@ def _safe_json(raw: Any) -> Any:
         return json.loads(raw)
     except (TypeError, ValueError):
         return {}
+
+
+def _verdict_examples(
+    hs: Any, scope: Scope, *, limit: int = 10
+) -> tuple[list[prompt_mod.FeedbackExample], list[prompt_mod.FeedbackExample]]:
+    """Pull recent approved + rejected edges from the same profile.
+
+    These ride into the next LLM prompt as positive / negative few-shot
+    examples (see :func:`amx.lineage.llm_prompt.build_messages`). Limit
+    is generous because the prompt builder hard-caps per side.
+    """
+    with hs._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT cr.verdict, cr.details_json,
+                   src.schema_name, src.table_name,
+                   tgt.schema_name, tgt.table_name
+            FROM catalog_relationships cr
+            JOIN catalog_entities src ON src.id = cr.from_entity_id
+            JOIN catalog_entities tgt ON tgt.id = cr.to_entity_id
+            WHERE cr.verdict IN ('approved', 'rejected')
+              AND src.db_profile = ?
+            ORDER BY cr.audit_at DESC NULLS LAST
+            LIMIT ?
+            """,
+            (scope.profile, limit * 2),
+        ).fetchall()
+    approved: list[prompt_mod.FeedbackExample] = []
+    rejected: list[prompt_mod.FeedbackExample] = []
+    for row in rows:
+        verdict = str(row[0] or "")
+        details = _safe_json(row[1])
+        note = ""
+        if isinstance(details, dict):
+            note = str(details.get("notes") or details.get("reasoning") or "")[:80]
+        ex = prompt_mod.FeedbackExample(
+            from_fqn=f"{row[2]}.{row[3]}",
+            to_fqn=f"{row[4]}.{row[5]}",
+            note=note,
+        )
+        if verdict == "approved" and len(approved) < limit:
+            approved.append(ex)
+        elif verdict == "rejected" and len(rejected) < limit:
+            rejected.append(ex)
+        if len(approved) >= limit and len(rejected) >= limit:
+            break
+    return approved, rejected
 
 
 __all__ = ["LLMExtractor", "LLMCallable"]

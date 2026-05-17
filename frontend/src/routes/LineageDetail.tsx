@@ -21,7 +21,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, RefreshCcw, Sparkles, Zap } from "lucide-react";
+import { ArrowLeft, Eye, EyeOff, RefreshCcw, Share2, Sparkles, Zap } from "lucide-react";
+
+import { encodeLineageShare } from "../lib/lineageShare";
 
 import {
   lineageCreateEdge,
@@ -205,6 +207,46 @@ export default function LineageDetail() {
     createEdge.mutate({ source: sourceId, target: targetId });
   };
 
+  // v3 S5 — rejected-edge toggle. Default hides them so the canvas
+  // stays clean; the toggle in the action row brings them back for
+  // audit purposes.
+  const [showRejected, setShowRejected] = useState(false);
+
+  // v3 S5 — share link. Produces a /lineage/share#<encoded> URL,
+  // copies to clipboard, surfaces a toast. The payload travels in
+  // the URL hash so it never reaches the server.
+  const copyShareLink = async () => {
+    if (!lineage.data) return;
+    const blob = encodeLineageShare(lineage.data);
+    const url = `${window.location.origin}/lineage/share#${blob}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.push({
+        title: "Share link copied",
+        description: "Anyone with the link can open the read-only canvas.",
+        tone: "success",
+      });
+    } catch {
+      toast.push({
+        title: "Could not copy",
+        description: "Browser blocked clipboard access; URL: " + url,
+        tone: "error",
+      });
+    }
+  };
+
+  // Filter rejected edges out of the canvas payload unless the user
+  // explicitly wants to see them. Pure client-side; the underlying
+  // catalog row stays intact.
+  const filteredPayload = useMemo(() => {
+    if (!lineage.data) return lineage.data;
+    if (showRejected) return lineage.data;
+    const before = lineage.data.edges.length;
+    const filtered = lineage.data.edges.filter((e) => e.verdict !== "rejected");
+    if (filtered.length === before) return lineage.data;
+    return { ...lineage.data, edges: filtered };
+  }, [lineage.data, showRejected]);
+
   const goToTab = useCallback(
     (next: string) => {
       const others = allTabs.filter((t) => t !== next);
@@ -287,6 +329,25 @@ export default function LineageDetail() {
             Force fresh
           </Button>
           <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setShowRejected((v) => !v)}
+            title={showRejected ? "Hide rejected edges" : "Show rejected edges"}
+          >
+            {showRejected ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            {showRejected ? "Hide rejected" : "Show rejected"}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={copyShareLink}
+            disabled={!lineage.data}
+            title="Copy a read-only share link to the clipboard"
+          >
+            <Share2 className="h-4 w-4" />
+            Share
+          </Button>
+          <Button
             variant="primary"
             size="sm"
             onClick={() => {
@@ -329,16 +390,16 @@ export default function LineageDetail() {
               Loading lineage payload…
             </div>
           )}
-          {lineage.data && (
+          {filteredPayload && (
             <>
               <LineageSearchInput
-                nodes={lineage.data.nodes}
+                nodes={filteredPayload.nodes}
                 onPick={(id) => canvasRef.current?.focusNode(id)}
                 openSignal={searchSignal}
               />
               <LineageCanvas
                 ref={canvasRef}
-                payload={lineage.data}
+                payload={filteredPayload}
                 onSelectEdge={setSelectedEdge}
                 onCreateEdge={handleCreateEdge}
                 onEdgeAction={handleEdgeAction}
