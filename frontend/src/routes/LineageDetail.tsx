@@ -44,6 +44,7 @@ import {
 import LineageSearchInput from "../components/LineageSearchInput";
 import LineageTabBar from "../components/LineageTabBar";
 import { EdgePanel } from "../components/EdgePanel";
+import { LineageTracePanel } from "../components/lineage/LineageTracePanel";
 import { Badge, Button, useToast } from "../components/ui";
 
 export default function LineageDetail() {
@@ -56,6 +57,10 @@ export default function LineageDetail() {
   const canvasRef = useRef<LineageCanvasHandle | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<LineageEdge | null>(null);
   const [searchSignal, setSearchSignal] = useState(0);
+  const [tracedColumn, setTracedColumn] = useState<{
+    nodeId: string;
+    column: string;
+  } | null>(null);
 
   const tabs = useMemo(() => parseTabHash(location.hash), [location.hash]);
   const allTabs = useMemo(() => {
@@ -400,7 +405,14 @@ export default function LineageDetail() {
         </div>
       )}
 
-      <div className="grid h-[calc(100vh-260px)] grid-cols-[minmax(0,1fr)_320px] gap-3">
+      <div
+        className={
+          "grid h-[calc(100vh-260px)] gap-3 " +
+          (tracedColumn
+            ? "grid-cols-[minmax(0,1fr)_288px_320px]"
+            : "grid-cols-[minmax(0,1fr)_320px]")
+        }
+      >
         <div className="relative overflow-hidden rounded-xl border border-surface-border bg-surface-raised">
           {lineage.isLoading && (
             <div className="flex h-full items-center justify-center text-sm text-fg-muted">
@@ -420,10 +432,33 @@ export default function LineageDetail() {
                 onSelectEdge={setSelectedEdge}
                 onCreateEdge={handleCreateEdge}
                 onEdgeAction={handleEdgeAction}
+                onColumnClick={(nodeId, column) => setTracedColumn({ nodeId, column })}
+                tracedColumn={tracedColumn}
               />
             </>
           )}
         </div>
+        {tracedColumn && (
+          <LineageTracePanel
+            profile={profileName}
+            anchorPath={anchorPath}
+            column={tracedColumn.column}
+            onClose={() => setTracedColumn(null)}
+            onStepClick={(step) => {
+              canvasRef.current?.focusNode(
+                step.kind === "operator"
+                  ? step.fqn
+                  : `${step.schema}.${step.table}`,
+              );
+              if (step.column && step.kind !== "operator") {
+                setTracedColumn({
+                  nodeId: `${step.schema}.${step.table}`,
+                  column: step.column,
+                });
+              }
+            }}
+          />
+        )}
         <EdgePanel edge={selectedEdge} />
       </div>
     </div>

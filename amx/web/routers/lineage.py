@@ -214,6 +214,186 @@ def get_audit_trail(
     return {"profile": name, "entries": out, "count": len(out)}
 
 
+# ── v4 — trace panel (server-side column BFS) ────────────────────────────
+#
+# Declared BEFORE the catch-all ``/{anchor_path:path}`` route so the
+# concrete prefix wins the FastAPI match order.
+
+
+@router.get("/column-trace/{anchor_path:path}")
+def get_column_trace(
+    anchor_path: str,
+    profile: str | None = Query(default=None),
+    column: str = Query(..., min_length=1),
+    direction: str = Query(default="upstream"),
+    max_depth: int = Query(default=50, ge=1, le=200),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Server-side BFS over column-level edges.
+
+    Returns an ordered list of steps from ORIGIN → HERE (upstream) or
+    HERE → DOWNSTREAM (downstream), capped at ``max_depth`` so an
+    accidentally deep chain cannot stall the page.
+
+    Each step carries ``{step, fqn, table, column, kind,
+    relationship_type, operator?}`` — operator entries surface the
+    op_kind + expression of the synthetic node so the panel can render
+    a transformation step rather than just a column-to-column hop.
+    """
+    name = _resolve_profile(cfg, profile)
+    database, schema, table, _anchor_col = _parse_anchor_path(anchor_path)
+    if not table:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not parse anchor table from {anchor_path!r}.",
+        )
+    if direction not in {"upstream", "downstream"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="direction must be 'upstream' or 'downstream'.",
+        )
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    anchor_id = _lookup_table_id(hs, name, database, schema, table)
+    if anchor_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Table {schema}.{table} not in catalog for profile {name!r}.",
+        )
+
+    steps = _walk_column_chain(
+        hs,
+        anchor_id=anchor_id,
+        anchor_column=column,
+        direction=direction,
+        max_depth=max_depth,
+    )
+    truncated = len(steps) >= max_depth
+    return {
+        "profile": name,
+        "anchor": {
+            "database": database,
+            "schema": schema,
+            "table": table,
+            "column": column,
+        },
+        "direction": direction,
+        "steps": steps,
+        "count": len(steps),
+        "truncated": truncated,
+    }
+
+
+def _lookup_table_id(hs: Any, profile: str, database: str, schema: str, table: str) -> int | None:
+    with hs._connect() as conn:
+        if database:
+            row = conn.execute(
+                """
+                SELECT id FROM catalog_entities
+                WHERE db_profile = ? AND database_name = ?
+                  AND schema_name = ? AND table_name = ?
+                  AND entity_kind = 'table'
+                LIMIT 1
+                """,
+                (profile, database, schema, table),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT id FROM catalog_entities
+                WHERE db_profile = ?
+                  AND schema_name = ? AND table_name = ?
+                  AND entity_kind = 'table'
+                LIMIT 1
+                """,
+                (profile, schema, table),
+            ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _walk_column_chain(
+    hs: Any,
+    *,
+    anchor_id: int,
+    anchor_column: str,
+    direction: str,
+    max_depth: int,
+) -> list[dict[str, Any]]:
+    """BFS over column-grain catalog_relationships rows.
+
+    Stops when the depth limit is reached, when a leaf has no further
+    edges, or when a cycle re-enters a previously-visited
+    ``(entity_id, column)`` node.
+    """
+    visited: set[tuple[int, str]] = {(anchor_id, anchor_column)}
+    frontier: list[tuple[int, str, int]] = [(anchor_id, anchor_column, 0)]
+    steps: list[dict[str, Any]] = []
+    upstream = direction == "upstream"
+    with hs._connect() as conn:
+        while frontier and len(steps) < max_depth:
+            node_id, col, depth = frontier.pop(0)
+            if upstream:
+                rows = conn.execute(
+                    """
+                    SELECT cr.from_entity_id, cr.from_column, cr.relationship_type,
+                           ce.entity_kind, ce.search_text, ce.schema_name, ce.table_name
+                    FROM catalog_relationships cr
+                    JOIN catalog_entities ce ON ce.id = cr.from_entity_id
+                    WHERE cr.to_entity_id = ? AND cr.to_column = ?
+                    """,
+                    (node_id, col),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT cr.to_entity_id, cr.to_column, cr.relationship_type,
+                           ce.entity_kind, ce.search_text, ce.schema_name, ce.table_name
+                    FROM catalog_relationships cr
+                    JOIN catalog_entities ce ON ce.id = cr.to_entity_id
+                    WHERE cr.from_entity_id = ? AND cr.from_column = ?
+                    """,
+                    (node_id, col),
+                ).fetchall()
+            for r in rows:
+                next_id = int(r[0])
+                next_col = str(r[1] or "")
+                key = (next_id, next_col)
+                if key in visited:
+                    continue
+                visited.add(key)
+                kind = str(r[3] or "")
+                step: dict[str, Any] = {
+                    "step": len(steps) + 1,
+                    "depth": depth + 1,
+                    "entity_id": next_id,
+                    "fqn": f"{r[5]}.{r[6]}" + (f".{next_col}" if next_col else ""),
+                    "table": str(r[6] or ""),
+                    "schema": str(r[5] or ""),
+                    "column": next_col,
+                    "kind": kind,
+                    "relationship_type": str(r[2] or ""),
+                }
+                if kind == "operator":
+                    try:
+                        details = json.loads(r[4] or "{}")
+                    except (TypeError, ValueError):
+                        details = {}
+                    if isinstance(details, dict):
+                        step["operator"] = {
+                            "op_kind": str(details.get("op_kind") or ""),
+                            "expression": str(details.get("expression") or ""),
+                        }
+                steps.append(step)
+                if len(steps) >= max_depth:
+                    break
+                frontier.append((next_id, next_col, depth + 1))
+    return steps
+
+
 @router.post("/discover")
 def post_discover(
     profile: str | None = Query(default=None),
