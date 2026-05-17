@@ -131,10 +131,8 @@ def _is_placeholder_data_url(data_url: str) -> bool:
         return False
     if PLACEHOLDER_MARKER.encode("ascii") in decoded:
         return True
-    return (
-        b'<rect x="4" y="4" width="120"' in decoded
-        and b"<text " in decoded
-    )
+    return b'<rect x="4" y="4" width="120"' in decoded and b"<text " in decoded
+
 
 # ── byte-size guard on custom uploads ────────────────────────────────────
 #
