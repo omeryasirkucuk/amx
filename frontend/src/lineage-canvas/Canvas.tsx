@@ -267,6 +267,10 @@ function CanvasInner() {
   function addTextNode() {
     // Plain-text label — same backend table as comments but with
     // ``style='text'`` so CommentNode skips the sticky-note chrome.
+    // No ``dragHandle`` constraint here: the whole node is draggable
+    // EXCEPT children with ``.nodrag`` (the editor body) — that
+    // gives us "click outside text to drag, click inside to edit"
+    // out of the box.
     const id = `text-tmp-${Date.now()}`;
     const node: CanvasNode = {
       id,
@@ -275,7 +279,6 @@ function CanvasInner() {
       width: 220,
       height: 36,
       data: { kind: "comment", id, color: "amber", text: "", style: "text" },
-      dragHandle: ".lcv-comment-grip",
     };
     setNodes((nds) => [...nds, node]);
   }
