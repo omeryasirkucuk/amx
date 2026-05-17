@@ -249,6 +249,9 @@ interface Props {
   /** Currently traced column for the right-rail panel. Highlights the
    *  matching row in the corresponding TableNode. */
   tracedColumn?: { nodeId: string; column: string } | null;
+  /** Called when the user clicks a column row inside any TableNode.
+   *  Wired by the canvas's parent route to open the trace panel. */
+  onColumnClick?: (nodeId: string, column: string) => void;
   className?: string;
 }
 
@@ -260,6 +263,7 @@ export const LineageCanvas = forwardRef<LineageCanvasHandle, Props>(
       onCreateEdge,
       onEdgeAction,
       tracedColumn,
+      onColumnClick,
       className,
     }: Props,
     ref,
@@ -287,6 +291,7 @@ export const LineageCanvas = forwardRef<LineageCanvasHandle, Props>(
           onCreateEdge={onCreateEdge}
           onEdgeAction={onEdgeAction}
           tracedColumn={tracedColumn ?? null}
+          onColumnClick={onColumnClick}
           className={className}
         />
       </ReactFlowProvider>
@@ -301,15 +306,34 @@ const CanvasInner = forwardRef<LineageCanvasHandle, Props>(function CanvasInner(
     onCreateEdge,
     onEdgeAction,
     tracedColumn = null,
+    onColumnClick,
     className,
   }: Props,
   ref,
 ) {
   const flow = useReactFlow();
-  const { nodes: baseNodes, edges: baseEdges } = useMemo(
+  // Inject the column-click handler into each TableNode's data via the
+  // layout pass. Memoised on the handler identity so React Flow
+  // doesn't see new node objects on every render.
+  const layoutResult = useMemo(
     () => layout(payload, tracedColumn ?? null),
     [payload, tracedColumn],
   );
+  const baseNodes = useMemo<RFNode[]>(() => {
+    if (!onColumnClick) return layoutResult.nodes;
+    return layoutResult.nodes.map((n) => {
+      if (n.type !== "amxTable") return n;
+      const data = n.data as TableNodeData;
+      return {
+        ...n,
+        data: {
+          ...data,
+          onColumnClick: (col: string) => onColumnClick(n.id, col),
+        },
+      };
+    });
+  }, [layoutResult.nodes, onColumnClick]);
+  const baseEdges = layoutResult.edges;
   const [highlightedNode, setHighlightedNode] = useState<string | null>(null);
 
   const adjacency = useMemo(() => {
