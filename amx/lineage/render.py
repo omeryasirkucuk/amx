@@ -13,6 +13,7 @@ does not depend on a ``dot`` binary anywhere.
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import sys
@@ -78,10 +79,13 @@ def render_lineage_image(
 
     fig, ax = plt.subplots(figsize=_figure_size(len(graph)))
     ax.set_axis_off()
+    _set_axis_limits(ax, positions)
     _draw_nodes(ax, positions, node_attrs)
     _draw_edges(ax, positions, edge_attrs)
+    if len(graph) == 1 and anchor_id in positions:
+        _draw_empty_result_caption(ax, positions[anchor_id])
     if payload.title:
-        ax.set_title(payload.title, fontsize=11, loc="left", pad=12)
+        fig.suptitle(payload.title, fontsize=11, x=0.04, ha="left", y=0.96)
     if payload.partial_warning:
         fig.text(
             0.5,
@@ -97,8 +101,12 @@ def render_lineage_image(
             },
         )
 
-    fig.tight_layout()
-    fig.savefig(output_path, format=fmt, dpi=160, bbox_inches="tight")
+    # Explicit margins instead of tight_layout: tight_layout fights
+    # ax.set_axis_off() on near-empty axes and prints a UserWarning when
+    # it gives up. Hard-coded margins also keep the canvas size stable
+    # across renders of the same artifact slot.
+    fig.subplots_adjust(left=0.04, right=0.96, top=0.92, bottom=0.10)
+    fig.savefig(output_path, format=fmt, dpi=160)
     plt.close(fig)
     return output_path
 
@@ -233,6 +241,12 @@ def _load_render_stack() -> tuple[Any, Any]:
         matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
 
+    # Keep SVG text as literal strings instead of glyph paths so the
+    # output is searchable / accessible / smaller. Without this every
+    # character becomes an opaque <use xlink:href="#DejaVuSans-XX">,
+    # which defeats Ctrl-F in any viewer.
+    matplotlib.rcParams["svg.fonttype"] = "none"
+
     return nx, plt
 
 
@@ -333,11 +347,82 @@ def _hierarchical_layout(graph: Any, anchor_id: str, nx: Any) -> dict[str, tuple
 
 
 def _figure_size(node_count: int) -> tuple[float, float]:
-    """Pick a canvas size that scales gently with node count."""
-    base_w, base_h = 10.0, 6.0
-    w = base_w + min(node_count / 20.0, 6.0)
-    h = base_h + min(node_count / 40.0, 4.0)
-    return w, h
+    """Figure size that grows with node count without wasting canvas on tiny graphs.
+
+    The previous implementation started at 10×6 inches regardless of
+    content; that made the single-node case look like an empty page
+    with a tiny anchor marooned in one corner. The curve below starts
+    at 6×4 for the anchor-only case, hits ~7×5 at ten nodes, ~9×6 at a
+    hundred, and ~11×7 at five hundred — enough room as the graph
+    grows, no waste when it doesn't.
+    """
+    base_w, base_h = 6.0, 4.0
+    if node_count <= 1:
+        return base_w, base_h
+    extra = math.log2(max(node_count, 2))
+    return base_w + extra * 0.9, base_h + extra * 0.55
+
+
+def _set_axis_limits(
+    ax: Any,
+    positions: dict[str, tuple[float, float]],
+    *,
+    h_pad: float = 2.0,
+    v_pad: float = 1.2,
+) -> None:
+    """Set xlim/ylim from the node bounding box so the anchor lands centred.
+
+    Without an explicit limit matplotlib autoscales to the data
+    extents, which for a single point at (0, 0) gives a degenerate
+    view that ``bbox_inches="tight"`` then crops into the bottom-left
+    corner. Symmetric padding around the actual content keeps the
+    anchor visually centred even when the BFS-derived layers are
+    asymmetric (e.g. anchor + one upstream + zero downstream).
+    """
+    if not positions:
+        ax.set_xlim(-1, 1)
+        ax.set_ylim(-1, 1)
+        return
+    xs = [p[0] for p in positions.values()]
+    ys = [p[1] for p in positions.values()]
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+    if x_min == x_max:
+        ax.set_xlim(x_min - h_pad, x_max + h_pad)
+    else:
+        ax.set_xlim(x_min - h_pad * 0.5, x_max + h_pad * 0.5)
+    if y_min == y_max:
+        ax.set_ylim(y_min - v_pad, y_max + v_pad)
+    else:
+        ax.set_ylim(y_min - v_pad * 0.5, y_max + v_pad * 0.5)
+
+
+def _draw_empty_result_caption(ax: Any, anchor_pos: tuple[float, float]) -> None:
+    """Render the 'no related entities found' caption under the anchor.
+
+    Replaces what would otherwise be a blank canvas when every
+    extractor returns an empty edge set. The caption tells the user
+    *what happened* and *what to do next* instead of leaving them
+    staring at a single tiny box in the corner.
+    """
+    ax_x, ax_y = anchor_pos
+    ax.text(
+        ax_x,
+        ax_y - 1.2,
+        "No related entities found in cache.\n"
+        "Try /lineage refresh --no-cache to pull view DDL and FK relationships.",
+        ha="center",
+        va="top",
+        fontsize=9,
+        color="#6b7280",
+        wrap=True,
+        bbox={
+            "boxstyle": "round,pad=0.5",
+            "facecolor": "#f3f4f6",
+            "edgecolor": "#d1d5db",
+            "linewidth": 0.8,
+        },
+    )
 
 
 def _draw_nodes(
@@ -395,9 +480,17 @@ def _draw_edges(
         )
         mx = (src[0] + tgt[0]) / 2.0
         my = (src[1] + tgt[1]) / 2.0
+        # Nudge the label off the line so it doesn't sit on top of nodes
+        # that happen to fall along the midpoint axis. The offset is
+        # perpendicular to the edge direction so labels don't cluster.
+        dx, dy = tgt[0] - src[0], tgt[1] - src[1]
+        length = max((dx * dx + dy * dy) ** 0.5, 1e-6)
+        offset_magnitude = 0.18
+        off_x = -dy / length * offset_magnitude
+        off_y = dx / length * offset_magnitude
         ax.text(
-            mx,
-            my,
+            mx + off_x,
+            my + off_y,
             ea["label"],
             fontsize=7,
             color=style["color"],
