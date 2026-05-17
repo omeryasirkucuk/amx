@@ -17,6 +17,7 @@ functions with ``fill_decision`` set explicitly.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -91,10 +92,24 @@ class LineageRunResult:
 def build_default_extractors(
     connector_factory: ConnectorFactory | None = None,
 ) -> list[Any]:
-    """The three slice-1 extractors in dispatch order."""
+    """The default extractors in dispatch order.
+
+    QueryLogExtractor (v2) sits alongside the slice-1 trio because it is
+    cache-only by construction — every read targets the local
+    ``history.db``, never the wire. LLMExtractor is intentionally
+    omitted: it is opt-in only, invoked through
+    :func:`suggest_lineage_llm` after the user explicitly asks for it.
+    Previously persisted ``lineage_llm`` edges are still surfaced
+    because they live in ``catalog_relationships`` and are exposed via
+    the LLMExtractor's ``cache_only`` mode when the caller composes
+    a custom extractor list (e.g. the Studio service entry).
+    """
+    from amx.lineage.extractors import QueryLogExtractor
+
     return [
         FKExtractor(),
         ViewDDLExtractor(connector_factory=connector_factory),
+        QueryLogExtractor(),
         NameMatchExtractor(),
     ]
 
@@ -536,6 +551,190 @@ def text_tree(
     return lines
 
 
+# ── Studio service entries ───────────────────────────────────────────────
+
+
+def lineage_for_studio(
+    hs: Any,
+    *,
+    scope: Scope,
+    connector_factory: ConnectorFactory | None = None,
+    include_llm_cached: bool = True,
+) -> dict[str, Any]:
+    """Return a JSON-serialisable lineage payload for the Studio endpoint.
+
+    Non-interactive — never opens a wire connection and never invokes
+    the LLM. Reads everything from local cache:
+    * deterministic extractors run in their normal ``cache_only`` mode
+    * previously persisted ``lineage_llm`` edges are surfaced via
+      :class:`LLMExtractor` ``cache_only`` mode when
+      ``include_llm_cached`` is true
+
+    Shape::
+
+        {
+          "anchor": {"database": ..., "schema": ..., "table": ..., "column": ...},
+          "nodes": [{"id", "label", "kind", "anchor": bool, "described": bool}, ...],
+          "edges": [{"from", "to", "type", "extractor", "confidence", "evidence"}, ...],
+          "partial": bool,
+          "extractors_used": [...],
+          "generated_at": float,
+        }
+    """
+    from amx.lineage.extractors import LLMExtractor
+
+    extractors = build_default_extractors(connector_factory=connector_factory)
+    if include_llm_cached:
+        extractors.append(LLMExtractor())
+
+    edges, _, miss_report = gather_edges(hs, scope, extractors)
+    partial = miss_report.has_misses()
+
+    nodes_by_id: dict[str, dict[str, Any]] = {}
+    anchor_id = _node_id(scope.anchor)
+    nodes_by_id[anchor_id] = {
+        "id": anchor_id,
+        "label": _node_label_studio(scope.anchor),
+        "kind": "column" if scope.anchor.column else "table",
+        "anchor": True,
+        "described": False,
+    }
+    for edge in edges:
+        for ref in (edge.source, edge.target):
+            node_id = _node_id(ref)
+            if node_id not in nodes_by_id:
+                nodes_by_id[node_id] = {
+                    "id": node_id,
+                    "label": _node_label_studio(ref),
+                    "kind": "column" if ref.column else "table",
+                    "anchor": False,
+                    "described": False,
+                }
+    described = described_entities(
+        hs, profile=scope.profile, refs=[_ref_from_node(nid) for nid in nodes_by_id]
+    )
+    for nid in nodes_by_id:
+        if nid in described:
+            nodes_by_id[nid]["described"] = True
+
+    edge_payloads: list[dict[str, Any]] = []
+    for edge in edges:
+        edge_payloads.append(
+            {
+                "from": _node_id(edge.source),
+                "to": _node_id(edge.target),
+                "type": edge.relationship_type,
+                "extractor": edge.extractor,
+                "confidence": round(float(edge.confidence), 3),
+                "evidence": edge.evidence,
+            }
+        )
+
+    return {
+        "anchor": {
+            "database": scope.anchor.database,
+            "schema": scope.anchor.schema,
+            "table": scope.anchor.table,
+            "column": scope.anchor.column or None,
+        },
+        "nodes": list(nodes_by_id.values()),
+        "edges": edge_payloads,
+        "partial": partial,
+        "extractors_used": sorted({e.extractor for e in edges}),
+        "generated_at": time.time(),
+    }
+
+
+@dataclass
+class LLMSuggestResult:
+    """Result of :func:`suggest_lineage_llm` — fed back to CLI + Studio."""
+
+    edges: list[dict[str, Any]] = field(default_factory=list)
+    persisted_count: int = 0
+    model: str = ""
+    aborted: bool = False
+    abort_reason: str = ""
+
+
+def suggest_lineage_llm(
+    hs: Any,
+    *,
+    scope: Scope,
+    cfg: Any,
+) -> LLMSuggestResult:
+    """Run one LLM call for the anchor; persist + return suggested edges.
+
+    ``cfg`` carries the active LLM profile via ``cfg.llm`` (see
+    :class:`amx.config.AMXConfig`). The function instantiates an
+    :class:`amx.llm.provider.LLMProvider` per call so callers pay the
+    cost only when explicitly opting in.
+    """
+    from amx.lineage.extractors import LLMExtractor
+
+    anchor_id = resolve_anchor_entity_id(hs, profile=scope.profile, anchor=scope.anchor)
+    if anchor_id is None:
+        return LLMSuggestResult(
+            aborted=True,
+            abort_reason=f"anchor {scope.anchor.fqn()!r} not found in catalog_entities",
+        )
+
+    llm_cfg = getattr(cfg, "llm", None)
+    if llm_cfg is None:
+        return LLMSuggestResult(aborted=True, abort_reason="no active LLM profile configured")
+
+    try:
+        from amx.llm.provider import LLMProvider
+    except Exception as exc:
+        return LLMSuggestResult(aborted=True, abort_reason=f"LLM provider unavailable: {exc}")
+
+    provider = LLMProvider(llm_cfg)
+    model_name = f"{getattr(llm_cfg, 'provider', '')}/{getattr(llm_cfg, 'model', '')}"
+
+    def _call(messages: list[dict[str, str]]) -> str:
+        result = provider.chat(messages=messages, temperature=0.0, use_logprobs=False)
+        return getattr(result, "content", "") or ""
+
+    extractor = LLMExtractor(llm_callable=_call, model_name=model_name)
+    extract_result = extractor.extract(hs=hs, scope=scope, mode="llm_suggest")
+
+    edges_payload = [
+        {
+            "from": _node_id(edge.source),
+            "to": _node_id(edge.target),
+            "type": edge.relationship_type,
+            "extractor": edge.extractor,
+            "confidence": round(float(edge.confidence), 3),
+            "evidence": edge.evidence,
+        }
+        for edge in extract_result.edges
+    ]
+    return LLMSuggestResult(
+        edges=edges_payload,
+        persisted_count=len(edges_payload),
+        model=model_name,
+    )
+
+
+def _node_label_studio(ref: ColumnRef) -> str:
+    parts = [p for p in (ref.schema, ref.table) if p]
+    base = ".".join(parts)
+    if ref.column:
+        return f"{base}.{ref.column}" if base else ref.column
+    return base or ref.fqn()
+
+
+def _ref_from_node(node_id: str) -> ColumnRef:
+    parts = node_id.split(".")
+    if len(parts) == 1:
+        return ColumnRef("", "", parts[0], "")
+    if len(parts) == 2:
+        return ColumnRef("", parts[0], parts[1], "")
+    if len(parts) == 3:
+        return ColumnRef("", parts[0], parts[1], parts[2])
+    # database.schema.table.column
+    return ColumnRef(parts[0], parts[1], parts[2], parts[3])
+
+
 # ── internal helpers ─────────────────────────────────────────────────────
 
 
@@ -626,6 +825,7 @@ __all__ = [
     "CacheMissReport",
     "ScaleVerdict",
     "LineageRunResult",
+    "LLMSuggestResult",
     "FillDecision",
     "FillPrompt",
     "ConnectorHandle",
@@ -638,4 +838,6 @@ __all__ = [
     "create_lineage",
     "refresh_lineage",
     "text_tree",
+    "lineage_for_studio",
+    "suggest_lineage_llm",
 ]
