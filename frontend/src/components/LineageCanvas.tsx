@@ -132,26 +132,40 @@ function layout(
     };
   });
 
-  const edges: RFEdge[] = payload.edges.map((e, i) => ({
-    id: `${e.from}->${e.to}#${i}`,
-    source: e.from,
-    target: e.to,
-    sourceHandle: e.from_column || null,
-    targetHandle: e.to_column || null,
-    label: edgeLabel(e),
-    type: "smoothstep",
-    markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor(e) },
-    style: {
-      stroke: edgeColor(e),
-      strokeWidth: edgeWidthFor(e),
-      strokeDasharray: edgeDash(e),
-    },
-    labelStyle: { fontSize: 9, fill: edgeColor(e) },
-    labelBgStyle: { fill: "#0f172acc" },
-    labelBgPadding: [3, 1] as [number, number],
-    labelBgBorderRadius: 3,
-    data: e,
-  }));
+  // v4 hotfix — operator nodes expose only `id="in"` / `id="out"`
+  // handles; using the source/target column name as the handle id
+  // (correct for table-to-table edges) silently dropped to the node
+  // centre when one endpoint was an operator. Force the operator
+  // side to its named in/out port regardless of payload.
+  const operatorIds = new Set(
+    payload.nodes.filter((n) => n.kind === "operator").map((n) => n.id),
+  );
+  const edges: RFEdge[] = payload.edges.map((e, i) => {
+    const sourceIsOp = operatorIds.has(e.from);
+    const targetIsOp = operatorIds.has(e.to);
+    const sourceHandle = sourceIsOp ? "out" : e.from_column || null;
+    const targetHandle = targetIsOp ? "in" : e.to_column || null;
+    return {
+      id: `${e.from}->${e.to}#${i}`,
+      source: e.from,
+      target: e.to,
+      sourceHandle,
+      targetHandle,
+      label: edgeLabel(e),
+      type: "smoothstep",
+      markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor(e) },
+      style: {
+        stroke: edgeColor(e),
+        strokeWidth: edgeWidthFor(e),
+        strokeDasharray: edgeDash(e),
+      },
+      labelStyle: { fontSize: 9, fill: edgeColor(e) },
+      labelBgStyle: { fill: "#0f172acc" },
+      labelBgPadding: [3, 1] as [number, number],
+      labelBgBorderRadius: 3,
+      data: e,
+    };
+  });
 
   return { nodes, edges };
 }

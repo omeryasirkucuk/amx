@@ -610,6 +610,12 @@ def lineage_for_studio(
     partial = miss_report.has_misses()
 
     nodes_by_id: dict[str, dict[str, Any]] = {}
+    # v4 hotfix — keep the original ColumnRef alongside the node so
+    # we don't have to re-parse the FQN. `_ref_from_node` is
+    # ambiguous on 3-part paths (cannot tell `db.schema.table` from
+    # `schema.table.column`), which silently broke
+    # `_attach_table_columns` for multi-database profiles.
+    refs_by_id: dict[str, ColumnRef] = {}
     anchor_id = _node_id(scope.anchor)
     nodes_by_id[anchor_id] = {
         "id": anchor_id,
@@ -618,6 +624,7 @@ def lineage_for_studio(
         "anchor": True,
         "described": False,
     }
+    refs_by_id[anchor_id] = scope.anchor
     for edge in edges:
         for ref in (edge.source, edge.target):
             node_id = _node_id(ref)
@@ -629,6 +636,7 @@ def lineage_for_studio(
                     "anchor": False,
                     "described": False,
                 }
+                refs_by_id[node_id] = ref
     described = described_entities(
         hs, profile=scope.profile, refs=[_ref_from_node(nid) for nid in nodes_by_id]
     )
@@ -663,7 +671,7 @@ def lineage_for_studio(
     # which port handles to lay out — drawn from the column entities
     # that appeared in any edge endpoint plus the catalogged columns
     # for the anchor table itself.
-    _attach_table_columns(hs, scope, nodes_by_id)
+    _attach_table_columns(hs, scope, nodes_by_id, refs_by_id)
     # v4 S5 — match synthetic operator nodes to persisted
     # catalog_entities rows so the inline editor can PATCH them.
     _attach_operator_entity_ids(hs, scope, nodes_by_id)
@@ -796,32 +804,69 @@ def _attach_table_columns(
     hs: Any,
     scope: Scope,
     nodes_by_id: dict[str, dict[str, Any]],
+    refs_by_id: dict[str, ColumnRef] | None = None,
 ) -> None:
     """Populate ``columns`` on every table node from the catalog cache.
 
     Walks ``catalog_entities`` for rows matching each table id in the
     payload, attaching ``[{"name": col, "dtype": dtype}]``. Operator
     nodes are skipped (they carry op_kind/expression instead).
+
+    v4 hotfix — caller now passes ``refs_by_id`` so we look the
+    ColumnRef up by node id instead of re-parsing the FQN.
+    `_ref_from_node` cannot disambiguate `db.schema.table` from
+    `schema.table.column` on a 3-part path, which silently broke
+    every multi-database profile — TableNode rendered the empty
+    "No columns cached" branch and the canvas collapsed to plain
+    centre-to-centre arrows ("two boxes with an arrow").
     """
     table_keys = [nid for nid, node in nodes_by_id.items() if node.get("kind") == "table"]
     if not table_keys:
         return
+    refs_by_id = refs_by_id or {}
     with hs._connect() as conn:
         for nid in table_keys:
-            ref = _ref_from_node(nid)
-            rows = conn.execute(
-                """
-                SELECT column_name, dtype
-                FROM catalog_entities
-                WHERE db_profile = ? AND schema_name = ? AND table_name = ?
-                  AND entity_kind = 'column' AND column_name IS NOT NULL
-                ORDER BY column_name
-                """,
-                (scope.profile, ref.schema, ref.table),
-            ).fetchall()
+            ref = refs_by_id.get(nid) or _ref_from_node(nid)
+            rows = _lookup_table_columns(conn, scope.profile, ref)
             nodes_by_id[nid]["columns"] = [
                 {"name": str(r[0]), "dtype": str(r[1] or "")} for r in rows
             ]
+
+
+def _lookup_table_columns(conn: Any, profile: str, ref: ColumnRef) -> list[tuple[Any, Any]]:
+    """Three-tier lookup for a table's catalog-cached columns.
+
+    1. Strict ``(profile, database, schema, table)`` — correct path
+       when catalog sync stamped a real database key.
+    2. ``(profile, '', schema, table)`` — legacy rows from before
+       the multi-database key landed.
+    3. ``(profile, schema, table)`` ignoring database — last-resort
+       fallback when the anchor's database and the catalog row's
+       database disagree (wizard pinned one value, sync wrote
+       another). Better to surface columns than show nothing.
+    """
+    base_sql = (
+        "SELECT column_name, dtype FROM catalog_entities "
+        "WHERE db_profile = ? AND schema_name = ? AND table_name = ? "
+        "AND entity_kind = 'column' AND column_name IS NOT NULL"
+    )
+    if ref.database:
+        rows = conn.execute(
+            f"{base_sql} AND database_name = ? ORDER BY column_name",
+            (profile, ref.schema, ref.table, ref.database),
+        ).fetchall()
+        if rows:
+            return rows
+    rows = conn.execute(
+        f"{base_sql} AND database_name = '' ORDER BY column_name",
+        (profile, ref.schema, ref.table),
+    ).fetchall()
+    if rows:
+        return rows
+    return conn.execute(
+        f"{base_sql} ORDER BY column_name",
+        (profile, ref.schema, ref.table),
+    ).fetchall()
 
 
 @dataclass
@@ -883,7 +928,18 @@ def suggest_lineage_llm(
     except Exception as exc:
         return LLMSuggestResult(aborted=True, abort_reason=f"LLM provider unavailable: {exc}")
 
-    provider = LLMProvider(llm_cfg)
+    # v4 hotfix — provider instantiation, the closure-captured chat
+    # call, and the extractor invocation can all raise (missing API
+    # key, keyring backend failure, network error). Wrap the whole
+    # path so the route returns aborted=True instead of bubbling a
+    # 500. The router renders aborted=True as a clean toast.
+    try:
+        provider = LLMProvider(llm_cfg)
+    except Exception as exc:
+        return LLMSuggestResult(
+            aborted=True,
+            abort_reason=f"LLM provider init failed: {exc}",
+        )
     model_name = f"{getattr(llm_cfg, 'provider', '')}/{getattr(llm_cfg, 'model', '')}"
 
     def _call(messages: list[dict[str, str]]) -> str:
@@ -891,7 +947,14 @@ def suggest_lineage_llm(
         return getattr(result, "content", "") or ""
 
     extractor = LLMExtractor(llm_callable=_call, model_name=model_name)
-    extract_result = extractor.extract(hs=hs, scope=scope, mode="llm_suggest")
+    try:
+        extract_result = extractor.extract(hs=hs, scope=scope, mode="llm_suggest")
+    except Exception as exc:
+        return LLMSuggestResult(
+            aborted=True,
+            abort_reason=f"LLM call failed: {type(exc).__name__}: {exc}",
+            model=model_name,
+        )
 
     edges_payload = [
         {
@@ -952,7 +1015,15 @@ def suggest_lineage_llm_bulk(
             abort_reason=f"LLM provider unavailable: {exc}",
         )
 
-    provider = LLMProvider(llm_cfg)
+    try:
+        provider = LLMProvider(llm_cfg)
+    except Exception as exc:
+        return BulkSuggestResult(
+            profile=profile,
+            schema=schema,
+            aborted=True,
+            abort_reason=f"LLM provider init failed: {exc}",
+        )
     model_name = f"{getattr(llm_cfg, 'provider', '')}/{getattr(llm_cfg, 'model', '')}"
 
     tables = _list_schema_tables(hs, profile=profile, database=database, schema=schema)

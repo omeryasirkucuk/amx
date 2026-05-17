@@ -82,8 +82,10 @@ function TableNodeImpl({ data }: NodeProps<TableNodeData>) {
         )}
       </div>
       {cols.length === 0 ? (
-        <div className="bg-slate-800 px-3 py-2 text-[10px] italic text-slate-400">
-          No columns cached yet.
+        <div className="bg-slate-800 px-3 py-2 text-[10px] text-slate-400">
+          <span className="italic">No columns cached.</span>{" "}
+          <span className="font-mono text-slate-300">Run /db sync</span> to
+          populate.
         </div>
       ) : collapsed ? (
         <div className="flex items-center justify-between bg-slate-900 px-3 py-1.5 text-[10px] text-slate-400">

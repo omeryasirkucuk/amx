@@ -486,6 +486,10 @@ def post_refresh(
     ``?no_cache=true`` the view-DDL cache for this scope is invalidated
     and the extractor is allowed to fill from the DB (otherwise the
     decision is ``skip`` — cache-only).
+
+    v4 hotfix — any unexpected exception inside the extractor or
+    render pipeline now returns ``aborted=True`` with the reason
+    surfaced to the toast, never a bare 500.
     """
     hs = history_store()
     if hs is None:
@@ -494,8 +498,6 @@ def post_refresh(
             detail="History store not initialised.",
         )
     scope = _scope(cfg, profile=profile, anchor_path=anchor_path, explicit_database=database)
-    # Try to find an existing artifact for this anchor + run refresh
-    # against it. If no artifact yet, fall back to a fresh create.
     anchor_id = lineage_service.resolve_anchor_entity_id(
         hs, profile=scope.profile, anchor=scope.anchor
     )
@@ -507,33 +509,44 @@ def post_refresh(
     artifacts = lineage_store.list_lineage_artifacts(hs, db_profile=scope.profile)
     matching = [a for a in artifacts if a["anchor_entity_id"] == anchor_id]
     fill = "fill" if no_cache else "skip"
-    if matching:
-        result = lineage_service.refresh_lineage(
-            hs=hs,
-            artifact=matching[0],
-            fill_decision=fill,
-            no_cache=no_cache,
-        )
-    else:
-        # Synthesize a name + path for the new artifact.
-        from pathlib import Path as _P
+    try:
+        if matching:
+            result = lineage_service.refresh_lineage(
+                hs=hs,
+                artifact=matching[0],
+                fill_decision=fill,
+                no_cache=no_cache,
+            )
+        else:
+            from pathlib import Path as _P
 
-        from amx.config import _resolve_config_dir
+            from amx.config import _resolve_config_dir
 
-        slug = re.sub(
-            r"[^A-Za-z0-9_-]+",
-            "_",
-            "-".join(p for p in (scope.anchor.schema, scope.anchor.table) if p) or "lineage",
-        )
-        out = _P(_resolve_config_dir()) / "lineage" / f"{slug}.svg"
-        result = lineage_service.create_lineage(
-            hs=hs,
-            scope=scope,
-            name=slug,
-            output_path=out,
-            fmt="svg",
-            fill_decision=fill,
-        )
+            slug = re.sub(
+                r"[^A-Za-z0-9_-]+",
+                "_",
+                "-".join(p for p in (scope.anchor.schema, scope.anchor.table) if p) or "lineage",
+            )
+            out = _P(_resolve_config_dir()) / "lineage" / f"{slug}.svg"
+            result = lineage_service.create_lineage(
+                hs=hs,
+                scope=scope,
+                name=slug,
+                output_path=out,
+                fmt="svg",
+                fill_decision=fill,
+            )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "artifact_id": 0,
+            "node_count": 0,
+            "edge_count": 0,
+            "extractors_used": [],
+            "extractors_partial": False,
+            "aborted": True,
+            "abort_reason": f"{type(exc).__name__}: {exc}",
+        }
     return {
         "ok": not result.aborted,
         "artifact_id": result.artifact_id,
@@ -617,7 +630,13 @@ def post_suggest(
             detail="History store not initialised.",
         )
     scope = _scope(cfg, profile=profile, anchor_path=anchor_path, explicit_database=database)
-    result = lineage_service.suggest_lineage_llm(hs=hs, scope=scope, cfg=cfg)
+    try:
+        result = lineage_service.suggest_lineage_llm(hs=hs, scope=scope, cfg=cfg)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{type(exc).__name__}: {exc}",
+        ) from exc
     if result.aborted:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

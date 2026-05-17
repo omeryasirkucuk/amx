@@ -169,3 +169,72 @@ def test_post_suggest_400_when_service_aborts(seeded_hs, client, auth_headers, m
     assert r.status_code == 400
     assert "no LLM profile" in r.text
     assert lineage_store.lookup_lineage_artifact(seeded_hs, name_or_id="nonexistent") is None
+
+
+def test_post_suggest_400_when_service_raises(seeded_hs, client, auth_headers, monkeypatch):
+    """v4 hotfix — uncaught exceptions inside suggest_lineage_llm
+    no longer bare-500. The router catches and reports as 400 with
+    the exception detail so the Studio toast can render something
+    actionable instead of 'Internal Server Error'."""
+
+    def boom(hs, *, scope, cfg):
+        raise RuntimeError("simulated LLM provider keyring failure")
+
+    monkeypatch.setattr(
+        "amx.web.routers.lineage.lineage_service.suggest_lineage_llm",
+        boom,
+    )
+    r = client.post(
+        "/api/lineage/public.orders/suggest",
+        headers=auth_headers,
+        params={"profile": "local"},
+    )
+    assert r.status_code == 400
+    assert "RuntimeError" in r.text or "keyring" in r.text
+
+
+def test_post_refresh_returns_aborted_when_create_raises(
+    seeded_hs, client, auth_headers, monkeypatch, tmp_path
+):
+    """v4 hotfix — any exception inside create_lineage / refresh_lineage
+    surfaces as aborted=True with the reason, never a bare 500."""
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated render failure")
+
+    monkeypatch.setattr(
+        "amx.web.routers.lineage.lineage_service.create_lineage",
+        boom,
+    )
+    r = client.post(
+        "/api/lineage/public.orders/refresh",
+        headers=auth_headers,
+        params={"profile": "local"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is False
+    assert body["aborted"] is True
+    assert "RuntimeError" in body["abort_reason"]
+
+
+def test_suggest_lineage_llm_aborts_when_provider_init_fails(seeded_hs, monkeypatch):
+    """Direct service-level test — when LLMProvider construction
+    raises (missing key, keyring backend error), the function
+    returns aborted=True instead of letting the exception escape."""
+    from amx.config import AMXConfig, LLMConfig
+    from amx.lineage.service import suggest_lineage_llm
+    from amx.lineage.types import ColumnRef, Scope
+
+    cfg = AMXConfig()
+    cfg.llm = LLMConfig(provider="openai", model="gpt-4o-mini")
+
+    class _BrokenProvider:
+        def __init__(self, *_args, **_kwargs):
+            raise RuntimeError("provider config not found")
+
+    monkeypatch.setattr("amx.llm.provider.LLMProvider", _BrokenProvider)
+    scope = Scope(profile="local", anchor=ColumnRef("", "public", "orders", ""))
+    result = suggest_lineage_llm(hs=seeded_hs, scope=scope, cfg=cfg)
+    assert result.aborted is True
+    assert "init failed" in result.abort_reason

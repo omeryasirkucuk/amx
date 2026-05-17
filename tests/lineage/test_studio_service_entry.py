@@ -132,6 +132,64 @@ def test_lineage_for_studio_splits_operator_edges_into_three_nodes(hs, monkeypat
     assert op_out[0]["operator"]["op_kind"] == "aggregate"
 
 
+def test_attach_table_columns_matches_on_database_name(hs):
+    """v4 hotfix — _attach_table_columns must filter by database_name
+    when the catalog row carries one. Previously the WHERE clause
+    omitted it, causing multi-database profiles to silently return
+    the wrong rows (or none, when bound parameters mismatched)."""
+    from amx.lineage.service import lineage_for_studio
+
+    # Seed an orders table + 3 column rows under database='analytics'.
+    seed_table_entity(hs, database="analytics", schema="public", table="orders")
+    with hs._connect() as conn:
+        for col in ("id", "customer_id", "amount"):
+            conn.execute(
+                "INSERT INTO catalog_entities "
+                "(db_profile, db_backend, database_name, schema_name, table_name, "
+                "column_name, entity_kind, asset_kind, dtype) "
+                "VALUES ('p', 'postgresql', 'analytics', 'public', 'orders', "
+                "?, 'column', 'table', 'integer')",
+                (col,),
+            )
+
+    scope = Scope(
+        profile="p",
+        anchor=ColumnRef(database="analytics", schema="public", table="orders", column=""),
+    )
+    payload = lineage_for_studio(hs=hs, scope=scope)
+    table_nodes = [n for n in payload["nodes"] if n.get("kind") == "table"]
+    assert len(table_nodes) == 1
+    cols = [c["name"] for c in table_nodes[0].get("columns") or []]
+    assert set(cols) == {"id", "customer_id", "amount"}
+
+
+def test_attach_table_columns_falls_back_to_empty_database_legacy(hs):
+    """Legacy row layout: column rows written with database_name=''
+    must still surface even when the anchor pins a real database."""
+    from amx.lineage.service import lineage_for_studio
+
+    seed_table_entity(hs, database="", schema="public", table="orders")
+    with hs._connect() as conn:
+        for col in ("a", "b"):
+            conn.execute(
+                "INSERT INTO catalog_entities "
+                "(db_profile, db_backend, database_name, schema_name, table_name, "
+                "column_name, entity_kind, asset_kind, dtype) "
+                "VALUES ('p', 'postgresql', '', 'public', 'orders', "
+                "?, 'column', 'table', 'integer')",
+                (col,),
+            )
+
+    scope = Scope(
+        profile="p",
+        anchor=ColumnRef(database="my_db", schema="public", table="orders", column=""),
+    )
+    payload = lineage_for_studio(hs=hs, scope=scope)
+    table_nodes = [n for n in payload["nodes"] if n.get("kind") == "table"]
+    cols = [c["name"] for c in table_nodes[0].get("columns") or []]
+    assert set(cols) == {"a", "b"}
+
+
 def test_operator_node_gets_persisted_operator_id_when_matched(hs, monkeypatch):
     """v4 S5 — when a persisted operator entity has the same kind +
     expression as the synthetic split node, attach operator_id so
