@@ -15,9 +15,9 @@ import { Plus, Search } from "lucide-react";
 import { Button } from "../../components/ui";
 import Modal from "../../components/Modal";
 import {
-  fetchAssets,
-  fetchProfiles,
-  fetchSchemas,
+  fetchAssetsResponse,
+  fetchProfilesResponse,
+  fetchSchemasResponse,
   fetchTableColumns,
   supportsCatalogs,
   type ProfileSummary,
@@ -51,11 +51,12 @@ export function AddTableModal({ open, onClose, defaultProfile, onPick }: Props) 
 
   const profilesQ = useQuery({
     queryKey: ["db-profiles", "list"],
-    queryFn: fetchProfiles,
+    queryFn: fetchProfilesResponse,
     enabled: open,
   });
+  const profilesList: ProfileSummary[] = profilesQ.data?.profiles ?? [];
 
-  const profileMeta: ProfileSummary | undefined = profilesQ.data?.find(
+  const profileMeta: ProfileSummary | undefined = profilesList.find(
     (p) => p.name === profile,
   );
   const usesCatalogs = supportsCatalogs(profileMeta);
@@ -95,22 +96,31 @@ export function AddTableModal({ open, onClose, defaultProfile, onPick }: Props) 
 
   const schemasQ = useQuery({
     queryKey: ["live-schemas", profile, database, catalog],
-    queryFn: () => fetchSchemas({ profile, database, catalog }),
+    queryFn: () => fetchSchemasResponse({ profile, database, catalog }),
     enabled: open && !!profile && (!!database || !!catalog),
   });
+  const schemasList: string[] = Array.isArray(schemasQ.data?.schemas)
+    ? schemasQ.data!.schemas
+    : [];
 
   const assetsQ = useQuery({
     queryKey: ["live-assets", profile, database, catalog, schema],
-    queryFn: () => fetchAssets({ profile, database, catalog, schema }),
+    queryFn: () => fetchAssetsResponse({ profile, database, catalog, schema }),
     enabled: open && !!profile && !!schema,
   });
+  const assetsList: Array<{ name: string; kind: string }> = Array.isArray(
+    assetsQ.data?.assets,
+  )
+    ? (assetsQ.data!.assets as Array<{ name: string; kind: string }>).filter(
+        (a) => a.kind === "table" || a.kind === "view",
+      )
+    : [];
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = assetsQ.data ?? [];
-    if (!q) return list;
-    return list.filter((a) => a.name.toLowerCase().includes(q));
-  }, [assetsQ.data, query]);
+    if (!q) return assetsList;
+    return assetsList.filter((a) => a.name.toLowerCase().includes(q));
+  }, [assetsList, query]);
 
   async function handlePick(asset: { name: string }) {
     if (loadingPick) return;
@@ -118,12 +128,14 @@ export function AddTableModal({ open, onClose, defaultProfile, onPick }: Props) 
     try {
       const cols = await fetchTableColumns({
         profile,
-        database: catalog || database,
+        database: usesCatalogs ? "" : database,
+        catalog: usesCatalogs ? catalog : "",
         schema,
         table: asset.name,
       });
       onPick({
         profile,
+        backend: String(profileMeta?.backend || ""),
         database: catalog || database,
         schema,
         table: asset.name,
@@ -164,7 +176,7 @@ export function AddTableModal({ open, onClose, defaultProfile, onPick }: Props) 
               className="block w-full rounded-md border border-surface-border bg-surface-raised px-2 py-1.5 text-sm"
             >
               <option value="">— pick profile —</option>
-              {(profilesQ.data ?? []).map((p) => (
+              {profilesList.map((p) => (
                 <option key={p.name} value={p.name}>
                   {p.name}
                 </option>
@@ -230,7 +242,7 @@ export function AddTableModal({ open, onClose, defaultProfile, onPick }: Props) 
               className="block w-full rounded-md border border-surface-border bg-surface-raised px-2 py-1.5 text-sm"
             >
               <option value="">— pick schema —</option>
-              {(schemasQ.data ?? []).map((s) => (
+              {schemasList.map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>

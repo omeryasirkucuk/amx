@@ -66,7 +66,11 @@ import {
   convertLoadedCanvas,
   makeTableNode,
 } from "./amx-bridge/payload";
+import { fetchTableColumns } from "./amx-bridge/catalog";
 import { parseSql, renderSql } from "./amx-bridge/sqlIo";
+import { logoKeyForBackend } from "./logos/backendMap";
+import { LogoPicker } from "./logos/LogoPicker";
+import type { LogoRow } from "./logos/registry";
 import type {
   AddTablePick,
   CanvasEdge,
@@ -108,6 +112,7 @@ function CanvasInner() {
   const [generateOpen, setGenerateOpen] = useState(false);
   const [sqlImportOpen, setSqlImportOpen] = useState(false);
   const [sqlExportOpen, setSqlExportOpen] = useState(false);
+  const [logoPickerOpen, setLogoPickerOpen] = useState(false);
 
   const [saveName, setSaveName] = useState("");
   const [aiAnchor, setAiAnchor] = useState("");
@@ -185,12 +190,16 @@ function CanvasInner() {
     const multi = nodes.some(
       (n) => n.data.kind === "table" && n.data.profile && n.data.profile !== pick.profile,
     );
+    const autoLogo = logoKeyForBackend(pick.backend);
     const node = makeTableNode({
       ...pick,
       position: { x: 80 + nodes.length * 20, y: 80 + nodes.length * 20 },
       multiProfile: multi,
       isAnchor: nodes.length === 0,
     });
+    if (autoLogo && node.data.kind === "table") {
+      node.data.logoKey = autoLogo;
+    }
     setNodes((nds) => {
       const updated = [...nds, node] as CanvasNode[];
       if (multi) {
@@ -223,6 +232,24 @@ function CanvasInner() {
     setNodes((nds) => [...nds, node]);
   }
 
+  function addLogoNode(logo: LogoRow) {
+    const id = `logo-tmp-${logo.key}-${Date.now()}`;
+    const node: CanvasNode = {
+      id,
+      type: "logo",
+      position: { x: 200 + nodes.length * 20, y: 200 + nodes.length * 20 },
+      width: 120,
+      height: 120,
+      data: {
+        kind: "logo",
+        id,
+        logoKey: logo.key,
+        label: logo.label,
+      },
+    };
+    setNodes((nds) => [...nds, node]);
+  }
+
   function addCommentNode() {
     const id = `comment-tmp-${Date.now()}`;
     const node: CanvasNode = {
@@ -246,6 +273,12 @@ function CanvasInner() {
     onBatch: (batch: StreamBatch) => {
       // Merge each batch's edges into the canvas — synthesize missing
       // table nodes on the fly so the user sees the graph build up.
+      const newlySynthesised: Array<{
+        id: string;
+        database: string;
+        schema: string;
+        table: string;
+      }> = [];
       setNodes((prevNodes) => {
         const next = [...prevNodes];
         const known = new Set(next.map((n) => n.id));
@@ -256,6 +289,9 @@ function CanvasInner() {
           if (known.has(id)) return id;
           known.add(id);
           const parts = fqn.split(".");
+          const database = parts.length > 2 ? parts[0] : "";
+          const schema = parts.length > 1 ? parts[parts.length - 2] : "";
+          const table = parts[parts.length - 1];
           const tbl: CanvasNode = {
             id,
             type: "table",
@@ -264,14 +300,15 @@ function CanvasInner() {
               kind: "table",
               id,
               profile: primaryProfile,
-              database: parts.length > 2 ? parts[0] : "",
-              schema: parts.length > 1 ? parts[parts.length - 2] : "",
-              table: parts[parts.length - 1],
+              database,
+              schema,
+              table,
               fqn,
               columns: [],
             },
           };
           next.push(tbl);
+          newlySynthesised.push({ id, database, schema, table });
           return id;
         };
         for (const ed of batch.edges) {
@@ -280,6 +317,33 @@ function CanvasInner() {
         }
         return next;
       });
+
+      // Fire-and-forget column enrichment for the just-added tables.
+      // Cache-first; failures are silent so the canvas never blocks.
+      if (newlySynthesised.length && primaryProfile) {
+        Promise.all(
+          newlySynthesised.map((n) =>
+            fetchTableColumns({
+              profile: primaryProfile,
+              database: n.database,
+              schema: n.schema,
+              table: n.table,
+            })
+              .then((cols) => ({ id: n.id, cols }))
+              .catch(() => ({ id: n.id, cols: [] })),
+          ),
+        ).then((results) => {
+          setNodes((curr) =>
+            curr.map((cn) => {
+              const hit = results.find((r) => r.id === cn.id);
+              if (!hit || hit.cols.length === 0) return cn;
+              return cn.data.kind === "table"
+                ? { ...cn, data: { ...cn.data, columns: hit.cols } }
+                : cn;
+            }),
+          );
+        });
+      }
 
       setEdges((prevEdges) => {
         const next = [...prevEdges];
@@ -555,6 +619,7 @@ function CanvasInner() {
     else if (k === "g") addOperatorNode("aggregate");
     else if (k === "j") addOperatorNode("join");
     else if (k === "c") addCommentNode();
+    else if (k === "i") setLogoPickerOpen(true);
     else if (k === "l") handleAutoLayout();
   }
 
@@ -578,6 +643,7 @@ function CanvasInner() {
         onAddAggregate={() => addOperatorNode("aggregate")}
         onAddFunction={() => addOperatorNode("function")}
         onAddComment={addCommentNode}
+        onAddLogo={() => setLogoPickerOpen(true)}
         onUndo={() => toast.push({ title: "Undo/Redo wiring in progress" })}
         onRedo={() => toast.push({ title: "Undo/Redo wiring in progress" })}
         canUndo={false}
@@ -638,6 +704,13 @@ function CanvasInner() {
         onClose={() => setAddOpen(false)}
         defaultProfile={primaryProfile}
         onPick={onPickTable}
+      />
+
+      <LogoPicker
+        open={logoPickerOpen}
+        onClose={() => setLogoPickerOpen(false)}
+        onPick={addLogoNode}
+        title="Add a logo node"
       />
 
       <SearchModal

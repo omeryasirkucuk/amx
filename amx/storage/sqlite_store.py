@@ -813,6 +813,74 @@ class SQLiteHistoryStore:
                     "CREATE INDEX IF NOT EXISTS idx_lineage_artifact_nodes_entity "
                     "ON lineage_artifact_nodes(entity_id, db_profile)"
                 )
+            # ── lineage_logos: registry of available logos for canvas use ──
+            # Two flavours:
+            #   * ``source='default'`` — seeded once at init from the
+            #     bundled SVG library in ``amx/lineage/default_logos/``.
+            #     Read-only from the API; cannot be deleted by users so
+            #     a fresh install always has the well-known brands
+            #     (aws, gcp, powerbi, …).
+            #   * ``source='custom'`` — user-uploaded via POST. Stored as
+            #     either an inline base64 data URL (file upload) or a
+            #     pasted external URL.
+            # Same (key, source) is unique so the seed is idempotent and
+            # users can shadow a default by adding a custom row with the
+            # same key without colliding.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lineage_logos (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key         TEXT NOT NULL,
+                    label       TEXT NOT NULL,
+                    category    TEXT NOT NULL,
+                    source      TEXT NOT NULL,
+                    data_url    TEXT NOT NULL DEFAULT '',
+                    url         TEXT NOT NULL DEFAULT '',
+                    created_at  REAL NOT NULL,
+                    UNIQUE(key, source)
+                )
+                """
+            )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lineage_logos_category "
+                    "ON lineage_logos(category)"
+                )
+            # ── lineage_logo_nodes: standalone logo nodes on a canvas ──
+            # Each row places a logo (from the registry) on a saved
+            # artifact's canvas. Cascades on artifact delete.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lineage_logo_nodes (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    artifact_id INTEGER NOT NULL,
+                    logo_id     INTEGER NOT NULL,
+                    label       TEXT NOT NULL DEFAULT '',
+                    x           REAL NOT NULL DEFAULT 0,
+                    y           REAL NOT NULL DEFAULT 0,
+                    width       REAL NOT NULL DEFAULT 120,
+                    height      REAL NOT NULL DEFAULT 120,
+                    created_at  REAL NOT NULL,
+                    updated_at  REAL NOT NULL,
+                    FOREIGN KEY (artifact_id) REFERENCES lineage_artifacts(id) ON DELETE CASCADE,
+                    FOREIGN KEY (logo_id) REFERENCES lineage_logos(id)
+                )
+                """
+            )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lineage_logo_nodes_artifact "
+                    "ON lineage_logo_nodes(artifact_id)"
+                )
+            # ── lineage_artifact_nodes.logo_key (header badge override) ──
+            # Optional per-table logo badge that overrides the
+            # backend-derived auto-bind. Empty string = no override (the
+            # frontend falls back to the auto-bound logo for the node's
+            # profile.backend, or no badge if no backend match).
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "ALTER TABLE lineage_artifact_nodes ADD COLUMN logo_key TEXT DEFAULT ''"
+                )
             # ── lineage_comments: sticky-note annotations on a canvas ──
             # Free-floating notes are not lineage entities — they live
             # alongside a saved canvas and never participate in edge
@@ -1022,6 +1090,17 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_scheduled_runs_db_profile "
                 "ON scheduled_runs(db_profile)"
             )
+            # Seed the bundled default logos into ``lineage_logos`` if
+            # they aren't there yet. Idempotent via the UNIQUE(key,
+            # source) index — re-runs on every init are no-ops after
+            # the first.
+            try:
+                from amx.lineage.logo_store import seed_default_logos
+            except Exception:  # pragma: no cover - import guard
+                seed_default_logos = None
+            if seed_default_logos is not None:
+                with contextlib.suppress(Exception):
+                    seed_default_logos(self)
             # Last step: populate the metadata sidecar so every table created
             # above carries a queryable description. Must run after all
             # CREATE TABLE / ALTER TABLE statements so PRAGMA table_info

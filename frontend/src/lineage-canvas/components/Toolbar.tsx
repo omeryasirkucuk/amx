@@ -15,6 +15,7 @@ import {
   Download,
   FileCode2,
   Filter,
+  Image as ImageIcon,
   LayoutGrid,
   Layers3,
   Plus,
@@ -37,6 +38,7 @@ interface ToolbarProps {
   onAddAggregate: () => void;
   onAddFunction: () => void;
   onAddComment: () => void;
+  onAddLogo: () => void;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -107,6 +109,9 @@ export function Toolbar(p: ToolbarProps) {
       </IconBtn>
       <IconBtn label="Add comment" shortcut="C" onClick={p.onAddComment}>
         <StickyNote size={15} />
+      </IconBtn>
+      <IconBtn label="Add logo" shortcut="I" onClick={p.onAddLogo}>
+        <ImageIcon size={15} />
       </IconBtn>
 
       <Divider />

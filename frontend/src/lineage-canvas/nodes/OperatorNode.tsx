@@ -1,13 +1,14 @@
 /**
  * Generic OperatorNode for join / aggregate / function / projection.
  *
- * Simpler than FilterNode — no @-mention input — but visually
- * consistent: colored left border + uppercase tag in the header. The
- * expression is editable inline as a plain textarea (double-click).
+ * Editable expression. Same draggability + commit-back rules as
+ * FilterNode: ``nodrag`` on the editor wrapper, ``useReactFlow().setNodes``
+ * for state commits, local React state for the textarea value so the
+ * caret behaves.
  */
 
 import { memo, useState } from "react";
-import { Handle, NodeProps, Position } from "reactflow";
+import { Handle, NodeProps, Position, useReactFlow } from "reactflow";
 import { Code2, Combine, Layers3, type LucideIcon, Sparkles } from "lucide-react";
 import clsx from "clsx";
 
@@ -28,18 +29,35 @@ const LABELS: Record<string, string> = {
   projection: "select",
 };
 
-function OperatorNodeImpl({ data, selected }: NodeProps<OperatorNodeData>) {
-  const [editing, setEditing] = useState(false);
+const PLACEHOLDERS: Record<string, string> = {
+  join: "customers.id = orders.customer_id",
+  aggregate: "country, status",
+  function: "round(amount, 2) AS amount_r",
+  projection: "id, name, status",
+};
+
+function OperatorNodeImpl({ id, data, selected }: NodeProps<OperatorNodeData>) {
+  const rf = useReactFlow();
+  const [expression, setExpression] = useState<string>(data.expression || "");
   const color = OPERATOR_COLORS[data.opKind] ?? OPERATOR_COLORS.function;
   const Icon = ICONS[data.opKind] ?? Code2;
+
+  function commit(next: string) {
+    setExpression(next);
+    rf.setNodes((nodes) =>
+      nodes.map((n) =>
+        n.id === id ? { ...n, data: { ...n.data, expression: next } } : n,
+      ),
+    );
+  }
+
   return (
     <div
       className={clsx(
         "rounded-lg border bg-surface-raised text-ink shadow-lg",
         selected ? "border-accent-default" : "border-surface-border",
       )}
-      style={{ minWidth: 220, maxWidth: 320, borderLeft: `3px solid ${color}` }}
-      onDoubleClick={() => setEditing(true)}
+      style={{ minWidth: 240, maxWidth: 340, borderLeft: `3px solid ${color}` }}
     >
       <Handle
         type="target"
@@ -54,29 +72,15 @@ function OperatorNodeImpl({ data, selected }: NodeProps<OperatorNodeData>) {
           {LABELS[data.opKind] || data.opKind}
         </span>
       </div>
-      <div className="px-2 pb-2 pt-1">
-        {editing ? (
-          <textarea
-            value={data.expression}
-            onChange={(e) => {
-              data.expression = e.target.value;
-            }}
-            rows={3}
-            spellCheck={false}
-            autoFocus
-            onBlur={() => setEditing(false)}
-            className="w-full resize-none rounded border border-surface-border bg-transparent px-2 py-1.5 font-mono text-[12px] text-ink outline-none focus:border-accent-default"
-          />
-        ) : (
-          <pre
-            className="cursor-text whitespace-pre-wrap rounded border border-dashed border-surface-border bg-surface px-2 py-1.5 font-mono text-[12px]"
-            onClick={() => setEditing(true)}
-          >
-            {data.expression || (
-              <span className="text-fg-muted">double-click to edit…</span>
-            )}
-          </pre>
-        )}
+      <div className="nodrag nowheel px-2 pb-2 pt-1">
+        <textarea
+          value={expression}
+          onChange={(e) => commit(e.target.value)}
+          rows={3}
+          spellCheck={false}
+          placeholder={PLACEHOLDERS[data.opKind] || "expression…"}
+          className="block w-full resize-none rounded border border-surface-border bg-transparent px-2 py-1.5 font-mono text-[12.5px] leading-snug text-ink outline-none focus:border-accent-default"
+        />
       </div>
       <Handle
         type="source"

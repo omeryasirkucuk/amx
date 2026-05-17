@@ -65,6 +65,24 @@ export function convertLoadedCanvas(loaded: LoadedCanvas): ConvertedCanvas {
     });
   }
 
+  // Standalone logo nodes (external systems like Power BI / Tableau).
+  for (const lg of loaded.logo_nodes ?? []) {
+    nodes.push({
+      id: `logo-${lg.id}`,
+      type: "logo",
+      position: { x: lg.x, y: lg.y },
+      width: lg.width,
+      height: lg.height,
+      data: {
+        kind: "logo",
+        id: `logo-${lg.id}`,
+        logoKey: lg.logo_key,
+        label: lg.label || lg.logo_label || "",
+        logoNodeId: lg.id,
+      },
+    });
+  }
+
   const entityIdToNodeId = new Map<number, string>();
   for (const n of loaded.nodes) {
     entityIdToNodeId.set(n.entity_id, nodeIdFor(n));
@@ -135,6 +153,7 @@ export function loadedNodeToCanvasNode(
       entityId: n.entity_id,
       showProfileChip: opts.multiProfile,
       isAnchor: opts.isAnchor,
+      logoKey: n.logo_key || undefined,
     } satisfies TableNodeData,
     sourcePosition: Position.Right,
     targetPosition: Position.Left,

@@ -5,6 +5,7 @@
 import { CommentNode } from "./CommentNode";
 import { DataFrameNode } from "./DataFrameNode";
 import { FilterNode } from "./FilterNode";
+import { LogoNode } from "./LogoNode";
 import { OperatorNode } from "./OperatorNode";
 
 export const nodeTypes = {
@@ -12,6 +13,7 @@ export const nodeTypes = {
   filter: FilterNode,
   operator: OperatorNode,
   comment: CommentNode,
+  logo: LogoNode,
 };
 
 /** Map AMX op_kind → ReactFlow node type. */

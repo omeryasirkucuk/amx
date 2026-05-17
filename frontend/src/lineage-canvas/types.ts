@@ -9,7 +9,7 @@
 
 import type { Edge as RFEdge, Node as RFNode } from "reactflow";
 
-export type NodeKind = "table" | "operator" | "comment";
+export type NodeKind = "table" | "operator" | "comment" | "logo";
 
 export type OperatorKind =
   | "filter"
@@ -44,6 +44,20 @@ export interface TableNodeData {
   isAnchor?: boolean;
   /** Highlight column when a trace is active. */
   tracedColumn?: string;
+  /** Header badge logo (lineage_logos.key). Empty/undefined = no badge.
+   *  Auto-bound from profile.backend on add; user can override. */
+  logoKey?: string;
+}
+
+export interface LogoNodeData {
+  kind: "logo";
+  id: string;
+  /** lineage_logos.key — stable across history-store rebuilds. */
+  logoKey: string;
+  /** Optional inline label override; falls back to the registry label. */
+  label: string;
+  /** Backend logo_nodes.id once persisted. */
+  logoNodeId?: number;
 }
 
 export interface CommentNodeData {
@@ -68,7 +82,11 @@ export interface OperatorNodeData {
   upstreamColumns?: string[];
 }
 
-export type CanvasNodeData = TableNodeData | OperatorNodeData | CommentNodeData;
+export type CanvasNodeData =
+  | TableNodeData
+  | OperatorNodeData
+  | CommentNodeData
+  | LogoNodeData;
 
 export type CanvasNode = RFNode<CanvasNodeData>;
 
@@ -87,6 +105,10 @@ export type CanvasEdge = RFEdge<CanvasEdgeData>;
 
 export interface AddTablePick {
   profile: string;
+  /** Profile's backend (e.g. 'postgresql', 'snowflake'). Used by the
+   *  Canvas to auto-bind a header logo via backendMap. Empty when
+   *  unknown. */
+  backend: string;
   database: string;
   schema: string;
   table: string;

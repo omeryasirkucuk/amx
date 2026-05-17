@@ -25,34 +25,52 @@ export function supportsCatalogs(p: ProfileSummary | undefined): boolean {
   return CATALOG_BACKENDS.has(String(p.backend || "").toLowerCase());
 }
 
-export async function fetchProfiles(): Promise<ProfileSummary[]> {
-  const res = await apiFetch<ProfilesResponse>("/api/profiles/db");
-  return res.profiles;
+/**
+ * Fetch the db-profiles response shape.
+ *
+ * Returns the raw ``{profiles: ProfileSummary[]}`` envelope rather
+ * than the unwrapped array. The Sidebar + AskScopeDropdown cache this
+ * under the same TanStack key ``["db-profiles", "list"]``; an array
+ * vs object mismatch on that key crashes any consumer that calls
+ * ``.find`` on whichever shape lands first. Keeping the envelope keeps
+ * us cache-compatible with the rest of the Studio.
+ */
+export async function fetchProfilesResponse(): Promise<ProfilesResponse> {
+  return apiFetch<ProfilesResponse>("/api/profiles/db");
 }
 
-export async function fetchSchemas(args: {
+/**
+ * The fetchers below return the *raw* response envelope on purpose.
+ *
+ * The Sidebar and other parts of Studio cache the same TanStack keys
+ * (``["live-schemas", ...]`` etc.) with the full response shape. If
+ * we unwrapped to the inner array here we would either crash any
+ * other consumer that reads ``.data.schemas`` from the same key, or
+ * crash ourselves when their query lands first. Keeping the shape
+ * stable means our queries hit the warm cache for free.
+ */
+export async function fetchSchemasResponse(args: {
   profile: string;
   database: string;
   catalog: string;
-}): Promise<string[]> {
+}) {
   const kind: "catalog" | "database" = args.catalog ? "catalog" : "database";
-  const res = await api.liveSchemas({
+  return api.liveSchemas({
     profile: args.profile,
     database: args.database,
     catalog: args.catalog,
     kind,
   });
-  return res.schemas ?? [];
 }
 
-export async function fetchAssets(args: {
+export async function fetchAssetsResponse(args: {
   profile: string;
   database: string;
   catalog: string;
   schema: string;
-}): Promise<Array<{ name: string; kind: string }>> {
+}) {
   const kind: "catalog" | "database" = args.catalog ? "catalog" : "database";
-  const res = await api.liveAssets(
+  return api.liveAssets(
     {
       profile: args.profile,
       database: args.database,
@@ -61,7 +79,6 @@ export async function fetchAssets(args: {
     },
     args.schema,
   );
-  return (res.assets ?? []).filter((a) => a.kind === "table" || a.kind === "view");
 }
 
 export interface TableMeta {
@@ -69,38 +86,41 @@ export interface TableMeta {
 }
 
 /**
- * Fetch column metadata for one table. We piggyback on /api/catalog/columns
- * which is the canonical cache-first source; if that endpoint isn't
- * exposed for the active profile the canvas degrades to a column-less
- * node (still draggable, still typed by inference, just no badges).
+ * Fetch column metadata for one table via the canonical live-db route
+ * ``GET /api/live/schemas/{schema}/tables/{table}/columns``. The route
+ * is cache-first: when the catalog already knows the table (sidebar
+ * has expanded the schema once) the response comes back without a
+ * live round-trip; otherwise it falls through to the connector.
+ *
+ * Either ``database`` or ``catalog`` qualifies the table — catalog
+ * profiles (Databricks, BigQuery, Snowflake) need ``catalog``;
+ * everything else uses ``database``.
  */
 export async function fetchTableColumns(args: {
   profile: string;
-  database: string;
+  database?: string;
+  catalog?: string;
   schema: string;
   table: string;
 }): Promise<ColumnSpec[]> {
+  const params = new URLSearchParams({ profile: args.profile });
+  if (args.catalog) params.set("catalog", args.catalog);
+  if (args.database) params.set("database", args.database);
+  const path = `/api/live/schemas/${encodeURIComponent(
+    args.schema,
+  )}/tables/${encodeURIComponent(args.table)}/columns?${params.toString()}`;
   try {
-    const params = new URLSearchParams({
-      profile: args.profile,
-      database: args.database,
-      schema: args.schema,
-      table: args.table,
-    });
-    const res = await apiFetch<{ columns?: Array<Record<string, unknown>> }>(
-      `/api/catalog/columns?${params.toString()}`,
-    );
+    const res = await apiFetch<{
+      columns?: Array<{ name?: string; dtype?: string; nullable?: boolean }>;
+    }>(path);
     return (res.columns || []).map((c) => ({
-      name: String(c.column_name || c.name || ""),
-      dtype: String(c.data_type || c.dtype || ""),
-      isPrimary: Boolean(c.is_primary || c.is_pk),
-      isForeign: Boolean(c.is_foreign || c.is_fk),
-      description: typeof c.description === "string" ? c.description : undefined,
+      name: String(c.name || ""),
+      dtype: String(c.dtype || ""),
     }));
   } catch {
-    // Endpoint shape differs across forks of the catalog router; degrade
-    // gracefully so the canvas still renders even when columns are
-    // unavailable.
+    // Live route can 4xx for unauthorised profiles or unreachable
+    // connectors — the canvas still renders a column-less node so the
+    // graph stays drawable.
     return [];
   }
 }

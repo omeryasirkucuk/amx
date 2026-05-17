@@ -480,7 +480,8 @@ def get_artifact_by_id(
 
     with hs._connect() as conn:
         node_rows = conn.execute(
-            "SELECT entity_id, db_profile, x, y, width, height, z_index "
+            "SELECT entity_id, db_profile, x, y, width, height, z_index, "
+            "       COALESCE(logo_key, '') "
             "FROM lineage_artifact_nodes WHERE artifact_id = ? "
             "ORDER BY z_index, id",
             (int(artifact_id),),
@@ -490,6 +491,9 @@ def get_artifact_by_id(
             "FROM lineage_comments WHERE artifact_id = ? ORDER BY id",
             (int(artifact_id),),
         ).fetchall()
+    from amx.lineage.logo_store import list_logo_nodes
+
+    logo_nodes_out = list_logo_nodes(hs, int(artifact_id))
 
     nodes_out: list[dict[str, Any]] = []
     by_profile: dict[str, list[int]] = {}
@@ -530,6 +534,7 @@ def get_artifact_by_id(
                 "width": float(row[4] or 240.0),
                 "height": float(row[5] or 120.0),
                 "z_index": int(row[6] or 0),
+                "logo_key": str(row[7] or ""),
                 "database": meta.get("database", ""),
                 "schema": meta.get("schema", ""),
                 "table": meta.get("table", ""),
@@ -601,6 +606,7 @@ def get_artifact_by_id(
         "nodes": nodes_out,
         "edges": edges_out,
         "comments": comments_out,
+        "logo_nodes": logo_nodes_out,
     }
 
 
@@ -696,6 +702,148 @@ def list_comments(artifact_id: int) -> dict[str, Any]:
             for r in rows
         ],
     }
+
+
+# ── Logo registry + logo-node CRUD ───────────────────────────────────────
+#
+# All GET routes here are registered BEFORE the catch-all
+# ``/{anchor_path:path}`` GET below for the same routing-precedence reason
+# the by-id reads use. POST / PATCH / DELETE don't share a catch-all so
+# they can sit anywhere, but we keep them grouped here for readability.
+
+
+@router.get("/logos")
+def get_logos() -> dict[str, Any]:
+    """Return every logo in the registry (defaults + customs)."""
+    from amx.lineage.logo_store import list_logos
+
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    return {"logos": list_logos(hs)}
+
+
+@router.post("/logos", status_code=status.HTTP_201_CREATED)
+def post_logo(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Upload a custom logo (data URL or external URL)."""
+    from amx.lineage.logo_store import LogoStoreError, create_custom_logo
+
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    try:
+        return create_custom_logo(
+            hs,
+            key=str(payload.get("key") or ""),
+            label=str(payload.get("label") or ""),
+            category=str(payload.get("category") or "custom"),
+            data_url=str(payload.get("data_url") or ""),
+            url=str(payload.get("url") or ""),
+        )
+    except LogoStoreError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.delete("/logos/{logo_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_logo(logo_id: int) -> None:
+    """Delete a custom logo. Defaults are protected (403)."""
+    from amx.lineage.logo_store import LogoStoreError, delete_custom_logo
+
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    try:
+        delete_custom_logo(hs, int(logo_id))
+    except LogoStoreError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.get("/by-id/{artifact_id}/logo-nodes")
+def get_logo_nodes(artifact_id: int) -> dict[str, Any]:
+    """List standalone logo nodes on a saved canvas."""
+    from amx.lineage.logo_store import list_logo_nodes
+
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    return {
+        "artifact_id": int(artifact_id),
+        "logo_nodes": list_logo_nodes(hs, int(artifact_id)),
+    }
+
+
+@router.post("/by-id/{artifact_id}/logo-nodes", status_code=status.HTTP_201_CREATED)
+def post_logo_node(artifact_id: int, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Drop a logo (by id or key) on a saved canvas."""
+    from amx.lineage.logo_store import LogoStoreError, create_logo_node
+
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    try:
+        return create_logo_node(
+            hs,
+            int(artifact_id),
+            logo_id=int(payload["logo_id"]) if payload.get("logo_id") else None,
+            logo_key=str(payload.get("logo_key") or "") or None,
+            label=str(payload.get("label") or ""),
+            x=float(payload.get("x") or 0.0),
+            y=float(payload.get("y") or 0.0),
+            width=float(payload.get("width") or 120.0),
+            height=float(payload.get("height") or 120.0),
+        )
+    except LogoStoreError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.patch("/by-id/{artifact_id}/logo-nodes/{node_id}")
+def patch_logo_node(
+    artifact_id: int,
+    node_id: int,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    """Move / resize / relabel a logo node."""
+    from amx.lineage.logo_store import update_logo_node
+
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    updated = update_logo_node(hs, int(artifact_id), int(node_id), payload=payload)
+    return {"ok": True, "updated": int(updated)}
+
+
+@router.delete(
+    "/by-id/{artifact_id}/logo-nodes/{node_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_logo_node_route(artifact_id: int, node_id: int) -> None:
+    from amx.lineage.logo_store import delete_logo_node
+
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    delete_logo_node(hs, int(artifact_id), int(node_id))
 
 
 @router.get("/{anchor_path:path}")
@@ -1357,6 +1505,7 @@ def post_manual_artifact(
     nodes_in = payload.get("nodes") or []
     edges_in = payload.get("edges") or []
     comments_in = payload.get("comments") or []
+    logo_nodes_in = payload.get("logo_nodes") or []
     if not primary_profile or not name or not anchor_fqn:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1489,8 +1638,9 @@ def post_manual_artifact(
                 conn.execute(
                     """
                     INSERT INTO lineage_artifact_nodes
-                        (artifact_id, entity_id, db_profile, x, y, width, height, z_index)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (artifact_id, entity_id, db_profile, x, y, width, height,
+                         z_index, logo_key)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         int(result.artifact_id),
@@ -1501,6 +1651,7 @@ def post_manual_artifact(
                         float(node.get("width") or 240.0),
                         float(node.get("height") or 120.0),
                         int(node.get("z_index") or 0),
+                        str(node.get("logo_key") or ""),
                     ),
                 )
 
@@ -1529,6 +1680,32 @@ def post_manual_artifact(
                         now,
                     ),
                 )
+
+    # Persist standalone logo nodes (Power BI / Tableau / etc.) — these
+    # represent external systems on the canvas. Each entry references a
+    # registry row by ``logo_key`` (preferred, stable across history
+    # store rebuilds) or by ``logo_id``. Unknown keys are silently
+    # skipped so a stale frontend cache can't 500 the save.
+    if result.artifact_id and logo_nodes_in:
+        from amx.lineage.logo_store import LogoStoreError, create_logo_node
+
+        for entry in logo_nodes_in:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                create_logo_node(
+                    hs,
+                    int(result.artifact_id),
+                    logo_id=int(entry["logo_id"]) if entry.get("logo_id") else None,
+                    logo_key=str(entry.get("logo_key") or "") or None,
+                    label=str(entry.get("label") or ""),
+                    x=float(entry.get("x") or 0.0),
+                    y=float(entry.get("y") or 0.0),
+                    width=float(entry.get("width") or 120.0),
+                    height=float(entry.get("height") or 120.0),
+                )
+            except LogoStoreError:
+                continue
 
     return {
         "ok": not result.aborted,
