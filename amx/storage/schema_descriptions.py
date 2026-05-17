@@ -1125,6 +1125,12 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "rendered color so the palette can evolve without a migration."
         ),
         "text": "Free-form note body. Plain text with @-mention support in the UI.",
+        "style": (
+            "Render mode: 'note' (default) is the colored sticky-note "
+            "with a header band; 'text' is a transparent plain-text "
+            "label without background or border, used for canvas "
+            "section headings and free-form annotations."
+        ),
         "created_at": "UTC epoch seconds when the comment was first saved.",
         "updated_at": "UTC epoch seconds of the most recent edit.",
     },

@@ -487,7 +487,8 @@ def get_artifact_by_id(
             (int(artifact_id),),
         ).fetchall()
         comment_rows = conn.execute(
-            "SELECT id, x, y, width, height, color, text, created_at, updated_at "
+            "SELECT id, x, y, width, height, color, text, created_at, updated_at, "
+            "       COALESCE(style, 'note') "
             "FROM lineage_comments WHERE artifact_id = ? ORDER BY id",
             (int(artifact_id),),
         ).fetchall()
@@ -593,6 +594,7 @@ def get_artifact_by_id(
             "text": str(c[6] or ""),
             "created_at": float(c[7] or 0.0),
             "updated_at": float(c[8] or 0.0),
+            "style": str(c[9] or "note"),
         }
         for c in comment_rows
     ]
@@ -681,7 +683,8 @@ def list_comments(artifact_id: int) -> dict[str, Any]:
         )
     with hs._connect() as conn:
         rows = conn.execute(
-            "SELECT id, x, y, width, height, color, text, created_at, updated_at "
+            "SELECT id, x, y, width, height, color, text, created_at, updated_at, "
+            "       COALESCE(style, 'note') "
             "FROM lineage_comments WHERE artifact_id = ? ORDER BY id",
             (int(artifact_id),),
         ).fetchall()
@@ -698,6 +701,7 @@ def list_comments(artifact_id: int) -> dict[str, Any]:
                 "text": str(r[6] or ""),
                 "created_at": float(r[7] or 0.0),
                 "updated_at": float(r[8] or 0.0),
+                "style": str(r[9] or "note"),
             }
             for r in rows
         ],
@@ -1655,7 +1659,9 @@ def post_manual_artifact(
                     ),
                 )
 
-    # Persist sticky-note comments alongside the canvas.
+    # Persist canvas annotations — both styles share this table:
+    # ``style='note'`` (default) is the colored sticky; ``style='text'``
+    # is the minimal plain-text label.
     if result.artifact_id and comments_in:
         with hs._connect() as conn:
             for comment in comments_in:
@@ -1664,9 +1670,9 @@ def post_manual_artifact(
                 conn.execute(
                     """
                     INSERT INTO lineage_comments
-                        (artifact_id, x, y, width, height, color, text,
+                        (artifact_id, x, y, width, height, color, text, style,
                          created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         int(result.artifact_id),
@@ -1676,6 +1682,7 @@ def post_manual_artifact(
                         float(comment.get("height") or 140.0),
                         str(comment.get("color") or "amber"),
                         str(comment.get("text") or ""),
+                        str(comment.get("style") or "note"),
                         now,
                         now,
                     ),
@@ -1737,9 +1744,9 @@ def post_comment(
         cur = conn.execute(
             """
             INSERT INTO lineage_comments
-                (artifact_id, x, y, width, height, color, text,
+                (artifact_id, x, y, width, height, color, text, style,
                  created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(artifact_id),
@@ -1749,6 +1756,7 @@ def post_comment(
                 float(payload.get("height") or 140.0),
                 str(payload.get("color") or "amber"),
                 str(payload.get("text") or ""),
+                str(payload.get("style") or "note"),
                 now,
                 now,
             ),
@@ -1776,7 +1784,7 @@ def patch_comment(
         if key in payload:
             sets.append(f"{key} = ?")
             args.append(float(payload[key]))
-    for key in ("color", "text"):
+    for key in ("color", "text", "style"):
         if key in payload:
             sets.append(f"{key} = ?")
             args.append(str(payload[key]))

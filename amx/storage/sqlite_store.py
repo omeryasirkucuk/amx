@@ -910,6 +910,18 @@ class SQLiteHistoryStore:
                     "CREATE INDEX IF NOT EXISTS idx_lineage_comments_artifact "
                     "ON lineage_comments(artifact_id)"
                 )
+            # Two render modes share the comments table:
+            #   * ``style='note'`` (default) — colored sticky note with
+            #     a header band and color picker.
+            #   * ``style='text'`` — minimal plain-text label, no
+            #     background, no border; for canvas section headings
+            #     and free-form annotations.
+            # Shape is identical (text + x/y/w/h) so an ALTER is enough
+            # rather than a second table.
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "ALTER TABLE lineage_comments ADD COLUMN style TEXT DEFAULT 'note'"
+                )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_usage_evidence (

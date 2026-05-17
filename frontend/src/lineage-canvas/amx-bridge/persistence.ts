@@ -61,6 +61,8 @@ export interface ManualSaveComment {
   height: number;
   color: string;
   text: string;
+  /** "note" (sticky) | "text" (plain label). Default "note". */
+  style?: "note" | "text";
 }
 
 export interface ManualSaveResponse {
@@ -134,6 +136,7 @@ export interface LoadedComment {
   text: string;
   created_at: number;
   updated_at: number;
+  style?: "note" | "text";
 }
 
 export interface LoadedLogoNode {
@@ -193,6 +196,7 @@ export function buildSavePayload(args: {
         height: n.height || 140,
         color: String(c.color || "amber"),
         text: c.text || "",
+        style: c.style || "note",
       });
     } else if (n.data.kind === "logo") {
       logo_nodes.push({

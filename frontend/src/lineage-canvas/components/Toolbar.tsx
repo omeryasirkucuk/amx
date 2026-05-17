@@ -11,6 +11,7 @@ import { ReactNode } from "react";
 import clsx from "clsx";
 import {
   ArrowDownToLine,
+  CaseSensitive,
   Combine,
   Download,
   FileCode2,
@@ -38,6 +39,7 @@ interface ToolbarProps {
   onAddAggregate: () => void;
   onAddFunction: () => void;
   onAddComment: () => void;
+  onAddText: () => void;
   onAddLogo: () => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -109,6 +111,9 @@ export function Toolbar(p: ToolbarProps) {
       </IconBtn>
       <IconBtn label="Add comment" shortcut="C" onClick={p.onAddComment}>
         <StickyNote size={15} />
+      </IconBtn>
+      <IconBtn label="Add text" shortcut="T" onClick={p.onAddText}>
+        <CaseSensitive size={15} />
       </IconBtn>
       <IconBtn label="Add logo" shortcut="I" onClick={p.onAddLogo}>
         <ImageIcon size={15} />

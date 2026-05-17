@@ -67,6 +67,11 @@ export interface CommentNodeData {
   commentId?: number;
   color: keyof typeof import("./constants").COMMENT_COLORS;
   text: string;
+  /** Render mode:
+   *   - "note"  → sticky-note (colored bg, header band, palette picker)
+   *   - "text"  → minimal plain text label (transparent, no border)
+   *  Default "note" so existing comments keep their look. */
+  style?: "note" | "text";
 }
 
 export interface OperatorNodeData {
