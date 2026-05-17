@@ -619,6 +619,8 @@ def commands_for_namespace(namespace: str) -> tuple[SlashCommand, ...]:
         return (*_ROOT_BUILTINS, *_SEARCH_COMMANDS)
     if ns == "history":
         return (*_ROOT_BUILTINS, *_HISTORY_COMMANDS)
+    if ns == "lineage":
+        return (*_ROOT_BUILTINS, *_LINEAGE_COMMANDS)
     return _ROOT_BUILTINS
 
 
@@ -639,6 +641,7 @@ def cmd_heads_for_namespace(namespace: str) -> frozenset[str]:
         "analyze": _ANALYZE_COMMANDS,
         "search": _SEARCH_COMMANDS,
         "history": _HISTORY_COMMANDS,
+        "lineage": _LINEAGE_COMMANDS,
     }
     if ns not in table:
         return frozenset()
@@ -669,7 +672,17 @@ def find_command(slash_or_head: str) -> SlashCommand | None:
 
 def all_namespaces() -> tuple[str, ...]:
     """Distinct namespaces that have at least one command."""
-    return ("db", "metadata", "docs", "llm", "code", "analyze", "search", "history")
+    return (
+        "db",
+        "metadata",
+        "docs",
+        "llm",
+        "code",
+        "analyze",
+        "search",
+        "history",
+        "lineage",
+    )
 
 
 __all__ = [
