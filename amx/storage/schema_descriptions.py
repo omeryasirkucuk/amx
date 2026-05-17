@@ -1013,8 +1013,7 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "delete so orphan node rows cannot accumulate."
         ),
         "entity_id": (
-            "catalog_entities.id of the table, view, or operator the node "
-            "represents on the canvas."
+            "catalog_entities.id of the table, view, or operator the node represents on the canvas."
         ),
         "db_profile": (
             "DB profile the entity belongs to. Stored per-node (not just on "
@@ -1054,8 +1053,7 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
         "label": "Human-readable label shown under the icon in the picker.",
         "category": (
-            "Bucket for the picker tabs: 'cloud' | 'warehouse' | 'bi' | "
-            "'tooling' | 'custom'."
+            "Bucket for the picker tabs: 'cloud' | 'warehouse' | 'bi' | 'tooling' | 'custom'."
         ),
         "source": (
             "Origin: 'default' for rows seeded from the bundled SVG "
@@ -1083,8 +1081,7 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
         "id": "Surrogate INT primary key.",
         "artifact_id": (
-            "lineage_artifacts.id this logo node belongs to. Cascades on "
-            "artifact delete."
+            "lineage_artifacts.id this logo node belongs to. Cascades on artifact delete."
         ),
         "logo_id": (
             "lineage_logos.id of the logo this node renders. Foreign key "
@@ -1112,8 +1109,7 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
         "id": "Surrogate INT primary key.",
         "artifact_id": (
-            "lineage_artifacts.id this comment belongs to. Cascades on "
-            "artifact delete."
+            "lineage_artifacts.id this comment belongs to. Cascades on artifact delete."
         ),
         "x": "Canvas x coordinate in ReactFlow units.",
         "y": "Canvas y coordinate in ReactFlow units.",

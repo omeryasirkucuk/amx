@@ -919,9 +919,7 @@ class SQLiteHistoryStore:
             # Shape is identical (text + x/y/w/h) so an ALTER is enough
             # rather than a second table.
             with contextlib.suppress(sqlite3.OperationalError):
-                conn.execute(
-                    "ALTER TABLE lineage_comments ADD COLUMN style TEXT DEFAULT 'note'"
-                )
+                conn.execute("ALTER TABLE lineage_comments ADD COLUMN style TEXT DEFAULT 'note'")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_usage_evidence (
