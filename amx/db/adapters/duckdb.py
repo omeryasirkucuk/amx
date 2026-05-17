@@ -285,6 +285,35 @@ class DuckDBAdapter(DatabaseAdapter):
             for r in rows
         ]
 
+    def list_views_with_definitions(
+        self,
+        engine: Engine,
+        schema: str,
+    ) -> list[dict[str, Any]]:
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(
+                    text(
+                        "SELECT view_name, sql, comment "
+                        "FROM duckdb_views() "
+                        "WHERE schema_name = :schema AND NOT internal "
+                        "ORDER BY view_name"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+            except Exception:
+                return []
+        return [
+            {
+                "name": str(r[0]),
+                "type": "view",
+                "definition": str(r[1]) if r[1] else None,
+                "comment": str(r[2]) if r[2] else None,
+                "metadata": {},
+            }
+            for r in rows
+        ]
+
     def list_functions(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         # DuckDB exposes ~1000 built-in functions; restrict to user-defined
         # ones (function_type = 'macro' is handled separately by

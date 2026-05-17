@@ -213,6 +213,35 @@ class MySQLAdapter(DatabaseAdapter):
 
     # ── Extended object types ─────────────────────────────────────────────
 
+    def list_views_with_definitions(
+        self,
+        engine: Engine,
+        schema: str,
+    ) -> list[dict[str, Any]]:
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(
+                    text(
+                        "SELECT TABLE_NAME, VIEW_DEFINITION "
+                        "FROM information_schema.views "
+                        "WHERE TABLE_SCHEMA = :schema "
+                        "ORDER BY TABLE_NAME"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+            except Exception:
+                return []
+        return [
+            {
+                "name": str(r[0]),
+                "type": "view",
+                "definition": str(r[1]) if r[1] else None,
+                "comment": None,
+                "metadata": {},
+            }
+            for r in rows
+        ]
+
     def list_stored_procedures(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         with engine.connect() as conn:
             rows = conn.execute(

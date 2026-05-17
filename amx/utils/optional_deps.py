@@ -120,6 +120,16 @@ BUNDLES: dict[str, list[PackageSpec]] = {
     "local_embeddings": [
         ("sentence_transformers", "sentence-transformers>=3.0"),
     ],
+    # /lineage view-DDL parsing relies on sqlglot's column-lineage
+    # walker. networkx + matplotlib carry the diagram renderer — both
+    # pure-pip, no OS package, so /lineage works on a vanilla
+    # ``pip install amx-cli`` without brew/apt steps. AMX auto-installs
+    # this bundle on the first /lineage create.
+    "lineage": [
+        "sqlglot",
+        "networkx",
+        "matplotlib",
+    ],
 }
 
 #: Human-readable labels surfaced in the install banner when a bundle
@@ -127,6 +137,7 @@ BUNDLES: dict[str, list[PackageSpec]] = {
 BUNDLE_LABELS: dict[str, str] = {
     "rag": "shared RAG core (/docs, /search, /code)",
     "docs-extended": "document RAG (/docs ingest)",
+    "lineage": "/lineage view-DDL parser + Graphviz wrapper",
 }
 
 #: Bundles whose total install footprint is large enough (sentence-

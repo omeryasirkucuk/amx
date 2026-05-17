@@ -412,6 +412,41 @@ class MSSQLAdapter(DatabaseAdapter):
 
     # ── Extended object types ─────────────────────────────────────────────
 
+    def list_views_with_definitions(
+        self,
+        engine: Engine,
+        schema: str,
+    ) -> list[dict[str, Any]]:
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(
+                    text(
+                        "SELECT v.name, m.definition, "
+                        "       ep.value AS comment "
+                        "FROM sys.views v "
+                        "JOIN sys.sql_modules m ON m.object_id = v.object_id "
+                        "LEFT JOIN sys.extended_properties ep "
+                        "       ON ep.major_id = v.object_id "
+                        "       AND ep.minor_id = 0 "
+                        "       AND ep.name = 'MS_Description' "
+                        "WHERE SCHEMA_NAME(v.schema_id) = :schema "
+                        "ORDER BY v.name"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+            except Exception:
+                return []
+        return [
+            {
+                "name": str(r[0]),
+                "type": "view",
+                "definition": str(r[1]) if r[1] else None,
+                "comment": str(r[2]) if r[2] else None,
+                "metadata": {},
+            }
+            for r in rows
+        ]
+
     def list_stored_procedures(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         with engine.connect() as conn:
             rows = conn.execute(
