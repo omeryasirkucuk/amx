@@ -51,11 +51,19 @@ from starlette.responses import Response
 # blocked-src CSP report. ``'unsafe-inline'`` on style-src is the
 # Tailwind concession (utility-class style attrs); it does *not*
 # extend to script-src.
+#
+# ``https://cdn.simpleicons.org`` is the single CDN allowlisted for
+# images: the lineage canvas serves brand marks for AWS, Snowflake,
+# Power BI etc. from there so we don't have to bundle ~22 SVGs as
+# repo assets. SimpleIcons is the de-facto registry of brand marks
+# under CC0; the CDN endpoint is read-only and ships pure SVG with no
+# scripts. Per the policy intent above this is the explicit
+# single-source relaxation rather than a wildcard.
 _CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data:; "
+    "img-src 'self' data: https://cdn.simpleicons.org; "
     "connect-src 'self'; "
     "font-src 'self' data:; "
     "frame-ancestors 'none'; "
