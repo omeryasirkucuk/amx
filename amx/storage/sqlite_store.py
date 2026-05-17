@@ -727,9 +727,22 @@ class SQLiteHistoryStore:
                 "ALTER TABLE catalog_relationships ADD COLUMN verdict TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE catalog_relationships ADD COLUMN audit_actor TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE catalog_relationships ADD COLUMN audit_at REAL",
+                # v4 — column-level lineage. Empty string keeps the
+                # row at table grain (legacy behaviour); non-empty
+                # promotes it to a column→column edge. Operator nodes
+                # (entity_kind='operator') hang off the same edge
+                # rows.
+                "ALTER TABLE catalog_relationships ADD COLUMN from_column TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE catalog_relationships ADD COLUMN to_column TEXT NOT NULL DEFAULT ''",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(_ddl)
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_catalog_relationships_column_grain "
+                    "ON catalog_relationships(from_entity_id, from_column, to_entity_id, to_column) "
+                    "WHERE from_column != '' OR to_column != ''"
+                )
             # ── lineage_artifacts: registry of rendered lineage diagrams ──
             # Each row binds a focal entity (anchor) to a rendered image
             # on disk plus the edge-set hash that produced it. Drives
