@@ -3,11 +3,27 @@
  *
  * Editable expression with @-mention support. The single ``in`` handle
  * accepts an incoming table; the ``out`` handle feeds the filtered
- * result to the next node. Double-click enters edit mode.
+ * result to the next node.
+ *
+ * Editing notes (matter — these are the reason the previous build's
+ * inputs felt "dead"):
+ *
+ *   1. ReactFlow makes the whole node draggable by default. Any input
+ *      nested inside the node steals the pointerdown but loses it to
+ *      the drag listener unless the wrapper carries the ``nodrag``
+ *      class. We mark every interactive area with ``nodrag``.
+ *   2. ReactFlow's node `data` is stored in canvas state. Mutating
+ *      ``data.expression`` directly does NOT trigger a re-render and
+ *      does NOT persist through Save — the user's typing disappears.
+ *      We hold a local state for the textarea and commit back into
+ *      canvas state via :func:`useReactFlow().setNodes` on every
+ *      change.
+ *   3. ``nowheel`` lets the textarea scroll without zooming the
+ *      canvas under the cursor.
  */
 
 import { memo, useState } from "react";
-import { Handle, NodeProps, Position } from "reactflow";
+import { Handle, NodeProps, Position, useReactFlow } from "reactflow";
 import { Filter } from "lucide-react";
 import clsx from "clsx";
 
@@ -15,18 +31,28 @@ import { HighlightedConditionInput } from "../components/HighlightedConditionInp
 import { OPERATOR_COLORS } from "../constants";
 import type { OperatorNodeData } from "../types";
 
-function FilterNodeImpl({ data, selected }: NodeProps<OperatorNodeData>) {
-  const [editing, setEditing] = useState(false);
+function FilterNodeImpl({ id, data, selected }: NodeProps<OperatorNodeData>) {
+  const rf = useReactFlow();
+  const [expression, setExpression] = useState<string>(data.expression || "");
   const color = OPERATOR_COLORS.filter;
   const cols = data.upstreamColumns || [];
+
+  function commit(next: string) {
+    setExpression(next);
+    rf.setNodes((nodes) =>
+      nodes.map((n) =>
+        n.id === id ? { ...n, data: { ...n.data, expression: next } } : n,
+      ),
+    );
+  }
+
   return (
     <div
       className={clsx(
         "rounded-lg border bg-surface-raised text-ink shadow-lg",
         selected ? "border-accent-default" : "border-surface-border",
       )}
-      style={{ minWidth: 240, maxWidth: 320, borderLeft: `3px solid ${color}` }}
-      onDoubleClick={() => setEditing(true)}
+      style={{ minWidth: 260, maxWidth: 340, borderLeft: `3px solid ${color}` }}
     >
       <Handle
         type="target"
@@ -42,26 +68,13 @@ function FilterNodeImpl({ data, selected }: NodeProps<OperatorNodeData>) {
         </span>
         <span className="ml-auto text-[10px] text-fg-muted">filter</span>
       </div>
-      <div className="px-2 pb-2 pt-1">
-        {editing ? (
-          <HighlightedConditionInput
-            value={data.expression}
-            onChange={(next) => {
-              data.expression = next;
-            }}
-            columns={cols}
-            rows={3}
-          />
-        ) : (
-          <pre
-            className="cursor-text whitespace-pre-wrap rounded border border-dashed border-surface-border bg-surface px-2 py-1.5 font-mono text-[12px] text-ink"
-            onClick={() => setEditing(true)}
-          >
-            {data.expression || (
-              <span className="text-fg-muted">double-click to edit…</span>
-            )}
-          </pre>
-        )}
+      <div className="nodrag nowheel px-2 pb-2 pt-1">
+        <HighlightedConditionInput
+          value={expression}
+          onChange={commit}
+          columns={cols}
+          rows={3}
+        />
       </div>
       <Handle
         type="source"

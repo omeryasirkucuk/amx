@@ -21,6 +21,16 @@ export interface ManualSavePayload {
   nodes: ManualSaveNode[];
   edges: ManualSaveEdge[];
   comments: ManualSaveComment[];
+  logo_nodes: ManualSaveLogoNode[];
+}
+
+export interface ManualSaveLogoNode {
+  logo_key: string;
+  label?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface ManualSaveNode {
@@ -31,6 +41,8 @@ export interface ManualSaveNode {
   width: number;
   height: number;
   z_index?: number;
+  /** Optional override for the table's header logo badge. Empty = no override. */
+  logo_key?: string;
 }
 
 export interface ManualSaveEdge {
@@ -80,6 +92,7 @@ export interface LoadedCanvas {
   nodes: LoadedNode[];
   edges: LoadedEdge[];
   comments: LoadedComment[];
+  logo_nodes?: LoadedLogoNode[];
 }
 
 export interface LoadedNode {
@@ -96,6 +109,7 @@ export interface LoadedNode {
   width: number;
   height: number;
   z_index: number;
+  logo_key?: string;
 }
 
 export interface LoadedEdge {
@@ -122,6 +136,23 @@ export interface LoadedComment {
   updated_at: number;
 }
 
+export interface LoadedLogoNode {
+  id: number;
+  logo_id: number;
+  logo_key: string;
+  logo_label: string;
+  label: string;
+  data_url: string;
+  url: string;
+  category: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  created_at: number;
+  updated_at: number;
+}
+
 export async function loadCanvas(artifactId: number): Promise<LoadedCanvas> {
   return apiFetch<LoadedCanvas>(`/api/lineage/by-id/${artifactId}`);
 }
@@ -138,6 +169,7 @@ export function buildSavePayload(args: {
   const nodes: ManualSaveNode[] = [];
   const edges: ManualSaveEdge[] = [];
   const comments: ManualSaveComment[] = [];
+  const logo_nodes: ManualSaveLogoNode[] = [];
   const nodeIndex = new Map<string, TableNodeData>();
 
   for (const n of args.nodes) {
@@ -150,6 +182,7 @@ export function buildSavePayload(args: {
         y: n.position.y,
         width: (n.width || 240),
         height: (n.height || 120),
+        logo_key: n.data.logoKey || "",
       });
     } else if (n.data.kind === "comment") {
       const c = n.data as CommentNodeData;
@@ -160,6 +193,15 @@ export function buildSavePayload(args: {
         height: n.height || 140,
         color: String(c.color || "amber"),
         text: c.text || "",
+      });
+    } else if (n.data.kind === "logo") {
+      logo_nodes.push({
+        logo_key: n.data.logoKey,
+        label: n.data.label || "",
+        x: n.position.x,
+        y: n.position.y,
+        width: n.width || 120,
+        height: n.height || 120,
       });
     }
     // Operator nodes are persisted separately via /api/lineage/operators
@@ -189,6 +231,7 @@ export function buildSavePayload(args: {
     nodes,
     edges,
     comments,
+    logo_nodes,
   };
 }
 

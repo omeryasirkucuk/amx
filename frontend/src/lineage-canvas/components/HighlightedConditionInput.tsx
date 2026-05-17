@@ -120,7 +120,7 @@ export function HighlightedConditionInput({
   }
 
   return (
-    <div className="relative w-full">
+    <div className="nodrag nowheel relative w-full">
       <div
         ref={backdropRef}
         aria-hidden
@@ -136,7 +136,7 @@ export function HighlightedConditionInput({
         placeholder={placeholder || "e.g. @status == 'completed' AND @amount > 100"}
         rows={rows}
         spellCheck={false}
-        className="relative z-10 w-full resize-none rounded-md border border-surface-border bg-transparent px-2.5 py-2 font-mono text-[12.5px] leading-snug text-ink outline-none focus:border-accent-default"
+        className="nodrag relative z-10 w-full resize-none rounded-md border border-surface-border bg-transparent px-2.5 py-2 font-mono text-[12.5px] leading-snug text-ink outline-none focus:border-accent-default"
         style={{ caretColor: "rgb(var(--ink))" }}
       />
       {suggestOpen && filtered.length > 0 && (
