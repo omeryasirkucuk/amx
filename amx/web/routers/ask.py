@@ -536,6 +536,20 @@ def _event_generator(job: Job):
                 yield {"event": "ping", "data": json.dumps({"t": now})}
                 last_keepalive = now
             if job.status not in ("queued", "running"):
+                # Diagnostic: the generator is about to close the SSE
+                # stream because the worker flipped status. If the
+                # worker has not yet enqueued the terminal event (or
+                # enqueued one we still need to drain), the SPA will
+                # see "Connection lost" instead of a clean job.done /
+                # job.failed / job.cancelled. ``queue_size`` is the
+                # smoking gun: a value > 0 means the terminal event
+                # was waiting on the queue when we exited.
+                log.warning(
+                    "ask SSE generator exiting early: job_id=%s status=%s queue_size=%s",
+                    job.id,
+                    job.status,
+                    job.queue.qsize(),
+                )
                 break
             continue
         kind = str(event.get("type", ""))
@@ -631,6 +645,80 @@ def _ask_worker(
     doc_profiles_override: list[str] | None = None,
     code_profiles_override: list[str] | None = None,
 ) -> None:
+    """Run the tool-calling agent and guarantee a terminal SSE event.
+
+    Wraps :func:`_ask_worker_impl` in a try/finally so that any
+    unhandled exception on a path that does not already emit a
+    terminal still produces a ``job.failed`` SSE frame. Without this
+    belt-and-suspenders, a regression like the historical
+    ``_load_catalog`` raise inside ``CollectionIdentityMismatch``
+    silently killed the worker thread and the SPA hung on
+    "Reasoning…" until the browser eventually reported
+    "Connection lost. Reconnecting (attempt 1/5)…".
+    """
+    try:
+        _ask_worker_impl(
+            cfg,
+            job,
+            question,
+            session_id,
+            db_profile,
+            scope_profiles,
+            doc_profiles_override,
+            code_profiles_override,
+        )
+    except Exception:
+        # Last-resort safety net. The two real paths
+        # (``_ask_worker_impl`` happy + named-exception branches)
+        # already emit clean terminal frames; this only fires when
+        # something escapes them.
+        log.exception(
+            "ask worker crashed without emitting a terminal event: job_id=%s",
+            job.id,
+        )
+    finally:
+        if job.status in ("queued", "running"):
+            # No terminal event was emitted — the thread died on a path
+            # the explicit handlers did not cover. Synthesize a
+            # ``job.failed`` so the SPA renders an actionable error
+            # state instead of hanging until the browser SSE proxy
+            # gives up.
+            job.status = "failed"
+            job.error = job.error or (
+                "Internal error: the ask worker exited without "
+                "emitting a terminal event. See ~/.amx/logs/amx.log."
+            )
+            job.ended_at = time.time()
+            try:
+                emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
+            except Exception:
+                pass
+            log.warning(
+                "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=synth-fallback",
+                job.id,
+                job.status,
+                time.time() - job.started_at,
+            )
+            try:
+                emit_terminal(
+                    job.queue,
+                    "job.failed",
+                    {"error": job.error, "hint": "internal-error"},
+                )
+            except Exception:
+                pass
+
+
+def _ask_worker_impl(
+    cfg: AMXConfig,
+    job: Job,
+    question: str,
+    session_id: int | None,
+    db_profile: str,
+    scope_profiles: list[str],
+    doc_profiles_override: list[str] | None = None,
+    code_profiles_override: list[str] | None = None,
+) -> None:
     """Run the tool-calling agent + stream every reasoning chunk and
     tool result back to the SSE consumer. Persists the assistant
     turn to chat_sessions on success.
@@ -639,6 +727,11 @@ def _ask_worker(
     (per-question body override > session sticky > config default).
     Passed through to ``run_tool_agent`` which threads it into every
     catalog tool call.
+
+    Wrapped by :func:`_ask_worker` so an unhandled exception on a code
+    path that does not already emit a terminal still produces a
+    ``job.failed`` SSE event instead of silently killing the worker
+    thread and stranding the SPA on a hung stream.
     """
     job.status = "running"
     emit(job.queue, "activity.added", {"idx": 0, "label": "Thinking"})
@@ -711,13 +804,52 @@ def _ask_worker(
         except Exception as exc:  # pragma: no cover - best-effort
             log.warning("Could not finalise tokens_json for ask run %s: %s", run_id, exc)
 
-    catalog = _load_catalog()
+    # ``_load_catalog`` can raise when the user's chromadb collection was
+    # indexed under one embedding identity and the active embedding
+    # profile points at a different one (the canonical signal is
+    # ``"Vector collection was indexed with a different embedding
+    # identity"``). Without this try/except the exception bubbled out
+    # of the worker thread before any terminal event was emitted, so
+    # the SSE consumer hung indefinitely and the browser eventually
+    # reported "Connection lost. Reconnecting (attempt 1/5)..." with
+    # no recovery path. Surface the failure as a clean ``job.failed``
+    # event with the original message so the SPA can render the
+    # actionable hint ("run /search rebuild").
+    try:
+        catalog = _load_catalog()
+    except Exception as exc:
+        message = str(exc) or exc.__class__.__name__
+        job.status = "failed"
+        job.error = f"Search catalog could not be opened: {message}"
+        job.ended_at = time.time()
+        emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
+        _finish(status_value="failed", error_text=job.error)
+        hint = "rebuild-catalog" if "embedding identity" in message.lower() else "sync-catalog"
+        log.info(
+            "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=catalog-load-failed hint=%s",
+            job.id,
+            job.status,
+            time.time() - job.started_at,
+            hint,
+        )
+        emit_terminal(
+            job.queue,
+            "job.failed",
+            {"error": job.error, "hint": hint},
+        )
+        return
     if catalog is None:
         job.status = "failed"
         job.error = "Search catalog isn't initialised yet — run /search sync first."
         job.ended_at = time.time()
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
         _finish(status_value="failed", error_text=job.error)
+        log.info(
+            "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=catalog-not-initialised",
+            job.id,
+            job.status,
+            time.time() - job.started_at,
+        )
         emit_terminal(
             job.queue,
             "job.failed",
@@ -743,6 +875,12 @@ def _ask_worker(
         job.ended_at = time.time()
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
         _finish(status_value="failed", error_text=job.error)
+        log.info(
+            "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=llm-init-failed",
+            job.id,
+            job.status,
+            time.time() - job.started_at,
+        )
         emit_terminal(
             job.queue,
             "job.failed",
@@ -833,6 +971,12 @@ def _ask_worker(
                         session_id,
                         exc,
                     )
+        log.info(
+            "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=cancelled",
+            job.id,
+            job.status,
+            time.time() - job.started_at,
+        )
         emit_terminal(job.queue, "job.cancelled", {})
         return
     except Exception as exc:
@@ -877,6 +1021,12 @@ def _ask_worker(
         payload: dict[str, Any] = {"error": job.error}
         if hint:
             payload["hint"] = hint
+        log.info(
+            "ask worker terminal: job_id=%s status=%s elapsed=%.2fs reason=run_tool_agent-exception",
+            job.id,
+            job.status,
+            time.time() - job.started_at,
+        )
         emit_terminal(job.queue, "job.failed", payload)
         return
 
@@ -976,6 +1126,12 @@ def _ask_worker(
             "scope_profiles": list(result.scope_profiles or []),
             "focus_profile": result.focus_profile,
         },
+    )
+    log.info(
+        "ask worker terminal: job_id=%s status=%s elapsed=%.2fs",
+        job.id,
+        job.status,
+        time.time() - job.started_at,
     )
     emit_terminal(job.queue, "job.done", {"summary": job.summary})
 
