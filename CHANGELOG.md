@@ -8,6 +8,37 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- **Three new cache-only Ask tools** that answer the most-asked
+  question families from the catalog without touching the live
+  database:
+  - `catalog_coverage_summary` — per-profile + per-schema counts of
+    described vs undescribed tables and columns from
+    `catalog_entities`. Sub-50 ms; the canonical "how many tables
+    don't have comments?" path.
+  - `catalog_inventory` — distinct databases / schemas pulled from
+    the catalog cache. Replaces `list_catalogs` / `list_databases` /
+    `list_server_databases` in cache-only mode.
+  - `describe_column` — single column lookup (dtype, nullable,
+    primary-key / foreign-key flag, description) from the catalog
+    cache. Saves an entire `describe_table` round-trip when the user
+    only asks about one column.
+- **`tests/test_tool_freshness_contract.py`** regression test
+  enumerates every `cache_ok` tool and dispatches it against a
+  ToolBox whose `_live_db()` / `_connector_for_profile()` raise on
+  access. Any tool that wrongly reaches the live path fails the test
+  before it can ship — the kind of regression that produced the
+  `find_assets_missing_comment` mis-classification.
+- **1-second LLM heartbeat** during every `llm.chat` round.
+  `tool_agent.py` wraps each call in `_llm_round_heartbeat` and the
+  SSE bus emits `llm.round.started` / `heartbeat` / `finished`
+  events with `{round, phase, elapsed_ms}`. The AskChat
+  `LiveStatusLine` reads them to render
+  *"⚙ kimi-k2.6 round 1 — picking tools · 12 s"* — the user is
+  never blind during a long LLM round-trip again.
+- **"Enable Live refresh & retry" button** on assistant turns where
+  a tool refused with `needs_live_refresh`. One click flips the
+  Live refresh toggle on and re-submits the same question, so the
+  user never has to retype.
 - **`catalog_sync_status` tool.** Single-call freshness report for every
   DB profile in scope — reads `catalog_profile_state` (zero live-DB
   queries) and returns `state`, `last_synced_at`, `age_seconds`,
@@ -29,6 +60,24 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Changed
 
+- **Live-only tools stay visible in cache-only mode and return a
+  structured `needs_live_refresh` envelope** instead of being hidden
+  from the LLM's menu. The LLM sees the tool name + arguments it
+  would have run, so it can quote them verbatim ("This needs live
+  database access. Enable Live refresh and ask again — I'll run
+  `check_uniqueness(orders, [order_id])` and answer right after.")
+  and the SPA can render the one-click retry button with full
+  context. Replaces the earlier "hide from schema" approach that
+  pushed the LLM into vague "I don't have a direct tool" prose.
+- **`describe_table` cache path is fully lazy.** The live connector
+  and `cat_arg` resolution are now deferred to the live branch so a
+  cache hit no longer touches a SQLAlchemy engine — fixes a hidden
+  regression caught by the new freshness contract test.
+- **`describe_table` response carries a `stats` block** computed
+  from the cached column list (column count, nullable count,
+  documented vs undocumented count, column-coverage percentage),
+  so the agent can answer simple aggregate questions without a
+  follow-up tool call.
 - **Cache-only Ask now widens to every live-only tool.** Tool schemas
   carry a `freshness` annotation (`cache_ok` vs `live_only`); when the
   Ask composer's Live refresh toggle is OFF, `ToolBox.available_schemas()`

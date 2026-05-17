@@ -713,22 +713,19 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         return _tool_schemas()
 
     def available_schemas(self) -> list[dict[str, Any]]:
-        """Return the schemas the LLM should see for THIS toolbox.
+        """Return the full schema list — live-only tools STAY visible.
 
-        When ``allow_live_refresh`` is False every entry annotated
-        ``freshness="live_only"`` is removed so the LLM cannot propose
-        a tool we'd refuse to run. With ``allow_live_refresh`` True we
-        return the full list — the opt-in toggle re-enables the
-        live-only tools for the turn.
+        Previous revisions filtered ``freshness="live_only"`` entries
+        when ``allow_live_refresh`` was False; that hid useful tool
+        names from the LLM and forced it to invent vague fallback
+        prose ("I don't have a direct tool that can…"). The current
+        contract instead keeps every tool visible AND has
+        :meth:`invoke` short-circuit cache-only mode with a
+        structured ``needs_live_refresh`` envelope. The LLM sees the
+        tool name + arguments it would have run, and can quote them
+        verbatim to the user along with the one-click retry hint.
         """
-        all_schemas = self.schemas()
-        if self._allow_live_refresh:
-            return all_schemas
-        return [
-            entry
-            for entry in all_schemas
-            if entry.get("freshness", "cache_ok") != "live_only"
-        ]
+        return self.schemas()
 
     def _is_live_only_tool(self, name: str) -> bool:
         """``True`` when the named tool is annotated ``live_only`` in
@@ -758,29 +755,37 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         except json.JSONDecodeError as exc:
             return _safe_json({"error": f"Invalid arguments JSON: {exc}"})
 
-        # Cache-only mode belt-and-braces: ``available_schemas()`` already
-        # hides every ``live_only`` tool from the LLM's menu, but an old
-        # session's prior tool_call message might still carry one of
-        # them. Refuse to dispatch with a structured payload the LLM can
-        # surface back to the user instead of silently hitting the DB.
+        # Cache-only mode: live-only tools stay in the menu but the
+        # body never runs. Return a structured ``needs_live_refresh``
+        # envelope so the LLM can surface the exact tool + arguments
+        # back to the user along with the one-click retry hint. The
+        # SPA reads ``needs_live_refresh: true`` from the tool.call
+        # payload and renders an "Enable Live refresh & retry" button.
         if not self._allow_live_refresh and self._is_live_only_tool(name):
             log.info(
                 "live-only tool %s blocked: allow_live_refresh=False — "
-                "instructing LLM to ask the user to enable Live refresh",
+                "returning needs_live_refresh envelope",
                 name,
             )
             return _safe_json(
                 {
-                    "error": "live_only_tool_disabled",
+                    "needs_live_refresh": True,
                     "tool": name,
-                    "hint": (
-                        "This tool needs a live database query. Ask the "
-                        "user to enable the 'Live refresh' toggle in the "
-                        "Ask composer and re-ask the question, OR answer "
-                        "from the cached catalog tools "
-                        "(catalog_sync_status, list_schemas, "
-                        "list_tables_in_schema, describe_table)."
+                    "arguments": args,
+                    "reason": (
+                        "This tool samples the live database; the "
+                        "catalog cache cannot answer."
                     ),
+                    "user_action": (
+                        "Enable the 'Live refresh' toggle in the Ask "
+                        "composer and ask the same question again — "
+                        "the assistant will then call this tool."
+                    ),
+                    # Back-compat: tests pre-dating the envelope still
+                    # check for ``error == "live_only_tool_disabled"``;
+                    # keep the key so the freshness contract test and
+                    # the CHANGELOG-era harness keep passing.
+                    "error": "live_only_tool_disabled",
                 }
             )
 
@@ -1252,6 +1257,187 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
             "profiles": results,
             "total_schemas": total,
             "profiles_with_errors": with_errors,
+        }
+
+    def _tool_describe_column(
+        self,
+        schema: str,
+        table: str,
+        column: str,
+        db_profile: str = "",
+    ) -> dict[str, Any]:
+        """Cache-served column description / dtype / flags lookup.
+
+        Single ``catalog_entities`` row + description join — the agent
+        used to chain ``describe_table`` and parse its column list to
+        answer "is column X nullable?" / "what type is column Y?". This
+        tool returns the same data in one SQLite read.
+        """
+        sch = (schema or "").strip()
+        tbl = (table or "").strip()
+        col = (column or "").strip()
+        if not sch or not tbl or not col:
+            raise _ToolError("'schema', 'table', and 'column' are all required.")
+        target = (db_profile or "").strip()
+        if target and target not in self.db_profiles:
+            return {
+                "schema": sch,
+                "table": tbl,
+                "column": col,
+                "matches": [],
+                "source": "catalog",
+                "error": f"Profile {target!r} is not in this Ask's scope.",
+            }
+        scope: str | list[str] = target if target else self.db_profile_filter
+        try:
+            rows = self.catalog.fetch_column_detail(
+                scope,
+                schema_name=sch,
+                table_name=tbl,
+                column_name=col,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "schema": sch,
+                "table": tbl,
+                "column": col,
+                "matches": [],
+                "source": "catalog",
+                "error": f"Catalog column lookup failed: {exc}",
+            }
+        if not rows:
+            return {
+                "schema": sch,
+                "table": tbl,
+                "column": col,
+                "found": False,
+                "matches": [],
+                "source": "catalog",
+                "cache_only": True,
+                "hint": (
+                    f"No column '{sch}.{tbl}.{col}' in the catalog for "
+                    f"this scope. Enable Live refresh and ask again, or "
+                    f"run /search sync."
+                ),
+            }
+        return {
+            "schema": sch,
+            "table": tbl,
+            "column": col,
+            "found": True,
+            "matches": rows,
+            "count": len(rows),
+            "source": "catalog",
+        }
+
+    def _tool_catalog_inventory(
+        self,
+        scope: str = "schemas",
+        db_profile: str = "",
+    ) -> dict[str, Any]:
+        """Distinct databases / schemas from the catalog cache.
+
+        Cache-served replacement for the live ``list_databases`` /
+        ``list_server_databases`` paths when the user just wants the
+        inventory, not a live re-enumeration. Counts come from
+        ``catalog_entities`` — sub-50 ms regardless of profile
+        size.
+        """
+        normalised = (scope or "schemas").strip().lower()
+        if normalised not in {"databases", "schemas"}:
+            normalised = "schemas"
+        target = (db_profile or "").strip()
+        if target and target not in self.db_profiles:
+            return {
+                "scope_arg": normalised,
+                "rows": [],
+                "profiles": list(self.db_profiles),
+                "source": "catalog",
+                "error": f"Profile {target!r} is not in this Ask's scope.",
+            }
+        clause: str | list[str] = target if target else self.db_profile_filter
+        try:
+            rows = self.catalog.fetch_inventory(clause, scope=normalised)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "scope_arg": normalised,
+                "rows": [],
+                "profiles": list(self.db_profiles),
+                "source": "catalog",
+                "error": f"Catalog inventory query failed: {exc}",
+            }
+        return {
+            "scope_arg": normalised,
+            "rows": rows,
+            "profiles": list(self.db_profiles),
+            "count": len(rows),
+            "source": "catalog",
+        }
+
+    def _tool_catalog_coverage_summary(
+        self,
+        db_profile: str = "",
+        schema: str = "",
+    ) -> dict[str, Any]:
+        """Per-profile + per-schema description coverage from the catalog.
+
+        Single GROUP BY against ``catalog_entities`` — sub-50 ms — so the
+        Ask agent answers "how many tables don't have comments" in one
+        round-trip instead of chaining describe_table per asset (the
+        82-second hallucination loop the user hit).
+        """
+        target = (db_profile or "").strip()
+        if target and target not in self.db_profiles:
+            return {
+                "profiles": [],
+                "scope": list(self.db_profiles),
+                "source": "catalog",
+                "error": f"Profile {target!r} is not in this Ask's scope.",
+            }
+        scope: str | list[str] = target if target else self.db_profile_filter
+        sch = (schema or "").strip() or None
+        try:
+            rows = self.catalog.fetch_coverage_summary(scope, schema_name=sch)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "profiles": [],
+                "scope": list(self.db_profiles),
+                "source": "catalog",
+                "error": f"Catalog coverage query failed: {exc}",
+            }
+        total_tables = sum(row["total_tables"] for row in rows)
+        undocumented_tables = sum(row["undocumented_tables"] for row in rows)
+        total_columns = sum(row["total_columns"] for row in rows)
+        undocumented_columns = sum(row["undocumented_columns"] for row in rows)
+        documented_tables = max(0, total_tables - undocumented_tables)
+        documented_columns = max(0, total_columns - undocumented_columns)
+        totals = {
+            "total_tables": total_tables,
+            "undocumented_tables": undocumented_tables,
+            "documented_tables": documented_tables,
+            "total_columns": total_columns,
+            "undocumented_columns": undocumented_columns,
+            "documented_columns": documented_columns,
+            "table_coverage_pct": (
+                round(100.0 * documented_tables / total_tables, 1)
+                if total_tables > 0
+                else None
+            ),
+            "column_coverage_pct": (
+                round(100.0 * documented_columns / total_columns, 1)
+                if total_columns > 0
+                else None
+            ),
+        }
+        last_synced_at = max(
+            (row["last_synced_at"] or 0.0 for row in rows), default=0.0
+        )
+        return {
+            "profiles": rows,
+            "totals": totals,
+            "scope": list(self.db_profiles),
+            "source": "catalog",
+            "last_synced_at": last_synced_at or None,
         }
 
     def _tool_catalog_sync_status(self, db_profile: str = "") -> dict[str, Any]:
@@ -2088,22 +2274,15 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
         table_name = (table or "").strip()
         if not schema_name or not table_name:
             raise _ToolError("Both 'schema' and 'table' are required.")
-        # Profile-targeted: route to the named profile's connector when
-        # the LLM passed db_profile (or, in multi-profile scope, when
-        # the table only exists on one profile and we resolved the
-        # ambiguity earlier via find_table_by_name).
+        # Profile-targeted bookkeeping. The actual connector is opened
+        # LAZILY below — only when we need to pay for a live profile_table
+        # round-trip. Without this lazy-open the cache-only mode would
+        # still spin up a SQLAlchemy engine on every describe_table call
+        # even though the cache resolver would have returned the answer.
         targeted = (db_profile or "").strip()
         target_profile = targeted or self.db_profile
-        if targeted and targeted != self.db_profile:
-            db = self._connector_for_profile(targeted)
-        else:
-            db = self._live_db()
-        # Resolve the catalog for 3-level backends so describe_table
-        # doesn't end up issuing ``DESCRIBE None.<schema>.<table>``
-        # when the active profile didn't pin a catalog.
-        explicit = (catalog or "").strip()
-        cat_arg, _user_catalogs, _all_catalogs = self._resolve_catalog_or_autopick(db, explicit)
 
+        explicit = (catalog or "").strip()
         explicit_db = (database or "").strip()
 
         # ── Cache-first lookup ──
@@ -2119,6 +2298,35 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
             table=table_name,
             force_fresh=force_fresh,
         )
+
+        # Cache miss + cache-only mode: do not spin up a live connector.
+        # Return a structured "not in cache" payload that the LLM can
+        # surface back to the user; the assistant should then suggest
+        # enabling Live refresh + re-asking (or running /search sync).
+        if (
+            cache_payload is None
+            and not self._allow_live_refresh
+            and not force_fresh
+        ):
+            return {
+                "schema": schema_name,
+                "table": table_name,
+                "found": False,
+                "source": "catalog",
+                "cache_only": True,
+                "possibly_partial": True,
+                "hint": (
+                    f"Table '{schema_name}.{table_name}' is not in the "
+                    f"catalog for profile {target_profile}. Enable "
+                    f"'Live refresh' in the composer and ask again "
+                    f"to fetch it live, or run /search sync first."
+                ),
+            }
+
+        # Defer the live-connector + cat_arg resolution to the live
+        # branch below — cache-hit responses never need them.
+        db = None  # opened lazily in the else-branch
+        cat_arg: str = ""
 
         if cache_payload is not None and source != "live":
             # Reconstruct the wire shape from the cache payload. The
@@ -2147,6 +2355,18 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
                 table_comment=table_comment,
             )
         else:
+            # Lazy live-connector open: only reached when the cache
+            # missed AND the user (or force_fresh) allowed the trip.
+            if targeted and targeted != self.db_profile:
+                db = self._connector_for_profile(targeted)
+            else:
+                db = self._live_db()
+            # Resolve the catalog for 3-level backends so describe_table
+            # doesn't end up issuing ``DESCRIBE None.<schema>.<table>``
+            # when the active profile didn't pin a catalog.
+            cat_arg, _user_catalogs, _all_catalogs = self._resolve_catalog_or_autopick(
+                db, explicit
+            )
             # Cross-database resolution for unpinned 2-level backends.
             # When the user (or the LLM) passes ``database=…`` explicitly,
             # honour it — otherwise fall through to the connection-time
@@ -2275,6 +2495,25 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
                 if value:  # drop empty list / "" / 0 / {}
                     analytics_payload[attr] = value
 
+        # Aggregated cache-side stats so the LLM can answer "how many
+        # columns are nullable / undocumented / primary-key" without a
+        # second tool call. Pulled directly from the column list we
+        # already assembled — zero extra cost.
+        nullable_count = sum(1 for c in all_cols if c.get("nullable"))
+        documented_count = sum(1 for c in all_cols if str(c.get("comment") or "").strip())
+        stats = {
+            "row_count": int(profile.row_count or 0),
+            "column_count": len(all_cols),
+            "nullable_columns": nullable_count,
+            "non_nullable_columns": max(0, len(all_cols) - nullable_count),
+            "documented_columns": documented_count,
+            "undocumented_columns": max(0, len(all_cols) - documented_count),
+            "column_coverage_pct": (
+                round(100.0 * documented_count / len(all_cols), 1)
+                if all_cols
+                else None
+            ),
+        }
         result = {
             "schema": schema_name,
             "table": table_name,
@@ -2283,6 +2522,7 @@ class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRo
             "table_comment": str(profile.existing_comment or ""),
             "row_count": int(profile.row_count or 0),
             "column_count": len(all_cols),
+            "stats": stats,
             "dtype_summary": dtype_summary,
             # Complete coverage — no truncation. Authoritative source
             # for "which columns of dtype X exist on this table".

@@ -226,40 +226,31 @@ class _CacheOnlyToolBox:
     _is_live_only_tool = ToolBox._is_live_only_tool  # type: ignore[assignment]
 
 
-def test_available_schemas_excludes_live_only_when_cache_only() -> None:
-    box = _CacheOnlyToolBox(allow=False)
-    names = {e["function"]["name"] for e in box.available_schemas()}
-    # Cache-only happy path stays exposed.
-    assert "catalog_sync_status" in names
-    assert "list_schemas" in names
-    assert "list_tables_in_schema" in names
-    assert "describe_table" in names
-    # Live-only tools are hidden so the LLM cannot propose them.
-    hidden = {
+def test_available_schemas_returns_every_tool_in_either_mode() -> None:
+    """As of the needs_live_refresh envelope, live-only tools stay
+    visible in the LLM's menu regardless of toggle state. The agent
+    sees them, the dispatcher refuses them in cache-only mode with a
+    structured payload that the SPA renders as a retry button."""
+    off = _CacheOnlyToolBox(allow=False)
+    on = _CacheOnlyToolBox(allow=True)
+    off_names = {e["function"]["name"] for e in off.available_schemas()}
+    on_names = {e["function"]["name"] for e in on.available_schemas()}
+    full = {e["function"]["name"] for e in ToolBox.schemas()}
+    assert off_names == full
+    assert on_names == full
+    # Spot-check a few key tools so a future regression of the
+    # available_schemas filter shape fails this test loudly.
+    for name in (
         "list_catalogs",
-        "list_server_databases",
-        "list_volumes",
-        "list_databases",
         "check_uniqueness",
         "inspect_data_quality",
-        "sample_column_values",
-        "detect_scd_pattern",
-        "detect_dimensional_role",
         "find_joinable_tables",
-        "find_joinable_across_profiles",
-    }
-    assert hidden.isdisjoint(names), (
-        f"Live-only tools leaked into cache-only schema: {hidden & names}"
-    )
-
-
-def test_available_schemas_returns_everything_when_toggle_on() -> None:
-    box = _CacheOnlyToolBox(allow=True)
-    names = {e["function"]["name"] for e in box.available_schemas()}
-    # Same superset as ``ToolBox.schemas()``.
-    assert names == {e["function"]["name"] for e in ToolBox.schemas()}
-    # And a live-only tool is back.
-    assert "list_catalogs" in names
+        "catalog_sync_status",
+        "catalog_coverage_summary",
+        "catalog_inventory",
+        "describe_column",
+    ):
+        assert name in off_names, f"missing {name} in cache-only schema"
 
 
 def test_is_live_only_tool_classifier() -> None:
@@ -272,38 +263,51 @@ def test_is_live_only_tool_classifier() -> None:
 # ── invoke() refuses live-only tools in cache-only mode ─────────────
 
 
-def test_invoke_blocks_live_only_tool_with_structured_payload() -> None:
-    """The full ``ToolBox.invoke`` path with a real ToolBox stub —
-    we just need ``_allow_live_refresh=False`` and a known tool name.
-    The guard must return the structured payload BEFORE attempting
-    any DB connection."""
+def test_invoke_returns_needs_live_refresh_envelope(tmp_path) -> None:
+    """End-to-end through the real ``ToolBox.invoke`` path. Live-only
+    tool in cache-only mode must return ``needs_live_refresh: true``
+    with the tool name, the user's arguments, the reason, and the
+    user_action string — the SPA pulls these to render the retry
+    button."""
     import json
 
-    from amx.search._agent_tools_helpers import _safe_json  # noqa: F401 — import side-check
+    from amx.config import AMXConfig
+    from amx.search.agent_tools import ToolBox
+    from amx.search.catalog import SearchCatalog
+    from amx.storage.sqlite_store import SQLiteHistoryStore
 
-    box = _CacheOnlyToolBox(allow=False)
-    # We can't call ToolBox.invoke directly without instantiating —
-    # but the guard is pure: confirm it short-circuits via the
-    # helper used by invoke.
-    assert box._is_live_only_tool("list_catalogs") is True
+    db_path = tmp_path / "history.db"
+    store = SQLiteHistoryStore(db_path)
+    store.init()
+    cat = SearchCatalog(db_path)
+    cfg = AMXConfig()
+    cfg.db.backend = "postgresql"
+    box = ToolBox(
+        cfg, cat, db_profiles=["prod-pg"], allow_live_refresh=False
+    )
 
-    # Simulate the early-return shape invoke() produces:
-    payload = {
-        "error": "live_only_tool_disabled",
-        "tool": "list_catalogs",
-        "hint": (
-            "This tool needs a live database query. Ask the user to "
-            "enable the 'Live refresh' toggle in the Ask composer and "
-            "re-ask the question, OR answer from the cached catalog "
-            "tools (catalog_sync_status, list_schemas, "
-            "list_tables_in_schema, describe_table)."
-        ),
+    # Sanity: live_only tool is still in the menu, the LLM sees it.
+    assert any(
+        e["function"]["name"] == "check_uniqueness"
+        for e in box.available_schemas()
+    )
+
+    # Dispatch — must refuse with the rich envelope.
+    raw = box.invoke(
+        "check_uniqueness",
+        json.dumps({"table": "orders", "columns": ["order_id"]}),
+    )
+    decoded = json.loads(raw)
+    assert decoded["needs_live_refresh"] is True
+    assert decoded["tool"] == "check_uniqueness"
+    assert decoded["arguments"] == {
+        "table": "orders",
+        "columns": ["order_id"],
     }
-    encoded = json.dumps(payload)
-    decoded = json.loads(encoded)
+    assert "Live refresh" in decoded["user_action"]
+    assert "cache" in decoded["reason"].lower()
+    # Back-compat key for older frontends.
     assert decoded["error"] == "live_only_tool_disabled"
-    assert decoded["tool"] == "list_catalogs"
-    assert "Live refresh" in decoded["hint"]
 
 
 # ── _tool_catalog_sync_status shape ─────────────────────────────────
@@ -393,6 +397,128 @@ def test_tool_catalog_sync_status_filters_to_named_profile() -> None:
     box.catalog = _StubCatalog()  # type: ignore[attr-defined]
     result = ToolBox._tool_catalog_sync_status(box, db_profile="prod-pg")
     assert [row["db_profile"] for row in result["profiles"]] == ["prod-pg"]
+
+
+def test_tool_catalog_coverage_summary_returns_per_schema_counts(
+    tmp_path,
+) -> None:
+    """Seed two profiles × two schemas with a known documented /
+    undocumented mix and assert the tool returns the right counts +
+    totals + percentages. No live DB involvement."""
+    from amx.config import AMXConfig
+    from amx.search.agent_tools import ToolBox
+    from amx.search.catalog import SearchCatalog
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
+    db_path = tmp_path / "history.db"
+    store = SQLiteHistoryStore(db_path)
+    store.init()
+    cat = SearchCatalog(db_path)
+
+    # prod-pg.public: 2 tables (1 documented), 4 columns (2 documented)
+    cat.record_applied_description(
+        db_profile="prod-pg", db_backend="postgresql", database_name="",
+        schema_name="public", table_name="orders", column_name=None,
+        entity_kind="table", asset_kind="table",
+        description="Order header",
+    )
+    # Add an undocumented table by upserting via _upsert_entity through
+    # a no-op description. Easiest: use record_applied_description with
+    # description="" then null out the effective pointer manually.
+    import sqlite3
+    with sqlite3.connect(db_path) as raw:
+        raw.row_factory = sqlite3.Row
+        raw.execute(
+            """INSERT INTO catalog_entities (
+                  db_profile, db_backend, database_name, schema_name,
+                  table_name, entity_kind, asset_kind, updated_at,
+                  last_synced_at
+              ) VALUES (
+                  'prod-pg', 'postgresql', '', 'public',
+                  'users', 'table', 'table', 0, 100
+              )"""
+        )
+        # 4 columns under prod-pg.public: 2 documented, 2 undocumented
+        for i, (table, col, described) in enumerate([
+            ("orders", "order_id", True),
+            ("orders", "amount", False),
+            ("users", "id", True),
+            ("users", "email", False),
+        ]):
+            raw.execute(
+                """INSERT INTO catalog_entities (
+                      db_profile, db_backend, database_name, schema_name,
+                      table_name, column_name, entity_kind, asset_kind,
+                      effective_description_id, updated_at, last_synced_at
+                  ) VALUES (
+                      'prod-pg', 'postgresql', '', 'public',
+                      ?, ?, 'column', 'table',
+                      ?, 0, 100
+                  )""",
+                (table, col, 1 if described else None),
+            )
+        # dbr-oyk.amx_test: 1 table, all documented
+        raw.execute(
+            """INSERT INTO catalog_entities (
+                  db_profile, db_backend, database_name, schema_name,
+                  table_name, entity_kind, asset_kind,
+                  effective_description_id, updated_at, last_synced_at
+              ) VALUES (
+                  'dbr-oyk', 'databricks', 'amx_test', 'amx_test',
+                  'adrc', 'table', 'table', 1, 0, 200
+              )"""
+        )
+        raw.commit()
+
+    cfg = AMXConfig()
+    cfg.db.backend = "postgresql"
+    box = ToolBox(
+        cfg, cat, db_profiles=["prod-pg", "dbr-oyk"], allow_live_refresh=False
+    )
+
+    result = box._tool_catalog_coverage_summary()
+    assert "error" not in result
+    rows = {(r["db_profile"], r["schema"]): r for r in result["profiles"]}
+    assert ("prod-pg", "public") in rows
+    assert ("dbr-oyk", "amx_test") in rows
+    public = rows[("prod-pg", "public")]
+    assert public["total_tables"] == 2
+    assert public["undocumented_tables"] == 1  # users has no description
+    assert public["total_columns"] == 4
+    assert public["undocumented_columns"] == 2
+    assert public["table_coverage_pct"] == 50.0
+    assert public["column_coverage_pct"] == 50.0
+    dbr = rows[("dbr-oyk", "amx_test")]
+    assert dbr["total_tables"] == 1
+    assert dbr["undocumented_tables"] == 0
+    # Totals across scope
+    totals = result["totals"]
+    assert totals["total_tables"] == 3
+    assert totals["undocumented_tables"] == 1
+    assert totals["total_columns"] == 4
+    assert totals["undocumented_columns"] == 2
+
+
+def test_tool_catalog_coverage_summary_rejects_out_of_scope_profile(
+    tmp_path,
+) -> None:
+    from amx.config import AMXConfig
+    from amx.search.agent_tools import ToolBox
+    from amx.search.catalog import SearchCatalog
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
+    db_path = tmp_path / "history.db"
+    store = SQLiteHistoryStore(db_path)
+    store.init()
+    cat = SearchCatalog(db_path)
+    cfg = AMXConfig()
+    cfg.db.backend = "postgresql"
+    box = ToolBox(
+        cfg, cat, db_profiles=["prod-pg"], allow_live_refresh=False
+    )
+    result = box._tool_catalog_coverage_summary(db_profile="someone-else")
+    assert "error" in result
+    assert "not in this Ask's scope" in result["error"]
 
 
 def test_tool_catalog_sync_status_unknown_profile_returns_empty() -> None:

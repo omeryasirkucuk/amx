@@ -79,6 +79,13 @@ export interface SubmittedTurn {
     /** PR E: per-call citations (only present on ``search_docs``). */
     citations?: Citation[];
   }>;
+  /** Set when at least one tool the assistant tried to use was blocked
+   *  by cache-only mode. Drives the "Enable Live refresh & retry"
+   *  button on the persisted bubble. */
+  needsLiveRefresh?: {
+    question: string;
+    blockedTool: string;
+  };
   /** Multi-profile observability stamped on assistant turns. */
   scopeProfiles?: string[];
   focusProfile?: string | null;
@@ -324,7 +331,7 @@ export default function AskChat({
   });
 
   // Aggregate streamed events into the assistant's turn.
-  const { thinking, streamingAnswer, finalAnswer, toolCalls, activity, finalMeta, finalCitations, jobFailure, wasCancelled } = useMemo(() => {
+  const { thinking, streamingAnswer, finalAnswer, toolCalls, activity, llmRound, finalMeta, finalCitations, jobFailure, wasCancelled } = useMemo(() => {
     const thinkingChunks: string[] = [];
     const tools: Array<{
       name: string;
@@ -348,7 +355,17 @@ export default function AskChat({
       source?: "catalog" | "live" | "live_cache" | "mixed" | "blocked_cache_only";
       scopeProfiles?: string[];
       elapsedMs?: number;
+      needsLiveRefresh?: boolean;
+      blockedArguments?: Record<string, unknown>;
+      blockedReason?: string;
+      blockedUserAction?: string;
     }> = [];
+    let llmRoundState: {
+      round: number;
+      phase: string;
+      elapsedMs: number;
+      status: "active" | "finished";
+    } | null = null;
     // ``answerChunks`` accumulates ``answer.delta`` events into the
     // streaming assistant bubble. Cleared whenever a ``tool.call``
     // event arrives — any content emitted before a tool call is
@@ -371,6 +388,23 @@ export default function AskChat({
         thinkingChunks.push(event.text);
       } else if (event.type === "answer.delta" && typeof event.text === "string") {
         answerChunks.push(event.text);
+      } else if (
+        event.type === "llm.round.started" ||
+        event.type === "llm.round.heartbeat" ||
+        event.type === "llm.round.finished"
+      ) {
+        const status =
+          event.type === "llm.round.finished" ? "finished" : "active";
+        llmRoundState = {
+          round:
+            typeof event.round === "number" ? (event.round as number) : 0,
+          phase: String(event.phase || ""),
+          elapsedMs:
+            typeof event.elapsed_ms === "number"
+              ? (event.elapsed_ms as number)
+              : 0,
+          status,
+        };
       } else if (event.type === "tool.started") {
         // A tool is about to dispatch. Push a pending activity row so
         // the UI shows the user what's happening BEFORE the handler
@@ -413,6 +447,19 @@ export default function AskChat({
                 | "mixed"
                 | "blocked_cache_only")
             : undefined;
+        const needsLive = event.needs_live_refresh === true;
+        const blockedArgs =
+          event.blocked_arguments && typeof event.blocked_arguments === "object"
+            ? (event.blocked_arguments as Record<string, unknown>)
+            : undefined;
+        const blockedReason =
+          typeof event.blocked_reason === "string"
+            ? (event.blocked_reason as string)
+            : undefined;
+        const blockedUserAction =
+          typeof event.blocked_user_action === "string"
+            ? (event.blocked_user_action as string)
+            : undefined;
         // Resolve the pending activity row this call completes.
         // Match the LATEST pending row whose name + args agree — the
         // tool agent loops sequentially so first-pending-first-out
@@ -429,6 +476,10 @@ export default function AskChat({
               phase: "done",
               source,
               elapsedMs,
+              needsLiveRefresh: needsLive,
+              blockedArguments: blockedArgs,
+              blockedReason,
+              blockedUserAction,
             };
             break;
           }
@@ -483,6 +534,7 @@ export default function AskChat({
       finalAnswer: finalText,
       toolCalls: tools,
       activity: activityRows,
+      llmRound: llmRoundState,
       finalMeta: meta,
       finalCitations: citations,
       jobFailure: failure,
@@ -499,9 +551,25 @@ export default function AskChat({
   useEffect(() => {
     if (!closed) return;
     if (finalAnswer != null) {
+      // Detect cache-only refusals so the persisted turn can render the
+      // "Enable Live refresh & retry" button. We pick the FIRST blocked
+      // tool — usually there is only one per turn anyway, since the
+      // LLM is now instructed to stop on the first needs_live_refresh
+      // envelope.
+      const blockedActivity = activity.find((row) => row.needsLiveRefresh);
+      const blockedTool = blockedActivity?.name ?? "";
       setTurns((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === "assistant" && last.content === finalAnswer) return prev;
+        // Find the preceding user turn so the retry button can resubmit
+        // the SAME question with Live refresh ON.
+        let lastUserQuestion = "";
+        for (let i = prev.length - 1; i >= 0; i -= 1) {
+          if (prev[i].role === "user") {
+            lastUserQuestion = prev[i].content;
+            break;
+          }
+        }
         return [
           ...prev,
           {
@@ -512,6 +580,10 @@ export default function AskChat({
             focusProfile: finalMeta.focusProfile ?? null,
             totalLatencyMs: finalMeta.totalLatencyMs,
             citations: finalCitations.length > 0 ? finalCitations : undefined,
+            needsLiveRefresh:
+              blockedActivity && lastUserQuestion
+                ? { question: lastUserQuestion, blockedTool }
+                : undefined,
           },
         ];
       });
@@ -781,6 +853,31 @@ export default function AskChat({
                 turn.citations.length > 0 && (
                   <CitationsList citations={turn.citations} />
                 )}
+              {turn.role === "assistant" && turn.needsLiveRefresh && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAllowLiveRefresh(true);
+                    void submitText(turn.needsLiveRefresh!.question);
+                  }}
+                  disabled={!!activeJob}
+                  className={cn(
+                    "mt-2 inline-flex items-center gap-1.5 rounded-full",
+                    "border border-warning/40 bg-warning-soft/30 px-3 py-1",
+                    "text-xs font-medium text-warning hover:bg-warning-soft/50",
+                    "transition-colors",
+                    !!activeJob && "cursor-not-allowed opacity-50",
+                  )}
+                  title={
+                    turn.needsLiveRefresh.blockedTool
+                      ? `Re-run with Live refresh — calls ${turn.needsLiveRefresh.blockedTool}`
+                      : "Re-run this question with Live refresh enabled"
+                  }
+                >
+                  <span aria-hidden>⚡</span>
+                  Enable Live refresh &amp; retry
+                </button>
+              )}
               {turn.role === "assistant" &&
                 (turn.scopeProfiles?.length || turn.totalLatencyMs != null) && (
                   <AnswerMeta
@@ -808,6 +905,7 @@ export default function AskChat({
                 pendingActivity={activity.some((row) => row.phase === "pending")}
                 hasStreamingAnswer={!!streamingAnswer}
                 llmModel={activeLlmModel ?? activeLlmProfile ?? null}
+                llmRound={llmRound}
               />
             )}
             {activity.length > 0 && <ActivityFeed rows={activity} />}
@@ -1147,6 +1245,7 @@ function LiveStatusLine({
   pendingActivity,
   hasStreamingAnswer,
   llmModel,
+  llmRound,
 }: {
   jobStartedAt: number | null;
   tick: number;
@@ -1155,6 +1254,12 @@ function LiveStatusLine({
   pendingActivity: boolean;
   hasStreamingAnswer: boolean;
   llmModel: string | null;
+  llmRound: {
+    round: number;
+    phase: string;
+    elapsedMs: number;
+    status: "active" | "finished";
+  } | null;
 }) {
   // Always-on status row at the top of the live response bubble.
   // The user used to stare at a static "Reasoning…" for ~5 s before
@@ -1168,13 +1273,27 @@ function LiveStatusLine({
     elapsedSec >= 10
       ? `${elapsedSec.toFixed(0)}s`
       : `${elapsedSec.toFixed(1)}s`;
+  // LLM round info — when present and still active, surface
+  // "⚙ LLM round N — phase · Xs" so the user knows AMX is waiting on
+  // the model right now (not stuck). The heartbeat ticks every second
+  // from the backend so the elapsedMs the SSE carries stays fresh.
+  const roundActive = llmRound && llmRound.status === "active";
   let label: string;
   if (hasStreamingAnswer) {
     label = "Writing answer";
   } else if (pendingActivity) {
     label = "Running tool";
-  } else if (hasActivity) {
+  } else if (hasActivity && !roundActive) {
     label = "Picking next step";
+  } else if (roundActive) {
+    const phaseLabel =
+      llmRound.phase === "picking-tools"
+        ? "picking tools"
+        : llmRound.phase === "synthesising"
+          ? "synthesising answer"
+          : llmRound.phase || "thinking";
+    const modelLabel = llmModel ? llmModel.split("/").slice(-1)[0] : "LLM";
+    label = `${modelLabel} round ${llmRound.round || "?"} — ${phaseLabel}`;
   } else if (hasThinking) {
     label = "Reasoning";
   } else {

@@ -39,6 +39,138 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "freshness": FRESHNESS_CACHE_OK,
         "function": {
+            "name": "describe_column",
+            "description": (
+                "Look up one column from the catalog: dtype, nullable, "
+                "primary-key / foreign-key flag, and the effective "
+                "description text. Sub-50 ms SQLite read — use this for "
+                "'what type is column X', 'is column Y nullable', 'is this "
+                "a primary key', 'does this column have a description'. "
+                "Do NOT chain describe_table for a single column question; "
+                "this tool is the focused answer."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schema": {
+                        "type": "string",
+                        "description": "Schema name (case-insensitive).",
+                    },
+                    "table": {
+                        "type": "string",
+                        "description": "Table name (case-insensitive).",
+                    },
+                    "column": {
+                        "type": "string",
+                        "description": "Column name (case-insensitive).",
+                    },
+                    "db_profile": {
+                        "type": "string",
+                        "description": (
+                            "Optional: target one profile. Omit to fan out "
+                            "across the current Ask scope."
+                        ),
+                    },
+                },
+                "required": ["schema", "table", "column"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "catalog_inventory",
+            "description": (
+                "Return the catalog's recorded inventory of databases / "
+                "schemas per profile — distinct rows pulled from the "
+                "``catalog_entities`` cache. Sub-50 ms. Use this for "
+                "'which databases do I have', 'show all schemas', 'list "
+                "the catalogs we know about', 'what schemas exist under "
+                "profile X'. NO live DB hit — the answer is whatever "
+                "/search sync recorded.\n\n"
+                "``scope='databases'`` returns one row per (profile, "
+                "database) with `schema_count` and `table_count`. "
+                "``scope='schemas'`` returns one row per (profile, "
+                "database, schema) with `table_count`. Each row also "
+                "carries `last_synced_at` so you can flag stale entries."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["databases", "schemas"],
+                        "description": (
+                            "What to enumerate. Default ``'schemas'`` — "
+                            "use ``'databases'`` only when the user "
+                            "explicitly asked about databases / catalogs."
+                        ),
+                    },
+                    "db_profile": {
+                        "type": "string",
+                        "description": (
+                            "Optional: limit to one profile. Omit to "
+                            "fan out across the current Ask scope."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "catalog_coverage_summary",
+            "description": (
+                "Return per-profile + per-schema counts of how many tables "
+                "and columns are described vs undescribed in the catalog. "
+                "One SQL GROUP BY against ``catalog_entities`` — sub-50 ms.\n\n"
+                "Call this FIRST whenever the user asks any variation of "
+                "'how many tables don't have comments?', 'how many columns "
+                "are documented?', 'what's our description coverage?', 'is "
+                "this schema covered?', 'which schemas are still missing "
+                "comments?', 'how complete is our documentation?'. The "
+                "response carries `profiles` (one row per profile+schema) "
+                "and `totals` (sum across the scope) — quote the numbers "
+                "directly without chaining describe_table per asset.\n\n"
+                "Response shape: ``{\"profiles\": [{\"db_profile\", "
+                "\"database\", \"schema\", \"total_tables\", "
+                "\"undocumented_tables\", \"documented_tables\", "
+                "\"total_columns\", \"undocumented_columns\", "
+                "\"documented_columns\", \"table_coverage_pct\", "
+                "\"column_coverage_pct\", \"last_synced_at\"}], "
+                "\"totals\": {…}, \"scope\": [profiles], "
+                "\"source\": \"catalog\"}``."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "db_profile": {
+                        "type": "string",
+                        "description": (
+                            "Optional: limit to one profile. Omit to get "
+                            "every profile in the current Ask scope."
+                        ),
+                    },
+                    "schema": {
+                        "type": "string",
+                        "description": (
+                            "Optional: limit to one schema (case-sensitive). "
+                            "Use for 'is schema X covered?' questions."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
             "name": "catalog_sync_status",
             "description": (
                 "Return the catalog's sync state and last-sync timestamp for "

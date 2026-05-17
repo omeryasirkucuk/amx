@@ -1016,7 +1016,33 @@ def _ask_worker_impl(
             payload["source"] = summary["source"]
         if "elapsed_ms" in summary:
             payload["elapsed_ms"] = summary["elapsed_ms"]
+        # Forward the needs_live_refresh envelope so AskChat can render
+        # the "Enable Live refresh & retry" button on the bubble.
+        if summary.get("needs_live_refresh"):
+            payload["needs_live_refresh"] = True
+            for key in ("blocked_arguments", "blocked_reason", "blocked_user_action"):
+                if key in summary:
+                    payload[key] = summary[key]
         emit(job.queue, "tool.call", payload)
+
+    def _on_llm_round(event: dict[str, Any]) -> None:
+        """Forward LLM-round phase events onto the SSE bus.
+
+        The heartbeat context manager in ``tool_agent.py`` emits
+        ``started`` / ``heartbeat`` / ``finished`` for every ``llm.chat``
+        invocation. We rename the SSE event so the SPA can filter
+        cleanly: ``llm.round.started`` / ``llm.round.heartbeat`` /
+        ``llm.round.finished``.
+        """
+        phase_event = str(event.get("phase_event") or "heartbeat").lower()
+        if phase_event not in {"started", "heartbeat", "finished"}:
+            phase_event = "heartbeat"
+        payload: dict[str, Any] = {
+            "round": int(event.get("round") or 0),
+            "phase": str(event.get("phase") or ""),
+            "elapsed_ms": int(event.get("elapsed_ms") or 0),
+        }
+        emit(job.queue, f"llm.round.{phase_event}", payload)
 
     def _on_tool_start(announcement: dict[str, Any]) -> None:
         """Fired the moment a tool is about to dispatch, BEFORE the
@@ -1055,6 +1081,7 @@ def _ask_worker_impl(
             on_tool_call=_on_tool_call,
             on_tool_start=_on_tool_start,
             on_content_delta=_on_content_delta,
+            on_llm_round=_on_llm_round,
             cancel_token=job.cancel,
             db_profiles=list(scope_profiles) if scope_profiles else None,
             doc_profiles=doc_profiles_override,

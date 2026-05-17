@@ -20,8 +20,10 @@ against — so it doesn't have to hallucinate.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
+import time as _llm_time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -222,6 +224,7 @@ def run_tool_agent(
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
     on_tool_start: Callable[[dict[str, Any]], None] | None = None,
     on_content_delta: Callable[[str], None] | None = None,
+    on_llm_round: Callable[[dict[str, Any]], None] | None = None,
     cancel_token: threading.Event | None = None,
     db_profiles: list[str] | None = None,
     doc_profiles: list[str] | None = None,
@@ -298,8 +301,92 @@ def run_tool_agent(
             on_tool_call=on_tool_call,
             on_tool_start=on_tool_start,
             on_content_delta=on_content_delta,
+            on_llm_round=on_llm_round,
             cancel_token=cancel_token,
         )
+
+
+@contextlib.contextmanager
+def _llm_round_heartbeat(
+    *,
+    on_llm_round: Callable[[dict[str, Any]], None] | None,
+    round_id: int,
+    phase: str,
+    cancel_token: threading.Event | None,
+    interval_sec: float = 1.0,
+):
+    """Emit ``llm.round.started`` / ``llm.round.heartbeat`` /
+    ``llm.round.finished`` events around a single ``llm.chat`` call.
+
+    Why: the OpenRouter / kimi-k2.6 path streams reasoning_content too
+    slowly to repaint the SPA's status line — users used to stare at
+    a static "Talking to LLM…" for 5–70 seconds with no feedback. A
+    daemon thread ticks every second so the SPA's LiveStatusLine can
+    show *"⚙ LLM round 1 — picking tools · 12 s"* and the user knows
+    AMX is alive.
+
+    The thread bails the moment ``cancel_token`` flips so a Cancel
+    click does not leak a hot ticker.
+    """
+    if on_llm_round is None:
+        yield
+        return
+    start = _llm_time.monotonic()
+    stop = threading.Event()
+    try:
+        on_llm_round(
+            {
+                "phase_event": "started",
+                "round": round_id,
+                "phase": phase,
+                "elapsed_ms": 0,
+            }
+        )
+    except Exception:
+        pass
+
+    def _tick() -> None:
+        while not stop.is_set():
+            if cancel_token is not None and cancel_token.is_set():
+                return
+            stop.wait(timeout=interval_sec)
+            if stop.is_set():
+                return
+            try:
+                on_llm_round(
+                    {
+                        "phase_event": "heartbeat",
+                        "round": round_id,
+                        "phase": phase,
+                        "elapsed_ms": int((_llm_time.monotonic() - start) * 1000),
+                    }
+                )
+            except Exception:
+                # Never let a UI hook crash the heartbeat thread —
+                # silently drop and keep ticking; the next tick is
+                # one second away.
+                continue
+
+    ticker = threading.Thread(
+        target=_tick, name=f"amx-llm-heartbeat-{round_id}", daemon=True
+    )
+    ticker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        ticker.join(timeout=interval_sec * 2)
+        try:
+            on_llm_round(
+                {
+                    "phase_event": "finished",
+                    "round": round_id,
+                    "phase": phase,
+                    "elapsed_ms": int((_llm_time.monotonic() - start) * 1000),
+                }
+            )
+        except Exception:
+            pass
 
 
 def _compute_focus_profile(
@@ -350,6 +437,7 @@ def _run_tool_loop(
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
     on_tool_start: Callable[[dict[str, Any]], None] | None = None,
     on_content_delta: Callable[[str], None] | None = None,
+    on_llm_round: Callable[[dict[str, Any]], None] | None = None,
     cancel_token: threading.Event | None = None,
 ) -> ToolAgentResult:
     # Pre-fetch the schema list once; if it succeeds we put it into the
@@ -457,21 +545,27 @@ def _run_tool_loop(
                 # Never let a UI hook crash the agent loop.
                 pass
 
-        result = llm.chat(
-            chat_messages,
-            temperature=0.0,
-            max_tokens=_AGENT_MAX_TOKENS,
-            use_logprobs=False,
-            tools=tools_schema,
-            tool_choice="auto",
-            on_thinking=on_thinking,
-            on_content=_forward_content if on_content_delta is not None else None,
-            # Threading the cancel token through ``llm.chat`` means the
-            # stream consumer can bail between chunks, not just at the
-            # next iteration boundary. Without this a Cancel click during
-            # a long streamed answer waits for the whole answer to drain.
+        with _llm_round_heartbeat(
+            on_llm_round=on_llm_round,
+            round_id=iterations,
+            phase="picking-tools",
             cancel_token=cancel_token,
-        )
+        ):
+            result = llm.chat(
+                chat_messages,
+                temperature=0.0,
+                max_tokens=_AGENT_MAX_TOKENS,
+                use_logprobs=False,
+                tools=tools_schema,
+                tool_choice="auto",
+                on_thinking=on_thinking,
+                on_content=_forward_content if on_content_delta is not None else None,
+                # Threading the cancel token through ``llm.chat`` means the
+                # stream consumer can bail between chunks, not just at the
+                # next iteration boundary. Without this a Cancel click during
+                # a long streamed answer waits for the whole answer to drain.
+                cancel_token=cancel_token,
+            )
         # Per-step record so the Run detail Metrics card can render
         # an honest tool_agent.iter row -- the previous wiring summed
         # ``aggregated_usage`` for the SSE answer.final event but never
@@ -563,8 +657,20 @@ def _run_tool_loop(
             try:
                 parsed = json.loads(tool_result) if isinstance(tool_result, str) else {}
                 if isinstance(parsed, dict):
-                    if parsed.get("error") == "live_only_tool_disabled":
+                    if parsed.get("needs_live_refresh") is True or parsed.get(
+                        "error"
+                    ) == "live_only_tool_disabled":
                         summary["source"] = "blocked_cache_only"
+                        # Surface the structured envelope to the SPA so
+                        # the AskChat retry button knows which tool +
+                        # args would have run.
+                        summary["needs_live_refresh"] = True
+                        if isinstance(parsed.get("arguments"), dict):
+                            summary["blocked_arguments"] = parsed["arguments"]
+                        if isinstance(parsed.get("reason"), str):
+                            summary["blocked_reason"] = parsed["reason"]
+                        if isinstance(parsed.get("user_action"), str):
+                            summary["blocked_user_action"] = parsed["user_action"]
                     elif parsed.get("cache_only"):
                         summary["source"] = "catalog"
                     elif isinstance(parsed.get("source"), str):
@@ -640,13 +746,19 @@ def _run_tool_loop(
             }
         ]
         est = estimate_tokens(closing_messages)
-        result = llm.chat(
-            closing_messages,
-            temperature=0.0,
-            max_tokens=_AGENT_MAX_TOKENS,
-            use_logprobs=False,
-            on_thinking=on_thinking,
-        )
+        with _llm_round_heartbeat(
+            on_llm_round=on_llm_round,
+            round_id=iterations + 1,
+            phase="synthesising",
+            cancel_token=cancel_token,
+        ):
+            result = llm.chat(
+                closing_messages,
+                temperature=0.0,
+                max_tokens=_AGENT_MAX_TOKENS,
+                use_logprobs=False,
+                on_thinking=on_thinking,
+            )
         token_tracker.record_for(
             "tool_agent.final",
             est,
