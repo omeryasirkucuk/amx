@@ -19,10 +19,9 @@ from __future__ import annotations
 import json
 import threading
 import time
-from queue import Empty
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -495,11 +494,37 @@ def get_ask_job(job_id: str, jobs: JobRegistry = Depends(get_jobs)) -> dict[str,
 
 
 @router.get("/{job_id}/events")
-def stream_ask_events(job_id: str, jobs: JobRegistry = Depends(get_jobs)) -> EventSourceResponse:
+def stream_ask_events(
+    job_id: str,
+    request: Request,
+    jobs: JobRegistry = Depends(get_jobs),
+) -> EventSourceResponse:
     job = jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No job {job_id}")
-    return EventSourceResponse(_event_generator(job))
+    # Browsers populate ``Last-Event-ID`` automatically on auto-reconnect
+    # when prior events carried an ``id:`` field — see
+    # ``_event_generator`` for the matching emit. Reading it here lets a
+    # reconnected stream pick up exactly where the previous one left off
+    # instead of starting from the live tail and shredding the rendered
+    # output across two competing consumers.
+    raw_last_id = request.headers.get("last-event-id") or "0"
+    try:
+        last_event_id = int(raw_last_id)
+    except (TypeError, ValueError):
+        last_event_id = 0
+    return EventSourceResponse(
+        _event_generator(job, last_event_id=last_event_id),
+        headers={
+            # Hint to Nginx / sse-starlette / proxies that this body
+            # must not be buffered. Belt-and-braces — most reverse
+            # proxies in front of Studio (development, prod, hosted
+            # variants) honour this header to pass SSE through
+            # without coalescing frames.
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/{job_id}/cancel")
@@ -522,39 +547,88 @@ def _session_store_or_none() -> ChatSessionStore | None:
     return ChatSessionStore(hs)
 
 
-def _event_generator(job: Job):
-    """Tail the job's queue until a terminal event arrives. SSE
-    keepalives ride alongside so corporate proxies don't reap idle
-    streams while the agent is mid-LLM-call."""
+#: How long the SSE generator parks in ``tail_from`` between event
+#: arrivals before forcing a keepalive ping out the wire. Sized below
+#: the 30 s idle timeouts most corporate proxies enforce so a long
+#: LLM-thinking phase never lets the stream go silent long enough for
+#: an intermediary to reap it.
+_SSE_TAIL_TIMEOUT_SEC = 8.0
+#: Cap on time between data frames before forcing a ping. Slightly
+#: less than ``_SSE_TAIL_TIMEOUT_SEC`` so a tight loop that keeps
+#: returning empty tails still emits something useful every cycle.
+_SSE_PING_INTERVAL_SEC = 7.0
+
+
+def _event_generator(job: Job, *, last_event_id: int = 0):
+    """Stream the job's event log to one SSE consumer.
+
+    The generator is **multi-consumer safe** by design — two
+    concurrent EventSource connections against the same job each track
+    their own ``cursor`` against :meth:`BufferedQueue.tail_from` and
+    receive the FULL ordered history independently. That is the fix
+    for the "garbled thinking" reproduction: in the legacy ``queue.get``
+    consumer the two generators raced over one queue, each taking
+    roughly half the in-flight events, so the SPA only ever rendered
+    the half delivered to its current connection.
+
+    ``last_event_id`` is the sequence number of the last event the
+    browser has already seen, taken from the ``Last-Event-ID`` request
+    header. Replay starts from ``last_event_id + 1`` against the
+    bounded buffer; events older than the buffer's window are
+    irretrievable (best-effort, see :meth:`BufferedQueue.tail_from`).
+    Every yielded frame carries ``id: <seq>`` so the browser's
+    auto-reconnect path can pick up cleanly on the next disconnect.
+
+    Keepalive pings ride alongside on a tight 7-second cadence so
+    long thinking phases never let the stream go silent long enough
+    for a proxy to reap it. Pings are stamped with the current cursor
+    rather than a fresh id so a reconnect does not have to "replay"
+    the ping itself.
+    """
+    cursor = max(0, int(last_event_id or 0))
     last_keepalive = time.monotonic()
     while True:
-        try:
-            event = job.queue.get(timeout=15)
-        except Empty:
+        ready = job.queue.tail_from(cursor, timeout=_SSE_TAIL_TIMEOUT_SEC)
+        if ready is None:
+            # tail_from timed out with no new events. Force a keepalive
+            # ping if the wire has been quiet long enough.
             now = time.monotonic()
-            if now - last_keepalive > 14:
-                yield {"event": "ping", "data": json.dumps({"t": now})}
+            if now - last_keepalive > _SSE_PING_INTERVAL_SEC:
+                yield {
+                    "id": str(cursor),
+                    "event": "ping",
+                    "data": json.dumps({"t": now}),
+                }
                 last_keepalive = now
             if job.status not in ("queued", "running"):
-                # Diagnostic: the generator is about to close the SSE
-                # stream because the worker flipped status. If the
-                # worker has not yet enqueued the terminal event (or
-                # enqueued one we still need to drain), the SPA will
-                # see "Connection lost" instead of a clean job.done /
-                # job.failed / job.cancelled. ``queue_size`` is the
-                # smoking gun: a value > 0 means the terminal event
-                # was waiting on the queue when we exited.
+                # Worker terminated without enqueuing a terminal event.
+                # ``_ask_worker``'s try/finally synth fallback (PR #498)
+                # is supposed to catch this, but keep the diagnostic
+                # log so a regression that bypasses the fallback is
+                # still investigable.
                 log.warning(
-                    "ask SSE generator exiting early: job_id=%s status=%s queue_size=%s",
+                    "ask SSE generator exiting on terminal-without-event: "
+                    "job_id=%s status=%s cursor=%s buffer_seq=%s",
                     job.id,
                     job.status,
-                    job.queue.qsize(),
+                    cursor,
+                    job.queue.buffer_seq,
                 )
                 break
             continue
-        kind = str(event.get("type", ""))
-        yield {"event": kind, "data": json.dumps(event)}
-        if kind in {"job.done", "job.cancelled", "job.failed"}:
+        terminal_seen = False
+        for seq, event in ready:
+            kind = str(event.get("type", ""))
+            yield {
+                "id": str(seq),
+                "event": kind,
+                "data": json.dumps(event),
+            }
+            cursor = seq
+            last_keepalive = time.monotonic()
+            if kind in {"job.done", "job.cancelled", "job.failed"}:
+                terminal_seen = True
+        if terminal_seen:
             break
 
 

@@ -124,12 +124,11 @@ def test_ask_worker_synthesizes_terminal_on_silent_death(monkeypatch) -> None:
 
     assert job.status == "failed"
 
-    drained: list[dict] = []
-    while True:
-        try:
-            drained.append(job.queue.get_nowait())
-        except Exception:
-            break
+    # ``BufferedQueue`` no longer exposes the legacy ``queue.Queue``
+    # ``get_nowait`` API — SSE consumers read via :meth:`tail_from`.
+    # The replay buffer carries every event the worker emitted, so a
+    # snapshot is the post-refactor equivalent of "drain everything".
+    drained = list(job.queue.buffer_snapshot())
 
     terminal = [e for e in drained if e.get("type") == "job.failed"]
     assert len(terminal) == 1, f"No synth terminal emitted: {drained}"
