@@ -8,8 +8,8 @@ describe("SourceAttacher", () => {
   it("renders the attached source list and supports removal", () => {
     const onChange = vi.fn();
     const sources = [
-      { kind: "upload" as const, source_path: "/x/a.pdf", original_name: "a.pdf" },
-      { kind: "upload" as const, source_path: "/x/b.csv", original_name: "b.csv" },
+      { kind: "upload" as const, path: "/x/a.pdf", original_name: "a.pdf" },
+      { kind: "upload" as const, path: "/x/b.csv", original_name: "b.csv" },
     ];
     renderWithProviders(
       <SourceAttacher pageId="page-1" sources={sources} onChange={onChange} />,

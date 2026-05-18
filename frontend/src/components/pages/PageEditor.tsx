@@ -48,15 +48,22 @@ interface Props {
 }
 
 const RICH_CLASS = cn(
-  "prose prose-sm lg:prose-base max-w-none",
+  "prose prose-base lg:prose-lg max-w-none",
+  // Headings: explicit size/weight so they read clearly against the
+  // body, plus colour + tracking matching the rest of AMX.
   "prose-headings:text-ink prose-headings:font-semibold prose-headings:tracking-tight",
-  "prose-p:text-ink prose-li:text-ink prose-strong:text-ink",
+  "prose-h1:text-3xl prose-h1:mt-0 prose-h1:mb-4",
+  "prose-h2:text-2xl prose-h2:mt-8 prose-h2:mb-3",
+  "prose-h3:text-xl prose-h3:mt-6 prose-h3:mb-2",
+  "prose-p:text-ink prose-p:leading-relaxed",
+  "prose-li:text-ink prose-li:marker:text-ink-dim",
+  "prose-strong:text-ink prose-strong:font-semibold",
   "prose-a:text-accent prose-a:no-underline hover:prose-a:underline",
-  "prose-code:rounded prose-code:bg-surface-subtle prose-code:px-1 prose-code:py-[1px] prose-code:text-accent-ink",
-  "prose-pre:bg-surface-subtle prose-pre:text-ink",
-  "prose-blockquote:border-accent/40 prose-blockquote:text-ink-muted",
+  "prose-code:rounded prose-code:bg-surface-subtle prose-code:px-1 prose-code:py-[1px] prose-code:text-accent-ink prose-code:font-medium prose-code:before:hidden prose-code:after:hidden",
+  "prose-pre:bg-surface-subtle prose-pre:text-ink prose-pre:border prose-pre:border-border",
+  "prose-blockquote:border-accent/40 prose-blockquote:text-ink-muted prose-blockquote:not-italic",
   "prose-hr:border-border",
-  "prose-table:text-sm",
+  "prose-table:text-sm prose-th:text-ink prose-td:text-ink prose-td:border-border prose-th:border-border",
 );
 
 // Shared markdown-it instance: we use it to pre-render markdown to

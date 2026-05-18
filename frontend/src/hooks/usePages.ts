@@ -16,7 +16,7 @@ export interface PageAssetRef {
 
 export interface PageSource {
   kind: "upload" | "email" | "excel";
-  source_path: string;
+  path: string;
   original_name: string;
 }
 

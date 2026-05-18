@@ -58,12 +58,12 @@ class PagesService:
         if page is None:
             raise KeyError(page_id)
         assets = [
-            AssetRef(a["asset_kind"], a["asset_ref"])
+            AssetRef(a["kind"], a["ref"])
             for a in page["assets"]
             if a.get("included", 1)
         ]
         sources = [
-            SourceRef(s["source_kind"], s["source_path"], s["original_name"])
+            SourceRef(s["kind"], s["path"], s["original_name"])
             for s in page["sources"]
         ]
         ctx = ctx_mod.gather(

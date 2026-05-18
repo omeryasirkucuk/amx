@@ -47,8 +47,8 @@ export default function AssetChip({ asset }: Props) {
 
   const refText = asset.ref || "(no reference)";
   return (
-    <div className="group flex items-start gap-2 rounded-md border border-border bg-surface px-2.5 py-2 transition-colors hover:border-accent/40 hover:bg-surface-subtle">
-      <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded bg-accent-soft/60 text-accent-ink">
+    <div className="group flex min-h-[48px] items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-2 transition-colors hover:border-accent/40 hover:bg-surface-subtle">
+      <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center self-center rounded bg-accent-soft/60 text-accent-ink">
         <Icon size={14} />
       </span>
       <div className="min-w-0 flex-1">

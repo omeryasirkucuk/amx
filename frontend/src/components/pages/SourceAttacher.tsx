@@ -135,7 +135,7 @@ export default function SourceAttacher({ pageId, sources, onChange }: Props) {
           <ul className="space-y-1">
             {sources.map((s, i) => (
               <li
-                key={`${s.source_path}-${i}`}
+                key={`${s.path}-${i}`}
                 className="flex items-center gap-2 rounded-md border border-border bg-surface px-2 py-1.5 text-sm"
               >
                 <FileIcon size={13} className="shrink-0 text-ink-dim" />
