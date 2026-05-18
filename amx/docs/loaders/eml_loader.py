@@ -14,9 +14,17 @@ from email import message_from_bytes
 from email.message import Message
 from pathlib import Path
 
-from markdownify import markdownify
-
 HEADERS = ("From", "To", "Cc", "Subject", "Date")
+
+
+def _html_to_markdown(html: str) -> str:
+    # Deferred so an absent markdownify install does not block the
+    # rest of the docs ingestion path from loading at server startup.
+    try:
+        from markdownify import markdownify
+    except ImportError:
+        return html
+    return markdownify(html)
 
 
 def _decoded(part: Message) -> str:
@@ -38,11 +46,11 @@ def _pick_body(msg: Message) -> str:
         if text_part is not None:
             return _decoded(text_part)
         if html_part is not None:
-            return markdownify(_decoded(html_part))
+            return _html_to_markdown(_decoded(html_part))
         return ""
     text = _decoded(msg)
     if msg.get_content_type() == "text/html":
-        text = markdownify(text)
+        text = _html_to_markdown(text)
     return text
 
 
