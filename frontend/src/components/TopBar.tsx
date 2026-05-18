@@ -4,6 +4,7 @@ import {
   Activity,
   BarChart3,
   ChevronRight,
+  FileText,
   PanelLeft,
   Pin,
   Sparkles,
@@ -48,6 +49,7 @@ const navItems = [
     // stays highlighted while the user navigates between artefacts.
     match: ["/lineage"],
   },
+  { to: "/pages", label: "Pages", icon: FileText, match: ["/pages"] },
   { to: "/settings", label: "Settings", icon: SettingsIcon, match: ["/settings"] },
   { to: "/system", label: "System", icon: Activity, match: ["/system"] },
 ];

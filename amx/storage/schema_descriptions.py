@@ -1416,6 +1416,115 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "comment body redacted (used for /doctor and post-mortems)."
         ),
     },
+    # ── documentation_pages (local + shared) ──────────────────────────────
+    "documentation_pages": {
+        "__table__": (
+            "User-facing narrative pages composed by AMX from selected DB "
+            "profiles, doc profiles, lineage artifacts, and uploaded "
+            "sources. Each row is the canonical markdown body backing the "
+            "Studio editor, the CLI /pages-show preview, and the markdown / "
+            "PDF export endpoints. Joined to documentation_page_assets and "
+            "documentation_page_sources for the per-asset / per-upload "
+            "context fed back into re-generations."
+        ),
+        "id": ("Stable UUID for the page across versions and exports."),
+        "title": (
+            "Human-readable page title; rendered as the H1 of the document and shown in list views."
+        ),
+        "slug": ("URL-safe identifier used by /pages/:slug in Studio routing."),
+        "markdown_body": (
+            "Current markdown source; canonical content backing both the editor and exports."
+        ),
+        "rendered_html": (
+            "Cached HTML render of markdown_body; used by PDF export and "
+            "read-only views to skip re-rendering."
+        ),
+        "status": (
+            "Lifecycle flag - draft, published, or deleted; controls "
+            "visibility in listings and supports soft-delete via "
+            "/pages-delete."
+        ),
+        "created_at": "Creation timestamp in UTC.",
+        "updated_at": ("Timestamp of the last edit; updated on every body change."),
+        "created_by": (
+            "Author identity; populated from the active AMX session/user record when present."
+        ),
+        "generation_prompt": (
+            "User's free-text intent passed to the LLM on the most recent "
+            "generate call; persisted so users can re-generate with the "
+            "same prompt."
+        ),
+        "model_used": (
+            "LLM model id that produced the last generated draft; supports "
+            "reproducibility and attribution."
+        ),
+    },
+    # ── documentation_page_assets (local + shared) ────────────────────────
+    "documentation_page_assets": {
+        "__table__": (
+            "Per-page list of catalog assets (DB profiles down to columns, "
+            "doc profiles, lineage artifacts) feeding the LLM composer. "
+            "Edited via the Studio AssetPicker and the /pages-new wizard; "
+            "the 'included' flag lets users keep history while excluding an "
+            "asset from future re-generations."
+        ),
+        "id": "Surrogate key for asset row identity.",
+        "page_id": "Parent page reference.",
+        "asset_kind": (
+            "Discriminator - one of db_profile, db_database, db_schema, "
+            "db_table, db_column, doc_profile, lineage_artifact."
+        ),
+        "asset_ref": (
+            "Fully-qualified reference (e.g. pg_prod/sales/public/orders, "
+            "doc:design_docs, lineage:<artifact_id>); resolves to the live "
+            "object at generation time."
+        ),
+        "included": (
+            "1/0 flag - whether the asset is active for re-generation; "
+            "lets users keep history while excluding from future runs."
+        ),
+    },
+    # ── documentation_page_sources (local + shared) ───────────────────────
+    "documentation_page_sources": {
+        "__table__": (
+            "Per-page list of user-uploaded source files (.xlsx, .eml, plus "
+            "any extension already in SUPPORTED_EXTENSIONS). Each row points "
+            "at a content-addressed file under "
+            "~/.amx/uploads/pages/<page_id>/ and records the original "
+            "filename so the Studio source list stays readable."
+        ),
+        "id": "Surrogate key for source row identity.",
+        "page_id": "Parent page reference.",
+        "source_kind": (
+            "Discriminator - upload, email, or excel; controls which loader handles the file."
+        ),
+        "source_path": ("Content-addressed path under ~/.amx/uploads/pages/<page_id>/<sha>.<ext>."),
+        "original_name": "User-facing filename to display in the source list.",
+        "created_at": "Upload timestamp in UTC.",
+    },
+    # ── documentation_page_versions (local + shared) ──────────────────────
+    "documentation_page_versions": {
+        "__table__": (
+            "Append-only version history of every save on a documentation "
+            "page. Each /pages-edit save (CLI + Studio autosave) writes one "
+            "row so the version drawer can show a diff and restore prior "
+            "snapshots without destructive overwrites."
+        ),
+        "page_id": "Parent page reference.",
+        "version_no": (
+            "Monotonically-increasing version index for the page; together "
+            "with page_id uniquely identifies a snapshot."
+        ),
+        "markdown_body": (
+            "Frozen markdown content at the moment of save; supports diff/restore workflows."
+        ),
+        "saved_at": "Timestamp the version was captured.",
+        "saved_by": "Author identity at save time.",
+        "note": (
+            "Optional short change note supplied by the user (e.g. "
+            "'regenerated after schema change')."
+        ),
+    },
     # ── _amx_schema_descriptions (the sidecar itself) ─────────────────────
     # Self-describing: the sidecar records its own description rows too.
     "_amx_schema_descriptions": {

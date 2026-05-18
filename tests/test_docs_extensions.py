@@ -45,6 +45,14 @@ def test_canonical_extensions_drop_rtf() -> None:
     assert ".rtf" not in SUPPORTED_EXTENSIONS
 
 
+def test_xlsx_and_eml_are_supported() -> None:
+    """Documentation Pages relies on .xlsx and .eml ingestion."""
+    from amx.docs.extensions import SUPPORTED_EXTENSIONS
+
+    assert ".xlsx" in SUPPORTED_EXTENSIONS
+    assert ".eml" in SUPPORTED_EXTENSIONS
+
+
 def test_every_supported_extension_has_a_loader() -> None:
     """If scan accepts a file, ingest must be able to parse it. This
     guard previously broke for ``.tsv`` and ``.markdown``."""

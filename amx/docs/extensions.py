@@ -41,6 +41,7 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
         ".xlsx",
         ".xls",
         ".pptx",
+        ".eml",
     }
 )
 

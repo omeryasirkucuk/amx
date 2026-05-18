@@ -39,3 +39,38 @@ def get_jobs(request: Request) -> JobRegistry:
     if jobs is None:
         raise RuntimeError("AMX Studio is missing its JobRegistry binding.")
     return jobs
+
+
+def get_pages_service(request: Request):
+    """Return the lazily-built :class:`amx.pages.service.PagesService`.
+
+    Cached on ``app.state.pages_service`` so a single instance is reused
+    across requests. The history-store path follows the same resolution
+    the rest of AMX uses (``cfg.CONFIG_DIR / history.db``) so the local
+    SQLite database picks up ``AMX_CONFIG_DIR`` overrides.
+    """
+    from pathlib import Path
+
+    svc = getattr(request.app.state, "pages_service", None)
+    if svc is not None:
+        return svc
+
+    cfg = get_cfg(request)
+    from amx.pages._llm import AMXLLMClient
+    from amx.pages._resolver import AMXResolver
+    from amx.pages.service import PagesService
+    from amx.pages.store import PageStore
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
+    config_dir = getattr(cfg, "CONFIG_DIR", str(Path.home() / ".amx"))
+    history = SQLiteHistoryStore(Path(config_dir) / "history.db")
+    history.init()
+    llm = AMXLLMClient(cfg)
+    svc = PagesService(
+        store=PageStore(history=history),
+        llm=llm,
+        resolver=AMXResolver(cfg),
+        model_name=llm.model_name,
+    )
+    request.app.state.pages_service = svc
+    return svc

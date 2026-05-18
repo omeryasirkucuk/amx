@@ -171,6 +171,36 @@ EXPLANATORY_TERMS = frozenset(
 )
 
 
+class _StringFnLoader:
+    """Adapter wrapping a ``(path) -> str`` loader as the langchain loader
+    protocol (``__init__(path)`` + ``.load() -> list[Document]``).
+
+    The pages module ships pure-Python loaders for ``.xlsx`` and ``.eml``
+    that return a single markdown string; this adapter feeds them into
+    the same ingest path the langchain loaders use without the heavy
+    ``unstructured`` dependency.
+    """
+
+    def __init__(self, fn: Any, path: str | Path) -> None:
+        self._fn = fn
+        self._path = str(path)
+
+    def load(self) -> list[Any]:
+        from langchain_core.documents import Document
+
+        text = self._fn(self._path)
+        return [Document(page_content=text, metadata={"source": self._path})]
+
+
+def _make_string_fn_loader(fn: Any) -> Any:
+    """Return a class-shaped loader factory that closes over ``fn``."""
+
+    def _factory(path: str | Path) -> _StringFnLoader:
+        return _StringFnLoader(fn, path)
+
+    return _factory
+
+
 def _build_loader_map() -> dict[str, Any]:
     """Build the extension -> langchain loader class map on first use.
 
@@ -191,6 +221,9 @@ def _build_loader_map() -> dict[str, Any]:
         UnstructuredPowerPointLoader,
     )
 
+    from amx.docs.loaders.eml_loader import load_eml
+    from amx.docs.loaders.xlsx_loader import load_xlsx
+
     return {
         ".pdf": PyPDFLoader,
         ".docx": Docx2txtLoader,
@@ -209,7 +242,9 @@ def _build_loader_map() -> dict[str, Any]:
         # agnostic at the langchain level and treats the file as one
         # logical record per row.
         ".tsv": CSVLoader,
-        ".xlsx": UnstructuredExcelLoader,
+        # Pure-Python xlsx loader from amx.docs.loaders: produces a
+        # markdown table per sheet, no Unstructured runtime needed.
+        ".xlsx": _make_string_fn_loader(load_xlsx),
         ".xls": UnstructuredExcelLoader,
         ".html": UnstructuredHTMLLoader,
         ".htm": UnstructuredHTMLLoader,
@@ -219,6 +254,9 @@ def _build_loader_map() -> dict[str, Any]:
         ".yml": TextLoader,
         ".rst": TextLoader,
         ".py": TextLoader,
+        # Email loader: headers as a frontmatter block plus plain-text
+        # body (falling back to markdownify-converted HTML).
+        ".eml": _make_string_fn_loader(load_eml),
     }
 
 
