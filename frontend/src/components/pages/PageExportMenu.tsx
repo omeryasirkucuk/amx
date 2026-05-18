@@ -66,7 +66,7 @@ export default function PageExportMenu({ pageId, pageTitle }: Props) {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-sm text-ink-muted hover:bg-surface-subtle hover:text-ink"
+        className="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft/40 px-3 py-1.5 text-sm font-medium text-accent-ink transition-colors hover:border-accent/50 hover:bg-accent-soft"
       >
         <Download size={14} />
         Export

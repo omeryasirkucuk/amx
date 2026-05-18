@@ -1,27 +1,48 @@
 // Edit view for a single Documentation Page.
-// Header carries the editable title + status + last-saved indicator;
-// the body shows the markdown editor; the rail exposes assets,
-// sources, re-generate, export, and delete.
+// Hosts the three-column shell (outline / canvas / rail), the
+// large title input, the segmented Edit/Preview/Source switcher,
+// and the focus-mode toggle that collapses everything except the
+// canvas. All cross-component state lives here so the rail and
+// the editor never duplicate it.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Loader2, RefreshCw, Trash2 } from "lucide-react";
+import {
+  ChevronRight,
+  History,
+  Loader2,
+  Maximize2,
+  Minimize2,
+  Trash2,
+} from "lucide-react";
 
-import PageHeader from "../components/PageHeader";
+import AssetChip from "../components/pages/AssetChip";
+import EditorFooter from "../components/pages/EditorFooter";
+import EditorViewSwitcher, {
+  loadStoredView,
+  type EditorView,
+} from "../components/pages/EditorViewSwitcher";
 import PageEditor from "../components/pages/PageEditor";
-import SourceAttacher from "../components/pages/SourceAttacher";
 import PageExportMenu from "../components/pages/PageExportMenu";
+import PageOutline from "../components/pages/PageOutline";
+import RegeneratePopover from "../components/pages/RegeneratePopover";
+import SourceAttacher from "../components/pages/SourceAttacher";
+import VersionsDrawer from "../components/pages/VersionsDrawer";
 import { Badge, Button, useToast } from "../components/ui";
 import type { BadgeTone } from "../components/ui";
+import { cn } from "../lib/cn";
 import {
   useDeletePage,
   useGeneratePage,
   usePage,
   useSavePage,
   type PageSource,
+  type PageVersion,
 } from "../hooks/usePages";
 
 const AUTOSAVE_DELAY_MS = 5000;
+const FOCUS_KEY = "amx-pages-focus";
+const OUTLINE_KEY = "amx-pages-outline-collapsed";
 
 const STATUS_TONE: Record<string, BadgeTone> = {
   draft: "neutral",
@@ -45,8 +66,26 @@ export default function PageEditRoute() {
   const [sources, setSources] = useState<PageSource[]>([]);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [saving, setSaving] = useState(false);
+  const [view, setView] = useState<EditorView>(() => loadStoredView());
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [focusMode, setFocusMode] = useState<boolean>(() => {
+    try {
+      return window.sessionStorage.getItem(FOCUS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [outlineCollapsed, setOutlineCollapsed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(OUTLINE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
   const initRef = useRef(false);
   const autosaveTimer = useRef<number | null>(null);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
 
   // Hydrate local state once the detail arrives.
   useEffect(() => {
@@ -71,13 +110,29 @@ export default function PageEditRoute() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [title, markdown]);
 
-  async function runSave() {
+  // Persist focus + outline preferences across reloads.
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(FOCUS_KEY, focusMode ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [focusMode]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(OUTLINE_KEY, outlineCollapsed ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [outlineCollapsed]);
+
+  async function runSave(overrideBody?: string) {
     if (!pageId) return;
     setSaving(true);
     try {
       const updated = await save.mutateAsync({
         title: title.trim() || "Untitled",
-        markdown_body: markdown,
+        markdown_body: overrideBody ?? markdown,
       });
       setLastSavedAt(new Date(updated.updated_at));
     } catch (e) {
@@ -87,13 +142,21 @@ export default function PageEditRoute() {
     }
   }
 
-  async function runRegenerate() {
+  async function runRegenerate(steering: string) {
     if (!pageId) return;
     try {
       const updated = await regen.mutateAsync();
       setMarkdown(updated.markdown_body);
       setTitle(updated.title);
       setLastSavedAt(new Date(updated.updated_at));
+      if (steering) {
+        // Pin the steering text onto the row as a note so the user
+        // can spot which run a given version came from.
+        await save.mutateAsync({
+          markdown_body: updated.markdown_body,
+          note: `steering: ${steering}`,
+        });
+      }
       toast.push({ title: "Page regenerated", tone: "success" });
     } catch (e) {
       toast.push({ title: (e as Error).message, tone: "error" });
@@ -111,40 +174,64 @@ export default function PageEditRoute() {
     }
   }
 
+  async function runRestore(version: PageVersion) {
+    setMarkdown(version.markdown_body);
+    setVersionsOpen(false);
+    await runSave(version.markdown_body);
+    toast.push({ title: `Restored v${version.version_no}`, tone: "success" });
+  }
+
+  const page = detail.data;
+  const versions = useMemo<PageVersion[]>(
+    () => page?.versions ?? [],
+    [page?.versions],
+  );
+
   if (detail.isLoading) {
     return (
-      <div className="mx-auto w-full max-w-6xl px-4 py-6 text-sm text-ink-dim">
-        Loading page...
+      <div className="mx-auto w-full max-w-7xl px-4 py-6">
+        <SkeletonShell />
       </div>
     );
   }
-  if (detail.error || !detail.data) {
+  if (detail.error || !page) {
     return (
-      <div className="mx-auto w-full max-w-6xl px-4 py-6 text-sm text-critical">
+      <div className="mx-auto w-full max-w-7xl px-4 py-6 text-sm text-critical">
         {(detail.error as Error)?.message ?? "Page not found."}
       </div>
     );
   }
 
-  const page = detail.data;
-
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6">
-      <PageHeader
-        breadcrumbs={[
-          { label: "Pages", to: "/pages" },
-          { label: page.title || "Untitled" },
-        ]}
-        title={
+    <div
+      className={cn(
+        "mx-auto w-full px-4 py-6 sm:px-6",
+        focusMode ? "max-w-3xl" : "max-w-7xl",
+      )}
+    >
+      {/* ── Header ───────────────────────────────────────────────── */}
+      <div className="mb-5">
+        <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-ink-dim">
+          <button
+            type="button"
+            onClick={() => navigate("/pages")}
+            className="hover:text-ink"
+          >
+            Pages
+          </button>
+          <ChevronRight size={11} />
+          <span className="truncate normal-case tracking-normal text-ink-muted">
+            {page.title || "Untitled"}
+          </span>
+        </div>
+        <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Untitled"
             aria-label="Page title"
-            className="w-full min-w-0 bg-transparent text-[22px] font-semibold tracking-tight text-ink outline-none focus:border-b focus:border-accent/40"
+            className="min-w-0 flex-1 bg-transparent text-3xl font-semibold tracking-tight text-ink outline-none placeholder:text-ink-dim focus:border-b focus:border-accent/40 lg:text-4xl"
           />
-        }
-        actions={
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone={STATUS_TONE[page.status] ?? "neutral"}>
               {page.status}
@@ -152,71 +239,136 @@ export default function PageEditRoute() {
             <SavedIndicator saving={saving} lastSavedAt={lastSavedAt} />
             <PageExportMenu pageId={page.id} pageTitle={title} />
           </div>
-        }
-      />
-      <div className="flex flex-col gap-6 lg:flex-row">
-        <div className="min-w-0 flex-1">
+        </div>
+      </div>
+
+      {/* ── View controls ────────────────────────────────────────── */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <EditorViewSwitcher value={view} onChange={setView} />
+        <div className="flex items-center gap-1">
+          {!focusMode && (
+            <button
+              type="button"
+              onClick={() => setVersionsOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1 text-xs text-ink-muted hover:border-accent/40 hover:bg-surface-subtle hover:text-ink"
+            >
+              <History size={12} />
+              Versions
+              <span className="ml-1 rounded-full bg-surface-subtle px-1.5 text-[10px] font-medium text-ink-dim">
+                {versions.length}
+              </span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setFocusMode((v) => !v)}
+            aria-pressed={focusMode}
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1 text-xs text-ink-muted hover:border-accent/40 hover:bg-surface-subtle hover:text-ink"
+            title={focusMode ? "Exit focus mode" : "Enter focus mode"}
+          >
+            {focusMode ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+            {focusMode ? "Exit focus" : "Focus mode"}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Body grid ────────────────────────────────────────────── */}
+      <div
+        className={cn(
+          "grid gap-5",
+          focusMode
+            ? "grid-cols-1"
+            : "lg:grid-cols-[220px_minmax(0,1fr)_300px]",
+        )}
+      >
+        {/* Outline */}
+        {!focusMode && (
+          <div className="order-2 lg:order-1">
+            <PageOutline
+              markdown={markdown}
+              scrollRoot={surfaceRef.current}
+              collapsed={outlineCollapsed}
+              onToggleCollapsed={() => setOutlineCollapsed((v) => !v)}
+            />
+          </div>
+        )}
+
+        {/* Canvas */}
+        <div className={cn("order-1 min-w-0", focusMode ? "" : "lg:order-2")}>
           <PageEditor
             initialMarkdown={page.markdown_body}
             onChange={setMarkdown}
+            view={view}
+            surfaceRef={surfaceRef}
+          />
+          <EditorFooter
+            markdown={markdown}
+            assetCount={page.assets.length}
+            modelUsed={page.model_used}
           />
         </div>
-        <aside className="w-full lg:w-72 lg:shrink-0 space-y-4">
-          <Section title="Assets">
-            {page.assets.length === 0 ? (
-              <div className="text-xs text-ink-dim">No assets attached.</div>
-            ) : (
-              <ul className="space-y-1">
-                {page.assets.map((a, i) => (
-                  <li
-                    key={`${a.kind}-${a.ref}-${i}`}
-                    className="rounded border border-border bg-surface px-2 py-1 text-xs"
-                  >
-                    <div className="font-mono text-ink">{a.ref}</div>
-                    <div className="text-[10px] uppercase tracking-wide text-ink-dim">
-                      {a.kind}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Section>
-          <Section title="Sources">
-            <SourceAttacher
-              pageId={page.id}
-              sources={sources}
-              onChange={setSources}
-            />
-          </Section>
-          <Section title="Actions">
-            <div className="flex flex-col gap-2">
-              <Button
-                variant="secondary"
-                onClick={runRegenerate}
-                loading={regen.isPending}
-                leadingIcon={<RefreshCw size={13} />}
-                fullWidth
-              >
-                Re-generate
-              </Button>
-              <Button
-                variant="danger"
-                onClick={runDelete}
-                loading={del.isPending}
-                leadingIcon={<Trash2 size={13} />}
-                fullWidth
-              >
-                Delete
-              </Button>
-            </div>
-          </Section>
-        </aside>
+
+        {/* Rail */}
+        {!focusMode && (
+          <aside className="order-3 space-y-4 lg:order-3">
+            <Section title="Assets">
+              {page.assets.length === 0 ? (
+                <p className="text-xs text-ink-dim">No assets attached.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {page.assets.map((a, i) => (
+                    <AssetChip key={`${a.kind}-${a.ref}-${i}`} asset={a} />
+                  ))}
+                </div>
+              )}
+            </Section>
+            <Section title="Sources">
+              <SourceAttacher
+                pageId={page.id}
+                sources={sources}
+                onChange={setSources}
+              />
+            </Section>
+            <Section title="Actions">
+              <div className="flex flex-col gap-2">
+                <RegeneratePopover
+                  pending={regen.isPending}
+                  onSubmit={runRegenerate}
+                />
+                <Button
+                  variant="danger"
+                  onClick={runDelete}
+                  loading={del.isPending}
+                  leadingIcon={<Trash2 size={13} />}
+                  fullWidth
+                >
+                  Delete
+                </Button>
+              </div>
+            </Section>
+          </aside>
+        )}
       </div>
+
+      <VersionsDrawer
+        open={versionsOpen}
+        onClose={() => setVersionsOpen(false)}
+        versions={versions}
+        currentBody={markdown}
+        restoring={saving}
+        onRestore={runRestore}
+      />
     </div>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="rounded-md border border-border bg-surface p-3">
       <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
@@ -249,5 +401,20 @@ function SavedIndicator({
     <span className="text-[11px] text-ink-dim">
       Saved {lastSavedAt.toLocaleTimeString()}
     </span>
+  );
+}
+
+function SkeletonShell() {
+  return (
+    <div className="space-y-4">
+      <div className="h-3 w-24 animate-pulse rounded bg-surface-subtle" />
+      <div className="h-9 w-1/2 animate-pulse rounded bg-surface-subtle" />
+      <div className="h-7 w-40 animate-pulse rounded bg-surface-subtle" />
+      <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)_300px]">
+        <div className="h-64 animate-pulse rounded-md bg-surface-subtle" />
+        <div className="h-96 animate-pulse rounded-md bg-surface-subtle" />
+        <div className="h-64 animate-pulse rounded-md bg-surface-subtle" />
+      </div>
+    </div>
   );
 }

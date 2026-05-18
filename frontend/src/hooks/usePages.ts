@@ -21,8 +21,11 @@ export interface PageSource {
 }
 
 export interface PageVersion {
-  id: string;
-  created_at: string;
+  page_id: string;
+  version_no: number;
+  markdown_body: string;
+  saved_at: string;
+  saved_by: string | null;
   note: string | null;
 }
 
