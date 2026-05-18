@@ -998,7 +998,62 @@ def stream_suggest_lineage(
         QueryLogExtractor,
     )
 
+    # Build a fast lookup of every table FQN that actually exists in
+    # the catalog for the scope's profile + database. Deterministic
+    # extractors (view DDL parser, query log, codebase scan) can yield
+    # edges that reference parsed-out names like ``all.source`` —
+    # generic SQL aliases / fragments that are not real catalog
+    # tables. Filtering against the catalog here keeps phantom
+    # endpoints off the canvas.
+    valid_endpoints: set[str] = set()
+    anchor_fqn = _node_id(scope.anchor)
+    try:
+        with hs._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT schema_name, table_name
+                FROM catalog_entities
+                WHERE db_profile = ? AND database_name = ?
+                  AND entity_kind = 'table'
+                """,
+                (scope.profile, scope.anchor.database),
+            ).fetchall()
+        for schema_name, table_name in rows:
+            schema_s = str(schema_name or "")
+            table_s = str(table_name or "")
+            if not table_s:
+                continue
+            short_fqn = f"{schema_s}.{table_s}" if schema_s else table_s
+            valid_endpoints.add(short_fqn)
+            # Also accept the database-qualified form because
+            # ``_node_id`` prefixes the database segment when it's
+            # present on the ColumnRef.
+            if scope.anchor.database:
+                valid_endpoints.add(f"{scope.anchor.database}.{short_fqn}")
+    except Exception:
+        # If the catalog query itself fails we degrade open — emitting
+        # is better than dropping every edge silently.
+        valid_endpoints = set()
+    # Anchor is always valid even if the catalog row was synced under
+    # a slightly different database name.
+    valid_endpoints.add(anchor_fqn)
+
+    def _edge_endpoints_valid(edge: Edge) -> bool:
+        """Drop edges whose endpoints don't resolve to real tables."""
+        if not valid_endpoints:
+            return True
+        from_id = _node_id(edge.source)
+        to_id = _node_id(edge.target)
+        return from_id in valid_endpoints and to_id in valid_endpoints
+
     def _emit(extractor: str, edges_iter: list[Edge], partial: bool = False) -> str:
+        # Skip self-loops (anchor → anchor) and any endpoint the
+        # catalog doesn't know about.
+        filtered = [
+            e
+            for e in edges_iter
+            if _node_id(e.source) != _node_id(e.target) and _edge_endpoints_valid(e)
+        ]
         payload = {
             "extractor": extractor,
             "partial": partial,
@@ -1020,7 +1075,7 @@ def stream_suggest_lineage(
                         else None
                     ),
                 }
-                for edge in edges_iter
+                for edge in filtered
             ],
         }
         return f"event: edges-batch\ndata: {_json.dumps(payload)}\n\n"
