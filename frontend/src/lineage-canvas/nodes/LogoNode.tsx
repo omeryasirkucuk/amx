@@ -14,6 +14,7 @@ import { memo, useState } from "react";
 import { Handle, NodeProps, NodeResizer, Position, useReactFlow } from "reactflow";
 import clsx from "clsx";
 
+import { NodeDeleteToolbar } from "../components/NodeDeleteToolbar";
 import { pickLogoSrc, useLogoIndex } from "../logos/registry";
 import type { LogoNodeData } from "../types";
 
@@ -81,6 +82,7 @@ function LogoNodeImpl({ id, data, selected }: NodeProps<LogoNodeData>) {
         className="lcv-handle"
         style={{ background: "rgb(var(--accent))" }}
       />
+      <NodeDeleteToolbar nodeId={id} visible={!!selected} />
     </div>
   );
 }
