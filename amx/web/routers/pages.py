@@ -184,8 +184,8 @@ async def upload_source(
     )
     return {
         "page_id": page_id,
-        "source_kind": kind,
-        "source_path": saved.saved_path,
+        "kind": kind,
+        "path": saved.saved_path,
         "original_name": saved.original_name,
     }
 

@@ -32,7 +32,8 @@ def test_create_get_list_delete(tmp_path: Path) -> None:
     assert page is not None
     assert page["title"] == "Orders overview"
     assert page["status"] == "draft"
-    assert page["assets"][0]["asset_ref"] == "pg_prod/sales/public/orders"
+    assert page["assets"][0]["ref"] == "pg_prod/sales/public/orders"
+    assert page["assets"][0]["kind"] == "db_table"
 
     rows = s.list_active()
     assert len(rows) == 1
@@ -91,5 +92,6 @@ def test_create_attaches_sources(tmp_path: Path) -> None:
     )
     page = s.get(pid)
     assert page is not None
-    assert page["sources"][0]["source_kind"] == "excel"
+    assert page["sources"][0]["kind"] == "excel"
+    assert page["sources"][0]["path"] == "/tmp/x.xlsx"
     assert page["sources"][0]["original_name"] == "x.xlsx"

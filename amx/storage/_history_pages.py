@@ -176,21 +176,49 @@ def attach_documentation_page_source(
 
 
 def list_documentation_page_assets(hs: SQLiteHistoryStore, page_id: str) -> list[dict[str, Any]]:
+    # Wire-shape: ``kind`` / ``ref`` instead of the raw on-disk
+    # ``asset_kind`` / ``asset_ref`` columns. The wizard, the
+    # service layer, and every frontend consumer already speak that
+    # shape — returning the raw row caused every chip in the rail
+    # to fall through to "(no reference)".
     with hs._connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM documentation_page_assets WHERE page_id = ? ORDER BY id",
+            "SELECT id, page_id, asset_kind, asset_ref, included "
+            "FROM documentation_page_assets WHERE page_id = ? ORDER BY id",
             (page_id,),
         ).fetchall()
-    return [_row_to_dict(r) for r in rows]
+    return [
+        {
+            "id": r["id"],
+            "kind": r["asset_kind"],
+            "ref": r["asset_ref"],
+            "included": int(r["included"] or 0),
+        }
+        for r in rows
+    ]
 
 
 def list_documentation_page_sources(hs: SQLiteHistoryStore, page_id: str) -> list[dict[str, Any]]:
+    # Same wire-shape hygiene as
+    # :func:`list_documentation_page_assets`: drop the on-disk
+    # ``source_`` prefix so the editor receives ``kind`` / ``path``
+    # consistently with the wizard's upload payload.
     with hs._connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM documentation_page_sources WHERE page_id = ? ORDER BY id",
+            "SELECT id, source_kind, source_path, original_name, created_at "
+            "FROM documentation_page_sources WHERE page_id = ? ORDER BY id",
             (page_id,),
         ).fetchall()
-    return [_row_to_dict(r) for r in rows]
+    return [
+        {
+            "id": r["id"],
+            "kind": r["source_kind"],
+            "path": r["source_path"],
+            "original_name": r["original_name"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
 
 
 def list_documentation_page_versions(hs: SQLiteHistoryStore, page_id: str) -> list[dict[str, Any]]:

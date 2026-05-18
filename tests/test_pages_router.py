@@ -264,13 +264,13 @@ def test_upload_source_accepts_eml_and_persists(
     )
     assert r.status_code == 201
     body = r.json()
-    assert body["source_kind"] == "email"
+    assert body["kind"] == "email"
     assert body["original_name"] == "note.eml"
 
     page = service.store.get(pid)
     assert page is not None
     assert len(page["sources"]) == 1
-    assert page["sources"][0]["source_kind"] == "email"
+    assert page["sources"][0]["kind"] == "email"
 
 
 def test_upload_source_missing_page_returns_404(
