@@ -1,6 +1,9 @@
-// Rich-text editor for the Documentation Pages feature.
-// Wraps TipTap with markdown round-trip plus a raw textarea toggle so
-// the user can edit either the WYSIWYG form or the markdown source.
+// Rich-text editor surface for the Pages feature.
+// Hosts the TipTap WYSIWYG with markdown round-trip, a slash menu
+// for inserting blocks, and lets the route swap between three
+// views: WYSIWYG editing, rendered preview, and raw markdown
+// source. The view choice is owned by the caller so it can persist
+// through localStorage and synchronise the page header pill.
 
 import { useEffect, useRef, useState } from "react";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
@@ -29,19 +32,39 @@ import {
 } from "lucide-react";
 
 import { cn } from "../../lib/cn";
+import PreviewPane from "./PreviewPane";
+import SlashMenu from "./SlashMenu";
+import type { EditorView } from "./EditorViewSwitcher";
 
 interface Props {
   initialMarkdown: string;
   onChange: (markdown: string) => void;
+  view: EditorView;
   readOnly?: boolean;
+  /** Forwarded to the canvas root so the route can use it for the
+   *  outline scroll-spy and focus-mode wiring. */
+  surfaceRef?: React.MutableRefObject<HTMLDivElement | null>;
 }
+
+const RICH_CLASS = cn(
+  "prose prose-sm lg:prose-base max-w-none",
+  "prose-headings:text-ink prose-headings:font-semibold prose-headings:tracking-tight",
+  "prose-p:text-ink prose-li:text-ink prose-strong:text-ink",
+  "prose-a:text-accent prose-a:no-underline hover:prose-a:underline",
+  "prose-code:rounded prose-code:bg-surface-subtle prose-code:px-1 prose-code:py-[1px] prose-code:text-accent-ink",
+  "prose-pre:bg-surface-subtle prose-pre:text-ink",
+  "prose-blockquote:border-accent/40 prose-blockquote:text-ink-muted",
+  "prose-hr:border-border",
+  "prose-table:text-sm",
+);
 
 export default function PageEditor({
   initialMarkdown,
   onChange,
+  view,
   readOnly = false,
+  surfaceRef,
 }: Props) {
-  const [rawMode, setRawMode] = useState(false);
   const [rawValue, setRawValue] = useState(initialMarkdown);
   const initialMarkdownRef = useRef(initialMarkdown);
 
@@ -61,7 +84,7 @@ export default function PageEditor({
       }),
     ],
     content: initialMarkdown,
-    editable: !readOnly,
+    editable: !readOnly && view === "edit",
     onUpdate({ editor: e }) {
       const md =
         (e.storage as { markdown?: { getMarkdown: () => string } }).markdown?.getMarkdown() ??
@@ -71,7 +94,14 @@ export default function PageEditor({
     },
   });
 
-  // Reset content when a new initialMarkdown arrives (e.g. after fetch).
+  // Mirror the editable flag whenever the caller flips views.
+  useEffect(() => {
+    if (!editor) return;
+    editor.setEditable(!readOnly && view === "edit");
+  }, [editor, view, readOnly]);
+
+  // Reset content when a new initialMarkdown arrives (e.g. after fetch
+  // or a Restore from the versions drawer).
   useEffect(() => {
     if (!editor) return;
     if (initialMarkdown === initialMarkdownRef.current) return;
@@ -80,68 +110,61 @@ export default function PageEditor({
     setRawValue(initialMarkdown);
   }, [initialMarkdown, editor]);
 
-  function switchToRaw() {
-    if (!editor) return;
-    const md =
-      (editor.storage as { markdown?: { getMarkdown: () => string } }).markdown?.getMarkdown() ??
-      "";
-    setRawValue(md);
-    setRawMode(true);
+  // When the user edits in Source view, push the change back into
+  // TipTap so switching to Edit/Preview later shows the latest body.
+  function handleRawChange(next: string) {
+    setRawValue(next);
+    onChange(next);
+    if (editor) {
+      editor.commands.setContent(next, { emitUpdate: false });
+    }
   }
 
-  function switchToRich() {
-    if (!editor) return;
-    editor.commands.setContent(rawValue, { emitUpdate: false });
-    onChange(rawValue);
-    setRawMode(false);
+  if (view === "preview") {
+    return <PreviewPane markdown={rawValue} className={RICH_CLASS} />;
+  }
+
+  if (view === "source") {
+    return (
+      <textarea
+        value={rawValue}
+        onChange={(e) => handleRawChange(e.target.value)}
+        readOnly={readOnly}
+        spellCheck={false}
+        className="min-h-[500px] w-full rounded-md border border-border bg-surface p-4 font-mono text-sm text-ink focus:border-accent/60 focus:outline-none"
+      />
+    );
   }
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        {editor && !rawMode ? (
-          <EditorToolbar editor={editor} disabled={readOnly} />
-        ) : (
-          <div className="text-xs text-ink-dim">Raw markdown mode</div>
-        )}
-        <button
-          type="button"
-          onClick={() => (rawMode ? switchToRich() : switchToRaw())}
-          className="rounded-md border border-border bg-surface px-2 py-1 text-[11px] text-ink-muted hover:bg-surface-subtle hover:text-ink"
-        >
-          {rawMode ? "Rich editor" : "Raw markdown"}
-        </button>
-      </div>
-      {rawMode ? (
-        <textarea
-          value={rawValue}
-          onChange={(e) => {
-            setRawValue(e.target.value);
-            onChange(e.target.value);
-          }}
-          readOnly={readOnly}
-          spellCheck={false}
-          className="min-h-[400px] w-full rounded-md border border-border bg-surface p-3 font-mono text-sm text-ink focus:border-accent/60 focus:outline-none"
+      <EditorToolbar editor={editor} disabled={readOnly} />
+      <div
+        ref={surfaceRef ?? undefined}
+        className="relative rounded-md border border-border bg-surface"
+      >
+        <EditorContent
+          editor={editor}
+          className={cn(
+            "px-5 py-4 [&_.ProseMirror]:min-h-[500px] [&_.ProseMirror]:outline-none",
+            RICH_CLASS,
+          )}
         />
-      ) : (
-        <div className="rounded-md border border-border bg-surface">
-          <EditorContent
-            editor={editor}
-            className="prose prose-sm max-w-none px-3 py-2 [&_.ProseMirror]:min-h-[400px] [&_.ProseMirror]:outline-none"
-          />
-        </div>
-      )}
+        <SlashMenu editor={editor} />
+      </div>
     </div>
   );
 }
 
 interface ToolbarProps {
-  editor: Editor;
+  editor: Editor | null;
   disabled: boolean;
 }
 
 function EditorToolbar({ editor, disabled }: ToolbarProps) {
   const [moreOpen, setMoreOpen] = useState(false);
+
+  if (!editor) return null;
 
   function btn(
     onClick: () => void,
@@ -170,6 +193,7 @@ function EditorToolbar({ editor, disabled }: ToolbarProps) {
   }
 
   function addLink() {
+    if (!editor) return;
     const prev = editor.getAttributes("link").href as string | undefined;
     const url = window.prompt("Link URL", prev ?? "https://");
     if (url === null) return;
@@ -257,7 +281,6 @@ function EditorToolbar({ editor, disabled }: ToolbarProps) {
   return (
     <div className="flex flex-wrap items-center gap-0.5">
       {primary}
-      {/* Secondary cluster: visible inline on sm+, collapsed into More menu on xs */}
       <div className="hidden sm:flex items-center gap-0.5">{secondary}</div>
       <div className="sm:hidden relative">
         <button
@@ -275,6 +298,9 @@ function EditorToolbar({ editor, disabled }: ToolbarProps) {
           </div>
         )}
       </div>
+      <span className="ml-auto text-[10px] text-ink-dim">
+        Tip: type <kbd className="rounded border border-border bg-surface px-1">/</kbd> for blocks
+      </span>
     </div>
   );
 }
