@@ -11,7 +11,6 @@ from __future__ import annotations
 import io
 
 from markdown_it import MarkdownIt
-from xhtml2pdf import pisa
 
 _md = MarkdownIt("commonmark", {"html": False, "linkify": True, "typographer": True})
 
@@ -33,6 +32,15 @@ def to_markdown(markdown_body: str) -> str:
 
 
 def to_pdf(markdown_body: str) -> bytes:
+    # Deferred so a missing xhtml2pdf install does not block the
+    # rest of the pages router from mounting at server startup.
+    try:
+        from xhtml2pdf import pisa
+    except ImportError as exc:
+        raise RuntimeError(
+            "PDF export requires xhtml2pdf. Install it with: pip install xhtml2pdf"
+        ) from exc
+
     html_body = _md.render(markdown_body)
     html = f"<html><head><style>{_PDF_CSS}</style></head><body>{html_body}</body></html>"
     buf = io.BytesIO()
