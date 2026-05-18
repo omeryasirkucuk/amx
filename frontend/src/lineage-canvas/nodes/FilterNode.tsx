@@ -28,6 +28,7 @@ import { Filter } from "lucide-react";
 import clsx from "clsx";
 
 import { HighlightedConditionInput } from "../components/HighlightedConditionInput";
+import { NodeDeleteToolbar } from "../components/NodeDeleteToolbar";
 import { OPERATOR_COLORS } from "../constants";
 import type { OperatorNodeData } from "../types";
 
@@ -83,6 +84,7 @@ function FilterNodeImpl({ id, data, selected }: NodeProps<OperatorNodeData>) {
         className="lcv-handle"
         style={{ background: color }}
       />
+      <NodeDeleteToolbar nodeId={id} visible={!!selected} />
     </div>
   );
 }
