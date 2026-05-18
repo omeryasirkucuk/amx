@@ -25,11 +25,24 @@ from amx.lineage.types import (
     Scope,
 )
 
-# Maximum number of candidate tables fed into the LLM prompt. Bigger
-# prompts cost more tokens with diminishing returns — name-prefix +
-# co-occurrence ranking already surfaces the relevant subset.
-_MAX_CANDIDATES = 30
-_MIN_CONFIDENCE = 0.4
+# Maximum number of candidate tables fed into the LLM prompt. The
+# ranker surfaces the most-likely-related subset, so a tighter cap
+# keeps the prompt small enough that even OpenRouter / kimi-style
+# providers stream a reply in well under a minute. 30 was too large
+# on SAP-style schemas where every candidate carries 50+ columns —
+# the prompt ballooned and the LLM stalled past the tunnel idle
+# timeout.
+_MAX_CANDIDATES = 12
+# Per-candidate column cap. The LLM doesn't need every column on
+# every candidate to infer table-pair edges — names + types of the
+# top columns are enough to anchor join-key reasoning.
+_MAX_CANDIDATE_COLUMNS = 15
+# Marginal hallucinations clustered around 0.4-0.5 in user testing
+# (LLM emitting plausible-sounding but unsupported edges). 0.6 is the
+# new floor for an edge to land on the canvas; the prompt now also
+# asks the model to honestly calibrate confidence rather than
+# default-stamp 0.7+ on every guess.
+_MIN_CONFIDENCE = 0.6
 
 
 # The LLM client surface the extractor depends on. Keeps the extractor
@@ -105,53 +118,76 @@ class LLMExtractor:
 
 
 def _build_anchor_context(hs: Any, scope: Scope) -> prompt_mod.AnchorContext:
-    """Read anchor columns + description from the cached catalog."""
-    fqn = f"{scope.anchor.schema}.{scope.anchor.table}"
-    columns = _columns_for_table(
-        hs, scope.profile, scope.anchor.database, scope.anchor.schema, scope.anchor.table
+    """Assemble the full anchor context via the rich-context module.
+
+    Delegates to :mod:`amx.lineage._anchor_context`, which collects
+    table/column descriptions, FK partners, view co-mentions, and
+    query-log co-occurrence — all signals the LLM needs to ground
+    its suggestions instead of guessing from bare column names.
+    """
+    from amx.lineage._anchor_context import build_rich_context
+
+    rich = build_rich_context(hs, scope)
+    fk_partners = [
+        {
+            "direction": fk.direction,
+            "other_fqn": fk.other_fqn,
+            "from_column": fk.from_column,
+            "to_column": fk.to_column,
+        }
+        for fk in rich.fk_partners
+    ]
+    view_references = [
+        {"view_fqn": v.view_fqn, "other_tables": v.other_tables} for v in rich.view_references
+    ]
+    co_occurrence = [
+        {"other_fqn": p.other_fqn, "count": p.count} for p in rich.co_occurrence_partners
+    ]
+    return prompt_mod.AnchorContext(
+        fqn=rich.fqn,
+        columns=rich.columns,
+        description=rich.table_description,
+        fk_partners=fk_partners,
+        view_references=view_references,
+        co_occurrence_partners=co_occurrence,
     )
-    description = _table_description(
-        hs, scope.profile, scope.anchor.database, scope.anchor.schema, scope.anchor.table
-    )
-    return prompt_mod.AnchorContext(fqn=fqn, columns=columns, description=description)
 
 
 def _build_candidate_list(hs: Any, scope: Scope) -> list[prompt_mod.CandidateTable]:
-    """Return up to _MAX_CANDIDATES tables in the same database, excluding the anchor.
+    """Return the top ``_MAX_CANDIDATES`` candidates ranked by signal.
 
-    Ranking heuristic: tables sharing a name prefix with the anchor (e.g.
-    SAP ``ADR6`` ↔ ``ADRC``) come first, then everything else
-    alphabetically. The LLM gets the most-likely-related subset first.
+    Replaces the prior name-prefix + alphabetical ordering — which on
+    SAP-style schemas filled the prompt with sibling tables — with a
+    weighted-sum score over FK partnership, view co-mentions, query
+    co-occurrence, column-name overlap, and prefix similarity. Each
+    candidate carries its score + reason list into the prompt so the
+    LLM sees the evidence behind every entry, not just the name.
     """
-    anchor_table = scope.anchor.table
-    prefix = _name_prefix(anchor_table)
-    with hs._connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT schema_name, table_name
-            FROM catalog_entities
-            WHERE db_profile = ? AND database_name = ?
-              AND entity_kind = 'table'
-              AND NOT (schema_name = ? AND table_name = ?)
-            """,
-            (scope.profile, scope.anchor.database, scope.anchor.schema, anchor_table),
-        ).fetchall()
-    candidates: list[tuple[bool, str, str]] = []
-    for schema_name, table_name in rows:
-        shares_prefix = bool(prefix) and str(table_name).upper().startswith(prefix)
-        candidates.append((shares_prefix, str(schema_name), str(table_name)))
-    candidates.sort(key=lambda t: (not t[0], t[1], t[2]))
+    from amx.lineage._candidate_ranker import score_candidates
+
+    ranked = score_candidates(hs, scope, max_count=_MAX_CANDIDATES)
     out: list[prompt_mod.CandidateTable] = []
-    for _, schema_name, table_name in candidates[:_MAX_CANDIDATES]:
+    for c in ranked:
+        # Truncate per-candidate column lists. Wide tables (SAP-style
+        # 200+ column dumps) otherwise inflate the prompt past the
+        # provider's practical streaming window. Names + types of the
+        # top columns are enough for the LLM to spot join keys.
+        all_columns = _columns_for_table(
+            hs, scope.profile, scope.anchor.database, c.schema, c.table
+        )
+        columns = [
+            {k: v for k, v in col.items() if k in ("name", "dtype")}
+            for col in all_columns[:_MAX_CANDIDATE_COLUMNS]
+        ]
         out.append(
             prompt_mod.CandidateTable(
-                fqn=f"{schema_name}.{table_name}",
-                columns=_columns_for_table(
-                    hs, scope.profile, scope.anchor.database, schema_name, table_name
-                ),
+                fqn=c.fqn,
+                columns=columns,
                 description=_table_description(
-                    hs, scope.profile, scope.anchor.database, schema_name, table_name
-                ),
+                    hs, scope.profile, scope.anchor.database, c.schema, c.table
+                )[:200],
+                score=c.score,
+                reasons=c.reasons,
             )
         )
     return out
@@ -376,7 +412,8 @@ def _verdict_examples(
             """
             SELECT cr.verdict, cr.details_json,
                    src.schema_name, src.table_name,
-                   tgt.schema_name, tgt.table_name
+                   tgt.schema_name, tgt.table_name,
+                   COALESCE(cr.from_column, ''), COALESCE(cr.to_column, '')
             FROM catalog_relationships cr
             JOIN catalog_entities src ON src.id = cr.from_entity_id
             JOIN catalog_entities tgt ON tgt.id = cr.to_entity_id
@@ -398,6 +435,8 @@ def _verdict_examples(
         ex = prompt_mod.FeedbackExample(
             from_fqn=f"{row[2]}.{row[3]}",
             to_fqn=f"{row[4]}.{row[5]}",
+            from_column=str(row[6] or ""),
+            to_column=str(row[7] or ""),
             note=note,
         )
         if verdict == "approved" and len(approved) < limit:

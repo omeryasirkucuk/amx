@@ -126,22 +126,43 @@ export function AddTableModal({ open, onClose, defaultProfile, onPick }: Props) 
     if (loadingPick) return;
     setLoadingPick(true);
     try {
-      const cols = await fetchTableColumns({
-        profile,
-        database: usesCatalogs ? "" : database,
-        catalog: usesCatalogs ? catalog : "",
-        schema,
-        table: asset.name,
-      });
+      // Optimistic add: drop the node onto the canvas immediately
+      // (empty columns) and close the modal. ``fetchTableColumns``
+      // talks to the live connector for Databricks / BigQuery /
+      // Snowflake profiles and can stall for many seconds when the
+      // warehouse is cold — blocking on it leaves the user staring
+      // at an unresponsive Add button. Columns are enriched in the
+      // background and the node updates in place when they arrive.
       onPick({
         profile,
         backend: String(profileMeta?.backend || ""),
         database: catalog || database,
         schema,
         table: asset.name,
-        columns: cols,
+        columns: [],
       });
       onClose();
+      // Fire-and-forget enrichment — failures are swallowed so the
+      // node stays draggable even when the catalog endpoint is down.
+      void fetchTableColumns({
+        profile,
+        database: usesCatalogs ? "" : database,
+        catalog: usesCatalogs ? catalog : "",
+        schema,
+        table: asset.name,
+      })
+        .then((cols) => {
+          if (!cols.length) return;
+          onPick({
+            profile,
+            backend: String(profileMeta?.backend || ""),
+            database: catalog || database,
+            schema,
+            table: asset.name,
+            columns: cols,
+          });
+        })
+        .catch(() => undefined);
     } finally {
       setLoadingPick(false);
     }
