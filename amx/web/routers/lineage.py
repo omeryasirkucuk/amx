@@ -81,6 +81,15 @@ def _scope(
     explicit_database: str = "",
 ) -> Scope:
     name = _resolve_profile(cfg, profile)
+    # When the caller passes the database explicitly AND the path
+    # starts with that database segment, strip it before parsing.
+    # Otherwise ``_parse_anchor_path`` treats the 3-part FQN
+    # ``db.schema.table`` as ``schema.table.column`` and AI Generate
+    # blows up with "anchor not found in catalog_entities". The strip
+    # is purely defensive — a path that doesn't carry the leading
+    # database segment is left alone.
+    if explicit_database and anchor_path.startswith(f"{explicit_database}."):
+        anchor_path = anchor_path[len(explicit_database) + 1 :]
     database, schema, table, column = _parse_anchor_path(anchor_path)
     # Explicit ``?database=…`` overrides everything — the Studio wizard
     # picks a database without baking it into the URL slug so the path

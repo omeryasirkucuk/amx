@@ -483,9 +483,23 @@ function CanvasInner() {
       toast.push({ title: "Pick anchor + profile first", tone: "warning" });
       return;
     }
+    // Look up the anchor's database (and prefer the node-local profile
+    // if the user added it from a non-primary profile). Passing
+    // ``database`` explicitly avoids the backend's 3-part-FQN parsing
+    // ambiguity that mistakes ``db.schema.table`` for
+    // ``schema.table.column``.
+    const anchorNode = nodes.find(
+      (n) => n.data.kind === "table" && (n.data as { fqn?: string }).fqn === aiAnchor,
+    );
+    const anchorDb = anchorNode?.data.kind === "table"
+      ? (anchorNode.data as { database?: string }).database || ""
+      : "";
+    const anchorProfile = anchorNode?.data.kind === "table"
+      ? (anchorNode.data as { profile?: string }).profile || primaryProfile
+      : primaryProfile;
     setGenerating(true);
     setGenerateOpen(false);
-    streamingAI.start(aiAnchor, { profile: primaryProfile });
+    streamingAI.start(aiAnchor, { profile: anchorProfile, database: anchorDb });
   }
 
   // ── Save (manual) ────────────────────────────────────────────────────────
