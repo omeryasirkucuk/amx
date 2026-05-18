@@ -45,16 +45,20 @@ export default function AssetChip({ asset }: Props) {
     }
   }
 
+  const refText = asset.ref || "(no reference)";
   return (
-    <div className="group flex items-start gap-2 rounded-md border border-border bg-surface px-2 py-1.5 transition-colors hover:border-accent/40 hover:bg-surface-subtle">
-      <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded bg-surface-subtle text-ink-muted">
-        <Icon size={12} />
+    <div className="group flex items-start gap-2 rounded-md border border-border bg-surface px-2.5 py-2 transition-colors hover:border-accent/40 hover:bg-surface-subtle">
+      <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded bg-accent-soft/60 text-accent-ink">
+        <Icon size={14} />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="truncate font-mono text-[11px] text-ink" title={asset.ref}>
-          {asset.ref}
+        <div
+          className="break-all font-mono text-xs leading-tight text-ink"
+          title={refText}
+        >
+          {refText}
         </div>
-        <div className="text-[10px] uppercase tracking-wide text-ink-dim">
+        <div className="mt-0.5 text-[10px] uppercase tracking-wide text-ink-dim">
           {labelFor(asset.kind)}
         </div>
       </div>
@@ -64,8 +68,9 @@ export default function AssetChip({ asset }: Props) {
         aria-label="Copy ref"
         title={copied ? "Copied" : "Copy ref"}
         className={cn(
-          "inline-flex h-6 w-6 items-center justify-center rounded text-ink-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface hover:text-ink",
-          copied && "opacity-100 text-accent-ink",
+          "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-muted transition hover:bg-surface hover:text-ink",
+          "opacity-60 group-hover:opacity-100",
+          copied && "!opacity-100 text-accent-ink",
         )}
       >
         {copied ? <Check size={12} /> : <Copy size={12} />}

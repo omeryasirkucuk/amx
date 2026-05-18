@@ -47,7 +47,10 @@ function slugify(text: string, taken: Set<string>): string {
 export function buildOutline(markdown: string): OutlineItem[] {
   const items: OutlineItem[] = [];
   const taken = new Set<string>();
-  for (const m of markdown.matchAll(HEADING_RE)) {
+  // Strip fenced code blocks before scanning headings so a ``# foo``
+  // line inside a code sample never lands in the TOC.
+  const stripped = markdown.replace(/```[\s\S]*?```/g, "");
+  for (const m of stripped.matchAll(HEADING_RE)) {
     const level = m[1].length as 1 | 2 | 3;
     const text = m[2].replace(/`/g, "").trim();
     if (!text) continue;
