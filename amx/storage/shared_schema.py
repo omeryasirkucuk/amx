@@ -42,9 +42,11 @@ from sqlalchemy import (
     Column,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     MetaData,
+    PrimaryKeyConstraint,
     String,
     Table,
     Text,
@@ -488,6 +490,211 @@ def build_metadata(schema: str | None = None) -> MetaData:
             comment=_desc("style_profiles", "updated_at"),
         ),
         comment=_desc("style_profiles"),
+    )
+
+    # ── documentation_pages: LLM-composed narrative pages ────────────────
+    pages_schema = schema or DEFAULT_HISTORY_SCHEMA
+    fq_pages = f"{pages_schema}.documentation_pages"
+    Table(
+        "documentation_pages",
+        md,
+        Column(
+            "id",
+            String(36),
+            primary_key=True,
+            comment=_desc("documentation_pages", "id"),
+        ),
+        Column(
+            "title",
+            String(512),
+            nullable=False,
+            comment=_desc("documentation_pages", "title"),
+        ),
+        Column(
+            "slug",
+            String(512),
+            nullable=False,
+            unique=True,
+            comment=_desc("documentation_pages", "slug"),
+        ),
+        Column(
+            "markdown_body",
+            Text,
+            nullable=False,
+            comment=_desc("documentation_pages", "markdown_body"),
+        ),
+        Column(
+            "rendered_html",
+            Text,
+            comment=_desc("documentation_pages", "rendered_html"),
+        ),
+        Column(
+            "status",
+            String(40),
+            nullable=False,
+            default="draft",
+            comment=_desc("documentation_pages", "status"),
+        ),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("documentation_pages", "created_at"),
+        ),
+        Column(
+            "updated_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("documentation_pages", "updated_at"),
+        ),
+        Column(
+            "created_by",
+            String(120),
+            comment=_desc("documentation_pages", "created_by"),
+        ),
+        Column(
+            "generation_prompt",
+            Text,
+            comment=_desc("documentation_pages", "generation_prompt"),
+        ),
+        Column(
+            "model_used",
+            String(120),
+            comment=_desc("documentation_pages", "model_used"),
+        ),
+        Index("ix_documentation_pages_status", "status"),
+        Index("ix_documentation_pages_updated_at", "updated_at"),
+        comment=_desc("documentation_pages"),
+    )
+
+    # ── documentation_page_assets: per-page asset list ───────────────────
+    Table(
+        "documentation_page_assets",
+        md,
+        Column(
+            "id",
+            Integer,
+            primary_key=True,
+            autoincrement=True,
+            comment=_desc("documentation_page_assets", "id"),
+        ),
+        Column(
+            "page_id",
+            String(36),
+            ForeignKey(fq_pages + ".id"),
+            nullable=False,
+            index=True,
+            comment=_desc("documentation_page_assets", "page_id"),
+        ),
+        Column(
+            "asset_kind",
+            String(40),
+            nullable=False,
+            comment=_desc("documentation_page_assets", "asset_kind"),
+        ),
+        Column(
+            "asset_ref",
+            String(1024),
+            nullable=False,
+            comment=_desc("documentation_page_assets", "asset_ref"),
+        ),
+        Column(
+            "included",
+            Integer,
+            nullable=False,
+            default=1,
+            comment=_desc("documentation_page_assets", "included"),
+        ),
+        comment=_desc("documentation_page_assets"),
+    )
+
+    # ── documentation_page_sources: per-page upload list ─────────────────
+    Table(
+        "documentation_page_sources",
+        md,
+        Column(
+            "id",
+            Integer,
+            primary_key=True,
+            autoincrement=True,
+            comment=_desc("documentation_page_sources", "id"),
+        ),
+        Column(
+            "page_id",
+            String(36),
+            ForeignKey(fq_pages + ".id"),
+            nullable=False,
+            index=True,
+            comment=_desc("documentation_page_sources", "page_id"),
+        ),
+        Column(
+            "source_kind",
+            String(40),
+            nullable=False,
+            comment=_desc("documentation_page_sources", "source_kind"),
+        ),
+        Column(
+            "source_path",
+            String(1024),
+            nullable=False,
+            comment=_desc("documentation_page_sources", "source_path"),
+        ),
+        Column(
+            "original_name",
+            String(512),
+            nullable=False,
+            comment=_desc("documentation_page_sources", "original_name"),
+        ),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("documentation_page_sources", "created_at"),
+        ),
+        comment=_desc("documentation_page_sources"),
+    )
+
+    # ── documentation_page_versions: per-save snapshots ──────────────────
+    Table(
+        "documentation_page_versions",
+        md,
+        Column(
+            "page_id",
+            String(36),
+            ForeignKey(fq_pages + ".id"),
+            nullable=False,
+            comment=_desc("documentation_page_versions", "page_id"),
+        ),
+        Column(
+            "version_no",
+            Integer,
+            nullable=False,
+            comment=_desc("documentation_page_versions", "version_no"),
+        ),
+        Column(
+            "markdown_body",
+            Text,
+            nullable=False,
+            comment=_desc("documentation_page_versions", "markdown_body"),
+        ),
+        Column(
+            "saved_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("documentation_page_versions", "saved_at"),
+        ),
+        Column(
+            "saved_by",
+            String(120),
+            comment=_desc("documentation_page_versions", "saved_by"),
+        ),
+        Column(
+            "note",
+            Text,
+            comment=_desc("documentation_page_versions", "note"),
+        ),
+        PrimaryKeyConstraint("page_id", "version_no"),
+        comment=_desc("documentation_page_versions"),
     )
 
     return md

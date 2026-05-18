@@ -112,11 +112,27 @@ docs = [
     "pypdf>=4.0",
     "openpyxl>=3.1",
     "python-docx>=1.1",
+    # ``markdownify`` converts HTML email bodies to markdown in the
+    # pure-Python .eml loader (amx/docs/loaders/eml_loader.py); keeps
+    # the prompt fed to the LLM consistent across plain-text and HTML
+    # messages.
+    "markdownify>=0.11",
     # CVE-2026-41066 was disclosed against lxml<6.1.0 in 2026-05.
     # ``unstructured`` pulls lxml transitively without pinning a
     # secure floor, so we pin one here. Drop this constraint once
     # ``unstructured``'s own pin catches up.
     "lxml>=6.1.0",
+]
+# Documentation Pages export pipeline. Pure-Python so it installs
+# cleanly on every supported OS. ``markdown-it-py`` renders the
+# canonical markdown body to HTML; ``xhtml2pdf`` renders that HTML
+# to a PDF byte stream. Auto-installed on demand via the optional-
+# deps registry when the user first triggers a PDF export.
+pages = [
+    "markdown-it-py>=3",
+    "xhtml2pdf>=0.2.11",
+    "markdownify>=0.11",
+    "openpyxl>=3.1",
 ]
 # PDF report rendering for the Compare modal (auto-installed on
 # demand via amx.utils.optional_deps when the user clicks
@@ -242,6 +258,9 @@ all = [
     "pypdf>=4.0",
     "openpyxl>=3.1",
     "python-docx>=1.1",
+    "markdownify>=0.11",
+    "markdown-it-py>=3",
+    "xhtml2pdf>=0.2.11",
     # CVE-2026-41066 floor — see comment on the same pin in the
     # ``docs`` extra above.
     "lxml>=6.1.0",

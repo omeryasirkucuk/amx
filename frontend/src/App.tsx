@@ -40,6 +40,9 @@ const DbCache = lazy(() => import("./routes/DbCache"));
 // canvas with the resolved artifact id when one exists).
 const Lineage = lazy(() => import("./routes/Lineage"));
 const LineageRedirect = lazy(() => import("./routes/LineageRedirect"));
+const Pages = lazy(() => import("./routes/Pages"));
+const PageNew = lazy(() => import("./routes/PageNew"));
+const PageEdit = lazy(() => import("./routes/PageEdit"));
 
 // Suspense fallback is intentionally minimal — chunk fetches over
 // loopback land in milliseconds, so a heavy skeleton would flash
@@ -98,6 +101,9 @@ export default function App() {
               <Route path="lineage/new" element={<Lineage />} />
               <Route path="lineage/share" element={<Lineage />} />
               <Route path="lineage/:profile/:anchor" element={<LineageRedirect />} />
+              <Route path="pages" element={<Pages />} />
+              <Route path="pages/new" element={<PageNew />} />
+              <Route path="pages/:pageId" element={<PageEdit />} />
               <Route path="runs/schedules" element={<Schedules />} />
               <Route
                 path="runs/catalog-refresh-schedules"
