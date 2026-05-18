@@ -288,33 +288,78 @@ function CanvasInner() {
   }
 
   // ── Streaming AI ─────────────────────────────────────────────────────────
+  // Resolved (fqn → node-id) map for the current batch. Populated
+  // inside the setNodes callback below and read back when setEdges
+  // builds its edge entries. The two callbacks share this closure
+  // and React 18 runs them in order during the next render cycle,
+  // so by the time the edge callback fires every FQN is mapped.
+  const fqnToIdRef = useRef(new Map<string, string>());
   const streamingAI = useStreamingAI({
     onBatch: (batch: StreamBatch) => {
-      // Merge each batch's edges into the canvas — synthesize missing
-      // table nodes on the fly so the user sees the graph build up.
       const newlySynthesised: Array<{
         id: string;
         database: string;
         schema: string;
         table: string;
       }> = [];
+      const fqnToId = new Map<string, string>();
+      fqnToIdRef.current = fqnToId;
+
       setNodes((prevNodes) => {
         const next = [...prevNodes];
-        const known = new Set(next.map((n) => n.id));
-        let i = 0;
-        const ensureTable = (fqn: string) => {
+
+        // Build an FQN → node-id index from existing TABLE nodes so
+        // streamed neighbors snap onto whatever the user already
+        // dragged in (anchor added via the Add-Table modal, prior
+        // LLM batches, etc.) instead of spawning duplicate copies of
+        // the same table. This is the fix for "AI Generate getiriyo
+        // ama aynı tabloyu yanına atıyo".
+        for (const n of next) {
+          if (n.data.kind === "table") {
+            const fqn = (n.data as { fqn?: string }).fqn;
+            if (fqn) fqnToId.set(fqn, n.id);
+          }
+        }
+
+        // Radial placement around the anchor if it's on the canvas.
+        // Falls back to a fixed origin when AI Generate runs without
+        // a pre-placed anchor (unusual but possible).
+        const anchorNode = aiAnchor
+          ? next.find(
+              (n) =>
+                n.data.kind === "table" &&
+                (n.data as { fqn?: string }).fqn === aiAnchor,
+            )
+          : undefined;
+        const cx = anchorNode?.position?.x ?? 320;
+        const cy = anchorNode?.position?.y ?? 200;
+
+        let newlyAdded = 0;
+        const ensureTable = (fqn: string): string => {
           if (!fqn) return "";
-          const id = `n-fqn-${fqn}`;
-          if (known.has(id)) return id;
-          known.add(id);
+          const existing = fqnToId.get(fqn);
+          if (existing) return existing;
+
           const parts = fqn.split(".");
           const database = parts.length > 2 ? parts[0] : "";
           const schema = parts.length > 1 ? parts[parts.length - 2] : "";
           const table = parts[parts.length - 1];
+          // Place new neighbors around the anchor: 8 evenly spaced
+          // slots per ring (45° apart), subsequent rings ~200px
+          // further out so a batch of 20 suggestions stays readable.
+          const slot = newlyAdded % 8;
+          const ring = Math.floor(newlyAdded / 8);
+          const angle = slot * (Math.PI / 4);
+          const radius = 280 + ring * 200;
+          newlyAdded += 1;
+          const id = `n-fqn-${fqn}`;
           const tbl: CanvasNode = {
             id,
             type: "table",
-            position: { x: 100 + (i++ % 5) * 280, y: 80 + Math.floor(i / 5) * 200 },
+            position: {
+              x: cx + radius * Math.cos(angle),
+              y: cy + radius * Math.sin(angle),
+            },
             data: {
               kind: "table",
               id,
@@ -327,10 +372,16 @@ function CanvasInner() {
             },
           };
           next.push(tbl);
+          fqnToId.set(fqn, id);
           newlySynthesised.push({ id, database, schema, table });
           return id;
         };
+
         for (const ed of batch.edges) {
+          // Defense in depth — the backend parser already rejects
+          // self-loops, but a stray ``from == to`` here would still
+          // spawn duplicate-anchor visual artifacts.
+          if (ed.from && ed.from === ed.to) continue;
           ensureTable(ed.from);
           ensureTable(ed.to);
         }
@@ -367,18 +418,29 @@ function CanvasInner() {
       setEdges((prevEdges) => {
         const next = [...prevEdges];
         const seen = new Set(next.map((e) => e.id));
+        const fqnToId = fqnToIdRef.current;
         for (const ed of batch.edges) {
-          const id = `${batch.extractor}-${ed.from}-${ed.to}-${ed.from_column || ""}-${ed.to_column || ""}`;
+          if (ed.from && ed.from === ed.to) continue;
+          // Resolve to the canonical node id assigned in the setNodes
+          // pass above. Existing nodes (user-placed anchor + prior
+          // batches) keep their original id, so streamed edges land
+          // ON them instead of next to a stray ``n-fqn-...`` twin.
+          const sourceId = fqnToId.get(ed.from) ?? `n-fqn-${ed.from}`;
+          const targetId = fqnToId.get(ed.to) ?? `n-fqn-${ed.to}`;
+          const id = `${batch.extractor}-${sourceId}-${targetId}-${ed.from_column || ""}-${ed.to_column || ""}`;
           if (seen.has(id)) continue;
           seen.add(id);
           const color = EDGE_COLORS[ed.type] ?? EDGE_COLORS.unknown;
           const dashed =
             ed.type === "name_match" ||
             (ed.type === "lineage_llm" && ed.confidence < 0.7);
+          const hoverLabel = ed.from_column && ed.to_column
+            ? `${ed.from_column} → ${ed.to_column} · ${ed.type} · ${Math.round(ed.confidence * 100)}%`
+            : `${ed.type} · ${Math.round(ed.confidence * 100)}%`;
           next.push({
             id,
-            source: `n-fqn-${ed.from}`,
-            target: `n-fqn-${ed.to}`,
+            source: sourceId,
+            target: targetId,
             sourceHandle: ed.from_column || undefined,
             targetHandle: ed.to_column || undefined,
             type: "column-edge",
@@ -388,7 +450,7 @@ function CanvasInner() {
               source: ed.extractor,
               confidence: ed.confidence,
               verdict: "",
-              hoverLabel: `${ed.type} · ${Math.round(ed.confidence * 100)}%`,
+              hoverLabel,
             },
             style: {
               stroke: color,
