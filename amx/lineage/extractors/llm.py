@@ -25,10 +25,18 @@ from amx.lineage.types import (
     Scope,
 )
 
-# Maximum number of candidate tables fed into the LLM prompt. Bigger
-# prompts cost more tokens with diminishing returns — name-prefix +
-# co-occurrence ranking already surfaces the relevant subset.
-_MAX_CANDIDATES = 30
+# Maximum number of candidate tables fed into the LLM prompt. The
+# ranker surfaces the most-likely-related subset, so a tighter cap
+# keeps the prompt small enough that even OpenRouter / kimi-style
+# providers stream a reply in well under a minute. 30 was too large
+# on SAP-style schemas where every candidate carries 50+ columns —
+# the prompt ballooned and the LLM stalled past the tunnel idle
+# timeout.
+_MAX_CANDIDATES = 12
+# Per-candidate column cap. The LLM doesn't need every column on
+# every candidate to infer table-pair edges — names + types of the
+# top columns are enough to anchor join-key reasoning.
+_MAX_CANDIDATE_COLUMNS = 15
 # Marginal hallucinations clustered around 0.4-0.5 in user testing
 # (LLM emitting plausible-sounding but unsupported edges). 0.6 is the
 # new floor for an edge to land on the canvas; the prompt now also
@@ -160,15 +168,24 @@ def _build_candidate_list(hs: Any, scope: Scope) -> list[prompt_mod.CandidateTab
     ranked = score_candidates(hs, scope, max_count=_MAX_CANDIDATES)
     out: list[prompt_mod.CandidateTable] = []
     for c in ranked:
+        # Truncate per-candidate column lists. Wide tables (SAP-style
+        # 200+ column dumps) otherwise inflate the prompt past the
+        # provider's practical streaming window. Names + types of the
+        # top columns are enough for the LLM to spot join keys.
+        all_columns = _columns_for_table(
+            hs, scope.profile, scope.anchor.database, c.schema, c.table
+        )
+        columns = [
+            {k: v for k, v in col.items() if k in ("name", "dtype")}
+            for col in all_columns[:_MAX_CANDIDATE_COLUMNS]
+        ]
         out.append(
             prompt_mod.CandidateTable(
                 fqn=c.fqn,
-                columns=_columns_for_table(
-                    hs, scope.profile, scope.anchor.database, c.schema, c.table
-                ),
+                columns=columns,
                 description=_table_description(
                     hs, scope.profile, scope.anchor.database, c.schema, c.table
-                ),
+                )[:200],
                 score=c.score,
                 reasons=c.reasons,
             )
