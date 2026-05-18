@@ -5,7 +5,7 @@
 // source. The view choice is owned by the caller so it can persist
 // through localStorage and synchronise the page header pill.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Link } from "@tiptap/extension-link";
@@ -16,6 +16,7 @@ import {
   TableRow,
 } from "@tiptap/extension-table";
 import { Markdown } from "tiptap-markdown";
+import MarkdownIt from "markdown-it";
 import {
   Bold,
   Code,
@@ -58,6 +59,35 @@ const RICH_CLASS = cn(
   "prose-table:text-sm",
 );
 
+// Shared markdown-it instance: we use it to pre-render markdown to
+// HTML before handing it to TipTap, because tiptap-markdown's
+// auto-parser only kicks in for paste / typed input — content set
+// via the ``content`` config option or ``setContent`` does NOT get
+// parsed, which is why a raw markdown string used to render with
+// literal ``#`` and ``**`` characters in the WYSIWYG view.
+const mdRenderer = new MarkdownIt({
+  html: false,
+  linkify: true,
+  typographer: true,
+  breaks: false,
+});
+
+// Some LLMs wrap their entire reply in a ```markdown ... ``` fence
+// even when the prompt forbids it. We strip the wrapper at the
+// editor boundary so existing rows that were saved before the
+// backend fix also render correctly.
+const FENCE_RE = /^\s*```(?:markdown|md)?\s*\n([\s\S]*?)\n```\s*$/i;
+
+function stripFence(body: string): string {
+  if (!body) return body;
+  const m = body.trim().match(FENCE_RE);
+  return m ? m[1] : body;
+}
+
+function markdownToHtml(body: string): string {
+  return mdRenderer.render(stripFence(body));
+}
+
 export default function PageEditor({
   initialMarkdown,
   onChange,
@@ -65,8 +95,9 @@ export default function PageEditor({
   readOnly = false,
   surfaceRef,
 }: Props) {
-  const [rawValue, setRawValue] = useState(initialMarkdown);
-  const initialMarkdownRef = useRef(initialMarkdown);
+  const cleanInitial = useMemo(() => stripFence(initialMarkdown), [initialMarkdown]);
+  const [rawValue, setRawValue] = useState(cleanInitial);
+  const initialMarkdownRef = useRef(cleanInitial);
 
   const editor = useEditor({
     extensions: [
@@ -77,13 +108,13 @@ export default function PageEditor({
       TableHeader,
       TableCell,
       Markdown.configure({
-        html: false,
+        html: true,
         tightLists: true,
         linkify: true,
         breaks: false,
       }),
     ],
-    content: initialMarkdown,
+    content: markdownToHtml(cleanInitial),
     editable: !readOnly && view === "edit",
     onUpdate({ editor: e }) {
       const md =
@@ -101,13 +132,16 @@ export default function PageEditor({
   }, [editor, view, readOnly]);
 
   // Reset content when a new initialMarkdown arrives (e.g. after fetch
-  // or a Restore from the versions drawer).
+  // or a Restore from the versions drawer). We render to HTML first so
+  // TipTap rebuilds the document with real heading / bold / list nodes
+  // instead of a single text block.
   useEffect(() => {
     if (!editor) return;
-    if (initialMarkdown === initialMarkdownRef.current) return;
-    initialMarkdownRef.current = initialMarkdown;
-    editor.commands.setContent(initialMarkdown, { emitUpdate: false });
-    setRawValue(initialMarkdown);
+    const clean = stripFence(initialMarkdown);
+    if (clean === initialMarkdownRef.current) return;
+    initialMarkdownRef.current = clean;
+    editor.commands.setContent(markdownToHtml(clean), { emitUpdate: false });
+    setRawValue(clean);
   }, [initialMarkdown, editor]);
 
   // When the user edits in Source view, push the change back into
@@ -116,12 +150,12 @@ export default function PageEditor({
     setRawValue(next);
     onChange(next);
     if (editor) {
-      editor.commands.setContent(next, { emitUpdate: false });
+      editor.commands.setContent(markdownToHtml(next), { emitUpdate: false });
     }
   }
 
   if (view === "preview") {
-    return <PreviewPane markdown={rawValue} className={RICH_CLASS} />;
+    return <PreviewPane markdown={stripFence(rawValue)} className={RICH_CLASS} />;
   }
 
   if (view === "source") {
