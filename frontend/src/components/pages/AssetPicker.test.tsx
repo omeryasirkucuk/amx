@@ -20,13 +20,16 @@ function mockFetch(handler: (url: string) => unknown) {
 beforeEach(() => {
   mockFetch((url) => {
     if (url.includes("/api/profiles/db")) {
-      return { profiles: [{ name: "local-pg", backend: "postgres" }] };
+      return { profiles: [{ name: "local-pg", backend: "postgresql" }] };
     }
     if (url.includes("/api/profiles/docs")) {
       return { profiles: [] };
     }
     if (url.includes("/api/lineage")) {
       return { artifacts: [], count: 0 };
+    }
+    if (url.includes("/api/live/databases")) {
+      return { databases: ["sales_db"], active_database: null };
     }
     return {};
   });
@@ -37,7 +40,7 @@ afterEach(() => {
 });
 
 describe("AssetPicker", () => {
-  it("renders DB profile rows fetched from /api/profiles/db", async () => {
+  it("renders the DB profile name fetched from /api/profiles/db", async () => {
     const onChange = vi.fn();
     renderWithProviders(<AssetPicker value={[]} onChange={onChange} />);
     // The picker renders both the md+ tab panel and the sm accordion so the
@@ -48,16 +51,23 @@ describe("AssetPicker", () => {
     );
   });
 
-  it("toggles a DB profile selection on click", async () => {
+  it("expands a profile and selects a database entity", async () => {
     const onChange = vi.fn();
     renderWithProviders(<AssetPicker value={[]} onChange={onChange} />);
     await waitFor(() =>
       expect(screen.getAllByText("local-pg").length).toBeGreaterThan(0),
     );
-    const rows = screen.getAllByText("local-pg");
-    fireEvent.click(rows[0]);
+    // Click the profile row to expand the tree.
+    fireEvent.click(screen.getAllByText("local-pg")[0]);
+    // Database row appears after /api/live/databases resolves.
+    await waitFor(() =>
+      expect(screen.getAllByText("sales_db").length).toBeGreaterThan(0),
+    );
+    // Clicking the database label toggles a db_database selection
+    // scoped under the active profile.
+    fireEvent.click(screen.getAllByText("sales_db")[0]);
     expect(onChange).toHaveBeenCalledWith([
-      { kind: "db_profile", ref: "local-pg" },
+      { kind: "db_database", ref: "local-pg/sales_db" },
     ]);
   });
 });

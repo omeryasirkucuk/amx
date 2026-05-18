@@ -1,6 +1,7 @@
 // Three-tab asset picker for the Documentation Pages wizard.
-// Lets the user attach DB profiles, doc profiles, and lineage
-// artifacts as generation context for a page.
+// Lets the user attach DB assets (drill from profile down to column),
+// doc profiles, and lineage artifacts as generation context for a
+// page.
 
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -9,14 +10,7 @@ import { Check, Database, FileText, Workflow } from "lucide-react";
 import { apiFetch, lineageList } from "../../lib/api";
 import { cn } from "../../lib/cn";
 import type { PageAssetRef } from "../../hooks/usePages";
-
-interface DbProfileSummary {
-  name: string;
-  backend?: string;
-}
-interface DbProfilesResponse {
-  profiles: DbProfileSummary[];
-}
+import DbAssetTree from "./DbAssetTree";
 
 interface DocProfileSummary {
   name: string;
@@ -34,7 +28,7 @@ interface Props {
 type TabId = "db" | "docs" | "lineage";
 
 const TABS: Array<{ id: TabId; label: string; icon: typeof Database }> = [
-  { id: "db", label: "DB profiles", icon: Database },
+  { id: "db", label: "DB assets", icon: Database },
   { id: "docs", label: "Doc profiles", icon: FileText },
   { id: "lineage", label: "Lineage", icon: Workflow },
 ];
@@ -43,7 +37,7 @@ export default function AssetPicker({ value, onChange }: Props) {
   const [active, setActive] = useState<TabId>("db");
 
   const countsByTab: Record<TabId, number> = {
-    db: value.filter((a) => a.kind === "db_profile").length,
+    db: value.filter((a) => a.kind.startsWith("db_")).length,
     docs: value.filter((a) => a.kind === "doc_profile").length,
     lineage: value.filter((a) => a.kind === "lineage_artifact").length,
   };
@@ -103,7 +97,7 @@ export default function AssetPicker({ value, onChange }: Props) {
       {/* md+ panel */}
       <div className="hidden md:block">
         {active === "db" && (
-          <DbProfileTab isSelected={isSelected} onToggle={toggle} />
+          <DbAssetTree value={value} onChange={onChange} />
         )}
         {active === "docs" && (
           <DocProfileTab isSelected={isSelected} onToggle={toggle} />
@@ -142,7 +136,7 @@ export default function AssetPicker({ value, onChange }: Props) {
               {expanded && (
                 <div className="border-t border-border p-3">
                   {t.id === "db" && (
-                    <DbProfileTab isSelected={isSelected} onToggle={toggle} />
+                    <DbAssetTree value={value} onChange={onChange} />
                   )}
                   {t.id === "docs" && (
                     <DocProfileTab isSelected={isSelected} onToggle={toggle} />
@@ -163,40 +157,6 @@ export default function AssetPicker({ value, onChange }: Props) {
 interface TabProps {
   isSelected: (kind: string, ref: string) => boolean;
   onToggle: (asset: PageAssetRef) => void;
-}
-
-function DbProfileTab({ isSelected, onToggle }: TabProps) {
-  const q = useQuery({
-    queryKey: ["pages", "asset-picker", "db-profiles"],
-    queryFn: () => apiFetch<DbProfilesResponse>("/api/profiles/db"),
-    staleTime: 30_000,
-  });
-  if (q.isLoading)
-    return <div className="text-xs text-ink-dim">Loading DB profiles...</div>;
-  if (q.error)
-    return (
-      <div className="text-xs text-critical">{(q.error as Error).message}</div>
-    );
-  const list = q.data?.profiles ?? [];
-  if (list.length === 0)
-    return (
-      <div className="text-xs text-ink-dim">
-        No DB profiles configured. Add one from Settings.
-      </div>
-    );
-  return (
-    <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
-      {list.map((p) => (
-        <AssetRow
-          key={p.name}
-          label={p.name}
-          sublabel={p.backend}
-          selected={isSelected("db_profile", p.name)}
-          onClick={() => onToggle({ kind: "db_profile", ref: p.name })}
-        />
-      ))}
-    </div>
-  );
 }
 
 function DocProfileTab({ isSelected, onToggle }: TabProps) {
