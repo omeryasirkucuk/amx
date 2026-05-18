@@ -9,53 +9,94 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from amx.lineage.types import ColumnRef
 
 _SYSTEM_PROMPT = (
-    "You are a data lineage assistant. Given an anchor table, its columns, "
-    "and a list of other tables in the same database, identify which other "
-    "tables LIKELY FEED INTO (upstream) or CONSUME FROM (downstream) the "
-    "anchor table.\n\n"
-    "Use only the schema/column information provided. Do not invent table or "
-    "column names that are not in the candidate list. Do not output "
-    "speculative edges with low confidence — when in doubt, omit the edge.\n\n"
-    "Respond with a single JSON object of the form:\n"
+    "You are a data lineage assistant. The user has chosen ONE focal "
+    "table (the anchor) and wants to know which OTHER tables relate "
+    "to it as upstream sources or downstream consumers.\n\n"
+    "Hard rules — violating any of these makes the suggestion useless:\n"
+    "  1. NEVER suggest an edge where ``from_table == to_table``. The "
+    "anchor is the focal node, not a node that links to itself.\n"
+    "  2. Every edge MUST have the anchor on exactly ONE side. Edges "
+    "between two non-anchor candidates are out of scope.\n"
+    "  3. Every edge MUST name a concrete column pair. ``from_column`` "
+    "and ``to_column`` are required, not optional — table-level edges "
+    "without column granularity are rejected.\n"
+    "  4. Only use the table names that appear in the candidate list. "
+    "Do not invent tables, columns, or relationships you have no "
+    "evidence for.\n"
+    "  5. Prefer suggestions backed by deterministic evidence "
+    "(``evidence`` field: ``FK``, ``view``, ``co-query``). Use "
+    "``name`` or ``inferred`` sparingly and only with sub-0.7 "
+    "confidence.\n"
+    '  6. Calibrate ``confidence`` honestly — 0.9+ means "I would '
+    "stake the day's work on this edge\". A guess based purely on "
+    "column-name similarity is 0.5-0.7, not 0.9.\n\n"
+    "The anchor section may include foreign-key partners, views that "
+    "join the anchor with other tables, and tables co-queried with "
+    "the anchor. Use that grounding aggressively — when a candidate "
+    "is already named in those sections, the edge almost certainly "
+    "exists and the only question is the column pair.\n\n"
+    "Respond with a single JSON object:\n"
     "{\n"
     '  "edges": [\n'
     "    {\n"
-    '      "from_table": "schema.table",\n'
-    '      "to_table":   "schema.table",\n'
-    '      "column_pairs": [["source_col", "target_col"], ...],\n'
-    '      "reasoning": "one-sentence why this edge is likely",\n'
-    '      "confidence": 0.0  // 0..1; 0.8+ only when the schema + column '
-    "names give clear, unambiguous evidence\n"
+    '      "from_table":  "schema.table",\n'
+    '      "from_column": "col_name",\n'
+    '      "to_table":    "schema.table",\n'
+    '      "to_column":   "col_name",\n'
+    '      "direction":   "upstream | downstream",\n'
+    '      "evidence":    "FK | view | co-query | name | inferred",\n'
+    '      "reasoning":   "one short sentence",\n'
+    '      "confidence":  0.0\n'
     "    }\n"
     "  ]\n"
     "}\n\n"
-    "Output nothing else — no markdown, no commentary. The JSON must be "
-    "directly parseable."
+    "Output nothing else — no markdown, no commentary. The JSON must "
+    "be directly parseable."
 )
 
 
 @dataclass(frozen=True)
 class AnchorContext:
-    """Everything the prompt builder needs about the anchor table."""
+    """Everything the prompt builder needs about the anchor table.
+
+    Backward compatible: callers that only set ``fqn``/``columns``/
+    ``description`` get the old behaviour; the new optional fields
+    surface in the prompt's anchor block when populated, giving the
+    LLM grounding it never had before.
+    """
 
     fqn: str  # 'schema.table'
     columns: list[dict[str, str]]  # [{name, dtype, description}, ...]
     description: str = ""
+    fk_partners: list[dict[str, str]] = field(default_factory=list)
+    # [{direction, other_fqn, from_column, to_column}, ...]
+    view_references: list[dict[str, Any]] = field(default_factory=list)
+    # [{view_fqn, other_tables: [str, ...]}, ...]
+    co_occurrence_partners: list[dict[str, Any]] = field(default_factory=list)
+    # [{other_fqn, count}, ...]
 
 
 @dataclass(frozen=True)
 class CandidateTable:
-    """One table the LLM may suggest as an edge endpoint."""
+    """One table the LLM may suggest as an edge endpoint.
+
+    ``score`` + ``reasons`` come from the candidate ranker — the prompt
+    surfaces them so the LLM sees WHY each candidate was picked
+    (FK partner, view co-mention, query co-occurrence, etc.) instead
+    of just a flat list.
+    """
 
     fqn: str  # 'schema.table'
     columns: list[dict[str, str]]
     description: str = ""
+    score: float = 0.0
+    reasons: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -71,10 +112,19 @@ class SuggestedEdge:
 
 @dataclass(frozen=True)
 class FeedbackExample:
-    """One previously-verdicted edge to fold into the next prompt."""
+    """One previously-verdicted edge to fold into the next prompt.
+
+    Column granularity matters for feedback. "User approved
+    ``customers → orders``" is weak signal; "User approved
+    ``customers.id → orders.customer_id``" tells the LLM exactly
+    which column pair the user wants to see again, and the same
+    rule reads as a negative example when verdict is rejected.
+    """
 
     from_fqn: str
     to_fqn: str
+    from_column: str = ""
+    to_column: str = ""
     note: str = ""  # e.g. "FK pattern", "spurious join" — short reason
 
 
@@ -102,17 +152,34 @@ def build_messages(
     candidates = candidates[:max_candidates]
     approved = list(approved_examples or [])[:max_examples_each]
     rejected = list(rejected_examples or [])[:max_examples_each]
-    user_payload = {
-        "anchor": {
-            "table": anchor.fqn,
-            "description": anchor.description,
-            "columns": anchor.columns,
-        },
+    anchor_block: dict[str, Any] = {
+        "table": anchor.fqn,
+        "description": anchor.description,
+        "columns": anchor.columns,
+    }
+    # Surface the rich anchor signals only when they have content; an
+    # empty list would just inflate the prompt without grounding.
+    if anchor.fk_partners:
+        anchor_block["known_foreign_keys"] = anchor.fk_partners
+    if anchor.view_references:
+        anchor_block["views_joining_this_table"] = [
+            {"view": v["view_fqn"], "joins_with": v["other_tables"]} for v in anchor.view_references
+        ]
+    if anchor.co_occurrence_partners:
+        anchor_block["tables_queried_alongside"] = anchor.co_occurrence_partners
+    user_payload: dict[str, Any] = {
+        "anchor": anchor_block,
         "candidates": [
             {
                 "table": c.fqn,
                 "description": c.description,
                 "columns": c.columns,
+                # Per-candidate score + reasons make the prompt
+                # self-explanatory: the LLM sees which evidence
+                # surfaced each candidate (FK, view, co-query, …)
+                # instead of treating them as an opaque list.
+                "score": c.score,
+                "reasons": c.reasons,
             }
             for c in candidates
         ],
@@ -121,20 +188,14 @@ def build_messages(
     if approved:
         feedback_blocks.append(
             "User has previously **approved** these edges in this catalogue. "
-            "Treat them as ground truth — mirror their reasoning style:\n"
-            + "\n".join(
-                f"  - {e.from_fqn} → {e.to_fqn}" + (f"  ({e.note})" if e.note else "")
-                for e in approved
-            )
+            "Treat them as ground truth — mirror the column-pair style:\n"
+            + "\n".join(f"  - {_format_feedback(e)}" for e in approved)
         )
     if rejected:
         feedback_blocks.append(
             "User has previously **rejected** these edges in this catalogue. "
             "Do not propose anything analogous:\n"
-            + "\n".join(
-                f"  - {e.from_fqn} → {e.to_fqn}" + (f"  ({e.note})" if e.note else "")
-                for e in rejected
-            )
+            + "\n".join(f"  - {_format_feedback(e)}" for e in rejected)
         )
     feedback_section = "\n\n" + "\n\n".join(feedback_blocks) if feedback_blocks else ""
     return [
@@ -158,7 +219,7 @@ def parse_response(
     *,
     anchor_fqn: str,
     valid_candidate_fqns: set[str],
-    min_confidence: float = 0.4,
+    min_confidence: float = 0.6,
 ) -> list[SuggestedEdge]:
     """Parse + validate the LLM's JSON reply.
 
@@ -166,6 +227,12 @@ def parse_response(
     (defends against hallucinated table names) or whose confidence is
     below ``min_confidence``. One of the two endpoints MUST be the
     anchor — edges that ignore the anchor entirely are also dropped.
+
+    ``from_fqn == to_fqn`` self-loops are rejected too. The system
+    prompt already states the anchor is the focal node and forbids
+    anchor-to-anchor suggestions, but a defense-in-depth filter here
+    catches stray cases (model glitches, off-distribution prompts)
+    before they reach the canvas as duplicate-anchor visual artifacts.
     """
     payload = _coerce_json(raw)
     if not isinstance(payload, dict):
@@ -181,6 +248,11 @@ def parse_response(
             continue
         from_fqn = str(entry.get("from_table") or "").strip()
         to_fqn = str(entry.get("to_table") or "").strip()
+        if from_fqn == to_fqn:
+            # Self-loop — reject unconditionally. The streaming hook
+            # would otherwise synthesise a second copy of the anchor
+            # node on the canvas with no incident edge to it.
+            continue
         if from_fqn not in valid or to_fqn not in valid:
             continue
         if anchor_fqn not in (from_fqn, to_fqn):
@@ -191,7 +263,18 @@ def parse_response(
             confidence = 0.0
         if confidence < min_confidence:
             continue
-        column_pairs = _extract_column_pairs(entry.get("column_pairs"))
+        # The new prompt asks for ``from_column``/``to_column`` as
+        # scalar strings (one pair per edge). Older prompts and
+        # cached responses still use ``column_pairs`` (list of
+        # ``[src, dst]``). Accept both shapes so a mid-flight
+        # rollout doesn't reject perfectly-good cached output.
+        column_pairs: list[tuple[str, str]] = []
+        single_from = str(entry.get("from_column") or "").strip()
+        single_to = str(entry.get("to_column") or "").strip()
+        if single_from or single_to:
+            column_pairs = [(single_from, single_to)]
+        else:
+            column_pairs = _extract_column_pairs(entry.get("column_pairs"))
         reasoning = str(entry.get("reasoning") or "").strip()
         out.append(
             SuggestedEdge(
@@ -203,6 +286,20 @@ def parse_response(
             )
         )
     return out
+
+
+def _format_feedback(ex: FeedbackExample) -> str:
+    """Render one feedback example as a compact one-liner.
+
+    Shape: ``schema.t1.col_a → schema.t2.col_b  (note)``. Falls back
+    to table-level when the column pair is missing (legacy rows
+    written before column-grain edges were standard).
+    """
+    if ex.from_column and ex.to_column:
+        head = f"{ex.from_fqn}.{ex.from_column} → {ex.to_fqn}.{ex.to_column}"
+    else:
+        head = f"{ex.from_fqn} → {ex.to_fqn}"
+    return head + (f"  ({ex.note})" if ex.note else "")
 
 
 def _coerce_json(raw: str) -> Any:
