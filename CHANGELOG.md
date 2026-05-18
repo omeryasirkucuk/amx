@@ -6,6 +6,69 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-05-18
+
+### Highlights
+
+- **Lineage canvas rebuilt from scratch.** The thin manual canvas is
+  replaced by a new `lineage-canvas/` package: per-column typed
+  handles, Bezier edges with hover labels, an `@`-mention Filter
+  operator editor, sticky-note Comment + plain-text Label nodes,
+  standalone Logo nodes for external systems (Power BI, Tableau,
+  S3, …), a rich top toolbar (Add nodes / Undo / Auto-arrange /
+  Search / Tracker / Share / PNG / SQL I/O), a Cmd+K palette, and a
+  Cmd+Shift+F attribute tracker. Multi-select via Cmd/Ctrl-click
+  and Shift-drag rubber-band; Backspace / Delete removes every
+  selected node and its incident edges in one pass. Every node
+  type carries an explicit floating trash button so deletion is
+  one click away.
+- **Cross-profile lineage.** A single canvas may host nodes from
+  any number of DB profiles. New `lineage_artifact_nodes` table
+  records per-node profile + position; the save flow no longer
+  pins one profile canvas-wide.
+- **AI Generate quality overhaul.** Three-layer rebuild of the
+  LLM stage. **Layer 1**: parser rejects self-loops, the streaming
+  hook reuses existing canvas nodes (no more duplicate-anchor
+  spawn), confidence floor 0.4 → 0.6. **Layer 2**: new rich
+  anchor-context module (table / column descriptions + FK
+  partners + views joining the anchor + query-log co-occurrence),
+  weighted-sum candidate ranker (FK · view · co-query · shared
+  columns · prefix · name tokens), column-pair JSON contract
+  with explicit `evidence` enum, system prompt rewritten with
+  hard rules. **Layer 3 (partial)**: `FeedbackExample` carries
+  column-pair detail so few-shot blocks tell the LLM exactly
+  which column pairs the user approved or rejected. Logprob
+  calibration + self-consistency multi-run remain opt-in
+  follow-ups. Prompt size capped (12 candidates × 15 columns
+  each) so the LLM's own errors surface as clean SSE warnings
+  within seconds instead of hanging until the tunnel cuts the
+  connection.
+- **Streaming AI generation.** New SSE endpoint
+  `/api/lineage/{anchor}/suggest/stream` emits one batch per
+  extractor (FK → view DDL → deterministic → LLM) so the canvas
+  animates edges in as the pipeline reports them.
+- **22 default brand logos via SimpleIcons → Iconify fallback.**
+  AWS, GCP, Azure, Snowflake, Databricks, BigQuery, Postgres,
+  MySQL, Redshift, Power BI, Tableau, Looker, Metabase, Apache
+  Superset, dbt, Apache Airflow, Fivetran, Apache Kafka, Apache
+  Spark, Apache Iceberg, Microsoft SharePoint, Dfive. Inlined as
+  base64 data URLs at seed time — no runtime CDN dependency.
+  Custom uploads (file or URL) shadow any default under the same
+  key. Per-table header badge auto-binds from `profile.backend`
+  (postgres → postgres logo, etc.).
+- **Rich-text label node.** Free-form text annotations with a
+  floating toolbar (Size / Bold / Color / Bullet) backed by
+  `contentEditable` + DOMPurify sanitisation. Auto-grows with
+  paragraphs (no inner scroll); always-visible drag grip +
+  delete X on hover. Canvas keyboard shortcuts bail out while
+  the editor or any other content-editable / input element holds
+  focus, so typing in a label never spawns Add-Table modals.
+- **Save-canvas name fix.** Artifacts re-open by id
+  (`/lineage?artifact=<id>`); the user-visible name no longer
+  participates in node resolution, removing the long-standing
+  "saved canvas can't reload when its name collides with a real
+  table" bug.
+
 ### Changed
 
 - **Catalog cache no longer auto-expires after 7 days.**
