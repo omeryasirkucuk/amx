@@ -135,7 +135,21 @@ def resolve_anchor_entity_id(
     profile: str,
     anchor: ColumnRef,
 ) -> int | None:
-    """Return ``catalog_entities.id`` matching the anchor's kind+identity."""
+    """Return ``catalog_entities.id`` matching the anchor's kind+identity.
+
+    Two-tier lookup: first try the strict (profile, database, schema,
+    table[, column]) match; if nothing matches, fall back to a
+    database-agnostic (profile, schema, table[, column]) lookup and
+    return the unique match.
+
+    The fallback addresses a common mismatch: the user's active
+    database in the Studio picker (e.g. ``bird_train``) does not have
+    to equal the ``database_name`` the catalog row was synced under
+    (e.g. ``SAP``). Without the fallback AI Generate aborts on every
+    such anchor with "anchor not found in catalog_entities" even
+    though the same ``schema.table`` is uniquely present under a
+    different database label.
+    """
     entity_kind = "column" if anchor.column else "table"
     with hs._connect() as conn:
         row = conn.execute(
@@ -156,7 +170,27 @@ def resolve_anchor_entity_id(
                 entity_kind,
             ),
         ).fetchone()
-    return int(row[0]) if row else None
+        if row:
+            return int(row[0])
+        rows = conn.execute(
+            """
+            SELECT id, database_name FROM catalog_entities
+            WHERE db_profile = ? AND schema_name = ? AND table_name = ?
+              AND COALESCE(column_name, '') = COALESCE(?, '')
+              AND entity_kind = ?
+            LIMIT 2
+            """,
+            (
+                profile,
+                anchor.schema,
+                anchor.table,
+                anchor.column or None,
+                entity_kind,
+            ),
+        ).fetchall()
+    if len(rows) == 1:
+        return int(rows[0][0])
+    return None
 
 
 def gather_edges(
@@ -998,7 +1032,122 @@ def stream_suggest_lineage(
         QueryLogExtractor,
     )
 
+    # Pre-flight: correct ``scope.anchor.database`` when the caller
+    # supplied a database label (typically the picker's active
+    # database, e.g. ``bird_train``) that does not match the value
+    # the catalog row was synced under (e.g. ``SAP``). Without this
+    # the candidate ranker + rich-context queries scope to the wrong
+    # database and return zero useful partners. We look up by
+    # ``(profile, schema, table)`` and, if a single row exists,
+    # rewrite the scope's database in place before the extractors
+    # fan out.
+    try:
+        with hs._connect() as _conn:
+            _strict = _conn.execute(
+                """
+                SELECT 1 FROM catalog_entities
+                WHERE db_profile = ? AND database_name = ?
+                  AND schema_name = ? AND table_name = ?
+                  AND entity_kind = 'table'
+                LIMIT 1
+                """,
+                (
+                    scope.profile,
+                    scope.anchor.database,
+                    scope.anchor.schema,
+                    scope.anchor.table,
+                ),
+            ).fetchone()
+            if not _strict:
+                _candidates = _conn.execute(
+                    """
+                    SELECT DISTINCT database_name FROM catalog_entities
+                    WHERE db_profile = ? AND schema_name = ?
+                      AND table_name = ? AND entity_kind = 'table'
+                    LIMIT 2
+                    """,
+                    (scope.profile, scope.anchor.schema, scope.anchor.table),
+                ).fetchall()
+                if len(_candidates) == 1:
+                    corrected = str(_candidates[0][0] or "")
+                    scope = Scope(
+                        profile=scope.profile,
+                        anchor=ColumnRef(
+                            database=corrected,
+                            schema=scope.anchor.schema,
+                            table=scope.anchor.table,
+                            column=scope.anchor.column,
+                        ),
+                        depth_up=scope.depth_up,
+                        depth_down=scope.depth_down,
+                        database=corrected,
+                        schema=scope.schema,
+                    )
+    except Exception:
+        # Best-effort — pre-flight failure is non-fatal.
+        pass
+
+    # Build a fast lookup of every table FQN that actually exists in
+    # the catalog for the scope's profile. Deterministic extractors
+    # (view DDL parser, query log, codebase scan) can yield edges
+    # that reference parsed-out names like ``all.source`` — generic
+    # SQL aliases / fragments that are not real catalog tables.
+    # Filtering against the catalog here keeps phantom endpoints off
+    # the canvas.
+    #
+    # We accept any database under the profile — catalog rows are
+    # often synced under a different database label (``SAP``) than the
+    # picker's active database (``bird_train``) and dropping all
+    # cross-label edges would gut the result set.
+    valid_endpoints: set[str] = set()
+    anchor_fqn = _node_id(scope.anchor)
+    try:
+        with hs._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT database_name, schema_name, table_name
+                FROM catalog_entities
+                WHERE db_profile = ? AND entity_kind = 'table'
+                """,
+                (scope.profile,),
+            ).fetchall()
+        for database_name, schema_name, table_name in rows:
+            db_s = str(database_name or "")
+            schema_s = str(schema_name or "")
+            table_s = str(table_name or "")
+            if not table_s:
+                continue
+            short_fqn = f"{schema_s}.{table_s}" if schema_s else table_s
+            # Accept both the database-qualified and unqualified
+            # forms because ``_node_id`` may emit either depending on
+            # whether the source ColumnRef carried a database value.
+            valid_endpoints.add(short_fqn)
+            if db_s:
+                valid_endpoints.add(f"{db_s}.{short_fqn}")
+    except Exception:
+        # If the catalog query itself fails we degrade open — emitting
+        # is better than dropping every edge silently.
+        valid_endpoints = set()
+    # Anchor is always valid even if the catalog row was synced under
+    # a slightly different database name.
+    valid_endpoints.add(anchor_fqn)
+
+    def _edge_endpoints_valid(edge: Edge) -> bool:
+        """Drop edges whose endpoints don't resolve to real tables."""
+        if not valid_endpoints:
+            return True
+        from_id = _node_id(edge.source)
+        to_id = _node_id(edge.target)
+        return from_id in valid_endpoints and to_id in valid_endpoints
+
     def _emit(extractor: str, edges_iter: list[Edge], partial: bool = False) -> str:
+        # Skip self-loops (anchor → anchor) and any endpoint the
+        # catalog doesn't know about.
+        filtered = [
+            e
+            for e in edges_iter
+            if _node_id(e.source) != _node_id(e.target) and _edge_endpoints_valid(e)
+        ]
         payload = {
             "extractor": extractor,
             "partial": partial,
@@ -1020,7 +1169,7 @@ def stream_suggest_lineage(
                         else None
                     ),
                 }
-                for edge in edges_iter
+                for edge in filtered
             ],
         }
         return f"event: edges-batch\ndata: {_json.dumps(payload)}\n\n"

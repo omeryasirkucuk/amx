@@ -39,6 +39,7 @@ import { TYPE_COLORS, normalizeType, shortTypeLabel } from "../constants";
 import { LogoBadge } from "../logos/LogoBadge";
 import { LogoPicker } from "../logos/LogoPicker";
 import type { LogoRow } from "../logos/registry";
+import { NodeDeleteToolbar } from "../components/NodeDeleteToolbar";
 import type { TableNodeData } from "../types";
 
 interface RowProps {
@@ -308,6 +309,7 @@ function DataFrameNodeImpl({ id, data, selected }: NodeProps<TableNodeData>) {
         onClear={data.logoKey ? () => setLogoKey("") : undefined}
         title="Pick header logo"
       />
+      <NodeDeleteToolbar nodeId={id} visible={!!selected} />
     </div>
   );
 }
