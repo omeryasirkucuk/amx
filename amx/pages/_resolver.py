@@ -1,8 +1,9 @@
 """Production :class:`amx.pages.context.Resolver` implementation.
 
-Wires the pages context-gathering layer to the live AMX subsystems:
+Wires the pages context-gathering layer to the local AMX subsystems:
 
-* DB asset refs resolve through :class:`amx.db.connector.DatabaseConnector`.
+* DB asset refs resolve through :class:`amx.search.catalog.SearchCatalog`
+  — every drill is a local SQLite read; no live DB round-trip.
 * Doc profile refs resolve through :class:`amx.docs.rag.RAGStore`.
 * Lineage refs resolve through :mod:`amx.lineage.store` against the
   active history store.
@@ -83,15 +84,22 @@ class AMXResolver:
     # ------------------------------------------------------------------
 
     def _resolve_db_asset(self, ref: str) -> str:
+        # Reads exclusively from the persistent catalog cache via
+        # SearchCatalog (same surface the Pages picker uses). No
+        # DatabaseConnector instantiation, no live round-trip — a
+        # 5,000-table Databricks workspace turns into a single local
+        # SQLite query per drill level. Cold cache returns a concise
+        # stub so the LLM sees a clear "not in cache" marker instead
+        # of fabricating columns.
         parts = [p for p in ref.split("/") if p]
         if not parts:
             return f"asset {ref} not found"
         profile_name = parts[0]
-        profile = self.cfg.db_profiles.get(profile_name)
-        if profile is None:
+        if profile_name not in self.cfg.db_profiles:
             return f"asset {ref} not found"
+        backend = self.cfg.db_profiles[profile_name].backend
         if len(parts) == 1:
-            return f"## DB profile `{profile_name}`\n\nbackend: {profile.backend}"
+            return f"## DB profile `{profile_name}`\n\nbackend: {backend}"
 
         database = parts[1] if len(parts) >= 2 else ""
         schema = parts[2] if len(parts) >= 3 else ""
@@ -101,35 +109,50 @@ class AMXResolver:
         if "." in table_spec:
             table, column = table_spec.split(".", 1)
 
-        from amx.db.connector import DatabaseConnector
+        from amx.search.catalog import SearchCatalog
 
-        connector = DatabaseConnector(profile, profile_name=profile_name)
+        catalog = SearchCatalog.from_history_store()
+        if catalog is None:
+            return f"asset {ref} not in cache"
+
         if not schema:
-            schemas = connector.list_schemas()
-            head = ", ".join(schemas[:10])
+            schemas = catalog.fetch_distinct_schemas(profile_name, database_name=database or None)
+            if not schemas:
+                return f"## `{profile_name}/{database}`\n\nnot in cache"
+            head = ", ".join(s["name"] for s in schemas[:10])
             return f"## `{profile_name}/{database}`\n\nschemas: {head}"
+
         if not table:
-            tables = connector.list_tables(schema)
-            head = ", ".join(tables[:25])
+            tables = catalog.fetch_distinct_tables_in_schema(
+                profile_name,
+                schema_name=schema,
+                database_name=database or None,
+            )
+            if not tables:
+                return f"## `{profile_name}/{database}/{schema}`\n\nnot in cache"
+            head = ", ".join(t["name"] for t in tables[:25])
             return f"## `{profile_name}/{database}/{schema}`\n\ntables: {head}"
 
-        cols = connector.list_column_profiles(schema, table)
-        comments = connector.get_column_comments(schema, table) or {}
+        cols = catalog.fetch_columns_for_table(
+            profile_name,
+            schema_name=schema,
+            table_name=table,
+            database_name=database or None,
+        )
         title = f"## `{profile_name}/{database}/{schema}/{table}`"
+        if not cols:
+            return f"{title}\n\nnot in cache"
+
         if column:
-            match = next((c for c in cols if c.name == column), None)
+            match = next((c for c in cols if c.get("name") == column), None)
             if match is None:
                 return f"{title}\n\ncolumn `{column}` not found"
-            desc = comments.get(column) or ""
-            body = f"column `{column}` ({getattr(match, 'data_type', '')})"
-            if desc:
-                body = f"{body}\ndescription: {desc}"
+            body = f"column `{column}` ({match.get('dtype', '')})"
             return f"{title}\n\n{body}"
 
-        lines = [title, "", "| column | type | description |", "| --- | --- | --- |"]
+        lines = [title, "", "| column | type |", "| --- | --- |"]
         for c in cols[:40]:
-            desc = comments.get(c.name) or ""
-            lines.append(f"| {c.name} | {getattr(c, 'data_type', '')} | {desc} |")
+            lines.append(f"| {c.get('name', '')} | {c.get('dtype', '')} |")
         return "\n".join(lines)
 
     def _resolve_doc_profile(self, ref: str, intent: str, k: int) -> list[str]:
