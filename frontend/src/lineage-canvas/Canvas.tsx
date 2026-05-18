@@ -201,16 +201,40 @@ function CanvasInner() {
       node.data.logoKey = autoLogo;
     }
     setNodes((nds) => {
-      const updated = [...nds, node] as CanvasNode[];
+      // Dedupe: AddTableModal optimistically calls onPick twice —
+      // once with empty columns (immediate), once after the
+      // background fetchTableColumns settles. If the node already
+      // exists (same id from ``makeTableNode``), merge the new
+      // columns into it instead of pushing a duplicate.
+      const existingIdx = nds.findIndex((n) => n.id === node.id);
+      if (existingIdx >= 0) {
+        const updatedNodes = nds.slice();
+        const prev = updatedNodes[existingIdx];
+        if (prev.data.kind === "table" && node.data.kind === "table") {
+          updatedNodes[existingIdx] = {
+            ...prev,
+            data: {
+              ...prev.data,
+              // Only overwrite when the fresh payload actually has
+              // columns — keeps the optimistic empty entry from
+              // wiping a previously-enriched node.
+              columns: node.data.columns.length
+                ? node.data.columns
+                : prev.data.columns,
+            },
+          };
+        }
+        return updatedNodes;
+      }
+      const appended = [...nds, node] as CanvasNode[];
       if (multi) {
-        // Re-flag every existing table-node so the chip shows
-        return updated.map((n) =>
+        return appended.map((n) =>
           n.data.kind === "table"
             ? { ...n, data: { ...n.data, showProfileChip: true } }
             : n,
         ) as CanvasNode[];
       }
-      return updated;
+      return appended;
     });
     if (!primaryProfile) setPrimaryProfile(pick.profile);
   }
