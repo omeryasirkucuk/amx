@@ -119,6 +119,21 @@ export async function apiFetch<T>(
   }
   // 204 No Content
   if (res.status === 204) return undefined as T;
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("json")) {
+    // A 2xx response that is not JSON is almost always the SPA
+    // catch-all answering an /api/* path the server does not know
+    // about (e.g. a router failed to mount). Surfacing the raw HTML
+    // through ``res.json()`` produces the cryptic Safari "string
+    // did not match the expected pattern" SyntaxError; convert it
+    // into a clear ApiError instead so the toast actually points at
+    // the problem.
+    throw new ApiError(
+      res.status,
+      `Expected JSON from ${path} but got ${contentType || "no content-type"}.`,
+      "The backend route is probably missing. Restart the Studio server or check the route mount.",
+    );
+  }
   return (await res.json()) as T;
 }
 
