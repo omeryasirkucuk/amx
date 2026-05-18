@@ -300,6 +300,38 @@ export interface DbCacheSearchResponse {
   results: DbCacheSearchResult[];
 }
 
+/** One row in a cache-tree response. ``last_synced_at`` is an epoch
+ *  seconds timestamp the UI can render as relative ("synced 2h ago")
+ *  next to the node label. */
+export interface DbCacheTreeItem {
+  name: string;
+  last_synced_at: number | null;
+}
+
+/** Cache-tree response for the database / schema / table levels.
+ *  ``synced`` is ``false`` when the profile has no sync row in the
+ *  catalog yet — the caller renders a "sync this profile first" hint
+ *  in that case rather than an empty list. */
+export interface DbCacheTreeResponse {
+  items: DbCacheTreeItem[];
+  synced: boolean;
+}
+
+/** Cache-tree column row — carries the recorded ``dtype`` plus
+ *  primary / foreign key flags so the picker can show a small badge
+ *  without a second fetch. */
+export interface DbCacheTreeColumnItem extends DbCacheTreeItem {
+  dtype: string;
+  nullable: boolean;
+  pk_flag: boolean;
+  fk_flag: boolean;
+}
+
+export interface DbCacheTreeColumnsResponse {
+  items: DbCacheTreeColumnItem[];
+  synced: boolean;
+}
+
 export interface SnapshotColumn {
   name: string;
   dtype: string;
@@ -597,6 +629,33 @@ export const api = {
       `/api/db/cache/search?${params.toString()}`,
     );
   },
+  /** Cache-only tree listing. These four helpers read straight from
+   *  the persistent catalog cache and never touch the live DB — used
+   *  by the Pages wizard asset picker so a deep drill across a
+   *  Databricks workspace stays a local SQLite read. ``synced`` is
+   *  ``false`` when the profile has no sync row yet; the caller
+   *  renders a "sync this profile first" hint in that case. */
+  dbCacheTreeDatabases: (profile: string) =>
+    apiFetch<DbCacheTreeResponse>(
+      `/api/db/cache/tree/databases?profile=${encodeURIComponent(profile)}`,
+    ),
+  dbCacheTreeSchemas: (profile: string, database: string) =>
+    apiFetch<DbCacheTreeResponse>(
+      `/api/db/cache/tree/schemas?profile=${encodeURIComponent(profile)}&database=${encodeURIComponent(database)}`,
+    ),
+  dbCacheTreeTables: (profile: string, database: string, schema: string) =>
+    apiFetch<DbCacheTreeResponse>(
+      `/api/db/cache/tree/tables?profile=${encodeURIComponent(profile)}&database=${encodeURIComponent(database)}&schema=${encodeURIComponent(schema)}`,
+    ),
+  dbCacheTreeColumns: (
+    profile: string,
+    database: string,
+    schema: string,
+    table: string,
+  ) =>
+    apiFetch<DbCacheTreeColumnsResponse>(
+      `/api/db/cache/tree/columns?profile=${encodeURIComponent(profile)}&database=${encodeURIComponent(database)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`,
+    ),
   liveSnapshot: (scope: Scope, schema: string, table: string) =>
     apiFetch<SnapshotResponse>(
       withScope(
