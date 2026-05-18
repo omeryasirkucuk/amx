@@ -1,7 +1,9 @@
 // Per-asset DB tree picker for the Pages wizard.
-// Lets the user attach exactly the assets they want — a column, a
-// table, a schema, or a whole database — across any DB profile,
-// without committing the whole profile as a single context blob.
+// Reads exclusively from the persistent catalog cache — every level
+// (database / schema / table / column) is served from a local SQLite
+// query, so drilling into a 5,000-table Databricks workspace never
+// triggers a live round-trip. Cold cache surfaces an inline "sync
+// this profile first" hint instead of silently hanging.
 
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -18,8 +20,6 @@ interface DbProfileSummary {
 interface DbProfilesResponse {
   profiles: DbProfileSummary[];
 }
-
-const CATALOG_BACKENDS = new Set(["databricks", "bigquery"]);
 
 interface Props {
   value: PageAssetRef[];
@@ -97,7 +97,6 @@ function ProfileCard({
         <div className="border-t border-border p-2">
           <DatabaseList
             profile={profile}
-            usesCatalogs={CATALOG_BACKENDS.has(backend)}
             value={value}
             onChange={onChange}
           />
@@ -107,39 +106,37 @@ function ProfileCard({
   );
 }
 
-function DatabaseList({
-  profile,
-  usesCatalogs,
-  value,
-  onChange,
-}: NodeProps & { profile: string; usesCatalogs: boolean }) {
+function NotSyncedHint({ indent = 1 }: { indent?: number }) {
+  // Cache is empty for this profile. Surfacing the action instead of
+  // a vague "nothing here" so the user knows the next step (run a
+  // /sync in the REPL or the catalog cache page).
+  return (
+    <Hint indent={indent}>
+      Profile not synced. Run <code className="text-ink-muted">/sync</code> or
+      open the DB cache page to populate.
+    </Hint>
+  );
+}
+
+function DatabaseList({ profile, value, onChange }: NodeProps & { profile: string }) {
   const q = useQuery({
-    queryKey: ["pages", "tree", profile, usesCatalogs ? "catalogs" : "databases"],
-    queryFn: async () => {
-      if (usesCatalogs) {
-        const r = await api.liveCatalogs({ profile });
-        return r.catalogs;
-      }
-      const r = await api.liveDatabases({ profile });
-      return r.databases;
-    },
+    queryKey: ["pages", "tree-cache", profile, "databases"],
+    queryFn: () => api.dbCacheTreeDatabases(profile),
     staleTime: 30_000,
   });
 
   if (q.isLoading) return <Hint indent={1}>Loading...</Hint>;
   if (q.error) return <ErrorLine indent={1}>{(q.error as Error).message}</ErrorLine>;
-  const names = q.data ?? [];
-  if (names.length === 0)
-    return <Hint indent={1}>No {usesCatalogs ? "catalogs" : "databases"}.</Hint>;
+  const items = q.data?.items ?? [];
+  if (!q.data?.synced || items.length === 0) return <NotSyncedHint />;
 
   return (
     <ul className="space-y-0.5">
-      {names.map((name) => (
+      {items.map((item) => (
         <DatabaseNode
-          key={name}
+          key={item.name}
           profile={profile}
-          usesCatalogs={usesCatalogs}
-          database={name}
+          database={item.name}
           value={value}
           onChange={onChange}
         />
@@ -150,17 +147,13 @@ function DatabaseList({
 
 function DatabaseNode({
   profile,
-  usesCatalogs,
   database,
   value,
   onChange,
-}: NodeProps & { profile: string; usesCatalogs: boolean; database: string }) {
+}: NodeProps & { profile: string; database: string }) {
   const [open, setOpen] = useState(false);
   const ref = `${profile}/${database}`;
   const selected = isSelected(value, "db_database", ref);
-  const scope = usesCatalogs
-    ? { profile, catalog: database, kind: "catalog" as const }
-    : { profile, database, kind: "database" as const };
 
   return (
     <li>
@@ -175,7 +168,6 @@ function DatabaseNode({
       />
       {open && (
         <SchemaList
-          scope={scope}
           profile={profile}
           database={database}
           value={value}
@@ -187,36 +179,30 @@ function DatabaseNode({
 }
 
 function SchemaList({
-  scope,
   profile,
   database,
   value,
   onChange,
-}: NodeProps & {
-  scope: { profile: string; database?: string; catalog?: string; kind: "database" | "catalog" };
-  profile: string;
-  database: string;
-}) {
+}: NodeProps & { profile: string; database: string }) {
   const q = useQuery({
-    queryKey: ["pages", "tree", profile, database, "schemas"],
-    queryFn: () => api.liveSchemas(scope),
+    queryKey: ["pages", "tree-cache", profile, database, "schemas"],
+    queryFn: () => api.dbCacheTreeSchemas(profile, database),
     staleTime: 30_000,
   });
 
   if (q.isLoading) return <Hint indent={2}>Loading schemas...</Hint>;
   if (q.error) return <ErrorLine indent={2}>{(q.error as Error).message}</ErrorLine>;
-  const schemas = q.data?.schemas ?? [];
-  if (schemas.length === 0) return <Hint indent={2}>No schemas.</Hint>;
+  const items = q.data?.items ?? [];
+  if (items.length === 0) return <Hint indent={2}>No schemas in cache.</Hint>;
 
   return (
     <ul className="space-y-0.5">
-      {schemas.map((name) => (
+      {items.map((item) => (
         <SchemaNode
-          key={name}
-          scope={scope}
+          key={item.name}
           profile={profile}
           database={database}
-          schema={name}
+          schema={item.name}
           value={value}
           onChange={onChange}
         />
@@ -226,18 +212,12 @@ function SchemaList({
 }
 
 function SchemaNode({
-  scope,
   profile,
   database,
   schema,
   value,
   onChange,
-}: NodeProps & {
-  scope: { profile: string; database?: string; catalog?: string; kind: "database" | "catalog" };
-  profile: string;
-  database: string;
-  schema: string;
-}) {
+}: NodeProps & { profile: string; database: string; schema: string }) {
   const [open, setOpen] = useState(false);
   const ref = `${profile}/${database}/${schema}`;
   const selected = isSelected(value, "db_schema", ref);
@@ -255,7 +235,6 @@ function SchemaNode({
       />
       {open && (
         <TableList
-          scope={scope}
           profile={profile}
           database={database}
           schema={schema}
@@ -268,39 +247,32 @@ function SchemaNode({
 }
 
 function TableList({
-  scope,
   profile,
   database,
   schema,
   value,
   onChange,
-}: NodeProps & {
-  scope: { profile: string; database?: string; catalog?: string; kind: "database" | "catalog" };
-  profile: string;
-  database: string;
-  schema: string;
-}) {
+}: NodeProps & { profile: string; database: string; schema: string }) {
   const q = useQuery({
-    queryKey: ["pages", "tree", profile, database, schema, "tables"],
-    queryFn: () => api.liveAssets(scope, schema),
+    queryKey: ["pages", "tree-cache", profile, database, schema, "tables"],
+    queryFn: () => api.dbCacheTreeTables(profile, database, schema),
     staleTime: 30_000,
   });
 
   if (q.isLoading) return <Hint indent={3}>Loading tables...</Hint>;
   if (q.error) return <ErrorLine indent={3}>{(q.error as Error).message}</ErrorLine>;
-  const assets = q.data?.assets ?? [];
-  if (assets.length === 0) return <Hint indent={3}>No tables.</Hint>;
+  const items = q.data?.items ?? [];
+  if (items.length === 0) return <Hint indent={3}>No tables in cache.</Hint>;
 
   return (
     <ul className="space-y-0.5">
-      {assets.map((a) => (
+      {items.map((item) => (
         <TableNode
-          key={a.name}
-          scope={scope}
+          key={item.name}
           profile={profile}
           database={database}
           schema={schema}
-          table={a.name}
+          table={item.name}
           value={value}
           onChange={onChange}
         />
@@ -310,7 +282,6 @@ function TableList({
 }
 
 function TableNode({
-  scope,
   profile,
   database,
   schema,
@@ -318,7 +289,6 @@ function TableNode({
   value,
   onChange,
 }: NodeProps & {
-  scope: { profile: string; database?: string; catalog?: string; kind: "database" | "catalog" };
   profile: string;
   database: string;
   schema: string;
@@ -341,7 +311,6 @@ function TableNode({
       />
       {open && (
         <ColumnList
-          scope={scope}
           profile={profile}
           database={database}
           schema={schema}
@@ -355,7 +324,6 @@ function TableNode({
 }
 
 function ColumnList({
-  scope,
   profile,
   database,
   schema,
@@ -363,22 +331,21 @@ function ColumnList({
   value,
   onChange,
 }: NodeProps & {
-  scope: { profile: string; database?: string; catalog?: string; kind: "database" | "catalog" };
   profile: string;
   database: string;
   schema: string;
   table: string;
 }) {
   const q = useQuery({
-    queryKey: ["pages", "tree", profile, database, schema, table, "columns"],
-    queryFn: () => api.liveColumns(scope, schema, table),
+    queryKey: ["pages", "tree-cache", profile, database, schema, table, "columns"],
+    queryFn: () => api.dbCacheTreeColumns(profile, database, schema, table),
     staleTime: 30_000,
   });
 
   if (q.isLoading) return <Hint indent={4}>Loading columns...</Hint>;
   if (q.error) return <ErrorLine indent={4}>{(q.error as Error).message}</ErrorLine>;
-  const cols = q.data?.columns ?? [];
-  if (cols.length === 0) return <Hint indent={4}>No columns.</Hint>;
+  const cols = q.data?.items ?? [];
+  if (cols.length === 0) return <Hint indent={4}>No columns in cache.</Hint>;
 
   return (
     <ul className="space-y-0.5">

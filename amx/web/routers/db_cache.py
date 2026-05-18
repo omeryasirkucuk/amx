@@ -173,3 +173,92 @@ def search(
             detail=f"Catalog search failed: {exc}",
         ) from exc
     return {"query": needle, "truncated": truncated, "results": results}
+
+
+# ── Cache-only tree listing (drives the Pages wizard asset picker) ──
+#
+# These endpoints read straight from ``catalog_entities`` and never
+# touch the live DB. Cold cache returns an empty list plus
+# ``synced=false`` so the caller renders a "sync this profile first"
+# hint instead of silently hanging on a live round-trip.
+
+
+def _open_catalog() -> Any:
+    """Return a ``SearchCatalog`` or raise 503 when history store
+    isn't bound yet. Keeps every tree endpoint terse — they just call
+    the matching fetch method and pass the rows through."""
+    from amx.search.catalog import SearchCatalog
+
+    cat = SearchCatalog.from_history_store()
+    if cat is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised; cannot read catalog cache.",
+        )
+    return cat
+
+
+def _is_synced(cat: Any, profile: str) -> bool:
+    try:
+        return bool(cat.is_profile_fully_synced(profile))
+    except Exception:
+        return False
+
+
+@router.get("/tree/databases")
+def tree_databases(profile: str = Query(...)) -> dict[str, Any]:
+    """Distinct ``database_name`` rows recorded under *profile*."""
+    cat = _open_catalog()
+    return {
+        "items": cat.fetch_distinct_databases(profile),
+        "synced": _is_synced(cat, profile),
+    }
+
+
+@router.get("/tree/schemas")
+def tree_schemas(
+    profile: str = Query(...),
+    database: str = Query(...),
+) -> dict[str, Any]:
+    """Distinct ``schema_name`` rows under *(profile, database)*."""
+    cat = _open_catalog()
+    return {
+        "items": cat.fetch_distinct_schemas(profile, database_name=database),
+        "synced": _is_synced(cat, profile),
+    }
+
+
+@router.get("/tree/tables")
+def tree_tables(
+    profile: str = Query(...),
+    database: str = Query(...),
+    schema: str = Query(...),
+) -> dict[str, Any]:
+    """Distinct ``table_name`` rows under *(profile, database, schema)*."""
+    cat = _open_catalog()
+    return {
+        "items": cat.fetch_distinct_tables_in_schema(
+            profile, schema_name=schema, database_name=database
+        ),
+        "synced": _is_synced(cat, profile),
+    }
+
+
+@router.get("/tree/columns")
+def tree_columns(
+    profile: str = Query(...),
+    database: str = Query(...),
+    schema: str = Query(...),
+    table: str = Query(...),
+) -> dict[str, Any]:
+    """Cached column rows for *(profile, database, schema, table)*."""
+    cat = _open_catalog()
+    return {
+        "items": cat.fetch_columns_for_table(
+            profile,
+            schema_name=schema,
+            table_name=table,
+            database_name=database,
+        ),
+        "synced": _is_synced(cat, profile),
+    }

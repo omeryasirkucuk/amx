@@ -469,6 +469,37 @@ class EntityCrudMixin:
         last = row["last_full_sync_at"]
         return state == "done" and last is not None
 
+    def fetch_distinct_databases(self, db_profile: str) -> list[dict]:
+        """Return distinct ``database_name`` rows for *db_profile* with
+        each database's freshest ``last_synced_at``. Catalog-style
+        backends (Databricks, BigQuery) populate ``database_name``
+        with their catalog/project value at sync time so the same
+        query serves every backend uniformly. Empty / legacy rows
+        without a recorded database are skipped — the caller relies on
+        a non-empty name to scope subsequent schema and table reads.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT database_name, MAX(last_synced_at) AS last_synced_at
+                FROM catalog_entities
+                WHERE db_profile = ?
+                  AND entity_kind = 'table'
+                  AND database_name IS NOT NULL AND database_name != ''
+                GROUP BY database_name
+                ORDER BY database_name
+                """,
+                (db_profile,),
+            ).fetchall()
+        return [
+            {
+                "name": str(r["database_name"] or ""),
+                "last_synced_at": float(r["last_synced_at"] or 0.0),
+            }
+            for r in rows
+            if r["database_name"]
+        ]
+
     def fetch_distinct_schemas(
         self, db_profile: str, database_name: str | None = None
     ) -> list[dict]:

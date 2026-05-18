@@ -27,33 +27,37 @@ beforeEach(() => {
         ],
       };
     }
-    if (url.includes("/api/live/databases")) {
-      return { databases: ["orders_db"], active_database: null };
+    if (url.includes("/api/db/cache/tree/databases?profile=pg_prod")) {
+      return {
+        items: [{ name: "orders_db", last_synced_at: 0 }],
+        synced: true,
+      };
     }
-    if (url.includes("/api/live/catalogs")) {
-      return { supports_catalogs: true, catalogs: ["main"], active_catalog: null };
-    }
-    if (url.endsWith("/api/live/schemas?profile=pg_prod&database=orders_db")) {
-      return { catalog: null, schemas: ["public"], items: [] };
+    if (url.includes("/api/db/cache/tree/databases?profile=dbr_main")) {
+      return { items: [{ name: "main", last_synced_at: 0 }], synced: true };
     }
     if (
-      url.includes("/api/live/schemas/public/assets") &&
-      url.includes("pg_prod")
+      url.includes("/api/db/cache/tree/schemas") &&
+      url.includes("profile=pg_prod")
     ) {
-      return { schema: "public", assets: [{ name: "orders", kind: "table", comment: "" }], count: 1 };
+      return { items: [{ name: "public", last_synced_at: 0 }], synced: true };
     }
     if (
-      url.includes("/api/live/schemas/public/tables/orders/columns") &&
-      url.includes("pg_prod")
+      url.includes("/api/db/cache/tree/tables") &&
+      url.includes("profile=pg_prod")
+    ) {
+      return { items: [{ name: "orders", last_synced_at: 0 }], synced: true };
+    }
+    if (
+      url.includes("/api/db/cache/tree/columns") &&
+      url.includes("profile=pg_prod")
     ) {
       return {
-        schema: "public",
-        table: "orders",
-        columns: [
-          { name: "id", dtype: "bigint", nullable: false },
-          { name: "amount", dtype: "numeric", nullable: true },
+        items: [
+          { name: "id", dtype: "bigint", nullable: false, pk_flag: true, fk_flag: false, last_synced_at: 0 },
+          { name: "amount", dtype: "numeric", nullable: true, pk_flag: false, fk_flag: false, last_synced_at: 0 },
         ],
-        count: 2,
+        synced: true,
       };
     }
     return {};
@@ -114,11 +118,32 @@ describe("DbAssetTree", () => {
     await waitFor(() => expect(screen.getByText("1 selected")).toBeTruthy());
   });
 
-  it("uses /api/live/catalogs for catalog-style backends", async () => {
+  it("reads from the cache for catalog-style backends too — no live round-trip", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      calls.push(url);
+      // Reuse the same handler as beforeEach so the responses match.
+      let body: unknown = {};
+      if (url.includes("/api/profiles/db")) {
+        body = {
+          profiles: [{ name: "dbr_main", backend: "databricks" }],
+        };
+      } else if (url.includes("/api/db/cache/tree/databases?profile=dbr_main")) {
+        body = { items: [{ name: "main", last_synced_at: 0 }], synced: true };
+      }
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
     renderWithProviders(<DbAssetTree value={[]} onChange={() => {}} />);
     await waitFor(() => expect(screen.getByText("dbr_main")).toBeTruthy());
-
     fireEvent.click(screen.getByText("dbr_main"));
     await waitFor(() => expect(screen.getByText("main")).toBeTruthy());
+
+    // Hard guarantee: no /api/live/* URL was touched during the drill.
+    expect(calls.some((u) => u.includes("/api/live/"))).toBe(false);
   });
 });

@@ -28,8 +28,8 @@ beforeEach(() => {
     if (url.includes("/api/lineage")) {
       return { artifacts: [], count: 0 };
     }
-    if (url.includes("/api/live/databases")) {
-      return { databases: ["sales_db"], active_database: null };
+    if (url.includes("/api/db/cache/tree/databases")) {
+      return { items: [{ name: "sales_db", last_synced_at: 0 }], synced: true };
     }
     return {};
   });
