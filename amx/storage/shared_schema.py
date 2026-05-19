@@ -129,7 +129,7 @@ DEFAULT_HISTORY_SCHEMA_COMMENT = SHARED_SCHEMA_COMMENT
 # All client versions writing into a shared store record this as their
 # ``schema_version`` so an older client refuses to write into a schema
 # bumped by a newer client (avoids losing columns the new client added).
-SHARED_SCHEMA_VERSION = 3
+SHARED_SCHEMA_VERSION = 4
 
 
 def _desc(table: str, column: str | None = None) -> str:
@@ -1036,6 +1036,182 @@ def build_metadata(schema: str | None = None) -> MetaData:
         Index("ix_lineage_comments_artifact", "artifact_id"),
         Index("ix_lineage_comments_local_lookup", "hostname", "local_id"),
         comment=_desc("lineage_comments"),
+    )
+
+    # ── _amx_users: workspace member registry ────────────────────────────────
+    fq_users = f"{schema or DEFAULT_HISTORY_SCHEMA}._amx_users"
+    Table(
+        "_amx_users",
+        md,
+        Column("id", String(36), primary_key=True, comment=_desc("_amx_users", "id")),
+        Column(
+            "username",
+            String(255),
+            nullable=False,
+            comment=_desc("_amx_users", "username"),
+        ),
+        Column(
+            "hostname",
+            String(255),
+            nullable=False,
+            comment=_desc("_amx_users", "hostname"),
+        ),
+        Column(
+            "display_name",
+            String(512),
+            comment=_desc("_amx_users", "display_name"),
+        ),
+        Column("email", String(255), comment=_desc("_amx_users", "email")),
+        Column(
+            "role",
+            String(20),
+            nullable=False,
+            comment=_desc("_amx_users", "role"),
+        ),
+        Column(
+            "first_seen_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("_amx_users", "first_seen_at"),
+        ),
+        Column(
+            "last_seen_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("_amx_users", "last_seen_at"),
+        ),
+        Column(
+            "client_version",
+            String(40),
+            comment=_desc("_amx_users", "client_version"),
+        ),
+        Column(
+            "created_by",
+            String(36),
+            comment=_desc("_amx_users", "created_by"),
+        ),
+        Column(
+            "revoked_at",
+            DateTime(timezone=True),
+            comment=_desc("_amx_users", "revoked_at"),
+        ),
+        Column(
+            "revoked_by",
+            String(36),
+            comment=_desc("_amx_users", "revoked_by"),
+        ),
+        Index("uq_amx_users_username_hostname", "username", "hostname", unique=True),
+        Index("ix_amx_users_role", "role"),
+        comment=_desc("_amx_users"),
+    )
+
+    # ── _amx_admin_audit: permission + sensitive-action log ──────────────────
+    Table(
+        "_amx_admin_audit",
+        md,
+        Column("id", String(36), primary_key=True, comment=_desc("_amx_admin_audit", "id")),
+        Column(
+            "event_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("_amx_admin_audit", "event_at"),
+        ),
+        Column(
+            "actor_user_id",
+            String(36),
+            ForeignKey(fq_users + ".id"),
+            comment=_desc("_amx_admin_audit", "actor_user_id"),
+        ),
+        Column(
+            "actor_username",
+            String(255),
+            comment=_desc("_amx_admin_audit", "actor_username"),
+        ),
+        Column(
+            "actor_hostname",
+            String(255),
+            comment=_desc("_amx_admin_audit", "actor_hostname"),
+        ),
+        Column(
+            "action",
+            String(40),
+            nullable=False,
+            comment=_desc("_amx_admin_audit", "action"),
+        ),
+        Column(
+            "target_user_id",
+            String(36),
+            ForeignKey(fq_users + ".id"),
+            comment=_desc("_amx_admin_audit", "target_user_id"),
+        ),
+        Column(
+            "target_resource",
+            String(1024),
+            comment=_desc("_amx_admin_audit", "target_resource"),
+        ),
+        Column(
+            "details_json",
+            _portable_json(),
+            comment=_desc("_amx_admin_audit", "details_json"),
+        ),
+        Index("ix_amx_admin_audit_event_at", "event_at"),
+        Index("ix_amx_admin_audit_actor_user_id", "actor_user_id"),
+        comment=_desc("_amx_admin_audit"),
+    )
+
+    # ── _amx_session_events: connect/disconnect log ──────────────────────────
+    Table(
+        "_amx_session_events",
+        md,
+        Column(
+            "id", String(36), primary_key=True, comment=_desc("_amx_session_events", "id")
+        ),
+        Column(
+            "event_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("_amx_session_events", "event_at"),
+        ),
+        Column(
+            "user_id",
+            String(36),
+            ForeignKey(fq_users + ".id"),
+            comment=_desc("_amx_session_events", "user_id"),
+        ),
+        Column(
+            "username",
+            String(255),
+            comment=_desc("_amx_session_events", "username"),
+        ),
+        Column(
+            "hostname",
+            String(255),
+            comment=_desc("_amx_session_events", "hostname"),
+        ),
+        Column(
+            "event_kind",
+            String(40),
+            nullable=False,
+            comment=_desc("_amx_session_events", "event_kind"),
+        ),
+        Column(
+            "client_version",
+            String(40),
+            comment=_desc("_amx_session_events", "client_version"),
+        ),
+        Column(
+            "os_platform",
+            String(40),
+            comment=_desc("_amx_session_events", "os_platform"),
+        ),
+        Column(
+            "db_profiles_seen",
+            _portable_json(),
+            comment=_desc("_amx_session_events", "db_profiles_seen"),
+        ),
+        Index("ix_amx_session_events_event_at", "event_at"),
+        Index("ix_amx_session_events_user_id", "user_id"),
+        comment=_desc("_amx_session_events"),
     )
 
     return md

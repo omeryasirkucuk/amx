@@ -1653,6 +1653,140 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "'regenerated after schema change')."
         ),
     },
+    # ── _amx_users (shared only) ──────────────────────────────────────────
+    "_amx_users": {
+        "__table__": (
+            "Workspace member registry. One row per (username, hostname) pair "
+            "that has ever connected to this shared store. The first user to "
+            "connect to a fresh store is bootstrapped as admin; all subsequent "
+            "users join as viewers. Admins can promote, demote, or revoke "
+            "members. Read by /history-store list-team and the admin CLI "
+            "commands added in subsequent PRs."
+        ),
+        "id": "UUID v4 primary key for the user record.",
+        "username": (
+            "OS username (or AMX_USER override) of the workspace member. "
+            "Part of the (username, hostname) unique pair that identifies a client."
+        ),
+        "hostname": ATTRIBUTION_HOSTNAME,
+        "display_name": (
+            "Optional human-readable name that an admin can set to override "
+            "the raw OS username. NULL until explicitly set."
+        ),
+        "email": (
+            "Optional contact email for the member. NULL until supplied. "
+            "Not used for authentication; informational only."
+        ),
+        "role": (
+            "Access level: 'admin' (can promote/demote/revoke others) or "
+            "'viewer' (read-only access to team history). 'writer' is reserved "
+            "for a future phase."
+        ),
+        "first_seen_at": "UTC timestamp when this member first connected to the shared store.",
+        "last_seen_at": (
+            "UTC timestamp of the member's most recent connection. Updated on "
+            "every register_session call so /history-store list-team can show "
+            "active vs dormant members."
+        ),
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
+        "created_by": (
+            "UUID of the _amx_users row for the admin who promoted this user "
+            "into the registry, or NULL for the bootstrap user who is the "
+            "first to connect."
+        ),
+        "revoked_at": (
+            "UTC timestamp when an admin revoked this member. NULL while active. "
+            "Revocation blocks future connections but preserves history rows."
+        ),
+        "revoked_by": (
+            "UUID of the _amx_users row for the admin who performed the revocation. "
+            "NULL while the member is not revoked."
+        ),
+    },
+    # ── _amx_admin_audit (shared only) ────────────────────────────────────
+    "_amx_admin_audit": {
+        "__table__": (
+            "Permission and sensitive-action audit log. Append-only; rows are "
+            "never updated or deleted. Records every admin action (promote, "
+            "demote, revoke, unrevoke) and notable system events (user_join, "
+            "forced_overwrite, etc.) so workspace owners can reconstruct who "
+            "changed what and when."
+        ),
+        "id": "UUID v4 primary key for the audit event.",
+        "event_at": "UTC timestamp the event occurred. Indexed for chronological queries.",
+        "actor_user_id": (
+            "UUID of the _amx_users row for the user who performed the action. "
+            "NULL for system-generated events that have no human actor."
+        ),
+        "actor_username": (
+            "Denormalized OS username of the actor at the time of the event. "
+            "Preserved verbatim so the audit trail survives even if the actor "
+            "row is later revoked or the username changes."
+        ),
+        "actor_hostname": (
+            "Denormalized hostname of the actor at the time of the event. "
+            "Paired with actor_username for a fully-qualified provenance label."
+        ),
+        "action": (
+            "Event discriminator: user_join | promote_admin | demote_admin | "
+            "revoke | unrevoke | forced_overwrite | profile_cleanup | "
+            "page_assign_profile | …. Open-ended so new actions can be added "
+            "without a schema migration."
+        ),
+        "target_user_id": (
+            "UUID of the _amx_users row that the action targeted. NULL for "
+            "non-user actions (e.g. forced_overwrite targets a resource)."
+        ),
+        "target_resource": (
+            "Opaque reference to the non-user resource the action targeted "
+            "(e.g. 'lineage_comment:abc123'). NULL for user-targeted actions."
+        ),
+        "details_json": (
+            "Free-form JSON payload recording old/new values and additional "
+            "context. Shape varies by action; consumers should not rely on a "
+            "fixed schema within this column."
+        ),
+    },
+    # ── _amx_session_events (shared only) ────────────────────────────────
+    "_amx_session_events": {
+        "__table__": (
+            "Connect/disconnect event log for workspace members. One row per "
+            "connection or disconnection event. Provides an audit trail of "
+            "who accessed the shared store and when, readable by admins via "
+            "/history-store list-team activity. Append-only; rows are never "
+            "updated or deleted."
+        ),
+        "id": "UUID v4 primary key for the session event.",
+        "event_at": "UTC timestamp the event occurred. Indexed for recent-activity queries.",
+        "user_id": (
+            "UUID of the _amx_users row for the member who connected or "
+            "disconnected. Indexed so per-user session history is fast."
+        ),
+        "username": (
+            "Denormalized OS username of the member at event time. Preserved "
+            "verbatim in case the user row is later revoked."
+        ),
+        "hostname": (
+            "Denormalized hostname of the member at event time. Together with "
+            "username, fully identifies the client machine."
+        ),
+        "event_kind": (
+            "What happened: 'connect' (normal re-connection of a known member), "
+            "'disconnect' (explicit logout or session end), "
+            "'first_seen' (the member's very first connection to this store)."
+        ),
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
+        "os_platform": (
+            "Platform string from sys.platform at connect time: 'darwin', "
+            "'linux', 'win32', etc. Stored for diagnostic and security-audit "
+            "purposes."
+        ),
+        "db_profiles_seen": (
+            "JSON list of DB profile names the member accessed during the "
+            "session. Empty list at connect time; enriched by subsequent "
+            "record_audit_event calls as the session progresses."
+        ),
+    },
     # ── _amx_schema_descriptions (the sidecar itself) ─────────────────────
     # Self-describing: the sidecar records its own description rows too.
     "_amx_schema_descriptions": {
