@@ -230,7 +230,21 @@ def _bootstrap_dual_or_local(local: SQLiteHistoryStore, cfg: AMXConfig):
 
     from amx.storage.dual_write import DualWriteHistoryStore
 
-    return DualWriteHistoryStore(local=local, shared=shared)
+    dual = DualWriteHistoryStore(local=local, shared=shared)
+
+    from amx.storage.backfill import start_background_backfill
+
+    try:
+        start_background_backfill(
+            local,
+            shared,
+            shared_profile=str(getattr(cfg, "history_store_profile", "") or ""),
+            shared_schema=str(getattr(cfg, "history_store_schema", "") or "AMX"),
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("backfill bootstrap failed; continuing", exc_info=True)
+
+    return dual
 
 
 class _LazyDualWriteStore:
