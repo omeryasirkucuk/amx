@@ -2,6 +2,14 @@
  * ColumnEdge — bezier edge with hover-only label, optional
  * cardinality markers, and a floating editor popover when selected.
  *
+ * The endpoints float: instead of trusting the source / target
+ * positions baked into the node (every table declares
+ * ``sourcePosition: Right`` / ``targetPosition: Left`` at creation),
+ * we compute, at render time, which side of each node faces the
+ * other along the center-to-center axis. That switch is what
+ * removes the "wrap-around bow" shape that appeared when neighbours
+ * were placed above / below / left of the anchor in radial layout.
+ *
  * A 16px-wide invisible overlay path catches hover and click events
  * so the user can land on thin / dashed edges easily (Dataloom
  * trick). The label is a small monospace pill anchored to the path
@@ -14,11 +22,20 @@ import {
   BaseEdge,
   EdgeLabelRenderer,
   EdgeProps,
+  Position,
   getBezierPath,
   useReactFlow,
+  useStore,
+  type ReactFlowState,
 } from "reactflow";
 
-import type { CanvasEdge, CanvasEdgeData, EdgeCardinality } from "../types";
+import type {
+  CanvasEdge,
+  CanvasEdgeData,
+  CanvasNode,
+  EdgeCardinality,
+  TableNodeData,
+} from "../types";
 import { lineageDeleteEdge, lineageEdgeStyle } from "../../lib/api";
 import { EdgeEditorPopover, type EdgeStylePatch } from "./EdgeEditorPopover";
 
@@ -30,6 +47,32 @@ const MARKER_IDS = {
   one: "lcv-marker-one",
   many: "lcv-marker-many",
 } as const;
+
+/** Pick the side of a node-rect (T/R/B/L) that faces ``target``
+ *  along the center-to-center vector, then return the midpoint of
+ *  that side as the floating handle anchor. */
+function floatingEndpoint(
+  rect: { x: number; y: number; width: number; height: number },
+  target: { x: number; y: number },
+): { x: number; y: number; pos: Position } {
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  const dx = target.x - cx;
+  const dy = target.y - cy;
+  // Compare horizontal vs vertical reach relative to the node's
+  // half-extent so wider-than-tall nodes still favour their short
+  // sides when the target is mostly above / below.
+  const ratioH = Math.abs(dx) / (rect.width / 2);
+  const ratioV = Math.abs(dy) / (rect.height / 2);
+  if (ratioH >= ratioV) {
+    return dx >= 0
+      ? { x: rect.x + rect.width, y: cy, pos: Position.Right }
+      : { x: rect.x, y: cy, pos: Position.Left };
+  }
+  return dy >= 0
+    ? { x: cx, y: rect.y + rect.height, pos: Position.Bottom }
+    : { x: cx, y: rect.y, pos: Position.Top };
+}
 
 function endsFor(c?: EdgeCardinality): { source: string | undefined; target: string | undefined } {
   if (!c) return { source: undefined, target: undefined };
@@ -44,25 +87,75 @@ function markerUrl(key: keyof typeof MARKER_IDS): string {
 
 function ColumnEdgeImpl({
   id,
+  source,
+  target,
   sourceX,
   sourceY,
   targetX,
   targetY,
   sourcePosition,
   targetPosition,
+  sourceHandleId,
+  targetHandleId,
   data,
   selected,
   style,
 }: EdgeProps<CanvasEdgeData>) {
   const rf = useReactFlow<unknown, CanvasEdgeData>();
+  // ``useStore`` re-runs the selector on every store change but the
+  // shallow-equal comparison keeps re-renders to the cases where the
+  // source / target node moved or resized. We need the geometry to
+  // compute the floating handle position.
+  const floating = useStore(
+    useCallback(
+      (s: ReactFlowState) => {
+        const sNode = s.nodeInternals.get(source);
+        const tNode = s.nodeInternals.get(target);
+        if (!sNode || !tNode) return null;
+        const sRect = {
+          x: sNode.positionAbsolute?.x ?? sNode.position?.x ?? 0,
+          y: sNode.positionAbsolute?.y ?? sNode.position?.y ?? 0,
+          width: sNode.width ?? 240,
+          height: sNode.height ?? 140,
+        };
+        const tRect = {
+          x: tNode.positionAbsolute?.x ?? tNode.position?.x ?? 0,
+          y: tNode.positionAbsolute?.y ?? tNode.position?.y ?? 0,
+          width: tNode.width ?? 240,
+          height: tNode.height ?? 140,
+        };
+        const sCenter = {
+          x: sRect.x + sRect.width / 2,
+          y: sRect.y + sRect.height / 2,
+        };
+        const tCenter = {
+          x: tRect.x + tRect.width / 2,
+          y: tRect.y + tRect.height / 2,
+        };
+        const src = floatingEndpoint(sRect, tCenter);
+        const tgt = floatingEndpoint(tRect, sCenter);
+        return { src, tgt };
+      },
+      [source, target],
+    ),
+  );
   const [hovered, setHovered] = useState(false);
+  // Use the floating geometry when available; fall back to ReactFlow's
+  // baked-in coordinates if the store lookup fails (defensive — the
+  // store should always have both nodes for a rendered edge).
+  const sx = floating?.src.x ?? sourceX;
+  const sy = floating?.src.y ?? sourceY;
+  const tx = floating?.tgt.x ?? targetX;
+  const ty = floating?.tgt.y ?? targetY;
+  const sPos = floating?.src.pos ?? sourcePosition;
+  const tPos = floating?.tgt.pos ?? targetPosition;
   const [edgePath, labelX, labelY] = getBezierPath({
-    sourceX,
-    sourceY,
-    sourcePosition,
-    targetX,
-    targetY,
-    targetPosition,
+    sourceX: sx,
+    sourceY: sy,
+    sourcePosition: sPos,
+    targetX: tx,
+    targetY: ty,
+    targetPosition: tPos,
   });
   const cardinality = data?.cardinality;
   const markers = endsFor(cardinality);
@@ -132,6 +225,41 @@ function ColumnEdgeImpl({
     );
   }, [id, rf]);
 
+  /** Force both endpoints' tables to expand and highlight the
+   *  source / target column rows. The forceExpandTick bump on each
+   *  node nudges DataFrameNode's useEffect to flip its local
+   *  ``expanded`` state without depending on a parent reset. */
+  const handleJumpToColumns = useCallback(() => {
+    if (!sourceHandleId || !targetHandleId) return;
+    rf.setNodes((nds) =>
+      (nds as CanvasNode[]).map((n) => {
+        if (n.data.kind !== "table") return n;
+        const td = n.data as TableNodeData;
+        if (n.id === source) {
+          return {
+            ...n,
+            data: {
+              ...td,
+              forceExpandTick: (td.forceExpandTick ?? 0) + 1,
+              tracedColumn: sourceHandleId,
+            },
+          };
+        }
+        if (n.id === target) {
+          return {
+            ...n,
+            data: {
+              ...td,
+              forceExpandTick: (td.forceExpandTick ?? 0) + 1,
+              tracedColumn: targetHandleId,
+            },
+          };
+        }
+        return n;
+      }),
+    );
+  }, [rf, source, sourceHandleId, target, targetHandleId]);
+
   return (
     <>
       <BaseEdge
@@ -172,9 +300,12 @@ function ColumnEdgeImpl({
             styleColor={data?.styleColor}
             styleDashed={data?.styleDashed}
             cardinality={data?.cardinality}
+            fromColumn={sourceHandleId ?? undefined}
+            toColumn={targetHandleId ?? undefined}
             onChange={applyChange}
             onDelete={handleDelete}
             onClose={handleClose}
+            onJumpToColumns={handleJumpToColumns}
           />
         </EdgeLabelRenderer>
       )}

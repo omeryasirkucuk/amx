@@ -1451,6 +1451,123 @@ def patch_edge_style(
     return {"id": int(edge_id), "ok": True}
 
 
+@router.post("/edges/among")
+def edges_among(
+    payload: dict[str, Any] = Body(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Return every ``catalog_relationships`` row whose endpoints are
+    both in the supplied set of entities.
+
+    Studio calls this after AI Generate (and on demand via the
+    "Discover related" toolbar button) to surface neighbour-to-
+    neighbour edges. The LLM extractor is anchor-centric and never
+    asks for non-anchor pairs, so without this call deterministic
+    edges (FK / view DDL / query log) between newly-spawned tables
+    would stay invisible on the canvas.
+
+    Body — either form is accepted, and they may be mixed:
+
+        ``{"entity_ids": [int, ...]}``
+            Used by canvases loaded from an artifact (every node
+            carries its backend ``entity_id``).
+        ``{"tables": [{"profile": str, "fqn": str}, ...]}``
+            Used by canvases assembled via AI Generate where the
+            new rows have not been persisted yet and only carry an
+            FQN. The handler resolves each pair to an entity_id
+            via the same strict lookup the save flow uses;
+            unresolved entries are silently dropped.
+
+    Returns the same edge shape used by ``GET /by-id/{artifact_id}``
+    (the canvas's load path) so the frontend can dedupe by ``id`` and
+    drop merged rows straight into ReactFlow state.
+    """
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    raw_ids = payload.get("entity_ids") or []
+    raw_tables = payload.get("tables") or []
+    ids: list[int] = []
+    seen: set[int] = set()
+    for v in raw_ids:
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            continue
+        if iv in seen:
+            continue
+        seen.add(iv)
+        ids.append(iv)
+    for entry in raw_tables:
+        if not isinstance(entry, dict):
+            continue
+        profile = str(entry.get("profile") or "").strip()
+        fqn = str(entry.get("fqn") or "").strip()
+        if not profile or not fqn:
+            continue
+        try:
+            iv = _resolve_entity_id_strict(hs, profile, fqn)
+        except HTTPException:
+            # Missing catalog row — skip silently rather than failing
+            # the whole call. Studio's canvas may carry stale FQNs
+            # that no longer resolve, and we'd rather surface the
+            # other edges than 404 the discovery pass.
+            continue
+        if iv in seen:
+            continue
+        seen.add(iv)
+        ids.append(iv)
+    if len(ids) < 2:
+        # Less than two endpoints means no edge can sit between two
+        # distinct nodes — short-circuit with an empty payload rather
+        # than hitting SQLite with a degenerate WHERE.
+        return {"edges": [], "count": 0}
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    placeholders = ",".join("?" for _ in ids)
+    with hs._connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, from_entity_id, to_entity_id, from_column, to_column,
+                   relationship_type, source, score, verdict,
+                   style_color, style_dashed, cardinality
+            FROM catalog_relationships
+            WHERE from_entity_id IN ({placeholders})
+              AND to_entity_id IN ({placeholders})
+              AND from_entity_id != to_entity_id
+            """,
+            tuple(ids) + tuple(ids),
+        ).fetchall()
+    edges_out: list[dict[str, Any]] = []
+    for r in rows:
+        dashed_raw = r[10]
+        dashed_out: bool | None = bool(int(dashed_raw)) if dashed_raw is not None else None
+        edges_out.append(
+            {
+                "id": int(r[0]),
+                "from_entity_id": int(r[1]),
+                "to_entity_id": int(r[2]),
+                "from_column": str(r[3] or ""),
+                "to_column": str(r[4] or ""),
+                "relationship_type": str(r[5] or ""),
+                "source": str(r[6] or ""),
+                "score": float(r[7] or 0.0),
+                "verdict": str(r[8] or ""),
+                "style_color": (str(r[9]) if r[9] else None),
+                "style_dashed": dashed_out,
+                "cardinality": (str(r[11]) if r[11] else None),
+            }
+        )
+    return {"edges": edges_out, "count": len(edges_out)}
+
+
 @router.delete("/edges/{edge_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_edge(
     edge_id: int,

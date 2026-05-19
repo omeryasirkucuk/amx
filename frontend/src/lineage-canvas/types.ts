@@ -44,6 +44,11 @@ export interface TableNodeData {
   isAnchor?: boolean;
   /** Highlight column when a trace is active. */
   tracedColumn?: string;
+  /** Bumping integer that forces the DataFrameNode to expand its
+   *  column rail. The bump (rather than a plain boolean) lets the
+   *  same node be expanded again on a later click without the user
+   *  having to collapse it manually in between. */
+  forceExpandTick?: number;
   /** Header badge logo (lineage_logos.key). Empty/undefined = no badge.
    *  Auto-bound from profile.backend on add; user can override. */
   logoKey?: string;

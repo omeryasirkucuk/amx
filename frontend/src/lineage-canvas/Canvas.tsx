@@ -68,9 +68,11 @@ import {
 } from "./amx-bridge/persistence";
 import {
   convertLoadedCanvas,
+  loadedEdgeToCanvasEdge,
   makeTableNode,
 } from "./amx-bridge/payload";
 import { fetchTableColumns } from "./amx-bridge/catalog";
+import { lineageEdgesAmong } from "../lib/api";
 import { parseSql, renderSql } from "./amx-bridge/sqlIo";
 import { logoKeyForBackend } from "./logos/backendMap";
 import { LogoPicker } from "./logos/LogoPicker";
@@ -342,6 +344,83 @@ function CanvasInner() {
     setNodes((nds) => [...nds, node]);
   }
 
+  /** Discover persisted edges (FK / view DDL / query log / earlier
+   *  manual saves) that sit between two tables on the current
+   *  canvas. Runs after AI Generate completes and also on the
+   *  toolbar's "Discover related" trigger. Tables already on the
+   *  canvas keep their geometry; only edges merge in. */
+  async function discoverRelatedEdges(): Promise<number> {
+    const tables = nodes.filter((n) => n.data.kind === "table");
+    if (tables.length < 2) return 0;
+    const entityIds: number[] = [];
+    const fqnPairs: { profile: string; fqn: string }[] = [];
+    for (const n of tables) {
+      const d = n.data as TableNodeData;
+      if (typeof d.entityId === "number" && d.entityId > 0) {
+        entityIds.push(d.entityId);
+      } else if (d.profile && d.fqn) {
+        fqnPairs.push({ profile: d.profile, fqn: d.fqn });
+      }
+    }
+    if (entityIds.length + fqnPairs.length < 2) return 0;
+    let response: Awaited<ReturnType<typeof lineageEdgesAmong>>;
+    try {
+      response = await lineageEdgesAmong({
+        entityIds,
+        tables: fqnPairs,
+      });
+    } catch {
+      return 0;
+    }
+    if (response.edges.length === 0) return 0;
+    // Build entity_id → node-id and FQN → node-id maps so backend
+    // edges latch onto whichever node id the canvas already uses.
+    const entityToNodeId = new Map<number, string>();
+    const fqnToNodeId = new Map<string, string>();
+    for (const n of tables) {
+      const d = n.data as TableNodeData;
+      if (typeof d.entityId === "number" && d.entityId > 0) {
+        entityToNodeId.set(d.entityId, n.id);
+      }
+      if (d.fqn) {
+        fqnToNodeId.set(d.fqn, n.id);
+        const parts = d.fqn.split(".");
+        if (parts.length >= 3) {
+          const alias = parts.slice(-2).join(".");
+          if (!fqnToNodeId.has(alias)) fqnToNodeId.set(alias, n.id);
+        }
+      }
+    }
+    let added = 0;
+    setEdges((prev) => {
+      const next = [...prev];
+      const seen = new Set(next.map((e) => e.id));
+      for (const row of response.edges) {
+        const sId = entityToNodeId.get(row.from_entity_id);
+        const tId = entityToNodeId.get(row.to_entity_id);
+        if (!sId || !tId) continue;
+        const ce = loadedEdgeToCanvasEdge(row, sId, tId);
+        if (seen.has(ce.id)) continue;
+        seen.add(ce.id);
+        next.push(ce);
+        added += 1;
+      }
+      return next;
+    });
+    return added;
+  }
+
+  async function handleDiscoverRelated() {
+    const added = await discoverRelatedEdges();
+    toast.push({
+      title: "Discover related",
+      description: added
+        ? `Added ${added} edge${added === 1 ? "" : "s"} from the catalog.`
+        : "No additional edges between the tables on canvas.",
+      tone: added ? "success" : "info",
+    });
+  }
+
   function handleAutoLayout() {
     // Resolve the anchor node id from the current AI Generate
     // selection so the hook can run its radial mode. When no anchor
@@ -591,6 +670,12 @@ function CanvasInner() {
         description: `${totals.total_edges} edge(s) streamed in.`,
         tone: "success",
       });
+      // Pull deterministic edges (FK / view DDL / query log) that the
+      // anchor-centric LLM extractor never proposes, so neighbour-to-
+      // neighbour relationships surface as soon as the stream ends.
+      // Fire-and-forget; failures are silent so the stream completion
+      // toast stays the primary signal.
+      void discoverRelatedEdges();
       // Auto-arrange only when this run actually added new tables —
       // an edges-only stream shouldn't disturb a canvas the user has
       // already laid out by hand. Defer one frame so the last
@@ -933,6 +1018,7 @@ function CanvasInner() {
         activeArtifactId={activeArtifactId}
         onOpenSavedArtifact={handleOpenSavedArtifact}
         onActiveSavedArtifactDeleted={handleActiveSavedArtifactDeleted}
+        onDiscoverRelated={() => void handleDiscoverRelated()}
       />
       <div
         ref={canvasShellRef}

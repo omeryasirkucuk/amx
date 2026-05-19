@@ -19,6 +19,7 @@ import {
   Image as ImageIcon,
   LayoutGrid,
   Layers3,
+  Network,
   Plus,
   Redo2,
   Save,
@@ -71,6 +72,10 @@ interface ToolbarProps {
   /** Called when the user deletes the currently-loaded saved
    *  artifact — Canvas clears state + strips the URL param. */
   onActiveSavedArtifactDeleted: () => void;
+  /** Manual trigger for the "find every known edge between the
+   *  tables on canvas" pass. Surfaces deterministic FK / view
+   *  DDL / query log edges the anchor-centric LLM skips. */
+  onDiscoverRelated: () => void;
 }
 
 interface IconButtonProps {
@@ -156,6 +161,9 @@ export function Toolbar(p: ToolbarProps) {
 
       <IconBtn label="Auto-arrange" shortcut="L" onClick={p.onAutoLayout}>
         <LayoutGrid size={15} />
+      </IconBtn>
+      <IconBtn label="Discover related edges" onClick={p.onDiscoverRelated}>
+        <Network size={15} />
       </IconBtn>
 
       <Divider />

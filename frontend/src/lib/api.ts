@@ -1391,6 +1391,45 @@ export async function lineageDelete(artifactId: number): Promise<void> {
   await apiFetch<void>(`/api/lineage/by-id/${artifactId}`, { method: "DELETE" });
 }
 
+/** Same shape as a row out of ``GET /by-id/{id}``'s ``edges`` list —
+ *  the canvas dedupes by ``id`` when merging these into existing
+ *  state. */
+export interface LineageEdgeAmongRow {
+  id: number;
+  from_entity_id: number;
+  to_entity_id: number;
+  from_column: string;
+  to_column: string;
+  relationship_type: string;
+  source: string;
+  score: number;
+  verdict: string;
+  style_color?: string | null;
+  style_dashed?: boolean | null;
+  cardinality?: "1:1" | "1:N" | "N:M" | null;
+}
+
+/** Find every persisted edge that sits between two tables on the
+ *  canvas. Pass ``entityIds`` for tables loaded from a saved
+ *  artifact and ``tables`` (``{profile, fqn}``) for AI-generated
+ *  tables that have not been persisted yet. Both lists may be
+ *  combined; the backend resolves and dedupes server-side. */
+export async function lineageEdgesAmong(args: {
+  entityIds?: number[];
+  tables?: { profile: string; fqn: string }[];
+}): Promise<{ edges: LineageEdgeAmongRow[]; count: number }> {
+  return apiFetch<{ edges: LineageEdgeAmongRow[]; count: number }>(
+    `/api/lineage/edges/among`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        entity_ids: args.entityIds ?? [],
+        tables: args.tables ?? [],
+      }),
+    },
+  );
+}
+
 /** Update Studio-canvas style overrides on a single edge. Any
  *  omitted key leaves the column untouched; ``null`` clears it
  *  back to the default. */

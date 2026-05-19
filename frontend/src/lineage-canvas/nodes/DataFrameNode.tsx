@@ -30,7 +30,7 @@
  *       collapsed so they don't render as floating dots.
  */
 
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Handle, NodeProps, Position, useReactFlow } from "reactflow";
 import { ChevronDown, ChevronRight, Search, Star } from "lucide-react";
 import clsx from "clsx";
@@ -148,6 +148,12 @@ function DataFrameNodeImpl({ id, data, selected }: NodeProps<TableNodeData>) {
   // open individual tables on demand via the header chevron or the
   // "+ show N columns" affordance.
   const [expanded, setExpanded] = useState<boolean>(false);
+  // External callers (e.g. clicking the "Columns" line on an edge
+  // popover) bump ``forceExpandTick`` to force this node open
+  // without forcing the user to find the chevron.
+  useEffect(() => {
+    if (data.forceExpandTick) setExpanded(true);
+  }, [data.forceExpandTick]);
   const [search, setSearch] = useState<string>("");
   const [logoPickerOpen, setLogoPickerOpen] = useState(false);
 

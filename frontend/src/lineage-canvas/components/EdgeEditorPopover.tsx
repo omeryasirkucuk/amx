@@ -12,7 +12,7 @@
 
 import type { CSSProperties } from "react";
 import clsx from "clsx";
-import { Trash2, X } from "lucide-react";
+import { ArrowRight, Columns3, Trash2, X } from "lucide-react";
 
 import type { EdgeCardinality } from "../types";
 
@@ -39,9 +39,19 @@ interface Props {
   styleColor?: string;
   styleDashed?: boolean;
   cardinality?: EdgeCardinality;
+  /** Column names on either side of the edge — when both are
+   *  present, the popover surfaces a "Columns" line plus a
+   *  "Jump to columns" affordance that expands both tables and
+   *  highlights the rows in question. */
+  fromColumn?: string;
+  toColumn?: string;
   onChange: (patch: EdgeStylePatch) => void;
   onDelete: () => void;
   onClose: () => void;
+  /** Called when the user clicks the "Jump to columns" affordance.
+   *  Caller is responsible for expanding both tables and bumping
+   *  ``forceExpandTick`` / ``tracedColumn`` on the relevant nodes. */
+  onJumpToColumns?: () => void;
 }
 
 export function EdgeEditorPopover({
@@ -50,10 +60,14 @@ export function EdgeEditorPopover({
   styleColor,
   styleDashed,
   cardinality,
+  fromColumn,
+  toColumn,
   onChange,
   onDelete,
   onClose,
+  onJumpToColumns,
 }: Props) {
+  const hasColumnPair = !!(fromColumn && toColumn);
   const transform: CSSProperties = {
     position: "absolute",
     transform: `translate(-50%, -120%) translate(${x}px, ${y}px)`,
@@ -177,6 +191,30 @@ export function EdgeEditorPopover({
           ))}
         </div>
       </div>
+      {hasColumnPair && (
+        <div className="mt-1 flex items-center gap-1.5">
+          <span className="text-[9.5px] uppercase tracking-wide text-fg-muted">
+            Columns
+          </span>
+          <button
+            type="button"
+            onClick={() => onJumpToColumns?.()}
+            disabled={!onJumpToColumns}
+            title="Open both tables and highlight these columns"
+            className={clsx(
+              "inline-flex items-center gap-1 rounded border border-surface-border px-1.5 py-0.5 font-mono text-[10.5px] transition",
+              onJumpToColumns
+                ? "text-ink hover:bg-surface"
+                : "cursor-default text-fg-muted",
+            )}
+          >
+            <Columns3 size={10} />
+            <span className="truncate">{fromColumn}</span>
+            <ArrowRight size={9} className="text-fg-muted" />
+            <span className="truncate">{toColumn}</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
