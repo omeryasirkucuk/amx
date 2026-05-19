@@ -127,6 +127,17 @@ _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (
         ),
     ),
     SlashCommand(
+        "/pages",
+        "root",
+        "Enter /pages namespace",
+        long_desc=(
+            "Compose, edit, and export documentation pages backed by the "
+            "active LLM. Attach DB / doc / lineage assets as context and "
+            "ship the result as Markdown or PDF. Subcommands: new, list, "
+            "show, edit, export, delete."
+        ),
+    ),
+    SlashCommand(
         "/studio",
         "root",
         "Open AMX Studio in your browser",
@@ -504,6 +515,47 @@ _HISTORY_COMMANDS: tuple[SlashCommand, ...] = (
     ),
 )
 
+_PAGES_COMMANDS: tuple[SlashCommand, ...] = (
+    SlashCommand(
+        "/new",
+        "pages",
+        "Create a new documentation page (/new [--title T] [--intent X] [--asset KIND:REF …] [--source PATH …] [--no-generate])",
+        long_desc=(
+            "Bare /new walks a wizard: title prompt → DB / doc / lineage "
+            "asset pickers → free-text intent → optional local source "
+            "files → LLM composition. Power-user flags map 1:1 to the "
+            "wizard steps so existing scripts keep working."
+        ),
+    ),
+    SlashCommand("/list", "pages", "List active documentation pages"),
+    SlashCommand(
+        "/show",
+        "pages",
+        "Print the markdown body of a page (/show <page_id>)",
+    ),
+    SlashCommand(
+        "/edit",
+        "pages",
+        "Open the page body in $EDITOR and save the result as a new revision (/edit <page_id> [--note TEXT])",
+    ),
+    SlashCommand(
+        "/export",
+        "pages",
+        "Export a page as md or pdf (/export <page_id> --format md|pdf [--out PATH])",
+    ),
+    SlashCommand(
+        "/delete",
+        "pages",
+        "Soft-delete a page (/delete <page_id> [--purge])",
+        long_desc=(
+            "Default soft-delete hides the page from /pages list but keeps "
+            "every revision and source row. --purge hard-deletes the page "
+            "and every related row from the history store; not reversible."
+        ),
+    ),
+)
+
+
 _LINEAGE_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/create",
@@ -590,6 +642,7 @@ ALL_COMMANDS: tuple[SlashCommand, ...] = (
     *_SEARCH_COMMANDS,
     *_HISTORY_COMMANDS,
     *_LINEAGE_COMMANDS,
+    *_PAGES_COMMANDS,
 )
 
 
@@ -633,6 +686,8 @@ def commands_for_namespace(namespace: str) -> tuple[SlashCommand, ...]:
         return (*_ROOT_BUILTINS, *_HISTORY_COMMANDS)
     if ns == "lineage":
         return (*_ROOT_BUILTINS, *_LINEAGE_COMMANDS)
+    if ns == "pages":
+        return (*_ROOT_BUILTINS, *_PAGES_COMMANDS)
     return _ROOT_BUILTINS
 
 
@@ -654,6 +709,7 @@ def cmd_heads_for_namespace(namespace: str) -> frozenset[str]:
         "search": _SEARCH_COMMANDS,
         "history": _HISTORY_COMMANDS,
         "lineage": _LINEAGE_COMMANDS,
+        "pages": _PAGES_COMMANDS,
     }
     if ns not in table:
         return frozenset()
@@ -683,7 +739,14 @@ def find_command(slash_or_head: str) -> SlashCommand | None:
 
 
 def all_namespaces() -> tuple[str, ...]:
-    """Distinct namespaces that have at least one command."""
+    """Distinct namespaces that have at least one command.
+
+    This is the single source of truth for the tab order. Both the REPL
+    tab bar (:mod:`amx.cli_support._session_ui`) and the Left/Right
+    arrow navigation in :mod:`amx.cli_support._session_keybindings`
+    derive from this tuple, so adding a new tab here automatically
+    surfaces it everywhere.
+    """
     return (
         "db",
         "metadata",
@@ -694,6 +757,7 @@ def all_namespaces() -> tuple[str, ...]:
         "search",
         "history",
         "lineage",
+        "pages",
     )
 
 

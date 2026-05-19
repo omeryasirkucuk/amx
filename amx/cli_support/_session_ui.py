@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from amx.cli_support.slash_commands import all_namespaces
 from amx.config import SUPPORTED_BACKENDS, AMXConfig
 from amx.utils.console import console, heading, info
 
@@ -24,18 +25,11 @@ def _canonical_namespace(namespace: str) -> str:
     return "metadata" if namespace == "manual" else namespace
 
 
-_TAB_ORDER = [
-    "root",
-    "db",
-    "metadata",
-    "docs",
-    "llm",
-    "code",
-    "analyze",
-    "search",
-    "history",
-    "lineage",
-]
+# Derive the tab strip from the slash-command registry so adding a new
+# namespace there automatically updates the bar — no manual list to
+# keep in sync (the historical bug where a new tab couldn't be reached
+# by arrow keys because the keybinding's separate copy missed it).
+_TAB_ORDER = ["root", *all_namespaces()]
 
 
 def _print_tab_bar(namespace: str) -> None:
@@ -89,6 +83,11 @@ def _print_namespace_hint(
         info(
             "Render column-level lineage diagrams from cached metadata. "
             "Each subcommand walks a picker — /create starts a guided wizard."
+        )
+    elif namespace == "pages":
+        info(
+            "Compose, edit, and export documentation pages. /new walks a wizard "
+            "(title → assets → intent → sources → LLM compose)."
         )
 
 
@@ -399,6 +398,31 @@ Commands:
 
 SQLite file:
   ~/.amx/history.db
+"""
+        )
+        return
+
+    if namespace == "pages":
+        out.print(
+            """
+[heading]Help — /pages namespace[/heading]
+Compose, edit, and export documentation pages backed by the active LLM. Each
+subcommand runs a wizard when called bare; the flags are optional power-user
+shortcuts.
+
+Commands:
+  1) /back                       Return to root namespace
+  2) /new                        Wizard: title → DB / doc / lineage asset pickers
+                                 → free-text intent → optional local sources →
+                                 LLM composition
+  3) /list                       List active (non-deleted) pages
+  4) /show <page_id>             Print the markdown body to stdout
+  5) /edit <page_id> [--note T]  Open $EDITOR, save the result as a new revision
+  6) /export <page_id>           Export as md or pdf (--format md|pdf [--out PATH])
+  7) /delete <page_id> [--purge] Soft-delete (default) or hard-delete (--purge)
+
+Page bodies, revisions, and source attachments live alongside run history in
+~/.amx/history.db.
 """
         )
         return
