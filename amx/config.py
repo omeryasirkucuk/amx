@@ -45,6 +45,8 @@ SUPPORTED_BACKENDS = (
     "redshift",
     "clickhouse",
     "duckdb",
+    "trino",
+    "hive",
 )
 DISABLED_PROFILE = "__none__"
 
@@ -262,7 +264,7 @@ def has_legacy_database_default(db: DBConfig) -> bool:
 
 # Secret-bearing fields per scope. These are externalised to the OS keyring
 # on save and resolved back to plaintext on load via amx.storage.secrets.
-_DB_SECRET_FIELDS = ("password", "access_token")
+_DB_SECRET_FIELDS = ("password", "access_token", "jwt_token")
 _LLM_SECRET_FIELDS = ("api_key",)
 _EMBEDDING_SECRET_FIELDS = ("api_key",)
 
@@ -679,6 +681,23 @@ class DBConfig(_ObservableConfig):
     tls_no_verify: bool = False
     tls_trusted_ca_file: str = ""
 
+    # Trino — ``jwt_token`` activates JWTAuthentication; when blank the
+    # URL's user/password triggers Basic auth at the driver level. The
+    # ``catalog`` and ``tls_trusted_ca_file`` / ``verify`` fields above
+    # are shared with Databricks / ClickHouse. ``http_scheme`` picks the
+    # transport ("http" for local Docker / dev clusters, "https" for
+    # any production deployment behind a load balancer).
+    jwt_token: str = ""
+    http_scheme: str = "https"
+
+    # Hive (HiveServer2) — auth mode picker. v1 wizard accepts
+    # NOSASL (dev only), PLAIN (user/password), and LDAP (user/password
+    # against an LDAP backend). KERBEROS is documented but not in the
+    # wizard — it requires host-level keytab + kinit, out of scope for
+    # an interactive picker. CUSTOM is the escape hatch for advanced
+    # SASL mechanisms.
+    auth_mode: str = ""
+
     # BigQuery
     project: str = ""
     dataset: str = ""
@@ -835,6 +854,57 @@ class DBConfig(_ObservableConfig):
             if params:
                 url += "?" + "&".join(params)
             return url
+
+        if self.backend == "trino":
+            # sqlalchemy-trino URL shape:
+            #   trino://<user>[:password]@<host>:<port>/<catalog>[/<schema>]
+            # JWT auth bypasses the URL password and is passed via
+            # ``connect_args`` in the adapter — see ``TrinoAdapter``.
+            host = _normalize_db_host(self.host)
+            # Default Trino ports: 8080 (plain HTTP) and 443 (HTTPS).
+            scheme = (self.http_scheme or "https").lower()
+            default_port = 443 if scheme == "https" else 8080
+            port = self._effective_port(default_port)
+            # When JWT is in play, leave the userinfo as just the user
+            # (the driver ignores any password when ``auth=`` is set);
+            # otherwise pass user:password for Basic auth.
+            if self.jwt_token:
+                userinfo = quote_plus(self.user) if self.user else ""
+            elif self.password:
+                userinfo = f"{quote_plus(self.user)}:{quote_plus(self.password)}"
+            else:
+                userinfo = quote_plus(self.user) if self.user else ""
+            base = f"trino://{userinfo}@{host}:{port}" if userinfo else f"trino://{host}:{port}"
+            path = ""
+            if self.catalog:
+                path = f"/{quote_plus(self.catalog)}"
+                if self.database:
+                    # Trino exposes schemas under the catalog. AMX reuses
+                    # ``database`` for the "starting schema" slot to match
+                    # the per-backend convention.
+                    path += f"/{quote_plus(self.database)}"
+            url = base + path
+            params: list[str] = [f"http_scheme={scheme}"]
+            if not self.verify:
+                params.append("verify=false")
+            return url + "?" + "&".join(params)
+
+        if self.backend == "hive":
+            # PyHive + sqlalchemy-hive URL shape:
+            #   hive://<user>:<password>@<host>:<port>/<database>?auth=<mode>
+            host = _normalize_db_host(self.host)
+            port = self._effective_port(10000)
+            auth = (self.auth_mode or "NONE").upper()
+            if self.password:
+                userinfo = f"{quote_plus(self.user)}:{quote_plus(self.password)}"
+            elif self.user:
+                userinfo = quote_plus(self.user)
+            else:
+                userinfo = ""
+            base = f"hive://{userinfo}@{host}:{port}" if userinfo else f"hive://{host}:{port}"
+            if self.database:
+                base += f"/{quote_plus(self.database)}"
+            return f"{base}?auth={quote_plus(auth)}"
 
         if self.backend == "bigquery":
             url = f"bigquery://{self.project}"
@@ -1057,6 +1127,15 @@ class DBConfig(_ObservableConfig):
             return f"{db} @ {self.host}:{port} ({scheme}, user {self.user or 'default'})"
         if self.backend == "duckdb":
             return f"DuckDB file: {self.database or ':memory:'}"
+        if self.backend == "trino":
+            cat = f" catalog={self.catalog}" if self.catalog else f" {unpinned_label}"
+            port = self._effective_port(443 if (self.http_scheme or "https") == "https" else 8080)
+            return f"{self.host}:{port}{cat} (user {self.user})"
+        if self.backend == "hive":
+            db = self.database or unpinned_label
+            port = self._effective_port(10000)
+            mode = (self.auth_mode or "NONE").upper()
+            return f"{db} @ {self.host}:{port} (user {self.user}, {mode})"
         db = self.database or unpinned_label
         return f"{db} @ {self.host}:{self.port} (user {self.user})"
 
@@ -1088,6 +1167,14 @@ class DBConfig(_ObservableConfig):
             # ClickHouse defaults the user to ``default`` if blank, so a
             # bare host is enough to attempt a connection.
             return bool(self.host)
+        if self.backend == "trino":
+            # Trino needs at least host + user; catalog is configurable
+            # at command time via the picker, so we don't require it
+            # for "can we even open a connection". Auth is permissive —
+            # anonymous Basic against a dev cluster is valid.
+            return bool(self.host and self.user)
+        if self.backend == "hive":
+            return bool(self.host and self.user)
         # DuckDB: file path or ``:memory:`` is enough; an empty ``database``
         # field is interpreted as in-memory by ``DBConfig.url``. Every other
         # backend has been handled above, so a non-duckdb fallthrough means
@@ -1119,6 +1206,13 @@ class DBConfig(_ObservableConfig):
         if self.backend == "redshift":
             return bool(self.database)
         if self.backend == "clickhouse":
+            return bool(self.database)
+        if self.backend == "trino":
+            # Trino's 3-level hierarchy means catalog is the pin point;
+            # a catalog without a schema is still "pinned enough" to
+            # name a query target.
+            return bool(self.catalog)
+        if self.backend == "hive":
             return bool(self.database)
         # DuckDB: the ``database`` field IS the file path; ``:memory:`` and
         # any explicit path both count as "pinned" because the user made an
@@ -1190,6 +1284,9 @@ def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
         motherduck_token=str(m.get("motherduck_token", "")),
         location=str(m.get("location", "")),
         impersonate_service_account=str(m.get("impersonate_service_account", "")),
+        jwt_token=str(m.get("jwt_token", "")),
+        http_scheme=str(m.get("http_scheme", "https")),
+        auth_mode=str(m.get("auth_mode", "")),
         profiling_mode=str(m.get("profiling_mode", "full")),
         profiling_max_rows=int(m.get("profiling_max_rows", 1_000_000)),
         profiling_sample_size=int(m.get("profiling_sample_size", 5)),
@@ -1314,6 +1411,32 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
                 "database": db.database,
                 "read_only": db.read_only,
                 "motherduck_token": db.motherduck_token,
+            }
+        )
+    elif db.backend == "trino":
+        base.update(
+            {
+                "host": db.host,
+                "port": db.port or (443 if (db.http_scheme or "https") == "https" else 8080),
+                "user": db.user,
+                "password": db.password,
+                "jwt_token": db.jwt_token,
+                "catalog": db.catalog,
+                "database": db.database,
+                "http_scheme": db.http_scheme or "https",
+                "verify": db.verify,
+                "tls_trusted_ca_file": db.tls_trusted_ca_file,
+            }
+        )
+    elif db.backend == "hive":
+        base.update(
+            {
+                "host": db.host,
+                "port": db.port or 10000,
+                "user": db.user,
+                "password": db.password,
+                "database": db.database,
+                "auth_mode": db.auth_mode or "NONE",
             }
         )
     else:

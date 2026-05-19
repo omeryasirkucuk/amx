@@ -140,6 +140,24 @@ DEFAULT_LOGOS: tuple[DefaultLogo, ...] = (
         "amazonredshift",
         "logos:aws-redshift",
     ),
+    DefaultLogo(
+        "trino",
+        "Trino",
+        "warehouse",
+        "#DD00A1",
+        "TR",
+        "trino",
+        "logos:trino",
+    ),
+    DefaultLogo(
+        "hive",
+        "Apache Hive",
+        "warehouse",
+        "#FDEE21",
+        "HV",
+        "apachehive",
+        "logos:hive",
+    ),
     # BI / sinks
     DefaultLogo(
         "powerbi",

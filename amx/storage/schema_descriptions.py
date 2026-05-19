@@ -131,7 +131,8 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
         "db_backend": (
             "Backend of the analyzed DB profile: postgresql | snowflake | "
-            "bigquery | databricks | mssql | mysql | oracle | redshift. "
+            "bigquery | databricks | mssql | mysql | oracle | redshift | "
+            "clickhouse | duckdb | trino | hive. "
             "Enables /compare --by db_backend cross-backend audits."
         ),
         "db_profile": (
@@ -689,7 +690,7 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "ddl_text": ("Raw CREATE VIEW DDL text as returned by the backend's system catalog."),
         "dialect": (
             "sqlglot dialect tag used when the DDL was parsed (postgres | "
-            "snowflake | bigquery | mysql | duckdb | tsql | …)."
+            "snowflake | bigquery | mysql | duckdb | tsql | trino | hive | …)."
         ),
         "parsed_lineage_json": (
             "JSON dump of the column-lineage extracted from this view's DDL: "
