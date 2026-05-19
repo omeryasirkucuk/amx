@@ -56,10 +56,11 @@ def test_create_history_tables_ddl_emits_comments_on_postgres() -> None:
 
     assert ddl.count("CREATE TABLE") == 14, "expected 14 CREATE TABLE statements"
     assert ddl.count("COMMENT ON TABLE") == 14, "expected 14 COMMENT ON TABLE statements"
-    # 187 columns (112 original + 21 lineage_artifacts + 20 lineage_artifact_nodes
-    #              + 19 lineage_artifact_edges + 15 lineage_comments)
-    assert ddl.count("COMMENT ON COLUMN") == 187, (
-        f"expected 187 COMMENT ON COLUMN statements, got {ddl.count('COMMENT ON COLUMN')}"
+    # 191 columns (112 original + 21 lineage_artifacts + 20 lineage_artifact_nodes
+    #              + 19 lineage_artifact_edges + 15 lineage_comments
+    #              + 4 added to documentation_pages in PR-2: db_profile + attribution triad)
+    assert ddl.count("COMMENT ON COLUMN") == 191, (
+        f"expected 191 COMMENT ON COLUMN statements, got {ddl.count('COMMENT ON COLUMN')}"
     )
 
 

@@ -1135,6 +1135,18 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_documentation_pages_updated_at "
                 "ON documentation_pages(updated_at DESC)"
             )
+            # PR-2: db_profile + attribution columns (idempotent ALTERs for
+            # existing installs; CREATE TABLE above handles fresh databases).
+            for _col_spec in (
+                "db_profile TEXT",
+                "hostname TEXT",
+                "client_version TEXT",
+                "local_id INTEGER",
+            ):
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(
+                        f"ALTER TABLE documentation_pages ADD COLUMN {_col_spec}"
+                    )
             # ── documentation_page_assets: per-page asset list ──────────
             conn.execute(
                 """
