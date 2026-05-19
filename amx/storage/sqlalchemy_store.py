@@ -233,6 +233,14 @@ class SQLAlchemyHistoryStore:
         Post-create, runs ``ensure_column_exists`` for every column added
         after the initial schema release so existing shared deployments
         self-heal on next bootstrap without a manual migration step.
+
+        After the schema is ready, the connecting client is registered
+        in ``_amx_users`` via :func:`amx.storage.admin.register_session`.
+        The first client to call ``init`` on a fresh store becomes the
+        workspace admin; all subsequent clients join as viewers. A
+        registration failure is non-fatal — it logs a warning and
+        continues so a broken admin table never blocks the rest of the
+        store from working.
         """
         from amx.storage.migration import ensure_column_exists
 
@@ -267,6 +275,25 @@ class SQLAlchemyHistoryStore:
                         f"Shared AMX schema version {stored} is newer than this "
                         f"client supports ({SHARED_SCHEMA_VERSION}). Upgrade AMX."
                     )
+
+        # Register this client's session in the admin member registry.
+        # Failures here are non-fatal: a registration error must not
+        # block the rest of the store from being used.
+        try:
+            from amx.storage import admin as _admin
+
+            _admin.register_session(
+                self,
+                username=self._username,
+                hostname=self._hostname,
+                client_version=self._client_version,
+                db_profiles_seen=[],
+            )
+        except Exception:
+            log.warning(
+                "Admin session registration failed — continuing without it.",
+                exc_info=True,
+            )
 
     # ── Run lifecycle ─────────────────────────────────────────────────────
 
