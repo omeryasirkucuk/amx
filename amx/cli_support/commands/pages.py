@@ -690,6 +690,98 @@ def register_pages_commands(
         svc.soft_delete(page_id, now=_utcnow())
         success(f"Soft-deleted page {page_id}")
 
+    @pages.command("assign-profile")
+    @click.argument("slug", required=False, default=None)
+    @click.option(
+        "--profile",
+        "db_profile",
+        default=None,
+        help="DB profile name to associate with the page (omit to clear).",
+    )
+    @click.pass_obj
+    def pages_assign_profile(
+        cfg: AMXConfig,
+        slug: str | None,
+        db_profile: str | None,
+    ) -> None:
+        """Associate a db_profile with a page for team-scoped filtering.
+
+        When called without arguments, runs an interactive wizard:
+          1. Pick a page from the list of active pages.
+          2. Pick a DB profile from the configured profiles.
+          3. Confirm and apply.
+
+        Power-user shortcut (non-interactive)::
+
+            /pages assign-profile <slug> --profile <name>
+
+        Pass ``--profile ""`` (empty string) or omit ``--profile`` in the
+        wizard to clear the field, marking the page as unscoped /
+        cross-profile.
+        """
+        svc = _svc(cfg)
+
+        # ── Wizard path ───────────────────────────────────────────────────
+        if slug is None or db_profile is None:
+            # Step 1: page picker when slug not supplied.
+            final_slug = slug
+            if final_slug is None:
+                active = svc.store.list_active()
+                if not active:
+                    info("No active pages found. Create one with /pages new.")
+                    return
+                info("Active pages:")
+                for idx, row in enumerate(active, start=1):
+                    click.echo(f"  {idx}. [{row.get('slug', '')}] {row.get('title', '')}")
+                raw = click.prompt("Select page (number or slug)").strip()
+                try:
+                    choice = int(raw)
+                    if 1 <= choice <= len(active):
+                        final_slug = str(active[choice - 1]["slug"])
+                    else:
+                        error(f"Selection out of range: {raw}")
+                        return
+                except ValueError:
+                    final_slug = raw
+
+            # Step 2: profile picker when --profile not supplied.
+            final_profile: str | None = db_profile
+            if final_profile is None:
+                db_names = sorted((cfg.db_profiles or {}).keys())
+                if db_names:
+                    info("Configured DB profiles: " + ", ".join(db_names))
+                raw_profile = click.prompt(
+                    "DB profile to assign (empty to clear / mark unscoped)",
+                    default="",
+                    show_default=False,
+                ).strip()
+                final_profile = raw_profile if raw_profile else None
+
+            # Step 3: confirm.
+            profile_label = f"'{final_profile}'" if final_profile else "(clear / unscoped)"
+            if not click.confirm(
+                f"Assign profile {profile_label} to page '{final_slug}'?", default=True
+            ):
+                info("Cancelled.")
+                return
+        else:
+            final_slug = slug
+            final_profile = db_profile if db_profile else None
+
+        # ── Apply ─────────────────────────────────────────────────────────
+        updated = svc.store.assign_db_profile(
+            slug=final_slug,
+            db_profile=final_profile,
+            now=_utcnow(),
+        )
+        if not updated:
+            error(f"No page with slug '{final_slug}' found.")
+            return
+        if final_profile:
+            success(f"Page '{final_slug}' is now scoped to profile '{final_profile}'.")
+        else:
+            success(f"Page '{final_slug}' is now unscoped (db_profile cleared).")
+
     return pages
 
 

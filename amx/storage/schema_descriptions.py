@@ -1579,6 +1579,13 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "LLM model id that produced the last generated draft; supports "
             "reproducibility and attribution."
         ),
+        "db_profile": (
+            "Source database profile this page was authored for. NULL means the page is "
+            "unscoped / cross-profile."
+        ),
+        "hostname": ATTRIBUTION_HOSTNAME,
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
+        "local_id": ATTRIBUTION_LOCAL_ID,
     },
     # ── documentation_page_assets (local + shared) ────────────────────────
     "documentation_page_assets": {

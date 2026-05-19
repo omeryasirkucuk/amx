@@ -229,8 +229,26 @@ class SQLAlchemyHistoryStore:
         Idempotent. ``MetaData.create_all`` skips tables that already
         exist. Also stamps :data:`SHARED_SCHEMA_VERSION` into
         ``schema_meta`` so older clients can detect a forward-rolled schema.
+
+        Post-create, runs ``ensure_column_exists`` for every column added
+        after the initial schema release so existing shared deployments
+        self-heal on next bootstrap without a manual migration step.
         """
+        from amx.storage.migration import ensure_column_exists
+
         self._md.create_all(self.engine)
+
+        # PR-2 columns on documentation_pages — added after v1 schema release.
+        for _col_name, _col_spec in (
+            ("db_profile", "VARCHAR(120)"),
+            ("hostname", "VARCHAR(255)"),
+            ("client_version", "VARCHAR(40)"),
+            ("local_id", "BIGINT"),
+        ):
+            ensure_column_exists(
+                self.engine, self.schema, "documentation_pages", _col_name, _col_spec
+            )
+
         with self.engine.begin() as conn:
             existing = conn.execute(select(self._t_meta.c.schema_version)).fetchone()
             if existing is None:
