@@ -29,6 +29,7 @@ from amx.cli_support.commands.history import register_history_commands
 from amx.cli_support.commands.history_store import register_history_store_commands
 from amx.cli_support.commands.lineage import register_lineage_commands
 from amx.cli_support.commands.manual import register_manual_commands
+from amx.cli_support.commands.pages import register_pages_commands
 from amx.cli_support.commands.profiles import (
     interactive_llm_block as _interactive_llm_block,
 )
@@ -434,6 +435,7 @@ register_docs_commands(
     finalize_scope=_finalize_scope,
     warn_no_doc_paths_for_scan_or_ingest=_warn_no_doc_paths_for_scan_or_ingest,
 )
+register_pages_commands(main, finalize_scope=_finalize_scope)
 register_code_commands(main, finalize_scope=_finalize_scope)
 register_root_commands(
     main,

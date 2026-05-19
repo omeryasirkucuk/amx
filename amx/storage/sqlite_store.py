@@ -1100,6 +1100,82 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_scheduled_runs_db_profile "
                 "ON scheduled_runs(db_profile)"
             )
+            # ── documentation_pages: LLM-composed narrative pages ───────
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS documentation_pages (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    slug TEXT NOT NULL UNIQUE,
+                    markdown_body TEXT NOT NULL,
+                    rendered_html TEXT,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    created_at TIMESTAMP NOT NULL,
+                    updated_at TIMESTAMP NOT NULL,
+                    created_by TEXT,
+                    generation_prompt TEXT,
+                    model_used TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documentation_pages_status "
+                "ON documentation_pages(status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documentation_pages_updated_at "
+                "ON documentation_pages(updated_at DESC)"
+            )
+            # ── documentation_page_assets: per-page asset list ──────────
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS documentation_page_assets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    page_id TEXT NOT NULL,
+                    asset_kind TEXT NOT NULL,
+                    asset_ref TEXT NOT NULL,
+                    included INTEGER NOT NULL DEFAULT 1,
+                    FOREIGN KEY (page_id) REFERENCES documentation_pages(id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documentation_page_assets_page_id "
+                "ON documentation_page_assets(page_id)"
+            )
+            # ── documentation_page_sources: per-page upload list ────────
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS documentation_page_sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    page_id TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    original_name TEXT NOT NULL,
+                    created_at TIMESTAMP NOT NULL,
+                    FOREIGN KEY (page_id) REFERENCES documentation_pages(id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documentation_page_sources_page_id "
+                "ON documentation_page_sources(page_id)"
+            )
+            # ── documentation_page_versions: per-save snapshots ─────────
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS documentation_page_versions (
+                    page_id TEXT NOT NULL,
+                    version_no INTEGER NOT NULL,
+                    markdown_body TEXT NOT NULL,
+                    saved_at TIMESTAMP NOT NULL,
+                    saved_by TEXT,
+                    note TEXT,
+                    PRIMARY KEY (page_id, version_no),
+                    FOREIGN KEY (page_id) REFERENCES documentation_pages(id)
+                )
+                """
+            )
             # Seed the bundled default logos into ``lineage_logos`` if
             # they aren't there yet. Idempotent via the UNIQUE(key,
             # source) index — re-runs on every init are no-ops after
@@ -1727,6 +1803,62 @@ class SQLiteHistoryStore:
         from amx.storage._history_caches import gc_schemas_cache
 
         return gc_schemas_cache(self, *args, **kwargs)
+
+    # ── documentation_pages CRUD (delegators) ───────────────────────────
+    def create_documentation_page(self, *args, **kwargs):
+        from amx.storage._history_pages import create_documentation_page
+
+        return create_documentation_page(self, *args, **kwargs)
+
+    def get_documentation_page(self, *args, **kwargs):
+        from amx.storage._history_pages import get_documentation_page
+
+        return get_documentation_page(self, *args, **kwargs)
+
+    def list_documentation_pages(self, *args, **kwargs):
+        from amx.storage._history_pages import list_documentation_pages
+
+        return list_documentation_pages(self, *args, **kwargs)
+
+    def update_documentation_page_body(self, *args, **kwargs):
+        from amx.storage._history_pages import update_documentation_page_body
+
+        return update_documentation_page_body(self, *args, **kwargs)
+
+    def soft_delete_documentation_page(self, *args, **kwargs):
+        from amx.storage._history_pages import soft_delete_documentation_page
+
+        return soft_delete_documentation_page(self, *args, **kwargs)
+
+    def append_documentation_page_version(self, *args, **kwargs):
+        from amx.storage._history_pages import append_documentation_page_version
+
+        return append_documentation_page_version(self, *args, **kwargs)
+
+    def attach_documentation_page_asset(self, *args, **kwargs):
+        from amx.storage._history_pages import attach_documentation_page_asset
+
+        return attach_documentation_page_asset(self, *args, **kwargs)
+
+    def attach_documentation_page_source(self, *args, **kwargs):
+        from amx.storage._history_pages import attach_documentation_page_source
+
+        return attach_documentation_page_source(self, *args, **kwargs)
+
+    def list_documentation_page_assets(self, *args, **kwargs):
+        from amx.storage._history_pages import list_documentation_page_assets
+
+        return list_documentation_page_assets(self, *args, **kwargs)
+
+    def list_documentation_page_sources(self, *args, **kwargs):
+        from amx.storage._history_pages import list_documentation_page_sources
+
+        return list_documentation_page_sources(self, *args, **kwargs)
+
+    def list_documentation_page_versions(self, *args, **kwargs):
+        from amx.storage._history_pages import list_documentation_page_versions
+
+        return list_documentation_page_versions(self, *args, **kwargs)
 
     def _connect(self) -> sqlite3.Connection:
         # ``timeout=30`` and the matching ``PRAGMA busy_timeout`` both

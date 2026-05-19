@@ -33,6 +33,7 @@ from amx.web.routers import (
     installs,
     lineage,
     live_db,
+    pages,
     pending,
     pricing,
     profiles,
@@ -140,6 +141,7 @@ def create_app(
     app.include_router(style.router)
     app.include_router(schedules.router)
     app.include_router(schedules.scheduler_router)
+    app.include_router(pages.router)
 
     # Re-Run snapshots are short-lived (worker deletes them in finally).
     # On startup, sweep anything older than 1h that a previous crashed
