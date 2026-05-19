@@ -21,6 +21,7 @@ from amx.config import AMXConfig
 from amx.web.auth import TokenAuthMiddleware, generate_token
 from amx.web.jobs import JobRegistry
 from amx.web.routers import (
+    admin,
     ask,
     capabilities,
     catalog,
@@ -118,6 +119,7 @@ def create_app(
     # the auth middleware — every response goes through it.
     app.add_middleware(SecurityHeadersMiddleware)
 
+    app.include_router(admin.router)
     app.include_router(system.router)
     app.include_router(live_db.router)
     app.include_router(catalog.router)

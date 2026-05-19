@@ -138,6 +138,17 @@ _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (
         ),
     ),
     SlashCommand(
+        "/admin",
+        "root",
+        "Enter /admin namespace",
+        long_desc=(
+            "Workspace administration: member registry, role management, "
+            "audit log, and session history. Subcommands: members, promote, "
+            "demote, revoke, unrevoke, audit, sessions. Write commands "
+            "require the admin role."
+        ),
+    ),
+    SlashCommand(
         "/studio",
         "root",
         "Open AMX Studio in your browser",
@@ -567,6 +578,53 @@ _PAGES_COMMANDS: tuple[SlashCommand, ...] = (
 )
 
 
+_ADMIN_COMMANDS: tuple[SlashCommand, ...] = (
+    SlashCommand(
+        "/members",
+        "admin",
+        "List workspace members and their roles",
+    ),
+    SlashCommand(
+        "/promote",
+        "admin",
+        "Promote a user to admin (/promote [username])",
+        long_desc=(
+            "Bare /promote opens a user picker then confirmation. "
+            "Power-user shortcut: /promote <username>."
+        ),
+    ),
+    SlashCommand(
+        "/demote",
+        "admin",
+        "Demote an admin to viewer (/demote [username])",
+        long_desc=(
+            "Bare /demote opens a user picker then confirmation. "
+            "Power-user shortcut: /demote <username>."
+        ),
+    ),
+    SlashCommand(
+        "/revoke",
+        "admin",
+        "Revoke a user, blocking future connections (/revoke [username])",
+    ),
+    SlashCommand(
+        "/unrevoke",
+        "admin",
+        "Reinstate a revoked user (/unrevoke [username])",
+    ),
+    SlashCommand(
+        "/audit",
+        "admin",
+        "Recent admin audit log (/audit [-n N] [--actor X] [--action Y])",
+    ),
+    SlashCommand(
+        "/sessions",
+        "admin",
+        "Recent session connection events (/sessions [--since ISO] [-n N])",
+    ),
+)
+
+
 _LINEAGE_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/create",
@@ -654,6 +712,7 @@ ALL_COMMANDS: tuple[SlashCommand, ...] = (
     *_HISTORY_COMMANDS,
     *_LINEAGE_COMMANDS,
     *_PAGES_COMMANDS,
+    *_ADMIN_COMMANDS,
 )
 
 
@@ -699,6 +758,8 @@ def commands_for_namespace(namespace: str) -> tuple[SlashCommand, ...]:
         return (*_ROOT_BUILTINS, *_LINEAGE_COMMANDS)
     if ns == "pages":
         return (*_ROOT_BUILTINS, *_PAGES_COMMANDS)
+    if ns == "admin":
+        return (*_ROOT_BUILTINS, *_ADMIN_COMMANDS)
     return _ROOT_BUILTINS
 
 
@@ -721,6 +782,7 @@ def cmd_heads_for_namespace(namespace: str) -> frozenset[str]:
         "history": _HISTORY_COMMANDS,
         "lineage": _LINEAGE_COMMANDS,
         "pages": _PAGES_COMMANDS,
+        "admin": _ADMIN_COMMANDS,
     }
     if ns not in table:
         return frozenset()
@@ -769,6 +831,7 @@ def all_namespaces() -> tuple[str, ...]:
         "history",
         "lineage",
         "pages",
+        "admin",
     )
 
 

@@ -27,6 +27,7 @@ from amx.lineage.discover import discover_profile_lineage
 from amx.lineage.types import ColumnRef, Scope
 from amx.storage.sqlite_store import history_store
 from amx.web.deps import get_cfg
+from amx.web.permissions import require_writer_role
 
 router = APIRouter(prefix="/api/lineage", tags=["lineage"])
 
@@ -806,6 +807,7 @@ def get_artifact_by_id(
 def delete_artifact_by_id(
     artifact_id: int,
     cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
 ) -> None:
     """Hard-delete a saved canvas. Cascade-removes its nodes, logo
     nodes and comments; does NOT touch ``catalog_relationships``
@@ -978,7 +980,10 @@ def get_logos() -> dict[str, Any]:
 
 
 @router.post("/logos", status_code=status.HTTP_201_CREATED)
-def post_logo(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+def post_logo(
+    payload: dict[str, Any] = Body(...),
+    _: None = Depends(require_writer_role),
+) -> dict[str, Any]:
     """Upload a custom logo (data URL or external URL)."""
     from amx.lineage.logo_store import LogoStoreError, create_custom_logo
 
@@ -1002,7 +1007,10 @@ def post_logo(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 
 @router.delete("/logos/{logo_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_logo(logo_id: int) -> None:
+def delete_logo(
+    logo_id: int,
+    _: None = Depends(require_writer_role),
+) -> None:
     """Delete a custom logo. Defaults are protected (403)."""
     from amx.lineage.logo_store import LogoStoreError, delete_custom_logo
 
@@ -1036,7 +1044,11 @@ def get_logo_nodes(artifact_id: int) -> dict[str, Any]:
 
 
 @router.post("/by-id/{artifact_id}/logo-nodes", status_code=status.HTTP_201_CREATED)
-def post_logo_node(artifact_id: int, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+def post_logo_node(
+    artifact_id: int,
+    payload: dict[str, Any] = Body(...),
+    _: None = Depends(require_writer_role),
+) -> dict[str, Any]:
     """Drop a logo (by id or key) on a saved canvas."""
     from amx.lineage.logo_store import LogoStoreError, create_logo_node
 
@@ -1067,6 +1079,7 @@ def patch_logo_node(
     artifact_id: int,
     node_id: int,
     payload: dict[str, Any] = Body(...),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Move / resize / relabel a logo node."""
     from amx.lineage.logo_store import update_logo_node
@@ -1085,7 +1098,11 @@ def patch_logo_node(
     "/by-id/{artifact_id}/logo-nodes/{node_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-def delete_logo_node_route(artifact_id: int, node_id: int) -> None:
+def delete_logo_node_route(
+    artifact_id: int,
+    node_id: int,
+    _: None = Depends(require_writer_role),
+) -> None:
     from amx.lineage.logo_store import delete_logo_node
 
     hs = history_store()
@@ -1140,6 +1157,7 @@ def post_refresh(
     database: str = Query(default=""),
     no_cache: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Re-extract all default extractors for ``anchor_path``.
 
@@ -1228,6 +1246,7 @@ def post_suggest_bulk(
     budget_tokens: int = Query(default=50_000, ge=100, le=2_000_000),
     budget_tables: int = Query(default=25, ge=1, le=500),
     cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Run AI suggest across every table in ``schema``.
 
@@ -1276,6 +1295,7 @@ def post_suggest(
     profile: str | None = Query(default=None),
     database: str = Query(default=""),
     cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Run a single on-demand LLM call for ``anchor_path``.
 
@@ -1421,6 +1441,7 @@ def _resolve_entity_id_strict(hs: Any, profile: str, fqn: str) -> int:
 def post_edge(
     payload: dict[str, Any] = Body(...),
     cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Persist a user-authored lineage edge.
 
@@ -1510,6 +1531,7 @@ def patch_edge_verdict(
     edge_id: int,
     payload: dict[str, Any] = Body(...),
     cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Mark an inferred edge as approved / rejected / pending.
 
@@ -1555,6 +1577,7 @@ def patch_edge_style(
     edge_id: int,
     payload: dict[str, Any] = Body(...),
     cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Update Studio-canvas style overrides for an edge.
 
@@ -1744,6 +1767,7 @@ def edges_among(
 def delete_edge(
     edge_id: int,
     cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
 ) -> None:
     """Hard-delete an edge. Use for manual edges the user no longer wants.
 
@@ -1774,6 +1798,7 @@ def delete_edge(
 def post_operator(
     payload: dict[str, Any] = Body(...),
     cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Create a transformation operator and chain it between two columns.
 
@@ -1862,6 +1887,7 @@ def patch_operator(
     operator_id: int,
     payload: dict[str, Any] = Body(...),
     cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Update an operator entity's expression."""
     from amx.lineage.operator_ops import lookup_operator, update_operator_expression
@@ -1899,6 +1925,7 @@ def _profile_backend(cfg: AMXConfig, profile: str) -> str:
 def post_manual_artifact(
     payload: dict[str, Any] = Body(...),
     cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Persist a hand-drawn canvas as a fresh lineage artifact.
 
@@ -2392,6 +2419,7 @@ def post_manual_artifact(
 def post_comment(
     artifact_id: int,
     payload: dict[str, Any] = Body(...),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Create a sticky-note comment on a saved canvas."""
     hs = history_store()
@@ -2431,6 +2459,7 @@ def patch_comment(
     artifact_id: int,
     comment_id: int,
     payload: dict[str, Any] = Body(...),
+    _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Update a sticky-note comment in place."""
     hs = history_store()
@@ -2468,7 +2497,11 @@ def patch_comment(
     "/by-id/{artifact_id}/comments/{comment_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-def delete_comment(artifact_id: int, comment_id: int) -> None:
+def delete_comment(
+    artifact_id: int,
+    comment_id: int,
+    _: None = Depends(require_writer_role),
+) -> None:
     hs = history_store()
     if hs is None:
         raise HTTPException(
