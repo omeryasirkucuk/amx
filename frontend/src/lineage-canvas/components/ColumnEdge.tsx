@@ -132,11 +132,60 @@ function ColumnEdgeImpl({
           x: tRect.x + tRect.width / 2,
           y: tRect.y + tRect.height / 2,
         };
-        const src = floatingEndpoint(sRect, tCenter);
-        const tgt = floatingEndpoint(tRect, sCenter);
+        // When both endpoints are tables that the user has opened
+        // AND the edge carries a column handle id, anchor to the
+        // actual column row instead of the floating rect midpoint.
+        // ReactFlow stores the per-handle bounds on the internal
+        // node once it has measured the handles, so we can read
+        // their absolute position from there.
+        const sData = sNode.data as TableNodeData | undefined;
+        const tData = tNode.data as TableNodeData | undefined;
+        const bothExpanded = !!sData?.expanded && !!tData?.expanded;
+        // ``handleBounds`` lives on the internal node shape but is
+        // not part of ReactFlow's public ``Node`` type; cast to
+        // ``unknown`` first so the typechecker lets us read it.
+        type HandleBound = {
+          id: string | null;
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        };
+        type WithBounds = {
+          handleBounds?: {
+            source?: HandleBound[];
+            target?: HandleBound[];
+          };
+        };
+        const sBounds = (sNode as unknown as WithBounds).handleBounds;
+        const tBounds = (tNode as unknown as WithBounds).handleBounds;
+        const sHandle =
+          bothExpanded && sourceHandleId
+            ? sBounds?.source?.find((h) => h.id === sourceHandleId)
+            : undefined;
+        const tHandle =
+          bothExpanded && targetHandleId
+            ? tBounds?.target?.find((h) => h.id === targetHandleId)
+            : undefined;
+        const src =
+          sHandle
+            ? {
+                x: sRect.x + sHandle.x + sHandle.width,
+                y: sRect.y + sHandle.y + sHandle.height / 2,
+                pos: Position.Right,
+              }
+            : floatingEndpoint(sRect, tCenter);
+        const tgt =
+          tHandle
+            ? {
+                x: tRect.x + tHandle.x,
+                y: tRect.y + tHandle.y + tHandle.height / 2,
+                pos: Position.Left,
+              }
+            : floatingEndpoint(tRect, sCenter);
         return { src, tgt };
       },
-      [source, target],
+      [source, target, sourceHandleId, targetHandleId],
     ),
   );
   const [hovered, setHovered] = useState(false);
@@ -240,6 +289,7 @@ function ColumnEdgeImpl({
             ...n,
             data: {
               ...td,
+              expanded: true,
               forceExpandTick: (td.forceExpandTick ?? 0) + 1,
               tracedColumn: sourceHandleId,
             },
@@ -250,6 +300,7 @@ function ColumnEdgeImpl({
             ...n,
             data: {
               ...td,
+              expanded: true,
               forceExpandTick: (td.forceExpandTick ?? 0) + 1,
               tracedColumn: targetHandleId,
             },

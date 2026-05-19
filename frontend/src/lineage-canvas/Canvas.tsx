@@ -73,6 +73,7 @@ import {
 } from "./amx-bridge/payload";
 import { fetchTableColumns } from "./amx-bridge/catalog";
 import { lineageEdgesAmong } from "../lib/api";
+import { proposeNameMatchEdges } from "./heuristics/nameMatch";
 import { parseSql, renderSql } from "./amx-bridge/sqlIo";
 import { logoKeyForBackend } from "./logos/backendMap";
 import { LogoPicker } from "./logos/LogoPicker";
@@ -224,20 +225,30 @@ function CanvasInner() {
   }
 
   function onPickTable(pick: AddTablePick) {
-    const multi = nodes.some(
-      (n) => n.data.kind === "table" && n.data.profile && n.data.profile !== pick.profile,
-    );
     const autoLogo = logoKeyForBackend(pick.backend);
-    const node = makeTableNode({
-      ...pick,
-      position: { x: 80 + nodes.length * 20, y: 80 + nodes.length * 20 },
-      multiProfile: multi,
-      isAnchor: nodes.length === 0,
-    });
-    if (autoLogo && node.data.kind === "table") {
-      node.data.logoKey = autoLogo;
-    }
     setNodes((nds) => {
+      // Compute geometry from the latest ``nds`` rather than the
+      // stale closure ``nodes`` — the multi-select Add Table modal
+      // fires ``onPick`` N times in a tight loop before any React
+      // commit lands, so reading ``nodes.length`` outside this
+      // updater gave every pick the same position and the new
+      // tables stacked at identical coordinates.
+      const tableCount = nds.filter((n) => n.data.kind === "table").length;
+      const multi = nds.some(
+        (n) =>
+          n.data.kind === "table" &&
+          n.data.profile &&
+          n.data.profile !== pick.profile,
+      );
+      const node = makeTableNode({
+        ...pick,
+        position: { x: 80 + tableCount * 32, y: 80 + tableCount * 32 },
+        multiProfile: multi,
+        isAnchor: tableCount === 0,
+      });
+      if (autoLogo && node.data.kind === "table") {
+        node.data.logoKey = autoLogo;
+      }
       // Dedupe: AddTableModal optimistically calls onPick twice —
       // once with empty columns (immediate), once after the
       // background fetchTableColumns settles. If the node already
@@ -410,39 +421,116 @@ function CanvasInner() {
     return added;
   }
 
+  /** Hydrate columns for every table on canvas that's still showing
+   *  ``(no columns cached)`` — the name-match heuristic needs them
+   *  on both sides to produce anything useful. Mirrors the
+   *  fire-and-forget shape used inside the streaming AI hook. */
+  async function hydrateMissingColumns(): Promise<number> {
+    const tables = (rf.getNodes() as CanvasNode[]).filter(
+      (n) => n.data.kind === "table",
+    );
+    const targets = tables.filter((n) => {
+      const d = n.data as TableNodeData;
+      return (d.columns?.length ?? 0) === 0 && d.profile && d.table;
+    });
+    if (targets.length === 0) return 0;
+    const fetched = await Promise.all(
+      targets.map((n) => {
+        const d = n.data as TableNodeData;
+        return fetchTableColumns({
+          profile: d.profile,
+          database: d.database || "",
+          schema: d.schema || "",
+          table: d.table,
+        })
+          .then((cols) => ({ id: n.id, cols }))
+          .catch(() => ({ id: n.id, cols: [] }));
+      }),
+    );
+    let updated = 0;
+    rf.setNodes((curr) =>
+      (curr as CanvasNode[]).map((cn) => {
+        const hit = fetched.find((r) => r.id === cn.id);
+        if (!hit || hit.cols.length === 0) return cn;
+        if (cn.data.kind !== "table") return cn;
+        updated += 1;
+        return {
+          ...cn,
+          data: { ...(cn.data as TableNodeData), columns: hit.cols },
+        };
+      }),
+    );
+    return updated;
+  }
+
   async function handleDiscoverRelated() {
-    const added = await discoverRelatedEdges();
+    const catalogAdded = await discoverRelatedEdges();
+    // Make sure every table has its columns loaded before we ask the
+    // heuristic to compare — without this, AI-spawned 2-part FQNs
+    // come in column-less and the name-match yields nothing on the
+    // user's first click of the Discover button.
+    await hydrateMissingColumns();
+    const liveNodes = rf.getNodes() as CanvasNode[];
+    const liveEdges = rf.getEdges() as CanvasEdge[];
+    const proposed = proposeNameMatchEdges(liveNodes, {
+      existingEdges: liveEdges,
+    });
+    let heuristicAdded = 0;
+    if (proposed.edges.length > 0) {
+      rf.setEdges((eds) => {
+        const next = [...(eds as CanvasEdge[])];
+        const seen = new Set(next.map((e) => e.id));
+        for (const e of proposed.edges) {
+          if (seen.has(e.id)) continue;
+          seen.add(e.id);
+          next.push(e);
+          heuristicAdded += 1;
+        }
+        return next;
+      });
+    }
+    const total = catalogAdded + heuristicAdded;
+    const parts: string[] = [];
+    if (catalogAdded) parts.push(`${catalogAdded} catalog`);
+    if (heuristicAdded) parts.push(`${heuristicAdded} name-match`);
     toast.push({
       title: "Discover related",
-      description: added
-        ? `Added ${added} edge${added === 1 ? "" : "s"} from the catalog.`
+      description: total
+        ? `Added ${parts.join(" + ")} edge${total === 1 ? "" : "s"}.`
         : "No additional edges between the tables on canvas.",
-      tone: added ? "success" : "info",
+      tone: total ? "success" : "info",
     });
   }
 
   function handleAutoLayout() {
-    // Resolve the anchor node id from the current AI Generate
-    // selection so the hook can run its radial mode. When no anchor
-    // is in play (e.g. the user manually built the canvas and is
-    // tapping ``L``), the hook falls back to dagre LR.
+    // Source the latest nodes / edges straight from ReactFlow's store
+    // instead of the React closure: ``onDone`` (and the streaming
+    // hook's callback machinery in general) caches its handler at
+    // mount, so reading from the rendered ``nodes`` / ``edges``
+    // closure here returns stale state and dagre / radial run over
+    // an empty graph. ``rf.getNodes()`` / ``rf.getEdges()`` always
+    // return the live ReactFlow internals.
+    const liveNodes = rf.getNodes() as CanvasNode[];
+    const liveEdges = rf.getEdges() as CanvasEdge[];
     let anchorId: string | undefined;
     if (aiAnchor) {
-      const found = nodes.find(
+      const found = liveNodes.find(
         (n) =>
           n.data.kind === "table" &&
           (n.data as TableNodeData).fqn === aiAnchor,
       );
       anchorId = found?.id;
     }
-    setNodes((nds) => autoLayout(nds, edges, { anchorId }));
+    const laidOut = autoLayout(liveNodes, liveEdges, { anchorId });
+    rf.setNodes(laidOut);
     // Center the freshly laid-out graph in the viewport so the user
-    // sees the whole anchor + neighbourhood after AI Generate
-    // without having to pan around. ``requestAnimationFrame`` waits
-    // for the setNodes commit so ReactFlow has the new positions
-    // before computing the bounds.
+    // sees the whole anchor + neighbourhood without panning. Defer
+    // until ReactFlow has committed the new positions — no
+    // ``maxZoom`` cap so a small neighbourhood can actually scale
+    // up enough to fill the viewport instead of sitting tiny in
+    // the middle.
     requestAnimationFrame(() => {
-      rf.fitView({ padding: 0.25, duration: 300, maxZoom: 1.0 });
+      rf.fitView({ padding: 0.2, duration: 300 });
     });
   }
 
@@ -678,10 +766,14 @@ function CanvasInner() {
       void discoverRelatedEdges();
       // Auto-arrange only when this run actually added new tables —
       // an edges-only stream shouldn't disturb a canvas the user has
-      // already laid out by hand. Defer one frame so the last
-      // batch's React commit has flushed and dagre sees every node.
+      // already laid out by hand. Wait ~80 ms so React has flushed
+      // the last batch's setNodes AND the fire-and-forget column
+      // enrichment commits have landed; without that the layout
+      // pass runs before some neighbours exist and the visual
+      // result is exactly the pre-layout cluster the user
+      // complained about.
       if (streamingAddedRef.current > 0) {
-        requestAnimationFrame(() => handleAutoLayout());
+        window.setTimeout(() => handleAutoLayout(), 80);
       }
     },
   });
@@ -968,6 +1060,20 @@ function CanvasInner() {
     setParams({});
   }
 
+  /** Clear the canvas back to a blank slate. Confirms first when
+   *  there is unsaved work so a stray click cannot blow away
+   *  in-progress edits. */
+  function handleNewLineage() {
+    if (hasUnsavedWork) {
+      if (!window.confirm("Discard the current canvas and start a new lineage?")) {
+        return;
+      }
+    }
+    handleActiveSavedArtifactDeleted();
+    setAiAnchor("");
+    setSaveName("");
+  }
+
   return (
     <div
       ref={pageWrapperRef}
@@ -1019,6 +1125,7 @@ function CanvasInner() {
         onOpenSavedArtifact={handleOpenSavedArtifact}
         onActiveSavedArtifactDeleted={handleActiveSavedArtifactDeleted}
         onDiscoverRelated={() => void handleDiscoverRelated()}
+        onNewLineage={handleNewLineage}
       />
       <div
         ref={canvasShellRef}
@@ -1047,6 +1154,11 @@ function CanvasInner() {
           fitView
           fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}
+          // Loosen the zoom range so the user can scale the canvas
+          // way out (default min 0.5 capped large lineages mid-screen)
+          // and in (default max 2 lost detail on dense graphs).
+          minZoom={0.1}
+          maxZoom={4}
           // Multi-select + delete keys. Arrays so both Mac and
           // Windows / Linux work without sniffing the platform:
           //   * Hold ⌘ / Ctrl + click to add a node to the selection.
@@ -1074,6 +1186,15 @@ function CanvasInner() {
         onClose={() => setAddOpen(false)}
         defaultProfile={primaryProfile}
         onPick={onPickTable}
+        onBatchAdded={(n) => {
+          // Multi-pick lands every node along a tight diagonal so
+          // the picks are at least visually distinct, then we run
+          // the regular auto-layout so they snap into the canvas's
+          // standard grid (or radial when an anchor exists).
+          if (n > 1) {
+            window.setTimeout(() => handleAutoLayout(), 60);
+          }
+        }}
       />
 
       <LogoPicker

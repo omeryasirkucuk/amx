@@ -146,13 +146,24 @@ function DataFrameNodeImpl({ id, data, selected }: NodeProps<TableNodeData>) {
   // Tables render collapsed by default — the column rail crowds the
   // canvas after AI Generate when 6+ neighbours land at once. Users
   // open individual tables on demand via the header chevron or the
-  // "+ show N columns" affordance.
-  const [expanded, setExpanded] = useState<boolean>(false);
+  // "+ show N columns" affordance. ``expanded`` lives on node data
+  // (not local React state) so other components — ColumnEdge in
+  // particular — can read it and decide whether to anchor edges
+  // to column handles vs the table rect.
+  const expanded = !!data.expanded;
+  const writeExpanded = (next: boolean) => {
+    rf.setNodes((nodes) =>
+      nodes.map((n) =>
+        n.id === id ? { ...n, data: { ...n.data, expanded: next } } : n,
+      ),
+    );
+  };
   // External callers (e.g. clicking the "Columns" line on an edge
   // popover) bump ``forceExpandTick`` to force this node open
   // without forcing the user to find the chevron.
   useEffect(() => {
-    if (data.forceExpandTick) setExpanded(true);
+    if (data.forceExpandTick && !data.expanded) writeExpanded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.forceExpandTick]);
   const [search, setSearch] = useState<string>("");
   const [logoPickerOpen, setLogoPickerOpen] = useState(false);
@@ -190,7 +201,7 @@ function DataFrameNodeImpl({ id, data, selected }: NodeProps<TableNodeData>) {
           aria-label={expanded ? "Collapse columns" : "Expand columns"}
           onClick={(e) => {
             e.stopPropagation();
-            setExpanded((v) => !v);
+            writeExpanded(!expanded);
           }}
           className="nodrag flex h-4 w-4 items-center justify-center rounded text-fg-muted hover:text-ink"
         >
@@ -251,7 +262,7 @@ function DataFrameNodeImpl({ id, data, selected }: NodeProps<TableNodeData>) {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              setExpanded(true);
+              writeExpanded(true);
             }}
             className="nodrag block w-full px-3 py-1.5 text-left text-[11px] text-fg-muted hover:bg-surface"
           >

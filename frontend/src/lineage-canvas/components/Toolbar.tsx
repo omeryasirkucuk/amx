@@ -15,6 +15,7 @@ import {
   Combine,
   Download,
   FileCode2,
+  FilePlus,
   Filter,
   Image as ImageIcon,
   LayoutGrid,
@@ -76,6 +77,10 @@ interface ToolbarProps {
    *  tables on canvas" pass. Surfaces deterministic FK / view
    *  DDL / query log edges the anchor-centric LLM skips. */
   onDiscoverRelated: () => void;
+  /** Clear the canvas back to a blank state. The Canvas owns the
+   *  unsaved-work confirm so this prop is just the user intent
+   *  signal. */
+  onNewLineage: () => void;
 }
 
 interface IconButtonProps {
@@ -120,6 +125,9 @@ export function Toolbar(p: ToolbarProps) {
         onPick={p.onOpenSavedArtifact}
         onActiveArtifactDeleted={p.onActiveSavedArtifactDeleted}
       />
+      <IconBtn label="New lineage" onClick={p.onNewLineage}>
+        <FilePlus size={15} />
+      </IconBtn>
 
       <Divider />
 
