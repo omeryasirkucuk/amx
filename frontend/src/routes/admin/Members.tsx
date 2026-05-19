@@ -5,12 +5,11 @@
  * The "Demote" button is disabled when the target row is the only remaining admin.
  */
 
-import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck, ShieldOff, UserX, UserCheck } from "lucide-react";
 
 import { apiFetch } from "../../lib/api";
-import { Badge, Button, Tooltip, useToast } from "../../components/ui";
+import { Badge, Tooltip, useToast } from "../../components/ui";
 import EmptyState from "../../components/EmptyState";
 import Skeleton from "../../components/ui/Skeleton";
 import { cn } from "../../lib/cn";
