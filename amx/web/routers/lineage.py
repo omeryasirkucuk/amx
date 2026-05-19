@@ -510,6 +510,8 @@ def get_artifact_by_id(
     for row in node_rows:
         by_profile.setdefault(str(row[1] or ""), []).append(int(row[0]))
 
+    from amx.lineage.operator_ops import decode_operator_details
+
     entity_meta: dict[int, dict[str, Any]] = {}
     for prof, ids in by_profile.items():
         if not ids:
@@ -518,49 +520,126 @@ def get_artifact_by_id(
         with hs._connect() as conn:
             rows = conn.execute(
                 f"SELECT id, database_name, schema_name, table_name, "
-                f"       column_name, entity_kind "
+                f"       column_name, entity_kind, search_text "
                 f"FROM catalog_entities WHERE id IN ({placeholders})",
                 tuple(ids),
             ).fetchall()
         for r in rows:
-            entity_meta[int(r[0])] = {
+            kind = str(r[5] or "table")
+            meta: dict[str, Any] = {
                 "profile": prof,
                 "database": str(r[1] or ""),
                 "schema": str(r[2] or ""),
                 "table": str(r[3] or ""),
                 "column": str(r[4] or ""),
-                "kind": str(r[5] or "table"),
+                "kind": kind,
             }
+            # Operator entities stash their op_kind + expression
+            # inside ``search_text`` JSON. Surface them as first-class
+            # fields so the frontend's ``loadedNodeToCanvasNode`` can
+            # rebuild the OperatorNode without re-parsing.
+            if kind == "operator":
+                details = decode_operator_details(str(r[6] or ""))
+                meta["op_kind"] = str(details.get("op_kind") or "")
+                meta["expression"] = str(details.get("expression") or "")
+            entity_meta[int(r[0])] = meta
+
+    # Bulk-fetch per-table column lists from the column-comments
+    # cache so the canvas re-renders with the real column rail
+    # instead of an empty "(no columns cached)" placeholder.
+    table_columns: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    table_keys = {
+        (
+            entity_meta[int(r[0])].get("profile", str(r[1] or "")),
+            entity_meta[int(r[0])].get("database", ""),
+            entity_meta[int(r[0])].get("schema", ""),
+            entity_meta[int(r[0])].get("table", ""),
+        )
+        for r in node_rows
+        if entity_meta.get(int(r[0]), {}).get("kind") == "table"
+    }
+    if table_keys:
+        with hs._connect() as conn:
+            for prof, db, sch, tbl in table_keys:
+                if not tbl:
+                    continue
+                row = conn.execute(
+                    """
+                    SELECT columns_json FROM column_comments_cache
+                    WHERE db_profile = ? AND database_name = ?
+                      AND schema_name = ? AND table_name = ?
+                    LIMIT 1
+                    """,
+                    (prof, db, sch, tbl),
+                ).fetchone()
+                if not row:
+                    continue
+                try:
+                    raw = json.loads(row[0] or "[]")
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(raw, list):
+                    continue
+                cols: list[dict[str, Any]] = []
+                for c in raw:
+                    if not isinstance(c, dict):
+                        continue
+                    name = str(c.get("name") or "").strip()
+                    if not name:
+                        continue
+                    cols.append(
+                        {
+                            "name": name,
+                            "dtype": str(c.get("dtype") or c.get("type") or ""),
+                            "isPrimary": bool(c.get("pk_flag") or c.get("is_primary")),
+                            "isForeign": bool(c.get("fk_flag") or c.get("is_foreign")),
+                        }
+                    )
+                table_columns[(prof, db, sch, tbl)] = cols
 
     for row in node_rows:
         entity_id = int(row[0])
         meta = entity_meta.get(entity_id, {})
-        nodes_out.append(
-            {
-                "entity_id": entity_id,
-                "profile": str(row[1] or ""),
-                "x": float(row[2] or 0.0),
-                "y": float(row[3] or 0.0),
-                "width": float(row[4] or 240.0),
-                "height": float(row[5] or 120.0),
-                "z_index": int(row[6] or 0),
-                "logo_key": str(row[7] or ""),
-                "database": meta.get("database", ""),
-                "schema": meta.get("schema", ""),
-                "table": meta.get("table", ""),
-                "column": meta.get("column", ""),
-                "kind": meta.get("kind", "table"),
-                "fqn": ".".join(
-                    p
-                    for p in (
-                        meta.get("database", ""),
-                        meta.get("schema", ""),
-                        meta.get("table", ""),
-                    )
-                    if p
+        node_entry: dict[str, Any] = {
+            "entity_id": entity_id,
+            "profile": str(row[1] or ""),
+            "x": float(row[2] or 0.0),
+            "y": float(row[3] or 0.0),
+            "width": float(row[4] or 240.0),
+            "height": float(row[5] or 120.0),
+            "z_index": int(row[6] or 0),
+            "logo_key": str(row[7] or ""),
+            "database": meta.get("database", ""),
+            "schema": meta.get("schema", ""),
+            "table": meta.get("table", ""),
+            "column": meta.get("column", ""),
+            "kind": meta.get("kind", "table"),
+            "fqn": ".".join(
+                p
+                for p in (
+                    meta.get("database", ""),
+                    meta.get("schema", ""),
+                    meta.get("table", ""),
+                )
+                if p
+            ),
+        }
+        if meta.get("kind") == "operator":
+            node_entry["op_kind"] = meta.get("op_kind", "")
+            node_entry["expression"] = meta.get("expression", "")
+        elif meta.get("kind") == "table":
+            cols = table_columns.get(
+                (
+                    str(row[1] or ""),
+                    meta.get("database", ""),
+                    meta.get("schema", ""),
+                    meta.get("table", ""),
                 ),
-            }
-        )
+                [],
+            )
+            if cols:
+                node_entry["columns"] = cols
+        nodes_out.append(node_entry)
 
     edges_out: list[dict[str, Any]] = []
     if node_rows:
@@ -1776,6 +1855,7 @@ def post_manual_artifact(
     anchor_fqn = str(payload.get("anchor_fqn") or "").strip()
     nodes_in = payload.get("nodes") or []
     edges_in = payload.get("edges") or []
+    operators_in = payload.get("operators") or []
     comments_in = payload.get("comments") or []
     logo_nodes_in = payload.get("logo_nodes") or []
     if not primary_profile or not name or not anchor_fqn:
@@ -1790,32 +1870,99 @@ def post_manual_artifact(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="History store not initialised.",
         )
-    from amx.lineage.operator_ops import write_column_edge
+    from amx.lineage.operator_ops import upsert_operator_entity, write_column_edge
 
     anchor_id = _resolve_entity_id_strict(hs, primary_profile, anchor_fqn)
     actor = _actor_name()
     now = time.time()
     persisted = 0
+
+    # Resolve every operator on the canvas to a backend entity_id up
+    # front so the edge loop below can stitch table↔operator edges by
+    # the operator's React Flow node id.
+    db_backend = _profile_backend(cfg, primary_profile)
+    op_node_to_entity: dict[str, int] = {}
+    op_node_meta: dict[str, dict[str, Any]] = {}
+    for op in operators_in:
+        if not isinstance(op, dict):
+            continue
+        node_id = str(op.get("node_id") or "").strip()
+        op_kind = str(op.get("op_kind") or "").strip()
+        if not node_id or not op_kind:
+            continue
+        expression = str(op.get("expression") or "")
+        # The operator entity needs a host (database, schema, table)
+        # so two filters on the same target table don't collide on
+        # the unique key — anchor table is the natural host for the
+        # canvas-floating operators users draw by hand.
+        anchor_database, anchor_schema, anchor_table, _anchor_col = _split_fqn_resolve_column(
+            hs, primary_profile, anchor_fqn
+        )
+        try:
+            entity_id, _path = upsert_operator_entity(
+                hs,
+                profile=primary_profile,
+                db_backend=db_backend or "",
+                database=anchor_database or "",
+                schema=anchor_schema or "",
+                table=anchor_table or "",
+                op_kind=op_kind,
+                expression=expression,
+            )
+        except ValueError:
+            # Unknown op_kind — skip rather than fail the whole save.
+            continue
+        op_node_to_entity[node_id] = entity_id
+        op_node_meta[node_id] = {
+            "entity_id": entity_id,
+            "x": float(op.get("x") or 0.0),
+            "y": float(op.get("y") or 0.0),
+            "width": float(op.get("width") or 240.0),
+            "height": float(op.get("height") or 120.0),
+            "z_index": int(op.get("z_index") or 0),
+        }
     for edge in edges_in:
         if not isinstance(edge, dict):
             continue
+        # Each endpoint can be either an operator on the canvas
+        # (identified by ``source_node_id`` / ``target_node_id``
+        # mapped via ``op_node_to_entity``) or a real table
+        # (identified by ``source_fqn`` / ``target_fqn``). An edge
+        # is dropped only when neither form resolves on a side,
+        # so a freshly-drawn table↔operator edge round-trips.
+        src_node_id = str(edge.get("source_node_id") or "").strip()
+        tgt_node_id = str(edge.get("target_node_id") or "").strip()
+        src_op_id = op_node_to_entity.get(src_node_id) if src_node_id else None
+        tgt_op_id = op_node_to_entity.get(tgt_node_id) if tgt_node_id else None
         src = str(edge.get("source_fqn") or "").strip()
         tgt = str(edge.get("target_fqn") or "").strip()
-        if not src or not tgt or src == tgt:
-            continue
         src_profile = str(edge.get("source_profile") or primary_profile).strip() or primary_profile
         tgt_profile = str(edge.get("target_profile") or primary_profile).strip() or primary_profile
         try:
-            src_id = _resolve_entity_id_strict(hs, src_profile, src)
-            tgt_id = _resolve_entity_id_strict(hs, tgt_profile, tgt)
+            if src_op_id is not None:
+                src_id = src_op_id
+                src_col_from_fqn = ""
+            else:
+                if not src:
+                    continue
+                src_id = _resolve_entity_id_strict(hs, src_profile, src)
+                _sdb, _ssch, _stbl, src_col_from_fqn = _split_fqn_resolve_column(
+                    hs, src_profile, src
+                )
+            if tgt_op_id is not None:
+                tgt_id = tgt_op_id
+                tgt_col_from_fqn = ""
+            else:
+                if not tgt:
+                    continue
+                tgt_id = _resolve_entity_id_strict(hs, tgt_profile, tgt)
+                _tdb, _tsch, _ttbl, tgt_col_from_fqn = _split_fqn_resolve_column(
+                    hs, tgt_profile, tgt
+                )
         except HTTPException:
             continue
-        _src_db, _src_schema, _src_table, src_col_from_fqn = _split_fqn_resolve_column(
-            hs, src_profile, src
-        )
-        _tgt_db, _tgt_schema, _tgt_table, tgt_col_from_fqn = _split_fqn_resolve_column(
-            hs, tgt_profile, tgt
-        )
+        if src_id == tgt_id:
+            continue
         src_col = str(edge.get("source_column") or src_col_from_fqn or "").strip()
         tgt_col = str(edge.get("target_column") or tgt_col_from_fqn or "").strip()
         details = {
@@ -1902,6 +2049,33 @@ def post_manual_artifact(
             "artifact_id": 0,
             "render_error": str(exc),
         }
+
+    # Persist operator-node placements alongside table nodes so the
+    # load endpoint can re-render the canvas exactly as it was —
+    # without this row, the operator entity exists in the catalog but
+    # the artifact has no idea where to draw it.
+    if result.artifact_id and op_node_meta:
+        with hs._connect() as conn:
+            for _node_id, meta in op_node_meta.items():
+                conn.execute(
+                    """
+                    INSERT INTO lineage_artifact_nodes
+                        (artifact_id, entity_id, db_profile, x, y, width, height,
+                         z_index, logo_key)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(result.artifact_id),
+                        int(meta["entity_id"]),
+                        primary_profile,
+                        meta["x"],
+                        meta["y"],
+                        meta["width"],
+                        meta["height"],
+                        meta["z_index"],
+                        "",
+                    ),
+                )
 
     # Persist per-node placements + cross-profile mapping.
     if result.artifact_id and nodes_in:
