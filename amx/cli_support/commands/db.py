@@ -1249,6 +1249,22 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
 
     if backend == "hive":
+        # Quick deployment-context hint so the user picks the right adapter.
+        # Hive lives in several places — none of them call the wizard the
+        # same way:
+        #   * local Docker (apache/hive) → NOSASL, host=localhost, port=10000
+        #   * on-prem Hadoop / EMR        → PLAIN or LDAP with SASL
+        #   * Cloudera CDH / CDP          → Kerberos (hand-edit config.yml;
+        #                                   wizard does not collect keytabs)
+        # If the user's tables live in a Databricks workspace via the
+        # legacy ``hive_metastore`` catalog, that is the Databricks
+        # backend's job — surface that disambiguation up front.
+        info(
+            "Hive backend targets HiveServer2 (Thrift). Use this for local "
+            "Docker, on-prem Hadoop, EMR, and Cloudera CDH/CDP clusters. "
+            "Databricks legacy 'hive_metastore' catalogs belong to the "
+            "Databricks backend, not this one."
+        )
         host = _ask_update_text(
             "HiveServer2 host (e.g. hive.example.com or localhost)",
             defaults.host or "",
