@@ -126,6 +126,27 @@ class LineageEdgeRecord:
     local_id: int
 
 
+@dataclass(frozen=True)
+class LineageCommentRecord:
+    """Immutable view of a single row from the ``lineage_comments`` table."""
+
+    id: str
+    artifact_id: str
+    x: float | None
+    y: float | None
+    width: float | None
+    height: float | None
+    color: str | None
+    style: str | None
+    text: str | None
+    created_by: str
+    hostname: str
+    client_version: str
+    created_at: datetime
+    updated_at: datetime
+    local_id: int
+
+
 def _new_uuid() -> str:
     return str(uuid.uuid4())
 
@@ -1135,6 +1156,97 @@ class SQLAlchemyHistoryStore:
             rows = conn.execute(stmt).fetchall()
         return [LineageEdgeRecord(**row._mapping) for row in rows]
 
+    # ── Lineage comments ──────────────────────────────────────────────────
+
+    def upsert_lineage_comment(
+        self,
+        *,
+        local_id: int,
+        artifact_uuid: str,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        color: str | None = None,
+        style: str = "note",
+        text: str = "",
+    ) -> str:
+        """Insert or update a sticky-note comment on a lineage canvas.
+
+        Lookup is by (hostname, local_id). If a matching row exists the
+        position, appearance, and text are updated; otherwise a new row is
+        inserted stamped with the current user attribution.
+        """
+        now = _utcnow()
+        existing = self._find_comment_uuid_by_local_id(self._hostname, local_id)
+        if existing:
+            with self.engine.begin() as conn:
+                conn.execute(
+                    update(self._t_lineage_comments)
+                    .where(self._t_lineage_comments.c.id == existing)
+                    .values(
+                        x=x,
+                        y=y,
+                        width=width,
+                        height=height,
+                        color=color,
+                        style=style,
+                        text=text,
+                        updated_at=now,
+                    )
+                )
+            return existing
+        uuid_value = _new_uuid()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(self._t_lineage_comments).values(
+                    id=uuid_value,
+                    artifact_id=artifact_uuid,
+                    x=x,
+                    y=y,
+                    width=width,
+                    height=height,
+                    color=color,
+                    style=style,
+                    text=text,
+                    created_by=self._username,
+                    hostname=self._hostname,
+                    client_version=self._client_version,
+                    created_at=now,
+                    updated_at=now,
+                    local_id=local_id,
+                )
+            )
+        return uuid_value
+
+    def _find_comment_uuid_by_local_id(self, hostname: str, local_id: int) -> str | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(self._t_lineage_comments.c.id)
+                .where(self._t_lineage_comments.c.hostname == hostname)
+                .where(self._t_lineage_comments.c.local_id == local_id)
+            ).fetchone()
+        return row[0] if row else None
+
+    def list_lineage_comments(self, *, artifact_uuid: str) -> list[LineageCommentRecord]:
+        """Return all comments for an artifact in insertion order."""
+        stmt = (
+            select(self._t_lineage_comments)
+            .where(self._t_lineage_comments.c.artifact_id == artifact_uuid)
+        )
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [LineageCommentRecord(**row._mapping) for row in rows]
+
+    def delete_lineage_comment(self, *, uuid: str) -> None:
+        """Hard-delete a comment by its UUID PK."""
+        with self.engine.begin() as conn:
+            conn.execute(
+                delete(self._t_lineage_comments).where(
+                    self._t_lineage_comments.c.id == uuid
+                )
+            )
+
     # ── Scheduled runs (Protocol stubs) ─────────────────────────────────
     #
     # Phase 1 of the scheduler keeps the scheduled_runs surface local-
@@ -1225,4 +1337,7 @@ __all__ = [
     "SQLAlchemyHistoryStore",
     "SchemaVersionMismatch",
     "LineageArtifactRecord",
+    "LineageNodeRecord",
+    "LineageEdgeRecord",
+    "LineageCommentRecord",
 ]

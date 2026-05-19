@@ -133,3 +133,39 @@ def test_upsert_lineage_edge_round_trip(store):
     assert edges[0].id == edge
     assert edges[0].join_type == "LEFT"
     assert edges[0].on_condition == "a.id = b.a_id"
+
+
+# ---------------------------------------------------------------------------
+# Task 10 — upsert_lineage_comment + list_lineage_comments + delete
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_lineage_comment_round_trip(store):
+    a = store.create_lineage_artifact(
+        local_id=1, name="t", db_profile="x", anchor_entity_ref="x|a|b|c"
+    )
+    cuuid = store.upsert_lineage_comment(
+        local_id=200, artifact_uuid=a,
+        x=10.0, y=20.0, width=200.0, height=80.0,
+        color="#fef3c7", style="note",
+        text="Check this join with @bob",
+    )
+    comments = store.list_lineage_comments(artifact_uuid=a)
+    assert len(comments) == 1
+    assert comments[0].id == cuuid
+    assert comments[0].text == "Check this join with @bob"
+    assert comments[0].created_by == store._username
+
+
+def test_delete_lineage_comment_removes_row(store):
+    a = store.create_lineage_artifact(
+        local_id=2, name="t2", db_profile="x", anchor_entity_ref="x|a|b|c"
+    )
+    cuuid = store.upsert_lineage_comment(
+        local_id=201, artifact_uuid=a,
+        x=0.0, y=0.0, width=100.0, height=50.0,
+        text="to be deleted",
+    )
+    store.delete_lineage_comment(uuid=cuuid)
+    comments = store.list_lineage_comments(artifact_uuid=a)
+    assert len(comments) == 0
