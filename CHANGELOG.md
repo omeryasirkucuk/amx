@@ -6,6 +6,63 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-05-19
+
+### Highlights
+
+- **Trino / Presto backend.** New first-class adapter (`backend: trino`)
+  for distributed-SQL coordinators. Pure-Python install via the new
+  `[trino]` extra (`pip install 'amx-cli[trino]'`). Covers Presto over
+  the shared wire protocol. ANSI `COMMENT ON TABLE / COLUMN / VIEW /
+  MATERIALIZED VIEW / SCHEMA` writeback works against any Trino
+  connector that supports DDL (hive / iceberg / delta / memory / …).
+  Bulk metadata via `<catalog>.information_schema` with graceful
+  fallback for older releases. Basic and JWT auth in the wizard;
+  OAuth2 / Kerberos remain hand-edit paths. Three-level catalog
+  hierarchy (`catalog.schema.table`) wired through the picker, the
+  cache, and Studio's settings form.
+- **Hive (HiveServer2) backend.** New adapter (`backend: hive`)
+  targeting the HiveServer2 SQL gateway over Thrift. Pure-Python
+  install via the new `[hive]` extra (`pip install 'amx-cli[hive]'`) —
+  built on bare `pyhive` + `pure-sasl` + `thrift-sasl` so it wheels
+  cleanly on macOS, Linux, and Windows (the legacy `sasl` C extension
+  is deliberately avoided). Table / view / database (== schema)
+  comment write-back via `ALTER TABLE / VIEW … SET TBLPROPERTIES` and
+  `ALTER DATABASE … SET DBPROPERTIES`. The wizard surfaces
+  PLAIN / LDAP / NOSASL auth modes for the four mainstream Hive
+  deployments (local Docker / on-prem Hadoop / AWS EMR / Cloudera
+  CDH/CDP); KERBEROS and CUSTOM are accepted as hand-edit paths.
+  Bulk metadata via Hive 3.x `information_schema` with a
+  `DESCRIBE FORMATTED` parser fallback that covers Hive 2.x / 3.x /
+  4.x row-shape drift.
+- **Column-comment write-back on Hive is intentionally OFF.** Hive's
+  only column-comment path requires re-declaring the original column
+  type, which is lossy for complex types (`struct`, `map`, `array`,
+  `uniontype`). `column_comments=False` makes the connector raise
+  `UnsupportedDatabaseOperation` cleanly upstream so users get a
+  clear error instead of a silently-broken schema. Apply Hive column
+  comments through dbt / Atlas, or migrate the table to Trino,
+  Databricks Unity Catalog, or PostgreSQL where native column-comment
+  DDL is safe.
+- **12 database backends** total. Picker dropdowns, Studio settings
+  form, `~/.amx/config.yml` schema, and the documentation site
+  (amxcli.com) all reflect the new count.
+
+### Other notes
+
+- `_DB_SECRET_FIELDS` now includes `jwt_token` so the Trino JWT path
+  participates in the same OS-keyring externalisation pipeline as
+  `password` and `access_token`.
+- New `DBConfig` fields: `jwt_token` (Trino), `http_scheme` (Trino),
+  `auth_mode` (Hive). YAML round-trip + Studio API mask the secret
+  fields like every other credential.
+
+### Issue closure
+
+- [#518](https://github.com/omeryasirkucuk/amx/issues/518) — Trino /
+  Presto and Hive (with Metastore) backend support (reported by
+  [@ying-w](https://github.com/ying-w)).
+
 ## [0.16.0] - 2026-05-18
 
 ### Highlights
