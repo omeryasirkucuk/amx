@@ -2,17 +2,23 @@
  * TeamWorkspaceTab — "Team workspace" panel inside Settings.
  *
  * Layout:
- *   - Always visible: HistoryStoreCard (enable/disable team history store)
- *   - Admin-only: horizontal sub-nav with Members / Activity / Audit / Settings
+ *   - HistoryStoreCard (enable/disable team history store)
+ *   - Role banner: shows the current user's role + active admins to ask
+ *   - Horizontal sub-nav: Members / Activity / Audit / Settings
+ *     - All tabs visible to everyone (read-only)
+ *     - Action controls inside each tab self-gate on role (admin-only writes)
  *
  * The inner sub-tab is synced to the `inner` query param so refreshes
  * preserve the selected sub-tab alongside the outer `tab=team` param.
  */
 
 import { useSearchParams } from "react-router-dom";
-import { Tabs, TabsList, Tab, TabPanel } from "../../components/ui";
+import { useQuery } from "@tanstack/react-query";
+import { ShieldCheck, Eye } from "lucide-react";
+import { Tabs, TabsList, Tab, TabPanel, Badge } from "../../components/ui";
 import HistoryStoreCard from "../../components/HistoryStoreCard";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole";
+import { apiFetch } from "../../lib/api";
 import AdminMembers from "../admin/Members";
 import AdminActivity from "../admin/Activity";
 import AdminAudit from "../admin/Audit";
@@ -33,8 +39,61 @@ function isInnerTab(value: string | null): value is InnerTab {
   return value !== null && (INNER_TAB_IDS as readonly string[]).includes(value);
 }
 
+interface MemberLite {
+  username: string;
+  hostname: string;
+  role: string;
+  revoked_at: string | null;
+}
+
+function RoleBanner() {
+  const { role, username, hostname } = useCurrentUserRole();
+  const members = useQuery<{ members: MemberLite[] }>({
+    queryKey: ["admin-members"],
+    queryFn: () => apiFetch<{ members: MemberLite[] }>("/api/admin/members"),
+    staleTime: 60_000,
+  });
+
+  const admins = (members.data?.members ?? []).filter(
+    (m) => m.role === "admin" && !m.revoked_at,
+  );
+
+  const isAdmin = role === "admin";
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface-subtle/40 px-4 py-3 text-sm">
+      <div className="flex items-center gap-3">
+        {isAdmin ? (
+          <ShieldCheck size={18} className="text-accent" />
+        ) : (
+          <Eye size={18} className="text-ink-muted" />
+        )}
+        <div>
+          <div className="font-medium text-ink">
+            {username}
+            <span className="ml-1.5 font-mono text-xs text-ink-dim">
+              @{hostname}
+            </span>
+          </div>
+          <div className="text-xs text-ink-muted">
+            Your role:{" "}
+            <Badge tone={isAdmin ? "info" : "neutral"}>{role}</Badge>
+          </div>
+        </div>
+      </div>
+      {!isAdmin && admins.length > 0 && (
+        <div className="text-xs text-ink-muted">
+          To request admin access, contact:{" "}
+          <span className="font-mono text-ink">
+            {admins.map((a) => a.username).join(", ")}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TeamWorkspaceTab() {
-  const { role } = useCurrentUserRole();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const innerParam = searchParams.get("inner");
@@ -54,33 +113,29 @@ export default function TeamWorkspaceTab() {
   return (
     <div className="space-y-6">
       <HistoryStoreCard />
+      <RoleBanner />
+      <Tabs value={inner} onValueChange={(v) => setInner(v as InnerTab)}>
+        <TabsList className="flex-wrap gap-1 sm:flex-nowrap overflow-x-auto">
+          {INNER_TABS.map((t) => (
+            <Tab key={t.id} value={t.id}>
+              {t.label}
+            </Tab>
+          ))}
+        </TabsList>
 
-      {role === "admin" && (
-        <div>
-          <Tabs value={inner} onValueChange={(v) => setInner(v as InnerTab)}>
-            <TabsList className="flex-wrap gap-1 sm:flex-nowrap overflow-x-auto">
-              {INNER_TABS.map((t) => (
-                <Tab key={t.id} value={t.id}>
-                  {t.label}
-                </Tab>
-              ))}
-            </TabsList>
-
-            <TabPanel value="members">
-              <AdminMembers />
-            </TabPanel>
-            <TabPanel value="activity">
-              <AdminActivity />
-            </TabPanel>
-            <TabPanel value="audit">
-              <AdminAudit />
-            </TabPanel>
-            <TabPanel value="settings">
-              <AdminSettings />
-            </TabPanel>
-          </Tabs>
-        </div>
-      )}
+        <TabPanel value="members">
+          <AdminMembers />
+        </TabPanel>
+        <TabPanel value="activity">
+          <AdminActivity />
+        </TabPanel>
+        <TabPanel value="audit">
+          <AdminAudit />
+        </TabPanel>
+        <TabPanel value="settings">
+          <AdminSettings />
+        </TabPanel>
+      </Tabs>
     </div>
   );
 }
