@@ -33,6 +33,7 @@ import {
   addEdge,
   applyEdgeChanges,
   applyNodeChanges,
+  useReactFlow,
   type Connection,
   type EdgeChange,
   type NodeChange,
@@ -49,9 +50,11 @@ import "reactflow/dist/style.css";
 
 import { AddTableModal } from "./components/AddTableModal";
 import { AttributeTrackerPanel } from "./components/AttributeTrackerPanel";
-import { edgeTypes } from "./components/ColumnEdge";
+import { ColumnEdgeMarkerDefs, edgeTypes } from "./components/ColumnEdge";
+import { EdgeLegendChip } from "./components/EdgeLegendChip";
 import { SearchModal } from "./components/SearchModal";
 import { Toolbar } from "./components/Toolbar";
+import { buildEdgeHoverLabel } from "./edgeLabels";
 import { useAutoLayout } from "./hooks/useAutoLayout";
 import { usePngExport } from "./hooks/usePngExport";
 import { useStreamingAI, type StreamBatch } from "./hooks/useStreamingAI";
@@ -127,6 +130,10 @@ function CanvasInner() {
   );
   const autoLayout = useAutoLayout();
   const exportPng = usePngExport();
+  // ``useReactFlow`` is only valid inside the ReactFlowProvider that
+  // wraps this component (see ``LineageCanvasRoute`` below); we use it
+  // for the post-layout fitView call.
+  const rf = useReactFlow();
 
   // Size the Lineage page to exactly fit the viewport below whatever
   // chrome AppShell renders above it (TopBar, padding, sidebar resize,
@@ -336,7 +343,28 @@ function CanvasInner() {
   }
 
   function handleAutoLayout() {
-    setNodes((nds) => autoLayout(nds, edges));
+    // Resolve the anchor node id from the current AI Generate
+    // selection so the hook can run its radial mode. When no anchor
+    // is in play (e.g. the user manually built the canvas and is
+    // tapping ``L``), the hook falls back to dagre LR.
+    let anchorId: string | undefined;
+    if (aiAnchor) {
+      const found = nodes.find(
+        (n) =>
+          n.data.kind === "table" &&
+          (n.data as TableNodeData).fqn === aiAnchor,
+      );
+      anchorId = found?.id;
+    }
+    setNodes((nds) => autoLayout(nds, edges, { anchorId }));
+    // Center the freshly laid-out graph in the viewport so the user
+    // sees the whole anchor + neighbourhood after AI Generate
+    // without having to pan around. ``requestAnimationFrame`` waits
+    // for the setNodes commit so ReactFlow has the new positions
+    // before computing the bounds.
+    requestAnimationFrame(() => {
+      rf.fitView({ padding: 0.25, duration: 300, maxZoom: 1.0 });
+    });
   }
 
   // ── Streaming AI ─────────────────────────────────────────────────────────
@@ -346,6 +374,12 @@ function CanvasInner() {
   // and React 18 runs them in order during the next render cycle,
   // so by the time the edge callback fires every FQN is mapped.
   const fqnToIdRef = useRef(new Map<string, string>());
+  // Count of nodes synthesised during the in-flight stream. Reset
+  // when ``startGenerate`` fires, incremented in each batch, read by
+  // ``onDone`` to decide whether to auto-layout. Skipping layout
+  // when the stream only added edges (no new tables) keeps already
+  // arranged canvases stable.
+  const streamingAddedRef = useRef(0);
   const streamingAI = useStreamingAI({
     onBatch: (batch: StreamBatch) => {
       const newlySynthesised: Array<{
@@ -366,10 +400,22 @@ function CanvasInner() {
         // LLM batches, etc.) instead of spawning duplicate copies of
         // the same table. This is the fix for "AI Generate getiriyo
         // ama aynı tabloyu yanına atıyo".
+        //
+        // Also record a 2-part ``schema.table`` alias for any 3-part
+        // FQN — the LLM almost always streams ``schema.table`` while
+        // the picker stores ``database.schema.table``, so without the
+        // alias the anchor never matched the stream and got
+        // duplicated by ``ensureTable`` with an empty columns list.
         for (const n of next) {
           if (n.data.kind === "table") {
             const fqn = (n.data as { fqn?: string }).fqn;
-            if (fqn) fqnToId.set(fqn, n.id);
+            if (!fqn) continue;
+            fqnToId.set(fqn, n.id);
+            const parts = fqn.split(".");
+            if (parts.length >= 3) {
+              const alias = parts.slice(-2).join(".");
+              if (!fqnToId.has(alias)) fqnToId.set(alias, n.id);
+            }
           }
         }
 
@@ -383,6 +429,12 @@ function CanvasInner() {
                 (n.data as { fqn?: string }).fqn === aiAnchor,
             )
           : undefined;
+        const anchorData = anchorNode?.data.kind === "table"
+          ? (anchorNode.data as TableNodeData)
+          : undefined;
+        const anchorDatabase = anchorData?.database || "";
+        const anchorProfile = anchorData?.profile || primaryProfile;
+        const anchorLogoKey = anchorData?.logoKey || "";
         const cx = anchorNode?.position?.x ?? 320;
         const cy = anchorNode?.position?.y ?? 200;
 
@@ -393,7 +445,10 @@ function CanvasInner() {
           if (existing) return existing;
 
           const parts = fqn.split(".");
-          const database = parts.length > 2 ? parts[0] : "";
+          // Inherit the anchor's database when the streamed FQN is
+          // only 2-part — without it ``fetchTableColumns`` can't
+          // resolve the catalog row and silently returns ``[]``.
+          const database = parts.length > 2 ? parts[0] : anchorDatabase;
           const schema = parts.length > 1 ? parts[parts.length - 2] : "";
           const table = parts[parts.length - 1];
           // Place new neighbors around the anchor: 8 evenly spaced
@@ -415,12 +470,16 @@ function CanvasInner() {
             data: {
               kind: "table",
               id,
-              profile: primaryProfile,
+              profile: anchorProfile,
               database,
               schema,
               table,
               fqn,
               columns: [],
+              // Inherit the anchor's logo so every AI-spawned table
+              // gets the same backend badge instead of rendering
+              // un-tagged. Manual logo-picker still overrides.
+              ...(anchorLogoKey ? { logoKey: anchorLogoKey } : {}),
             },
           };
           next.push(tbl);
@@ -437,6 +496,7 @@ function CanvasInner() {
           ensureTable(ed.from);
           ensureTable(ed.to);
         }
+        streamingAddedRef.current += newlySynthesised.length;
         return next;
       });
 
@@ -486,9 +546,13 @@ function CanvasInner() {
           const dashed =
             ed.type === "name_match" ||
             (ed.type === "lineage_llm" && ed.confidence < 0.7);
-          const hoverLabel = ed.from_column && ed.to_column
-            ? `${ed.from_column} → ${ed.to_column} · ${ed.type} · ${Math.round(ed.confidence * 100)}%`
-            : `${ed.type} · ${Math.round(ed.confidence * 100)}%`;
+          const hoverLabel = buildEdgeHoverLabel({
+            fromColumn: ed.from_column,
+            toColumn: ed.to_column,
+            type: ed.type,
+            confidence: ed.confidence,
+            dashed,
+          });
           next.push({
             id,
             source: sourceId,
@@ -527,6 +591,13 @@ function CanvasInner() {
         description: `${totals.total_edges} edge(s) streamed in.`,
         tone: "success",
       });
+      // Auto-arrange only when this run actually added new tables —
+      // an edges-only stream shouldn't disturb a canvas the user has
+      // already laid out by hand. Defer one frame so the last
+      // batch's React commit has flushed and dagre sees every node.
+      if (streamingAddedRef.current > 0) {
+        requestAnimationFrame(() => handleAutoLayout());
+      }
     },
   });
 
@@ -551,6 +622,9 @@ function CanvasInner() {
       : primaryProfile;
     setGenerating(true);
     setGenerateOpen(false);
+    // Reset the per-stream counter so ``onDone`` only auto-layouts
+    // when *this* run added at least one table.
+    streamingAddedRef.current = 0;
     streamingAI.start(aiAnchor, { profile: anchorProfile, database: anchorDb });
   }
 
@@ -800,6 +874,15 @@ function CanvasInner() {
     setParams({ artifact: String(id) });
   }
 
+  function handleActiveSavedArtifactDeleted() {
+    setNodes([]);
+    setEdges([]);
+    setPrimaryProfile("");
+    setArtifactName("");
+    setActiveArtifactId(null);
+    setParams({});
+  }
+
   return (
     <div
       ref={pageWrapperRef}
@@ -849,6 +932,7 @@ function CanvasInner() {
         hasUnsavedWork={hasUnsavedWork}
         activeArtifactId={activeArtifactId}
         onOpenSavedArtifact={handleOpenSavedArtifact}
+        onActiveSavedArtifactDeleted={handleActiveSavedArtifactDeleted}
       />
       <div
         ref={canvasShellRef}
@@ -856,12 +940,16 @@ function CanvasInner() {
         tabIndex={0}
         onKeyDown={onCanvasKeyDown}
       >
-        {generating && (
-          <div className="pointer-events-none absolute right-3 top-3 z-10 inline-flex items-center gap-1.5 rounded-md bg-surface-raised/90 px-2 py-1 text-[11px] text-fg-muted shadow">
-            <Loader2 size={12} className="animate-spin" />
-            streaming AI batches…
-          </div>
-        )}
+        <ColumnEdgeMarkerDefs />
+        <div className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-2">
+          {generating && (
+            <div className="inline-flex items-center gap-1.5 rounded-md bg-surface-raised/90 px-2 py-1 text-[11px] text-fg-muted shadow">
+              <Loader2 size={12} className="animate-spin" />
+              streaming AI batches…
+            </div>
+          )}
+          <EdgeLegendChip />
+        </div>
         <ReactFlow
           nodes={nodes}
           edges={edges}

@@ -137,16 +137,17 @@ function HiddenHandles({ columns }: { columns: TableNodeData["columns"] }) {
 }
 
 const SEARCH_THRESHOLD = 8;
-const AUTO_COLLAPSE_THRESHOLD = 25;
 
 function DataFrameNodeImpl({ id, data, selected }: NodeProps<TableNodeData>) {
   const rf = useReactFlow();
   const columns = useMemo(() => data.columns || [], [data.columns]);
   const headerLabel = data.schema ? `${data.schema}.${data.table}` : data.table;
 
-  const [expanded, setExpanded] = useState<boolean>(
-    columns.length <= AUTO_COLLAPSE_THRESHOLD,
-  );
+  // Tables render collapsed by default — the column rail crowds the
+  // canvas after AI Generate when 6+ neighbours land at once. Users
+  // open individual tables on demand via the header chevron or the
+  // "+ show N columns" affordance.
+  const [expanded, setExpanded] = useState<boolean>(false);
   const [search, setSearch] = useState<string>("");
   const [logoPickerOpen, setLogoPickerOpen] = useState(false);
 

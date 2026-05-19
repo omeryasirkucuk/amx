@@ -734,6 +734,15 @@ class SQLiteHistoryStore:
                 # rows.
                 "ALTER TABLE catalog_relationships ADD COLUMN from_column TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE catalog_relationships ADD COLUMN to_column TEXT NOT NULL DEFAULT ''",
+                # v5 — Studio-canvas style overrides. All nullable so
+                # an unedited edge reads as ``NULL`` → frontend
+                # defaults take over. Style overrides live on the edge
+                # itself (not the artifact), so the same relationship
+                # carries its user-chosen color / cardinality across
+                # every canvas that surfaces it.
+                "ALTER TABLE catalog_relationships ADD COLUMN style_color TEXT",
+                "ALTER TABLE catalog_relationships ADD COLUMN style_dashed INTEGER",
+                "ALTER TABLE catalog_relationships ADD COLUMN cardinality TEXT",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(_ddl)
