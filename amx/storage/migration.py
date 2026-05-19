@@ -31,7 +31,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, insert, select
+from sqlalchemy import and_, inspect, insert, select, text
+from sqlalchemy.engine import Engine
 
 from amx.storage.sqlalchemy_store import SQLAlchemyHistoryStore
 from amx.storage.sqlite_store import SQLiteHistoryStore
@@ -495,4 +496,117 @@ def _dump_or_none(value: Any) -> str | None:
         return None
 
 
-__all__ = ["migrate_local_to_shared", "pull_shared_to_local"]
+def ensure_column_exists(
+    engine: Engine,
+    schema: str | None,
+    table: str,
+    column_name: str,
+    column_spec: str,
+) -> None:
+    """Idempotently add *column_name* to *table* on the given engine.
+
+    Dispatches the correct DDL dialect for each supported backend:
+
+    * **SQLite** — ``ALTER TABLE … ADD COLUMN …`` wrapped in a try/except
+      (SQLite raises ``OperationalError: duplicate column name`` on a
+      second add; we suppress it).
+    * **PostgreSQL / MySQL / Snowflake / BigQuery** — ``ALTER TABLE … ADD
+      COLUMN IF NOT EXISTS …`` (all four support the IF NOT EXISTS clause
+      natively).
+    * **Oracle** — plain ``ALTER TABLE … ADD …`` wrapped in try/except for
+      ``ORA-01430`` (column already exists).
+    * **Databricks** — ``ALTER TABLE … ADD COLUMNS (…)`` (Databricks uses
+      the plural ``COLUMNS`` keyword).
+
+    For every backend, a pre-flight ``inspect(engine).get_columns(table)``
+    check is performed first; if the column is already present the ALTER is
+    skipped entirely to avoid any DDL noise on already-migrated schemas.
+
+    Parameters
+    ----------
+    engine:
+        SQLAlchemy engine connected to the target backend.
+    schema:
+        Schema (or database/namespace) name. ``None`` for SQLite or
+        schema-less connections.
+    table:
+        Unqualified table name.
+    column_name:
+        Name of the column to add.
+    column_spec:
+        Type + optional constraints as a SQL fragment (e.g. ``"TEXT"``,
+        ``"VARCHAR(120) DEFAULT NULL"``).
+    """
+    # Pre-flight: skip if column already present.
+    try:
+        inspector = inspect(engine)
+        existing_cols = {
+            c["name"] for c in inspector.get_columns(table, schema=schema or None)
+        }
+        if column_name in existing_cols:
+            log.debug("ensure_column_exists: %s.%s already has %s", table, schema, column_name)
+            return
+    except Exception:  # noqa: BLE001
+        # If introspection fails (e.g. table does not exist yet), fall
+        # through to the ALTER — it will fail with a meaningful error.
+        pass
+
+    dialect_name = engine.dialect.name.lower()
+
+    fq_table = f"{schema}.{table}" if schema else table
+
+    if dialect_name == "sqlite":
+        # SQLite: suppress "duplicate column name" OperationalError.
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(f"ALTER TABLE {fq_table} ADD COLUMN {column_name} {column_spec}")
+                )
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc).lower()
+            if "duplicate column" in err or "already exists" in err:
+                pass  # idempotent
+            else:
+                raise
+    elif dialect_name == "oracle":
+        # Oracle raises ORA-01430 when the column already exists.
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {fq_table} ADD {column_name} {column_spec}"
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc)
+            if "ORA-01430" in err or "already exists" in err.lower():
+                pass  # idempotent
+            else:
+                raise
+    elif dialect_name == "databricks":
+        # Databricks uses plural COLUMNS and does not support IF NOT EXISTS.
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {fq_table} ADD COLUMNS ({column_name} {column_spec})"
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc).lower()
+            if "already exists" in err:
+                pass  # idempotent
+            else:
+                raise
+    else:
+        # PostgreSQL, MySQL, Snowflake, BigQuery — all support IF NOT EXISTS.
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    f"ALTER TABLE {fq_table} "
+                    f"ADD COLUMN IF NOT EXISTS {column_name} {column_spec}"
+                )
+            )
+
+
+__all__ = ["ensure_column_exists", "migrate_local_to_shared", "pull_shared_to_local"]
