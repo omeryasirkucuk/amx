@@ -52,6 +52,12 @@ export interface ManualSaveEdge {
   target_profile: string;
   source_column?: string;
   target_column?: string;
+  /** Studio-canvas style override fields — round-trip with the edge
+   *  so a saved canvas re-loads with the user's chosen visuals. All
+   *  optional; absent / null means "no override". */
+  style_color?: string | null;
+  style_dashed?: boolean | null;
+  cardinality?: "1:1" | "1:N" | "N:M" | null;
 }
 
 export interface ManualSaveComment {
@@ -124,6 +130,12 @@ export interface LoadedEdge {
   source: string;
   score: number;
   verdict: string;
+  /** Studio-canvas style override fields. ``null`` (the wire form
+   *  for "no override") survives the round-trip so the renderer can
+   *  tell "user picked solid" apart from "user never touched". */
+  style_color?: string | null;
+  style_dashed?: boolean | null;
+  cardinality?: "1:1" | "1:N" | "N:M" | null;
 }
 
 export interface LoadedComment {
@@ -218,6 +230,7 @@ export function buildSavePayload(args: {
     const src = nodeIndex.get(e.source);
     const tgt = nodeIndex.get(e.target);
     if (!src || !tgt) continue;
+    const d = e.data;
     edges.push({
       source_fqn: src.fqn,
       source_profile: src.profile || primaryProfile,
@@ -225,6 +238,9 @@ export function buildSavePayload(args: {
       target_profile: tgt.profile || primaryProfile,
       source_column: e.sourceHandle || undefined,
       target_column: e.targetHandle || undefined,
+      style_color: d?.styleColor ?? null,
+      style_dashed: d?.styleDashed ?? null,
+      cardinality: d?.cardinality ?? null,
     });
   }
 

@@ -951,6 +951,27 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "operator's input port; otherwise it names the real "
             "downstream column."
         ),
+        "style_color": (
+            "v5 Studio edge override. User-chosen stroke color (CSS "
+            "hex such as '#60a5fa') for rendering this edge in the "
+            "lineage canvas. NULL keeps the default color derived from "
+            "relationship_type. Lives on the edge itself so the same "
+            "relationship looks the same on every artifact that "
+            "surfaces it."
+        ),
+        "style_dashed": (
+            "v5 Studio edge override. 0 = force a solid stroke, 1 = "
+            "force a dashed stroke, NULL = derive from relationship_type "
+            "and score (name_match and low-confidence LLM edges dash by "
+            "default). Lets the user lock the visual regardless of "
+            "where the inference came from."
+        ),
+        "cardinality": (
+            "v5 Studio edge override. User-set relationship cardinality "
+            "marker rendered at the edge endpoints. One of '1:1', "
+            "'1:N', 'N:M', or NULL (no marker). Pure presentation "
+            "metadata — does not change which rows match the edge."
+        ),
     },
     # ── lineage_artifacts (local only) ────────────────────────────────────
     "lineage_artifacts": {

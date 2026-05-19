@@ -168,10 +168,19 @@ export function loadedEdgeToCanvasEdge(
   source: string,
   target: string,
 ): CanvasEdge {
-  const color = EDGE_COLORS[e.relationship_type] ?? EDGE_COLORS.unknown;
-  const dashed =
+  // Auto-derived defaults from the relationship type / score.
+  const defaultColor = EDGE_COLORS[e.relationship_type] ?? EDGE_COLORS.unknown;
+  const defaultDashed =
     e.relationship_type === "name_match" ||
     (e.relationship_type === "lineage_llm" && e.score < 0.7);
+  // User overrides beat the defaults. ``null`` from the wire means
+  // "no override"; ``undefined`` shouldn't happen but is treated the
+  // same way to keep TypeScript happy on partial payloads.
+  const styleColor = e.style_color ?? undefined;
+  const styleDashed = e.style_dashed ?? undefined;
+  const cardinality = e.cardinality ?? undefined;
+  const effectiveColor = styleColor ?? defaultColor;
+  const effectiveDashed = styleDashed ?? defaultDashed;
   return {
     id: `e-${e.id}`,
     source,
@@ -186,11 +195,14 @@ export function loadedEdgeToCanvasEdge(
       verdict: e.verdict,
       edgeId: e.id,
       hoverLabel: hoverLabelFor(e),
+      styleColor,
+      styleDashed,
+      cardinality,
     },
     style: {
-      stroke: color,
+      stroke: effectiveColor,
       strokeWidth: e.score >= 0.9 ? 1.6 : 1.1,
-      strokeDasharray: dashed ? "5 4" : undefined,
+      strokeDasharray: effectiveDashed ? "5 4" : undefined,
     },
   };
 }

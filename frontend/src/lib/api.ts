@@ -1383,6 +1383,32 @@ export async function lineageList(profile?: string): Promise<LineageArtifactList
   return apiFetch<LineageArtifactList>(`/api/lineage${qs}`);
 }
 
+/** Hard-delete a saved lineage artifact (cascades to its nodes,
+ *  logo-nodes and comments; shared catalog_relationships rows are
+ *  intentionally preserved so other artifacts that surface the
+ *  same edge keep rendering them). */
+export async function lineageDelete(artifactId: number): Promise<void> {
+  await apiFetch<void>(`/api/lineage/by-id/${artifactId}`, { method: "DELETE" });
+}
+
+/** Update Studio-canvas style overrides on a single edge. Any
+ *  omitted key leaves the column untouched; ``null`` clears it
+ *  back to the default. */
+export interface LineageEdgeStylePatch {
+  style_color?: string | null;
+  style_dashed?: boolean | null;
+  cardinality?: "1:1" | "1:N" | "N:M" | null;
+}
+export async function lineageEdgeStyle(
+  edgeId: number,
+  patch: LineageEdgeStylePatch,
+): Promise<{ id: number; ok: boolean }> {
+  return apiFetch<{ id: number; ok: boolean }>(
+    `/api/lineage/edges/${edgeId}/style`,
+    { method: "PATCH", body: JSON.stringify(patch) },
+  );
+}
+
 export async function lineageFetch(
   anchor: string,
   opts: { profile?: string; database?: string; depthUp?: number; depthDown?: number } = {},
