@@ -102,7 +102,10 @@ def test_bigquery_pins_project_and_dataset(cfg, stub_db, client, auth_headers):
 
 @pytest.mark.parametrize(
     "backend",
-    ["postgresql", "snowflake", "mysql", "oracle", "mssql", "redshift", "clickhouse"],
+    # 2-level backends only — Trino is 3-level (catalog/schema/table)
+    # and is exercised separately by the catalog-scope tests. Hive joins
+    # here because its ``database`` field IS the schema in HiveQL.
+    ["postgresql", "snowflake", "mysql", "oracle", "mssql", "redshift", "clickhouse", "hive"],
 )
 def test_two_level_backends_only_pin_database(backend: str, cfg, stub_db, client, auth_headers):
     """For every 2-level backend the wizard captures only ``database``.
