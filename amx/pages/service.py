@@ -57,15 +57,8 @@ class PagesService:
         page = self.store.get(page_id)
         if page is None:
             raise KeyError(page_id)
-        assets = [
-            AssetRef(a["kind"], a["ref"])
-            for a in page["assets"]
-            if a.get("included", 1)
-        ]
-        sources = [
-            SourceRef(s["kind"], s["path"], s["original_name"])
-            for s in page["sources"]
-        ]
+        assets = [AssetRef(a["kind"], a["ref"]) for a in page["assets"] if a.get("included", 1)]
+        sources = [SourceRef(s["kind"], s["path"], s["original_name"]) for s in page["sources"]]
         ctx = ctx_mod.gather(
             intent=page["generation_prompt"] or "",
             assets=assets,
