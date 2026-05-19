@@ -25,7 +25,7 @@ describe("SourceAttacher", () => {
       <SourceAttacher pageId="page-1" sources={[]} onChange={onChange} />,
     );
     expect(
-      screen.getByText(/Drop files here or click to browse/i),
+      screen.getByText(/Drop files or click to browse/i),
     ).toBeInTheDocument();
   });
 });

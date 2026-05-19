@@ -27,7 +27,7 @@ export default function PreviewPane({ markdown, className }: Props) {
     return (
       <div
         className={cn(
-          "min-h-[400px] rounded-md border border-border bg-surface p-6 text-sm text-ink-dim",
+          "min-h-[400px] text-sm text-ink-dim",
           className,
         )}
       >
@@ -38,7 +38,7 @@ export default function PreviewPane({ markdown, className }: Props) {
   return (
     <div
       className={cn(
-        "min-h-[400px] rounded-md border border-border bg-surface px-6 py-5",
+        "min-h-[400px]",
         "prose prose-base lg:prose-lg max-w-none",
         "prose-headings:text-ink prose-headings:font-semibold prose-headings:tracking-tight",
         "prose-h1:text-3xl prose-h1:mt-0 prose-h1:mb-4",

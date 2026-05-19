@@ -75,89 +75,75 @@ export default function SourceAttacher({ pageId, sources, onChange }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-      <div className="flex-1">
-        <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragOver(true);
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={onDrop}
-          onClick={() => inputRef.current?.click()}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
-          }}
-          className={cn(
-            "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed p-6 text-center transition-colors",
-            dragOver
-              ? "border-accent bg-accent-soft/40"
-              : "border-border bg-surface-subtle hover:border-accent/40",
-          )}
-        >
-          {upload.isPending ? (
-            <Loader2 size={20} className="animate-spin text-ink-dim" />
-          ) : (
-            <Upload size={20} className="text-ink-dim" />
-          )}
-          <div className="text-sm font-medium text-ink">
-            {upload.isPending
-              ? "Uploading..."
-              : "Drop files here or click to browse"}
-          </div>
-          <div className="text-[11px] text-ink-dim">
-            Supports .xlsx, .pdf, .docx, .md, .csv, .json, .yaml, .html, .eml, ...
-          </div>
-        </div>
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          accept={ACCEPT_EXTENSIONS.join(",")}
-          onChange={onFileChange}
-          className="hidden"
-        />
-        {error && (
-          <div className="mt-2 text-xs text-critical">{error}</div>
+    <div className="space-y-2">
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        onClick={() => inputRef.current?.click()}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
+        }}
+        className={cn(
+          "flex h-24 cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed px-3 text-center transition-colors",
+          dragOver
+            ? "border-accent bg-accent-soft/40"
+            : "border-border bg-surface hover:border-accent/40 hover:bg-surface-subtle",
         )}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
-          Attached sources ({sources.length})
-        </div>
-        {sources.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border bg-surface px-3 py-4 text-center text-xs text-ink-dim">
-            No sources attached yet.
-          </div>
+      >
+        {upload.isPending ? (
+          <Loader2 size={14} className="animate-spin text-ink-dim" />
         ) : (
-          <ul className="space-y-1">
-            {sources.map((s, i) => (
-              <li
-                key={`${s.path}-${i}`}
-                className="flex items-center gap-2 rounded-md border border-border bg-surface px-2 py-1.5 text-sm"
-              >
-                <FileIcon size={13} className="shrink-0 text-ink-dim" />
-                <span className="min-w-0 flex-1 truncate" title={s.original_name}>
-                  {s.original_name}
-                </span>
-                <span className="shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-ink-dim">
-                  {s.kind}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => removeAt(i)}
-                  aria-label={`Remove ${s.original_name}`}
-                  className="shrink-0 rounded p-1 text-ink-dim hover:bg-surface-subtle hover:text-critical"
-                >
-                  <X size={12} />
-                </button>
-              </li>
-            ))}
-          </ul>
+          <Upload size={14} className="text-ink-dim" />
         )}
+        <div className="text-left">
+          <div className="text-xs font-medium text-ink">
+            {upload.isPending ? "Uploading..." : "Drop files or click to browse"}
+          </div>
+          <div className="text-[10px] text-ink-dim">
+            .xlsx · .pdf · .docx · .md · .csv · .json · .yaml · .html · .eml
+          </div>
+        </div>
       </div>
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        accept={ACCEPT_EXTENSIONS.join(",")}
+        onChange={onFileChange}
+        className="hidden"
+      />
+      {error && <div className="text-[11px] text-critical">{error}</div>}
+      {sources.length === 0 ? (
+        <p className="text-[11px] text-ink-dim">No sources attached yet.</p>
+      ) : (
+        <ul className="space-y-1">
+          {sources.map((s, i) => (
+            <li
+              key={`${s.path}-${i}`}
+              className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-surface-subtle"
+            >
+              <FileIcon size={13} className="shrink-0 text-ink-dim" />
+              <span className="min-w-0 flex-1 truncate text-xs text-ink" title={s.original_name}>
+                {s.original_name}
+              </span>
+              <button
+                type="button"
+                onClick={() => removeAt(i)}
+                aria-label={`Remove ${s.original_name}`}
+                className="shrink-0 rounded p-1 text-ink-dim hover:bg-surface hover:text-critical"
+              >
+                <X size={12} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

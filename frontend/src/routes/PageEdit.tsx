@@ -1,12 +1,14 @@
 // Edit view for a single Documentation Page.
-// Hosts the three-column shell (outline / canvas / rail), the
-// large title input, the segmented Edit/Preview/Source switcher,
-// and the focus-mode toggle that collapses everything except the
-// canvas. All cross-component state lives here so the rail and
-// the editor never duplicate it.
+// Document-first layout: canvas is the hero (no card), outline is a
+// quiet sticky text list on the left, the rail on the right is a
+// single column divided by hairlines (no nested cards). The editor
+// toolbar is hoisted out of PageEditor so it sits above the
+// 3-column grid; this way the first content element of each column
+// (outline label, canvas H1, rail label) shares the same Y baseline.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import type { Editor } from "@tiptap/react";
 import {
   ChevronRight,
   History,
@@ -18,6 +20,7 @@ import {
 
 import AssetChip from "../components/pages/AssetChip";
 import EditorFooter from "../components/pages/EditorFooter";
+import EditorToolbar from "../components/pages/EditorToolbar";
 import EditorViewSwitcher, {
   loadStoredView,
   type EditorView,
@@ -42,7 +45,6 @@ import {
 
 const AUTOSAVE_DELAY_MS = 5000;
 const FOCUS_KEY = "amx-pages-focus";
-const OUTLINE_KEY = "amx-pages-outline-collapsed";
 
 const STATUS_TONE: Record<string, BadgeTone> = {
   draft: "neutral",
@@ -68,16 +70,10 @@ export default function PageEditRoute() {
   const [saving, setSaving] = useState(false);
   const [view, setView] = useState<EditorView>(() => loadStoredView());
   const [versionsOpen, setVersionsOpen] = useState(false);
+  const [editor, setEditor] = useState<Editor | null>(null);
   const [focusMode, setFocusMode] = useState<boolean>(() => {
     try {
       return window.sessionStorage.getItem(FOCUS_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
-  const [outlineCollapsed, setOutlineCollapsed] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem(OUTLINE_KEY) === "1";
     } catch {
       return false;
     }
@@ -110,7 +106,6 @@ export default function PageEditRoute() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [title, markdown]);
 
-  // Persist focus + outline preferences across reloads.
   useEffect(() => {
     try {
       window.sessionStorage.setItem(FOCUS_KEY, focusMode ? "1" : "0");
@@ -118,13 +113,6 @@ export default function PageEditRoute() {
       /* ignore */
     }
   }, [focusMode]);
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(OUTLINE_KEY, outlineCollapsed ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
-  }, [outlineCollapsed]);
 
   async function runSave(overrideBody?: string) {
     if (!pageId) return;
@@ -150,8 +138,8 @@ export default function PageEditRoute() {
       setTitle(updated.title);
       setLastSavedAt(new Date(updated.updated_at));
       if (steering) {
-        // Pin the steering text onto the row as a note so the user
-        // can spot which run a given version came from.
+        // Pin the steering text on the next version's note so the
+        // user can spot which run produced which body.
         await save.mutateAsync({
           markdown_body: updated.markdown_body,
           note: `steering: ${steering}`,
@@ -202,6 +190,8 @@ export default function PageEditRoute() {
     );
   }
 
+  const toolbarDisabled = view !== "edit";
+
   return (
     <div
       className={cn(
@@ -210,7 +200,7 @@ export default function PageEditRoute() {
       )}
     >
       {/* ── Header ───────────────────────────────────────────────── */}
-      <div className="mb-5">
+      <header className="mb-6">
         <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-ink-dim">
           <button
             type="button"
@@ -224,7 +214,7 @@ export default function PageEditRoute() {
             {page.title || "Untitled"}
           </span>
         </div>
-        <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -240,10 +230,10 @@ export default function PageEditRoute() {
             <PageExportMenu pageId={page.id} pageTitle={title} />
           </div>
         </div>
-      </div>
+      </header>
 
-      {/* ── View controls ────────────────────────────────────────── */}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+      {/* ── View tabs + action chips ─────────────────────────────── */}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <EditorViewSwitcher value={view} onChange={setView} />
         <div className="flex items-center gap-1">
           {!focusMode && (
@@ -272,13 +262,18 @@ export default function PageEditRoute() {
         </div>
       </div>
 
+      {/* ── Toolbar (hoisted out of the canvas) ──────────────────── */}
+      <div className="mb-4 border-b border-border pb-2">
+        <EditorToolbar editor={editor} disabled={toolbarDisabled} />
+      </div>
+
       {/* ── Body grid ────────────────────────────────────────────── */}
       <div
         className={cn(
-          "grid gap-5",
+          "grid gap-8",
           focusMode
             ? "grid-cols-1"
-            : "lg:grid-cols-[220px_minmax(0,1fr)_300px]",
+            : "lg:grid-cols-[180px_minmax(0,1fr)_280px]",
         )}
       >
         {/* Outline */}
@@ -287,8 +282,6 @@ export default function PageEditRoute() {
             <PageOutline
               markdown={markdown}
               scrollRoot={surfaceRef.current}
-              collapsed={outlineCollapsed}
-              onToggleCollapsed={() => setOutlineCollapsed((v) => !v)}
             />
           </div>
         )}
@@ -300,6 +293,7 @@ export default function PageEditRoute() {
             onChange={setMarkdown}
             view={view}
             surfaceRef={surfaceRef}
+            onEditorReady={setEditor}
           />
           <EditorFooter
             markdown={markdown}
@@ -310,27 +304,27 @@ export default function PageEditRoute() {
 
         {/* Rail */}
         {!focusMode && (
-          <aside className="order-3 space-y-4 lg:order-3">
-            <Section title="Assets">
+          <aside className="order-3 divide-y divide-border lg:order-3">
+            <RailBlock title="Assets">
               {page.assets.length === 0 ? (
-                <p className="text-xs text-ink-dim">No assets attached.</p>
+                <p className="text-[11px] text-ink-dim">No assets attached.</p>
               ) : (
-                <div className="space-y-1.5">
+                <div className="-mx-1 space-y-0.5">
                   {page.assets.map((a, i) => (
                     <AssetChip key={`${a.kind}-${a.ref}-${i}`} asset={a} />
                   ))}
                 </div>
               )}
-            </Section>
-            <Section title="Sources">
+            </RailBlock>
+            <RailBlock title="Sources">
               <SourceAttacher
                 pageId={page.id}
                 sources={sources}
                 onChange={setSources}
               />
-            </Section>
-            <Section title="Actions">
-              <div className="flex flex-col gap-2">
+            </RailBlock>
+            <RailBlock title="Actions">
+              <div className="space-y-2">
                 <RegeneratePopover
                   pending={regen.isPending}
                   onSubmit={runRegenerate}
@@ -345,7 +339,7 @@ export default function PageEditRoute() {
                   Delete
                 </Button>
               </div>
-            </Section>
+            </RailBlock>
           </aside>
         )}
       </div>
@@ -362,7 +356,7 @@ export default function PageEditRoute() {
   );
 }
 
-function Section({
+function RailBlock({
   title,
   children,
 }: {
@@ -370,8 +364,8 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-md border border-border bg-surface p-3">
-      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+    <section className="space-y-2 py-4 first:pt-0 last:pb-0">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
         {title}
       </div>
       {children}
@@ -410,7 +404,7 @@ function SkeletonShell() {
       <div className="h-3 w-24 animate-pulse rounded bg-surface-subtle" />
       <div className="h-9 w-1/2 animate-pulse rounded bg-surface-subtle" />
       <div className="h-7 w-40 animate-pulse rounded bg-surface-subtle" />
-      <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)_300px]">
+      <div className="grid gap-8 lg:grid-cols-[180px_minmax(0,1fr)_280px]">
         <div className="h-64 animate-pulse rounded-md bg-surface-subtle" />
         <div className="h-96 animate-pulse rounded-md bg-surface-subtle" />
         <div className="h-64 animate-pulse rounded-md bg-surface-subtle" />

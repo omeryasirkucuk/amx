@@ -6,7 +6,6 @@
 // currently reading.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { cn } from "../../lib/cn";
 
@@ -23,8 +22,6 @@ interface Props {
    *  the IntersectionObserver targets the same elements so the
    *  active highlight tracks reading position. */
   scrollRoot?: HTMLElement | null;
-  collapsed?: boolean;
-  onToggleCollapsed?: () => void;
 }
 
 const HEADING_RE = /^(#{1,3})\s+(.+?)\s*$/gm;
@@ -59,12 +56,7 @@ export function buildOutline(markdown: string): OutlineItem[] {
   return items;
 }
 
-export default function PageOutline({
-  markdown,
-  scrollRoot,
-  collapsed,
-  onToggleCollapsed,
-}: Props) {
+export default function PageOutline({ markdown, scrollRoot }: Props) {
   const items = useMemo(() => buildOutline(markdown), [markdown]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -112,49 +104,37 @@ export default function PageOutline({
   }
 
   return (
-    <nav
-      aria-label="Page outline"
-      className="rounded-md border border-border bg-surface"
-    >
-      <button
-        type="button"
-        onClick={onToggleCollapsed}
-        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-ink-dim hover:text-ink"
-      >
-        <span>Outline</span>
-        {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-      </button>
-      {!collapsed && (
-        <div className="border-t border-border p-2">
-          {items.length === 0 ? (
-            <p className="px-1 py-2 text-[11px] text-ink-dim">
-              No headings yet. Add one with <code>#</code>, <code>##</code>, or <code>###</code>.
-            </p>
-          ) : (
-            <ul className="space-y-0.5">
-              {items.map((it) => (
-                <li key={it.id}>
-                  <button
-                    type="button"
-                    onClick={() => handleClick(it.id)}
-                    className={cn(
-                      "block w-full truncate rounded px-2 py-1 text-left text-[12px] transition-colors",
-                      it.level === 1 && "font-medium",
-                      it.level === 2 && "pl-4",
-                      it.level === 3 && "pl-6 text-[11px]",
-                      activeId === it.id
-                        ? "bg-accent-soft text-accent-ink"
-                        : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
-                    )}
-                    title={it.text}
-                  >
-                    {it.text}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+    <nav aria-label="Page outline" className="sticky top-4 space-y-2">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+        Outline
+      </div>
+      {items.length === 0 ? (
+        <p className="text-[11px] text-ink-dim">
+          No headings yet. Add one with <code>#</code>, <code>##</code>, or <code>###</code>.
+        </p>
+      ) : (
+        <ul className="space-y-0.5">
+          {items.map((it) => (
+            <li key={it.id}>
+              <button
+                type="button"
+                onClick={() => handleClick(it.id)}
+                className={cn(
+                  "block w-full truncate rounded px-2 py-1 text-left text-[12px] transition-colors",
+                  it.level === 1 && "font-medium",
+                  it.level === 2 && "pl-4",
+                  it.level === 3 && "pl-6 text-[11px]",
+                  activeId === it.id
+                    ? "bg-accent-soft text-accent-ink"
+                    : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
+                )}
+                title={it.text}
+              >
+                {it.text}
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </nav>
   );
