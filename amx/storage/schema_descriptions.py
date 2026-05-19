@@ -973,16 +973,18 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "metadata — does not change which rows match the edge."
         ),
     },
-    # ── lineage_artifacts (local only) ────────────────────────────────────
+    # ── lineage_artifacts ─────────────────────────────────────────────────
     "lineage_artifacts": {
         "__table__": (
-            "Registry of rendered lineage diagrams. Each row pairs a focal "
-            "entity (anchor) with the on-disk image file produced for it, "
-            "the edge-set hash that backs the image, and the extractors "
-            "used. Drives /lineage open, refresh, delete, list. /open uses "
-            "the hash to detect drift without re-running extractors."
+            "Saved lineage diagrams. Local rows hold the rendering for this "
+            "host; shared rows are visible to the entire team workspace, with "
+            "full structural data (nodes, edges, joins, where clauses) so "
+            "teammates can re-render and edit them."
         ),
-        "id": "Surrogate INT primary key.",
+        "id": (
+            "Primary key. Integer autoincrement in the local SQLite store; "
+            "UUID string in the shared warehouse for cross-host stability."
+        ),
         "name": (
             "User-facing slug used by /lineage open|refresh|delete. "
             "Unique across all artifacts in this history store."
@@ -992,14 +994,30 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "catalog_entities.db_profile and disambiguates artifacts with "
             "the same anchor name across profiles."
         ),
+        # Local-only: integer FK into catalog_entities (shared uses anchor_entity_ref instead)
         "anchor_entity_id": (
-            "catalog_entities.id of the focal table or column the diagram "
-            "radiates from. Foreign key into catalog_entities."
+            "Local-only: catalog_entities.id of the focal table or column "
+            "the diagram radiates from. Foreign key into catalog_entities. "
+            "Not present in the shared store, which uses anchor_entity_ref."
         ),
-        "depth_up": "Upstream hops included when this artifact was rendered.",
-        "depth_down": "Downstream hops included when this artifact was rendered.",
+        # Shared-only: FQN string identifying the anchor (local uses anchor_entity_id instead)
+        "anchor_entity_ref": (
+            "Shared-only: FQN of the anchor entity in the form "
+            "'db_profile|database|schema|table[|column]'. "
+            "Not present in the local store, which uses anchor_entity_id."
+        ),
+        "depth_up": (
+            "Upstream hops included when this artifact was rendered."
+        ),
+        "depth_down": (
+            "Downstream hops included when this artifact was rendered."
+        ),
         "format": "Image format on disk: 'png' | 'svg' | 'jpg'.",
-        "output_path": "Absolute filesystem path of the rendered image file.",
+        "output_path": (
+            "Absolute filesystem path of the rendered image file. "
+            "In the shared store this is optional; teammates re-render "
+            "from the stored structural data."
+        ),
         "edge_set_hash": (
             "SHA-256 of the sorted (from_id, to_id, type, score) tuples used "
             "in this render. /lineage open compares against the current hash "
@@ -1018,6 +1036,21 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "0 when every extractor returned a full cache hit or the user "
             "filled the misses. Renderer adds a footer banner when 1."
         ),
+        # Shared-only: canvas viewport state
+        "canvas_meta": (
+            "Shared-only: JSON of canvas viewport state: zoom, pan, "
+            "layout direction, theme."
+        ),
+        # Shared-only attribution columns
+        "created_by": ATTRIBUTION_CREATED_BY,
+        "hostname": ATTRIBUTION_HOSTNAME,
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
+        "created_at": (
+            "Shared-only: UTC timestamp when the row was inserted into "
+            "the shared store."
+        ),
+        "updated_at": "Shared-only: UTC timestamp of the last edit.",
+        "local_id": ATTRIBUTION_LOCAL_ID,
     },
     # ── lineage_artifact_nodes (local only) ───────────────────────────────
     "lineage_artifact_nodes": {
@@ -1587,45 +1620,6 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "SQLiteHistoryStore.init() so /doctor can detect descriptions "
             "that never refresh."
         ),
-    },
-    # ── lineage_artifacts (shared) ────────────────────────────────────────
-    "lineage_artifacts": {
-        "__table__": (
-            "Saved lineage diagrams shared across the team workspace, "
-            "including all structural data needed to re-render and edit."
-        ),
-        "id": "UUID primary key, stable across hosts.",
-        "name": "Human-readable artifact name shown in lists.",
-        "db_profile": "Name of the source database profile this lineage was extracted from.",
-        # local-only: integer FK into catalog_entities (shared uses anchor_entity_ref instead)
-        "anchor_entity_id": (
-            "catalog_entities.id of the focal table or column the diagram "
-            "radiates from. Foreign key into catalog_entities."
-        ),
-        "anchor_entity_ref": (
-            "FQN of the anchor entity in the form "
-            "'db_profile|database|schema|table[|column]'."
-        ),
-        "depth_up": "Upstream traversal depth at extraction time.",
-        "depth_down": "Downstream traversal depth at extraction time.",
-        "format": "Rendering format used for the local export, e.g. 'svg', 'png', 'dot'.",
-        "output_path": (
-            "Local filesystem path of the exported artifact "
-            "(optional; teammates re-render from structural data)."
-        ),
-        "edge_set_hash": "Stable hash of the edge set used for change detection.",
-        "node_count": "Number of nodes in the artifact at save time.",
-        "edge_count": "Number of edges in the artifact at save time.",
-        "generated_at": "Timestamp when the lineage was first generated.",
-        "extractors_used": "JSON list of extractor identifiers that contributed edges.",
-        "extractors_partial": "1 if any extractor returned a partial result, else 0.",
-        "canvas_meta": "JSON of canvas viewport state: zoom, pan, layout direction, theme.",
-        "created_by": ATTRIBUTION_CREATED_BY,
-        "hostname": ATTRIBUTION_HOSTNAME,
-        "client_version": ATTRIBUTION_CLIENT_VERSION,
-        "created_at": "UTC timestamp when the row was inserted into the shared store.",
-        "updated_at": "UTC timestamp of the last edit.",
-        "local_id": ATTRIBUTION_LOCAL_ID,
     },
 }
 
