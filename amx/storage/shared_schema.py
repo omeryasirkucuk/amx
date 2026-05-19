@@ -129,7 +129,7 @@ DEFAULT_HISTORY_SCHEMA_COMMENT = SHARED_SCHEMA_COMMENT
 # All client versions writing into a shared store record this as their
 # ``schema_version`` so an older client refuses to write into a schema
 # bumped by a newer client (avoids losing columns the new client added).
-SHARED_SCHEMA_VERSION = 1
+SHARED_SCHEMA_VERSION = 2
 
 
 def _desc(table: str, column: str | None = None) -> str:

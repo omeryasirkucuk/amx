@@ -83,3 +83,9 @@ def test_lineage_comments_has_attribution_columns():
     for expected_col in ("created_by", "hostname", "client_version",
                          "created_at", "updated_at", "local_id"):
         assert expected_col in actual, f"missing attribution: {expected_col}"
+
+
+def test_shared_schema_version_bumped():
+    from amx.storage.shared_schema import SHARED_SCHEMA_VERSION
+    # PR-1 increments the schema version to add lineage tables.
+    assert SHARED_SCHEMA_VERSION >= 2
