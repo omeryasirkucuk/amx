@@ -1058,14 +1058,10 @@ class SQLAlchemyHistoryStore:
 
         if force_overwrite:
             with self.engine.begin() as conn:
-                before_row = conn.execute(
-                    select(t).where(t.c.id == uuid)
-                ).fetchone()
+                before_row = conn.execute(select(t).where(t.c.id == uuid)).fetchone()
                 before = dict(before_row._mapping) if before_row else {}
                 conn.execute(
-                    update(t)
-                    .where(t.c.id == uuid)
-                    .values(version=t.c.version + 1, **fields)
+                    update(t).where(t.c.id == uuid).values(version=t.c.version + 1, **fields)
                 )
             from amx.storage import admin as _admin
 
@@ -1171,18 +1167,18 @@ class SQLAlchemyHistoryStore:
         t = self._t_lineage_artifact_nodes
         existing = self._find_node_uuid_by_local_id(self._hostname, local_id)
         if existing:
-            update_fields = dict(
-                x=x,
-                y=y,
-                width=width,
-                height=height,
-                z_index=z_index,
-                display_label=display_label,
-                column_list_json=column_list_json,
-                logo_key=logo_key,
-                custom_style_json=custom_style_json,
-                updated_at=now,
-            )
+            update_fields = {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "z_index": z_index,
+                "display_label": display_label,
+                "column_list_json": column_list_json,
+                "logo_key": logo_key,
+                "custom_style_json": custom_style_json,
+                "updated_at": now,
+            }
             if force_overwrite:
                 with self.engine.begin() as conn:
                     before_row = conn.execute(select(t).where(t.c.id == existing)).fetchone()
@@ -1199,7 +1195,10 @@ class SQLAlchemyHistoryStore:
                     actor_user_id=None,
                     action="forced_overwrite",
                     target_resource=f"lineage_artifact_nodes:{existing}",
-                    details={"before": _jsonable(before), "fields_updated": list(update_fields.keys())},
+                    details={
+                        "before": _jsonable(before),
+                        "fields_updated": list(update_fields.keys()),
+                    },
                 )
                 return existing
 
@@ -1312,18 +1311,18 @@ class SQLAlchemyHistoryStore:
         t = self._t_lineage_artifact_edges
         existing = self._find_edge_uuid_by_local_id(self._hostname, local_id)
         if existing:
-            update_fields = dict(
-                edge_kind=edge_kind,
-                join_type=join_type,
-                on_condition=on_condition,
-                where_clause=where_clause,
-                source_columns_json=source_columns_json,
-                target_columns_json=target_columns_json,
-                label=label,
-                style_json=style_json,
-                waypoints_json=waypoints_json,
-                updated_at=now,
-            )
+            update_fields = {
+                "edge_kind": edge_kind,
+                "join_type": join_type,
+                "on_condition": on_condition,
+                "where_clause": where_clause,
+                "source_columns_json": source_columns_json,
+                "target_columns_json": target_columns_json,
+                "label": label,
+                "style_json": style_json,
+                "waypoints_json": waypoints_json,
+                "updated_at": now,
+            }
             if force_overwrite:
                 with self.engine.begin() as conn:
                     before_row = conn.execute(select(t).where(t.c.id == existing)).fetchone()
@@ -1340,7 +1339,10 @@ class SQLAlchemyHistoryStore:
                     actor_user_id=None,
                     action="forced_overwrite",
                     target_resource=f"lineage_artifact_edges:{existing}",
-                    details={"before": _jsonable(before), "fields_updated": list(update_fields.keys())},
+                    details={
+                        "before": _jsonable(before),
+                        "fields_updated": list(update_fields.keys()),
+                    },
                 )
                 return existing
 
@@ -1446,16 +1448,16 @@ class SQLAlchemyHistoryStore:
         t = self._t_lineage_comments
         existing = self._find_comment_uuid_by_local_id(self._hostname, local_id)
         if existing:
-            update_fields = dict(
-                x=x,
-                y=y,
-                width=width,
-                height=height,
-                color=color,
-                style=style,
-                text=text,
-                updated_at=now,
-            )
+            update_fields = {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "color": color,
+                "style": style,
+                "text": text,
+                "updated_at": now,
+            }
             if force_overwrite:
                 with self.engine.begin() as conn:
                     before_row = conn.execute(select(t).where(t.c.id == existing)).fetchone()
@@ -1472,7 +1474,10 @@ class SQLAlchemyHistoryStore:
                     actor_user_id=None,
                     action="forced_overwrite",
                     target_resource=f"lineage_comments:{existing}",
-                    details={"before": _jsonable(before), "fields_updated": list(update_fields.keys())},
+                    details={
+                        "before": _jsonable(before),
+                        "fields_updated": list(update_fields.keys()),
+                    },
                 )
                 return existing
 
@@ -1581,9 +1586,7 @@ class SQLAlchemyHistoryStore:
                 before_row = conn.execute(select(t).where(t.c.id == page_id)).fetchone()
                 before = dict(before_row._mapping) if before_row else {}
                 conn.execute(
-                    update(t)
-                    .where(t.c.id == page_id)
-                    .values(version=t.c.version + 1, **fields)
+                    update(t).where(t.c.id == page_id).values(version=t.c.version + 1, **fields)
                 )
             from amx.storage import admin as _admin
 

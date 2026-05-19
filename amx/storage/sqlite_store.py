@@ -937,9 +937,7 @@ class SQLiteHistoryStore:
                 "lineage_comments",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
-                    conn.execute(
-                        f"ALTER TABLE {_occ_tbl} ADD COLUMN version INTEGER DEFAULT 1"
-                    )
+                    conn.execute(f"ALTER TABLE {_occ_tbl} ADD COLUMN version INTEGER DEFAULT 1")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_usage_evidence (

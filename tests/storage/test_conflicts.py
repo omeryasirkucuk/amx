@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -268,10 +267,7 @@ def test_local_sqlite_lineage_has_version_column(tmp_path: Path) -> None:
     ]
     with db._connect() as conn:
         for tbl in tables:
-            cols = {
-                row[1]
-                for row in conn.execute(f"PRAGMA table_info({tbl})").fetchall()
-            }
+            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
             assert "version" in cols, (
                 f"Table {tbl!r} is missing the 'version' column in local SQLite store"
             )
