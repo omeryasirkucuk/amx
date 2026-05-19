@@ -260,7 +260,12 @@ all = [
     "python-docx>=1.1",
     "markdownify>=0.11",
     "markdown-it-py>=3",
-    "xhtml2pdf>=0.2.11",
+    # ``xhtml2pdf`` lives only in the ``[pages]`` extra (not in
+    # ``[all]``) because it transitively pulls ``svglib`` -> ``pycairo``,
+    # which needs a native Cairo system library that is absent from
+    # the GitHub Actions Linux runners. PDF export lazy-imports it at
+    # call time, so the rest of the documentation-pages router works
+    # without it.
     # CVE-2026-41066 floor — see comment on the same pin in the
     # ``docs`` extra above.
     "lxml>=6.1.0",
