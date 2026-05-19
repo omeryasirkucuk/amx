@@ -1,4 +1,6 @@
 /** @type {import('tailwindcss').Config} */
+import typography from "@tailwindcss/typography";
+
 export default {
   // AMX Studio is dark-only by design (see `src/styles/index.css`
   // `:root { color-scheme: dark }`). No `.dark` class is toggled and
@@ -111,5 +113,5 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [typography],
 };
