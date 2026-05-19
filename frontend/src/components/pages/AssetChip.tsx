@@ -46,17 +46,21 @@ export default function AssetChip({ asset }: Props) {
   }
 
   const refText = asset.ref || "(no reference)";
+  // Insert zero-width spaces after every "/" so the browser only
+  // breaks the path at segment boundaries — "local-postgre / SAP /
+  // sap_s6p / vbrk" wraps cleanly instead of cutting mid-word.
+  const wrappableRef = refText.replace(/\//g, "/​");
   return (
-    <div className="group flex min-h-[48px] items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-2 transition-colors hover:border-accent/40 hover:bg-surface-subtle">
-      <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center self-center rounded bg-accent-soft/60 text-accent-ink">
-        <Icon size={14} />
+    <div className="group flex items-start gap-2 rounded px-1 py-1 transition-colors hover:bg-surface-subtle">
+      <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded bg-accent-soft/50 text-accent-ink">
+        <Icon size={12} />
       </span>
       <div className="min-w-0 flex-1">
         <div
-          className="break-all font-mono text-xs leading-tight text-ink"
+          className="break-words font-mono text-[12px] leading-snug text-ink"
           title={refText}
         >
-          {refText}
+          {wrappableRef}
         </div>
         <div className="mt-0.5 text-[10px] uppercase tracking-wide text-ink-dim">
           {labelFor(asset.kind)}
@@ -69,7 +73,7 @@ export default function AssetChip({ asset }: Props) {
         title={copied ? "Copied" : "Copy ref"}
         className={cn(
           "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-muted transition hover:bg-surface hover:text-ink",
-          "opacity-60 group-hover:opacity-100",
+          "opacity-0 group-hover:opacity-100",
           copied && "!opacity-100 text-accent-ink",
         )}
       >

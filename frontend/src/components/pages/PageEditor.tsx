@@ -17,20 +17,6 @@ import {
 } from "@tiptap/extension-table";
 import { Markdown } from "tiptap-markdown";
 import MarkdownIt from "markdown-it";
-import {
-  Bold,
-  Code,
-  Heading1,
-  Heading2,
-  Heading3,
-  Italic,
-  Link as LinkIcon,
-  List,
-  ListOrdered,
-  MoreHorizontal,
-  Minus,
-  Table as TableIcon,
-} from "lucide-react";
 
 import { cn } from "../../lib/cn";
 import PreviewPane from "./PreviewPane";
@@ -45,6 +31,11 @@ interface Props {
   /** Forwarded to the canvas root so the route can use it for the
    *  outline scroll-spy and focus-mode wiring. */
   surfaceRef?: React.MutableRefObject<HTMLDivElement | null>;
+  /** Lets the route render the editor toolbar above the 3-column
+   *  grid (document-first layout) instead of nesting it inside the
+   *  canvas card. Receives ``null`` while the editor is mounting and
+   *  again on unmount so the caller can grey-out toolbar buttons. */
+  onEditorReady?: (editor: Editor | null) => void;
 }
 
 const RICH_CLASS = cn(
@@ -101,6 +92,7 @@ export default function PageEditor({
   view,
   readOnly = false,
   surfaceRef,
+  onEditorReady,
 }: Props) {
   const cleanInitial = useMemo(() => stripFence(initialMarkdown), [initialMarkdown]);
   const [rawValue, setRawValue] = useState(cleanInitial);
@@ -138,6 +130,15 @@ export default function PageEditor({
     editor.setEditable(!readOnly && view === "edit");
   }, [editor, view, readOnly]);
 
+  // Surface the TipTap instance to the route so the toolbar above
+  // the 3-column grid can drive it. Re-publish on mount and clear
+  // on unmount so the caller can grey out controls when there is
+  // no editor (e.g. while the page is still loading).
+  useEffect(() => {
+    onEditorReady?.(editor ?? null);
+    return () => onEditorReady?.(null);
+  }, [editor, onEditorReady]);
+
   // Reset content when a new initialMarkdown arrives (e.g. after fetch
   // or a Restore from the versions drawer). We render to HTML first so
   // TipTap rebuilds the document with real heading / bold / list nodes
@@ -172,176 +173,24 @@ export default function PageEditor({
         onChange={(e) => handleRawChange(e.target.value)}
         readOnly={readOnly}
         spellCheck={false}
-        className="min-h-[500px] w-full rounded-md border border-border bg-surface p-4 font-mono text-sm text-ink focus:border-accent/60 focus:outline-none"
+        className="min-h-[500px] w-full resize-y border-0 bg-transparent p-0 font-mono text-sm text-ink outline-none focus:outline-none"
       />
     );
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <EditorToolbar editor={editor} disabled={readOnly} />
-      <div
-        ref={surfaceRef ?? undefined}
-        className="relative rounded-md border border-border bg-surface"
-      >
-        <EditorContent
-          editor={editor}
-          className={cn(
-            "px-5 py-4 [&_.ProseMirror]:min-h-[500px] [&_.ProseMirror]:outline-none",
-            RICH_CLASS,
-          )}
-        />
-        <SlashMenu editor={editor} />
-      </div>
-    </div>
-  );
-}
-
-interface ToolbarProps {
-  editor: Editor | null;
-  disabled: boolean;
-}
-
-function EditorToolbar({ editor, disabled }: ToolbarProps) {
-  const [moreOpen, setMoreOpen] = useState(false);
-
-  if (!editor) return null;
-
-  function btn(
-    onClick: () => void,
-    icon: React.ReactNode,
-    label: string,
-    isActive = false,
-  ) {
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        aria-label={label}
-        title={label}
-        aria-pressed={isActive}
-        disabled={disabled}
+    <div
+      ref={surfaceRef ?? undefined}
+      className="relative"
+    >
+      <EditorContent
+        editor={editor}
         className={cn(
-          "inline-flex h-7 w-7 items-center justify-center rounded text-ink-muted transition-colors",
-          isActive && "bg-accent-soft text-accent-ink",
-          !isActive && "hover:bg-surface-subtle hover:text-ink",
-          disabled && "cursor-not-allowed opacity-50",
+          "[&_.ProseMirror]:min-h-[500px] [&_.ProseMirror]:outline-none",
+          RICH_CLASS,
         )}
-      >
-        {icon}
-      </button>
-    );
-  }
-
-  function addLink() {
-    if (!editor) return;
-    const prev = editor.getAttributes("link").href as string | undefined;
-    const url = window.prompt("Link URL", prev ?? "https://");
-    if (url === null) return;
-    if (url === "") {
-      editor.chain().focus().extendMarkRange("link").unsetLink().run();
-      return;
-    }
-    editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
-  }
-
-  const primary = (
-    <>
-      {btn(
-        () => editor.chain().focus().toggleHeading({ level: 1 }).run(),
-        <Heading1 size={14} />,
-        "Heading 1",
-        editor.isActive("heading", { level: 1 }),
-      )}
-      {btn(
-        () => editor.chain().focus().toggleHeading({ level: 2 }).run(),
-        <Heading2 size={14} />,
-        "Heading 2",
-        editor.isActive("heading", { level: 2 }),
-      )}
-      {btn(
-        () => editor.chain().focus().toggleHeading({ level: 3 }).run(),
-        <Heading3 size={14} />,
-        "Heading 3",
-        editor.isActive("heading", { level: 3 }),
-      )}
-      {btn(
-        () => editor.chain().focus().toggleBold().run(),
-        <Bold size={14} />,
-        "Bold",
-        editor.isActive("bold"),
-      )}
-      {btn(
-        () => editor.chain().focus().toggleItalic().run(),
-        <Italic size={14} />,
-        "Italic",
-        editor.isActive("italic"),
-      )}
-    </>
-  );
-
-  const secondary = (
-    <>
-      {btn(
-        () => editor.chain().focus().toggleBulletList().run(),
-        <List size={14} />,
-        "Bullet list",
-        editor.isActive("bulletList"),
-      )}
-      {btn(
-        () => editor.chain().focus().toggleOrderedList().run(),
-        <ListOrdered size={14} />,
-        "Ordered list",
-        editor.isActive("orderedList"),
-      )}
-      {btn(
-        () => editor.chain().focus().toggleCode().run(),
-        <Code size={14} />,
-        "Inline code",
-        editor.isActive("code"),
-      )}
-      {btn(addLink, <LinkIcon size={14} />, "Insert link", editor.isActive("link"))}
-      {btn(
-        () =>
-          editor
-            .chain()
-            .focus()
-            .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
-            .run(),
-        <TableIcon size={14} />,
-        "Insert table",
-      )}
-      {btn(
-        () => editor.chain().focus().setHorizontalRule().run(),
-        <Minus size={14} />,
-        "Horizontal rule",
-      )}
-    </>
-  );
-
-  return (
-    <div className="flex flex-wrap items-center gap-0.5">
-      {primary}
-      <div className="hidden sm:flex items-center gap-0.5">{secondary}</div>
-      <div className="sm:hidden relative">
-        <button
-          type="button"
-          onClick={() => setMoreOpen((v) => !v)}
-          aria-label="More formatting"
-          aria-expanded={moreOpen}
-          className="inline-flex h-7 w-7 items-center justify-center rounded text-ink-muted hover:bg-surface-subtle hover:text-ink"
-        >
-          <MoreHorizontal size={14} />
-        </button>
-        {moreOpen && (
-          <div className="absolute left-0 top-8 z-10 flex gap-0.5 rounded-md border border-border bg-surface-raised p-1 shadow-md">
-            {secondary}
-          </div>
-        )}
-      </div>
-      <span className="ml-auto text-[10px] text-ink-dim">
-        Tip: type <kbd className="rounded border border-border bg-surface px-1">/</kbd> for blocks
-      </span>
+      />
+      <SlashMenu editor={editor} />
     </div>
   );
 }
