@@ -1,4 +1,4 @@
-"""End-to-end CLI tests for ``/pages-*`` (flat REPL commands)."""
+"""End-to-end CLI tests for the ``/pages`` namespace subcommands."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class _StubResolver:
 
 @pytest.fixture
 def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Root Click group with /pages-* commands wired to a tmp history.db."""
+    """Root Click group with the /pages namespace wired to a tmp history.db."""
     hs = SQLiteHistoryStore(tmp_path / "history.db")
     hs.init()
     _store_module._store = hs
@@ -96,7 +96,7 @@ def _make_page(cfg: AMXConfig) -> str:
 def test_pages_list_empty(cli) -> None:
     root, _hs, _cfg = cli
     runner = CliRunner()
-    result = runner.invoke(root, ["pages-list"])
+    result = runner.invoke(root, ["pages", "list"])
     assert result.exit_code == 0, result.output
     assert "No pages yet" in result.output
 
@@ -105,7 +105,7 @@ def test_pages_list_shows_created_page(cli) -> None:
     root, _hs, cfg = cli
     pid = _make_page(cfg)
     runner = CliRunner()
-    result = runner.invoke(root, ["pages-list"])
+    result = runner.invoke(root, ["pages", "list"])
     assert result.exit_code == 0, result.output
     assert "Test Page" in result.output
     assert pid[:8] in result.output
@@ -115,7 +115,7 @@ def test_pages_show_prints_body(cli) -> None:
     root, _hs, cfg = cli
     pid = _make_page(cfg)
     runner = CliRunner()
-    result = runner.invoke(root, ["pages-show", pid])
+    result = runner.invoke(root, ["pages", "show", pid])
     assert result.exit_code == 0, result.output
     assert "Overview" in result.output
     assert "Test body line 1" in result.output
@@ -124,7 +124,7 @@ def test_pages_show_prints_body(cli) -> None:
 def test_pages_show_unknown_id(cli) -> None:
     root, _hs, _cfg = cli
     runner = CliRunner()
-    result = runner.invoke(root, ["pages-show", "no-such-id"])
+    result = runner.invoke(root, ["pages", "show", "no-such-id"])
     assert result.exit_code == 0
     assert "not found" in result.output
 
@@ -134,7 +134,7 @@ def test_pages_export_md_writes_file(cli, tmp_path: Path) -> None:
     pid = _make_page(cfg)
     out = tmp_path / "out.md"
     runner = CliRunner()
-    result = runner.invoke(root, ["pages-export", pid, "--format", "md", "--out", str(out)])
+    result = runner.invoke(root, ["pages", "export", pid, "--format", "md", "--out", str(out)])
     assert result.exit_code == 0, result.output
     assert out.exists()
     body = out.read_text(encoding="utf-8")
@@ -145,11 +145,11 @@ def test_pages_delete_soft(cli) -> None:
     root, _hs, cfg = cli
     pid = _make_page(cfg)
     runner = CliRunner()
-    result = runner.invoke(root, ["pages-delete", pid])
+    result = runner.invoke(root, ["pages", "delete", pid])
     assert result.exit_code == 0, result.output
 
-    # Soft-deleted pages should not appear in /pages-list.
-    list_result = runner.invoke(root, ["pages-list"])
+    # Soft-deleted pages should not appear in /pages list.
+    list_result = runner.invoke(root, ["pages", "list"])
     assert pid not in list_result.output
 
 
@@ -157,6 +157,6 @@ def test_pages_delete_purge_removes_row(cli) -> None:
     root, hs, cfg = cli
     pid = _make_page(cfg)
     runner = CliRunner()
-    result = runner.invoke(root, ["pages-delete", pid, "--purge"])
+    result = runner.invoke(root, ["pages", "delete", pid, "--purge"])
     assert result.exit_code == 0, result.output
     assert hs.get_documentation_page(pid) is None

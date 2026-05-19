@@ -678,6 +678,7 @@ _CROSS_NAMESPACE_HEADS: frozenset[str] = frozenset(
         "config",
         "studio",
         "lineage",
+        "pages",
     }
 )
 
@@ -854,6 +855,7 @@ def run_interactive_session(
     search_cmd_heads = _registry_cmd_heads("search") | frozenset({"embeddings", "embedding"})
     history_cmd_heads = _registry_cmd_heads("history")
     lineage_cmd_heads = _registry_cmd_heads("lineage")
+    pages_cmd_heads = _registry_cmd_heads("pages")
 
     # SIGWINCH (terminal resize) is POSIX-only — Windows raises
     # AttributeError on signal.SIGWINCH. Guard so the interactive session
@@ -1032,6 +1034,7 @@ def run_interactive_session(
                 "search",
                 "history",
                 "lineage",
+                "pages",
             }:
                 namespace = "metadata" if cmdline == "manual" else cmdline
                 console.clear()
@@ -1087,6 +1090,13 @@ def run_interactive_session(
                 elif head in lineage_cmd_heads:
                     namespace = "lineage"
                     info("Assumed /lineage namespace for this command.")
+                # Pages dispatched last so its generic heads (/list,
+                # /show, /edit, /delete) don't shadow the same heads in
+                # /history, /lineage, /metadata. Pages-unique heads
+                # (/new, /export) still resolve here from root.
+                elif head in pages_cmd_heads:
+                    namespace = "pages"
+                    info("Assumed /pages namespace for this command.")
 
             if namespace == "docs":
                 if parts[0] == "search-docs" and len(parts) == 1:

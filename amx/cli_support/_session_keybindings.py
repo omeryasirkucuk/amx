@@ -16,6 +16,8 @@ from __future__ import annotations
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 
+from amx.cli_support.slash_commands import all_namespaces
+
 _NS_STATE: dict[str, str] = {"namespace": ""}
 
 
@@ -28,18 +30,11 @@ def _kb_escape_namespace() -> KeyBindings:
 
         return len(get_app().current_buffer.text) == 0
 
-    tabs = [
-        "",
-        "db",
-        "metadata",
-        "docs",
-        "llm",
-        "code",
-        "analyze",
-        "search",
-        "history",
-        "lineage",
-    ]
+    # Derive the arrow-nav tab order from the slash-command registry so
+    # a new namespace there is reachable by Left/Right immediately —
+    # the historical bug was a hand-maintained copy of this list that
+    # quietly drifted whenever a tab was added.
+    tabs = ["", *all_namespaces()]
 
     @kb.add("escape")
     def _(event) -> None:  # type: ignore[no-untyped-def]
