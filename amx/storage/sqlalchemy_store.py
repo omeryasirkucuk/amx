@@ -31,6 +31,7 @@ from __future__ import annotations
 import getpass
 import socket
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -45,6 +46,33 @@ from amx.storage.shared_schema import (
 from amx.utils.logging import get_logger
 
 log = get_logger("storage.sqlalchemy")
+
+
+@dataclass(frozen=True)
+class LineageArtifactRecord:
+    """Immutable view of a single row from the ``lineage_artifacts`` table."""
+
+    id: str
+    name: str
+    db_profile: str
+    anchor_entity_ref: str
+    depth_up: int | None
+    depth_down: int | None
+    format: str | None
+    output_path: str | None
+    edge_set_hash: str | None
+    node_count: int | None
+    edge_count: int | None
+    generated_at: datetime | None
+    extractors_used: list | None
+    extractors_partial: int | None
+    canvas_meta: dict | None
+    created_by: str
+    hostname: str
+    client_version: str
+    created_at: datetime
+    updated_at: datetime
+    local_id: int
 
 
 def _new_uuid() -> str:
@@ -778,6 +806,97 @@ class SQLAlchemyHistoryStore:
             log.debug("find_result_uuid_by_local_id failed: %s", exc)
             return None
 
+    # ── Lineage artifacts ─────────────────────────────────────────────────
+
+    def create_lineage_artifact(
+        self,
+        *,
+        local_id: int,
+        name: str,
+        db_profile: str,
+        anchor_entity_ref: str,
+        depth_up: int | None = None,
+        depth_down: int | None = None,
+        format: str | None = None,
+        output_path: str | None = None,
+        edge_set_hash: str | None = None,
+        node_count: int | None = None,
+        edge_count: int | None = None,
+        generated_at: datetime | None = None,
+        extractors_used: list | None = None,
+        extractors_partial: int | None = None,
+        canvas_meta: dict | None = None,
+    ) -> str:
+        """Insert a new lineage artifact row and return its UUID PK."""
+        uuid_value = _new_uuid()
+        now = _utcnow()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(self._t_lineage_artifacts).values(
+                    id=uuid_value,
+                    name=name,
+                    db_profile=db_profile,
+                    anchor_entity_ref=anchor_entity_ref,
+                    depth_up=depth_up,
+                    depth_down=depth_down,
+                    format=format,
+                    output_path=output_path,
+                    edge_set_hash=edge_set_hash,
+                    node_count=node_count,
+                    edge_count=edge_count,
+                    generated_at=generated_at,
+                    extractors_used=extractors_used,
+                    extractors_partial=extractors_partial,
+                    canvas_meta=canvas_meta,
+                    created_by=self._username,
+                    hostname=self._hostname,
+                    client_version=self._client_version,
+                    created_at=now,
+                    updated_at=now,
+                    local_id=local_id,
+                )
+            )
+        return uuid_value
+
+    def find_lineage_uuid_by_local_id(
+        self, *, hostname: str, local_id: int
+    ) -> str | None:
+        """Return the shared UUID for a lineage artifact given hostname + local int id.
+
+        Returns ``None`` if no matching row exists.
+        """
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(self._t_lineage_artifacts.c.id)
+                .where(self._t_lineage_artifacts.c.hostname == hostname)
+                .where(self._t_lineage_artifacts.c.local_id == int(local_id))
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def list_lineage_artifacts(
+        self,
+        *,
+        db_profiles: list[str] | None = None,
+        created_by: list[str] | None = None,
+    ) -> list[LineageArtifactRecord]:
+        """Return lineage artifacts, optionally filtered by profile and/or author.
+
+        Results are ordered newest-updated-first.
+        """
+        stmt = select(self._t_lineage_artifacts)
+        if db_profiles:
+            stmt = stmt.where(
+                self._t_lineage_artifacts.c.db_profile.in_(db_profiles)
+            )
+        if created_by:
+            stmt = stmt.where(
+                self._t_lineage_artifacts.c.created_by.in_(created_by)
+            )
+        stmt = stmt.order_by(self._t_lineage_artifacts.c.updated_at.desc())
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [LineageArtifactRecord(**row._mapping) for row in rows]
+
     # ── Scheduled runs (Protocol stubs) ─────────────────────────────────
     #
     # Phase 1 of the scheduler keeps the scheduled_runs surface local-
@@ -867,4 +986,5 @@ class SQLAlchemyHistoryStore:
 __all__ = [
     "SQLAlchemyHistoryStore",
     "SchemaVersionMismatch",
+    "LineageArtifactRecord",
 ]
