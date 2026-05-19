@@ -69,3 +69,17 @@ def test_lineage_artifact_edges_has_required_columns():
     }
     actual = {c.name for c in table.columns}
     assert expected <= actual, f"missing: {expected - actual}"
+
+
+def test_lineage_comments_table_exists():
+    md = build_metadata(schema="AMX")
+    assert "AMX.lineage_comments" in md.tables
+
+
+def test_lineage_comments_has_attribution_columns():
+    md = build_metadata(schema="AMX")
+    table = md.tables["AMX.lineage_comments"]
+    actual = {c.name for c in table.columns}
+    for expected_col in ("created_by", "hostname", "client_version",
+                         "created_at", "updated_at", "local_id"):
+        assert expected_col in actual, f"missing attribution: {expected_col}"

@@ -851,6 +851,41 @@ def build_metadata(schema: str | None = None) -> MetaData:
         comment=_desc("lineage_artifact_edges"),
     )
 
+    # ── lineage_comments: sticky-note annotations on lineage canvases ────────
+    Table(
+        "lineage_comments",
+        md,
+        Column("id", String(36), primary_key=True,
+               comment=_desc("lineage_comments", "id")),
+        Column("artifact_id", String(36),
+               ForeignKey(f"{schema}.lineage_artifacts.id"),
+               nullable=False,
+               comment=_desc("lineage_comments", "artifact_id")),
+        Column("x", Float, comment=_desc("lineage_comments", "x")),
+        Column("y", Float, comment=_desc("lineage_comments", "y")),
+        Column("width", Float, comment=_desc("lineage_comments", "width")),
+        Column("height", Float, comment=_desc("lineage_comments", "height")),
+        Column("color", String(40), comment=_desc("lineage_comments", "color")),
+        Column("style", String(20), server_default="note",
+               comment=_desc("lineage_comments", "style")),
+        Column("text", Text, comment=_desc("lineage_comments", "text")),
+        Column("created_by", String(255), nullable=False,
+               comment=_desc("lineage_comments", "created_by")),
+        Column("hostname", String(255), nullable=False,
+               comment=_desc("lineage_comments", "hostname")),
+        Column("client_version", String(40), nullable=False,
+               comment=_desc("lineage_comments", "client_version")),
+        Column("created_at", DateTime(timezone=True), nullable=False,
+               comment=_desc("lineage_comments", "created_at")),
+        Column("updated_at", DateTime(timezone=True), nullable=False,
+               comment=_desc("lineage_comments", "updated_at")),
+        Column("local_id", BigInteger, nullable=False,
+               comment=_desc("lineage_comments", "local_id")),
+        Index("ix_lineage_comments_artifact", "artifact_id"),
+        Index("ix_lineage_comments_local_lookup", "hostname", "local_id"),
+        comment=_desc("lineage_comments"),
+    )
+
     return md
 
 

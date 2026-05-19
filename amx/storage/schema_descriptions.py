@@ -1236,36 +1236,47 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "created_at": "UTC epoch seconds when the node was placed.",
         "updated_at": "UTC epoch seconds of the most recent move / resize.",
     },
-    # ── lineage_comments (local only) ─────────────────────────────────────
+    # ── lineage_comments ──────────────────────────────────────────────────
     "lineage_comments": {
         "__table__": (
-            "Sticky-note annotations attached to a saved lineage canvas. "
+            "Sticky-note style comments placed on lineage canvases. Used for "
+            "team annotations: questions, decisions, callouts on entities. "
             "Comments are free-floating notes that never participate in "
             "edge resolution; they live alongside the canvas and cascade "
             "on artifact delete."
         ),
-        "id": "Surrogate INT primary key.",
+        # Local store uses surrogate INT; shared store uses UUID string
+        "id": (
+            "Primary key. Surrogate INT in the local SQLite store; "
+            "UUID string in the shared warehouse for cross-host stability."
+        ),
         "artifact_id": (
-            "lineage_artifacts.id this comment belongs to. Cascades on artifact delete."
+            "FK to lineage_artifacts.id. Cascades on artifact delete."
         ),
-        "x": "Canvas x coordinate in ReactFlow units.",
-        "y": "Canvas y coordinate in ReactFlow units.",
-        "width": "Rendered note width in ReactFlow units.",
-        "height": "Rendered note height in ReactFlow units.",
+        "x": "Canvas X coordinate of the comment's top-left corner.",
+        "y": "Canvas Y coordinate of the comment's top-left corner.",
+        "width": "Comment width in canvas units.",
+        "height": "Comment height in canvas units.",
         "color": (
-            "Background color palette key: amber | rose | emerald | sky | "
-            "violet | slate. The frontend resolves the key to the actual "
-            "rendered color so the palette can evolve without a migration."
+            "Background color of the sticky note. In the local store this "
+            "is a palette key (amber | rose | emerald | sky | violet | "
+            "slate); in the shared store this is the hex value or palette "
+            "key, e.g. '#fef3c7'."
         ),
-        "text": "Free-form note body. Plain text with @-mention support in the UI.",
         "style": (
-            "Render mode: 'note' (default) is the colored sticky-note "
-            "with a header band; 'text' is a transparent plain-text "
-            "label without background or border, used for canvas "
-            "section headings and free-form annotations."
+            "Display style: 'note' (default) is the colored sticky-note "
+            "with a header band; 'callout' and 'pin' are additional shared "
+            "variants; 'text' is a transparent plain-text label without "
+            "background or border, used for canvas section headings."
         ),
-        "created_at": "UTC epoch seconds when the comment was first saved.",
-        "updated_at": "UTC epoch seconds of the most recent edit.",
+        "text": "Comment body, plain text.",
+        "created_at": "UTC timestamp of creation.",
+        "updated_at": "UTC timestamp of last edit.",
+        # Shared-only attribution columns
+        "created_by": ATTRIBUTION_CREATED_BY,
+        "hostname": ATTRIBUTION_HOSTNAME,
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
+        "local_id": ATTRIBUTION_LOCAL_ID,
     },
     # ── catalog_usage_evidence (local only) ───────────────────────────────
     "catalog_usage_evidence": {
