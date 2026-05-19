@@ -31,6 +31,7 @@ from __future__ import annotations
 import getpass
 import socket
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -45,6 +46,105 @@ from amx.storage.shared_schema import (
 from amx.utils.logging import get_logger
 
 log = get_logger("storage.sqlalchemy")
+
+
+@dataclass(frozen=True)
+class LineageArtifactRecord:
+    """Immutable view of a single row from the ``lineage_artifacts`` table."""
+
+    id: str
+    name: str
+    db_profile: str
+    anchor_entity_ref: str
+    depth_up: int | None
+    depth_down: int | None
+    format: str | None
+    output_path: str | None
+    edge_set_hash: str | None
+    node_count: int | None
+    edge_count: int | None
+    generated_at: datetime | None
+    extractors_used: list | None
+    extractors_partial: int | None
+    canvas_meta: dict | None
+    created_by: str
+    hostname: str
+    client_version: str
+    created_at: datetime
+    updated_at: datetime
+    local_id: int
+
+
+@dataclass(frozen=True)
+class LineageNodeRecord:
+    """Immutable view of a single row from the ``lineage_artifact_nodes`` table."""
+
+    id: str
+    artifact_id: str
+    entity_ref: str
+    entity_kind: str
+    db_profile: str
+    x: float | None
+    y: float | None
+    width: float | None
+    height: float | None
+    z_index: int | None
+    display_label: str | None
+    column_list_json: list | None
+    logo_key: str | None
+    custom_style_json: dict | None
+    created_by: str
+    hostname: str
+    client_version: str
+    created_at: datetime
+    updated_at: datetime
+    local_id: int
+
+
+@dataclass(frozen=True)
+class LineageEdgeRecord:
+    """Immutable view of a single row from the ``lineage_artifact_edges`` table."""
+
+    id: str
+    artifact_id: str
+    source_node_id: str
+    target_node_id: str
+    edge_kind: str
+    join_type: str | None
+    on_condition: str | None
+    where_clause: str | None
+    source_columns_json: list | None
+    target_columns_json: list | None
+    label: str | None
+    style_json: dict | None
+    waypoints_json: list | None
+    created_by: str
+    hostname: str
+    client_version: str
+    created_at: datetime
+    updated_at: datetime
+    local_id: int
+
+
+@dataclass(frozen=True)
+class LineageCommentRecord:
+    """Immutable view of a single row from the ``lineage_comments`` table."""
+
+    id: str
+    artifact_id: str
+    x: float | None
+    y: float | None
+    width: float | None
+    height: float | None
+    color: str | None
+    style: str | None
+    text: str | None
+    created_by: str
+    hostname: str
+    client_version: str
+    created_at: datetime
+    updated_at: datetime
+    local_id: int
 
 
 def _new_uuid() -> str:
@@ -113,6 +213,10 @@ class SQLAlchemyHistoryStore:
         self._t_events = self._md.tables[f"{schema}.app_events"]
         self._t_session = self._md.tables[f"{schema}.session_state"]
         self._t_meta = self._md.tables[f"{schema}.schema_meta"]
+        self._t_lineage_artifacts = self._md.tables[f"{schema}.lineage_artifacts"]
+        self._t_lineage_artifact_nodes = self._md.tables[f"{schema}.lineage_artifact_nodes"]
+        self._t_lineage_artifact_edges = self._md.tables[f"{schema}.lineage_artifact_edges"]
+        self._t_lineage_comments = self._md.tables[f"{schema}.lineage_comments"]
         self._hostname = _hostname()
         self._username = _username()
         self._client_version = _client_version()
@@ -774,6 +878,394 @@ class SQLAlchemyHistoryStore:
             log.debug("find_result_uuid_by_local_id failed: %s", exc)
             return None
 
+    # ── Lineage artifacts ─────────────────────────────────────────────────
+
+    def create_lineage_artifact(
+        self,
+        *,
+        local_id: int,
+        name: str,
+        db_profile: str,
+        anchor_entity_ref: str,
+        depth_up: int | None = None,
+        depth_down: int | None = None,
+        format: str | None = None,
+        output_path: str | None = None,
+        edge_set_hash: str | None = None,
+        node_count: int | None = None,
+        edge_count: int | None = None,
+        generated_at: datetime | None = None,
+        extractors_used: list | None = None,
+        extractors_partial: int | None = None,
+        canvas_meta: dict | None = None,
+    ) -> str:
+        """Insert a new lineage artifact row and return its UUID PK."""
+        uuid_value = _new_uuid()
+        now = _utcnow()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(self._t_lineage_artifacts).values(
+                    id=uuid_value,
+                    name=name,
+                    db_profile=db_profile,
+                    anchor_entity_ref=anchor_entity_ref,
+                    depth_up=depth_up,
+                    depth_down=depth_down,
+                    format=format,
+                    output_path=output_path,
+                    edge_set_hash=edge_set_hash,
+                    node_count=node_count,
+                    edge_count=edge_count,
+                    generated_at=generated_at,
+                    extractors_used=extractors_used,
+                    extractors_partial=extractors_partial,
+                    canvas_meta=canvas_meta,
+                    created_by=self._username,
+                    hostname=self._hostname,
+                    client_version=self._client_version,
+                    created_at=now,
+                    updated_at=now,
+                    local_id=local_id,
+                )
+            )
+        return uuid_value
+
+    def find_lineage_uuid_by_local_id(self, *, hostname: str, local_id: int) -> str | None:
+        """Return the shared UUID for a lineage artifact given hostname + local int id.
+
+        Returns ``None`` if no matching row exists.
+        """
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(self._t_lineage_artifacts.c.id)
+                .where(self._t_lineage_artifacts.c.hostname == hostname)
+                .where(self._t_lineage_artifacts.c.local_id == int(local_id))
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def list_lineage_artifacts(
+        self,
+        *,
+        db_profiles: list[str] | None = None,
+        created_by: list[str] | None = None,
+    ) -> list[LineageArtifactRecord]:
+        """Return lineage artifacts, optionally filtered by profile and/or author.
+
+        Results are ordered newest-updated-first.
+        """
+        stmt = select(self._t_lineage_artifacts)
+        if db_profiles:
+            stmt = stmt.where(self._t_lineage_artifacts.c.db_profile.in_(db_profiles))
+        if created_by:
+            stmt = stmt.where(self._t_lineage_artifacts.c.created_by.in_(created_by))
+        stmt = stmt.order_by(self._t_lineage_artifacts.c.updated_at.desc())
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [LineageArtifactRecord(**row._mapping) for row in rows]
+
+    # ── Lineage nodes ─────────────────────────────────────────────────────
+
+    def upsert_lineage_node(
+        self,
+        *,
+        local_id: int,
+        artifact_uuid: str,
+        entity_ref: str,
+        entity_kind: str,
+        db_profile: str,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        z_index: int = 0,
+        display_label: str | None = None,
+        column_list_json: list | None = None,
+        logo_key: str | None = None,
+        custom_style_json: dict | None = None,
+    ) -> str:
+        """Insert or update a lineage node; return its UUID.
+
+        Lookup is by (hostname, local_id). If a matching row exists the
+        positional and style fields are updated; otherwise a new row is
+        inserted with a fresh UUID.
+        """
+        now = _utcnow()
+        existing = self._find_node_uuid_by_local_id(self._hostname, local_id)
+        if existing:
+            with self.engine.begin() as conn:
+                conn.execute(
+                    update(self._t_lineage_artifact_nodes)
+                    .where(self._t_lineage_artifact_nodes.c.id == existing)
+                    .values(
+                        x=x,
+                        y=y,
+                        width=width,
+                        height=height,
+                        z_index=z_index,
+                        display_label=display_label,
+                        column_list_json=column_list_json,
+                        logo_key=logo_key,
+                        custom_style_json=custom_style_json,
+                        updated_at=now,
+                    )
+                )
+            return existing
+        uuid_value = _new_uuid()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(self._t_lineage_artifact_nodes).values(
+                    id=uuid_value,
+                    artifact_id=artifact_uuid,
+                    entity_ref=entity_ref,
+                    entity_kind=entity_kind,
+                    db_profile=db_profile,
+                    x=x,
+                    y=y,
+                    width=width,
+                    height=height,
+                    z_index=z_index,
+                    display_label=display_label,
+                    column_list_json=column_list_json,
+                    logo_key=logo_key,
+                    custom_style_json=custom_style_json,
+                    created_by=self._username,
+                    hostname=self._hostname,
+                    client_version=self._client_version,
+                    created_at=now,
+                    updated_at=now,
+                    local_id=local_id,
+                )
+            )
+        return uuid_value
+
+    def _find_node_uuid_by_local_id(self, hostname: str, local_id: int) -> str | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(self._t_lineage_artifact_nodes.c.id)
+                .where(self._t_lineage_artifact_nodes.c.hostname == hostname)
+                .where(self._t_lineage_artifact_nodes.c.local_id == local_id)
+            ).fetchone()
+        return row[0] if row else None
+
+    def list_lineage_nodes(self, *, artifact_uuid: str) -> list[LineageNodeRecord]:
+        """Return all nodes for an artifact ordered by z_index ascending."""
+        stmt = (
+            select(self._t_lineage_artifact_nodes)
+            .where(self._t_lineage_artifact_nodes.c.artifact_id == artifact_uuid)
+            .order_by(self._t_lineage_artifact_nodes.c.z_index)
+        )
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [LineageNodeRecord(**row._mapping) for row in rows]
+
+    # ── Lineage edges ─────────────────────────────────────────────────────
+
+    def upsert_lineage_edge(
+        self,
+        *,
+        local_id: int,
+        artifact_uuid: str,
+        source_node_uuid: str,
+        target_node_uuid: str,
+        edge_kind: str,
+        join_type: str | None = None,
+        on_condition: str | None = None,
+        where_clause: str | None = None,
+        source_columns_json: list | None = None,
+        target_columns_json: list | None = None,
+        label: str | None = None,
+        style_json: dict | None = None,
+        waypoints_json: list | None = None,
+    ) -> str:
+        """Insert or update a lineage edge; return its UUID.
+
+        Lookup is by (hostname, local_id). If a matching row exists the
+        semantic and style fields are updated; otherwise a new row is
+        inserted with a fresh UUID.
+        """
+        now = _utcnow()
+        existing = self._find_edge_uuid_by_local_id(self._hostname, local_id)
+        if existing:
+            with self.engine.begin() as conn:
+                conn.execute(
+                    update(self._t_lineage_artifact_edges)
+                    .where(self._t_lineage_artifact_edges.c.id == existing)
+                    .values(
+                        edge_kind=edge_kind,
+                        join_type=join_type,
+                        on_condition=on_condition,
+                        where_clause=where_clause,
+                        source_columns_json=source_columns_json,
+                        target_columns_json=target_columns_json,
+                        label=label,
+                        style_json=style_json,
+                        waypoints_json=waypoints_json,
+                        updated_at=now,
+                    )
+                )
+            return existing
+        uuid_value = _new_uuid()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(self._t_lineage_artifact_edges).values(
+                    id=uuid_value,
+                    artifact_id=artifact_uuid,
+                    source_node_id=source_node_uuid,
+                    target_node_id=target_node_uuid,
+                    edge_kind=edge_kind,
+                    join_type=join_type,
+                    on_condition=on_condition,
+                    where_clause=where_clause,
+                    source_columns_json=source_columns_json,
+                    target_columns_json=target_columns_json,
+                    label=label,
+                    style_json=style_json,
+                    waypoints_json=waypoints_json,
+                    created_by=self._username,
+                    hostname=self._hostname,
+                    client_version=self._client_version,
+                    created_at=now,
+                    updated_at=now,
+                    local_id=local_id,
+                )
+            )
+        return uuid_value
+
+    def _find_edge_uuid_by_local_id(self, hostname: str, local_id: int) -> str | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(self._t_lineage_artifact_edges.c.id)
+                .where(self._t_lineage_artifact_edges.c.hostname == hostname)
+                .where(self._t_lineage_artifact_edges.c.local_id == local_id)
+            ).fetchone()
+        return row[0] if row else None
+
+    def list_lineage_edges(self, *, artifact_uuid: str) -> list[LineageEdgeRecord]:
+        """Return all edges for an artifact in insertion order."""
+        stmt = select(self._t_lineage_artifact_edges).where(
+            self._t_lineage_artifact_edges.c.artifact_id == artifact_uuid
+        )
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [LineageEdgeRecord(**row._mapping) for row in rows]
+
+    # ── Lineage comments ──────────────────────────────────────────────────
+
+    def upsert_lineage_comment(
+        self,
+        *,
+        local_id: int,
+        artifact_uuid: str,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        color: str | None = None,
+        style: str = "note",
+        text: str = "",
+    ) -> str:
+        """Insert or update a sticky-note comment on a lineage canvas.
+
+        Lookup is by (hostname, local_id). If a matching row exists the
+        position, appearance, and text are updated; otherwise a new row is
+        inserted stamped with the current user attribution.
+        """
+        now = _utcnow()
+        existing = self._find_comment_uuid_by_local_id(self._hostname, local_id)
+        if existing:
+            with self.engine.begin() as conn:
+                conn.execute(
+                    update(self._t_lineage_comments)
+                    .where(self._t_lineage_comments.c.id == existing)
+                    .values(
+                        x=x,
+                        y=y,
+                        width=width,
+                        height=height,
+                        color=color,
+                        style=style,
+                        text=text,
+                        updated_at=now,
+                    )
+                )
+            return existing
+        uuid_value = _new_uuid()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(self._t_lineage_comments).values(
+                    id=uuid_value,
+                    artifact_id=artifact_uuid,
+                    x=x,
+                    y=y,
+                    width=width,
+                    height=height,
+                    color=color,
+                    style=style,
+                    text=text,
+                    created_by=self._username,
+                    hostname=self._hostname,
+                    client_version=self._client_version,
+                    created_at=now,
+                    updated_at=now,
+                    local_id=local_id,
+                )
+            )
+        return uuid_value
+
+    def _find_comment_uuid_by_local_id(self, hostname: str, local_id: int) -> str | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(self._t_lineage_comments.c.id)
+                .where(self._t_lineage_comments.c.hostname == hostname)
+                .where(self._t_lineage_comments.c.local_id == local_id)
+            ).fetchone()
+        return row[0] if row else None
+
+    def list_lineage_comments(self, *, artifact_uuid: str) -> list[LineageCommentRecord]:
+        """Return all comments for an artifact in insertion order."""
+        stmt = select(self._t_lineage_comments).where(
+            self._t_lineage_comments.c.artifact_id == artifact_uuid
+        )
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [LineageCommentRecord(**row._mapping) for row in rows]
+
+    def delete_lineage_comment(self, *, uuid: str) -> None:
+        """Hard-delete a comment by its UUID PK."""
+        with self.engine.begin() as conn:
+            conn.execute(
+                delete(self._t_lineage_comments).where(self._t_lineage_comments.c.id == uuid)
+            )
+
+    def find_prior_lineage_by_others(
+        self,
+        *,
+        db_profile: str,
+        anchor_entity_ref: str,
+        exclude_hostname: str,
+    ) -> list[LineageArtifactRecord]:
+        """Return lineage artifacts for the same anchor authored by other hosts.
+
+        Mirrors :meth:`find_prior_runs_by_others` for the lineage surface:
+        given a ``(db_profile, anchor_entity_ref)`` pair, returns every
+        artifact created by a host other than ``exclude_hostname`` (typically
+        the calling machine's hostname). Used by the CLI to warn that a
+        teammate has already mapped the same entity, enabling conflict
+        detection before overwriting shared lineage work.
+
+        Results are ordered newest-updated-first.
+        """
+        stmt = (
+            select(self._t_lineage_artifacts)
+            .where(self._t_lineage_artifacts.c.db_profile == db_profile)
+            .where(self._t_lineage_artifacts.c.anchor_entity_ref == anchor_entity_ref)
+            .where(self._t_lineage_artifacts.c.hostname != exclude_hostname)
+            .order_by(self._t_lineage_artifacts.c.updated_at.desc())
+        )
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [LineageArtifactRecord(**row._mapping) for row in rows]
+
     # ── Scheduled runs (Protocol stubs) ─────────────────────────────────
     #
     # Phase 1 of the scheduler keeps the scheduled_runs surface local-
@@ -863,4 +1355,8 @@ class SQLAlchemyHistoryStore:
 __all__ = [
     "SQLAlchemyHistoryStore",
     "SchemaVersionMismatch",
+    "LineageArtifactRecord",
+    "LineageNodeRecord",
+    "LineageEdgeRecord",
+    "LineageCommentRecord",
 ]

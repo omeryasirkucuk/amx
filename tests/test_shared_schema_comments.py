@@ -54,11 +54,12 @@ def test_create_history_tables_ddl_emits_comments_on_postgres() -> None:
     )
     ddl = PostgreSQLAdapter(cfg).create_history_tables_ddl("AMX")
 
-    assert ddl.count("CREATE TABLE") == 10, "expected 10 CREATE TABLE statements"
-    assert ddl.count("COMMENT ON TABLE") == 10, "expected 10 COMMENT ON TABLE statements"
-    # 112 columns, all annotated
-    assert ddl.count("COMMENT ON COLUMN") == 112, (
-        f"expected 112 COMMENT ON COLUMN statements, got {ddl.count('COMMENT ON COLUMN')}"
+    assert ddl.count("CREATE TABLE") == 14, "expected 14 CREATE TABLE statements"
+    assert ddl.count("COMMENT ON TABLE") == 14, "expected 14 COMMENT ON TABLE statements"
+    # 187 columns (112 original + 21 lineage_artifacts + 20 lineage_artifact_nodes
+    #              + 19 lineage_artifact_edges + 15 lineage_comments)
+    assert ddl.count("COMMENT ON COLUMN") == 187, (
+        f"expected 187 COMMENT ON COLUMN statements, got {ddl.count('COMMENT ON COLUMN')}"
     )
 
 
@@ -128,6 +129,8 @@ def test_databricks_create_table_ddl_compiles_for_every_table() -> None:
         "alternatives_json",
         "details_json",
         "value_json",
+        "extractors_used",
+        "canvas_meta",
     }
     seen_json_columns: set[str] = set()
     for table in md.tables.values():
