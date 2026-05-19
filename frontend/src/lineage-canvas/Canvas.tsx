@@ -33,6 +33,7 @@ import {
   addEdge,
   applyEdgeChanges,
   applyNodeChanges,
+  useReactFlow,
   type Connection,
   type EdgeChange,
   type NodeChange,
@@ -129,6 +130,10 @@ function CanvasInner() {
   );
   const autoLayout = useAutoLayout();
   const exportPng = usePngExport();
+  // ``useReactFlow`` is only valid inside the ReactFlowProvider that
+  // wraps this component (see ``LineageCanvasRoute`` below); we use it
+  // for the post-layout fitView call.
+  const rf = useReactFlow();
 
   // Size the Lineage page to exactly fit the viewport below whatever
   // chrome AppShell renders above it (TopBar, padding, sidebar resize,
@@ -338,7 +343,28 @@ function CanvasInner() {
   }
 
   function handleAutoLayout() {
-    setNodes((nds) => autoLayout(nds, edges));
+    // Resolve the anchor node id from the current AI Generate
+    // selection so the hook can run its radial mode. When no anchor
+    // is in play (e.g. the user manually built the canvas and is
+    // tapping ``L``), the hook falls back to dagre LR.
+    let anchorId: string | undefined;
+    if (aiAnchor) {
+      const found = nodes.find(
+        (n) =>
+          n.data.kind === "table" &&
+          (n.data as TableNodeData).fqn === aiAnchor,
+      );
+      anchorId = found?.id;
+    }
+    setNodes((nds) => autoLayout(nds, edges, { anchorId }));
+    // Center the freshly laid-out graph in the viewport so the user
+    // sees the whole anchor + neighbourhood after AI Generate
+    // without having to pan around. ``requestAnimationFrame`` waits
+    // for the setNodes commit so ReactFlow has the new positions
+    // before computing the bounds.
+    requestAnimationFrame(() => {
+      rf.fitView({ padding: 0.25, duration: 300, maxZoom: 1.0 });
+    });
   }
 
   // ── Streaming AI ─────────────────────────────────────────────────────────
