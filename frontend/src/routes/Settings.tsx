@@ -530,9 +530,23 @@ function DbProfileWizard({
         {chosenBackend && chosenBackend.supports_shared_history === false && (
           <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
             Shared history is unavailable on this backend. AMX run history
-            stays on this machine only — ``/history-store enable`` will refuse
+            stays on this machine only — <code>/history-store enable</code> will refuse
             to bootstrap on {chosenBackend.label}. Use it as a sandbox /
-            personal connection, not as the team's history store.
+            personal connection, not as the team&apos;s workspace.
+          </div>
+        )}
+        {chosenBackend && chosenBackend.supports_shared_history !== false && (
+          <div className="rounded-md border border-surface-border bg-surface-subtle/40 px-3 py-2 text-xs text-ink-muted">
+            <span className="font-semibold text-ink">Team workspace location.</span>{" "}
+            Choose one database profile to host the shared team workspace. This
+            single backend stores history runs, lineage diagrams, and
+            documentation pages for <strong>all</strong> your database profiles
+            — the team manages everything from one place. You do not need to
+            configure this per profile. Run{" "}
+            <code className="rounded bg-surface px-1 py-px font-mono text-[11px]">
+              /history-store enable
+            </code>{" "}
+            from the AMX CLI to activate.
           </div>
         )}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
