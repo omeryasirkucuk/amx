@@ -49,6 +49,13 @@ export interface PageDetail extends Page {
   versions: PageVersion[];
 }
 
+export interface IntentTemplate {
+  slug: string;
+  label: string;
+  required_assets: string;
+  prompt_skeleton: string;
+}
+
 interface CreatePagePayload {
   title: string;
   intent: string;
@@ -69,6 +76,17 @@ export function usePagesList() {
   return useQuery({
     queryKey: pagesKey,
     queryFn: () => apiFetch<Page[]>("/api/pages"),
+  });
+}
+
+const intentTemplatesKey = ["pages", "intent-templates"] as const;
+
+export function useIntentTemplates() {
+  return useQuery({
+    queryKey: intentTemplatesKey,
+    queryFn: () => apiFetch<IntentTemplate[]>("/api/pages/intent-templates"),
+    // Registry is process-static; refetch sparingly.
+    staleTime: 5 * 60 * 1000,
   });
 }
 

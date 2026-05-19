@@ -16,6 +16,7 @@ single bad asset never breaks page generation.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from amx.config import AMXConfig
 from amx.pages.types import SourceRef
@@ -174,7 +175,7 @@ class AMXResolver:
         if not artifact_ref:
             return f"lineage {ref} not found"
 
-        from amx.lineage.store import lookup_lineage_artifact
+        from amx.lineage.store import list_artifact_edges, lookup_lineage_artifact
         from amx.storage.sqlite_store import history_store
 
         hs = history_store()
@@ -188,12 +189,146 @@ class AMXResolver:
         node_count = artifact.get("node_count", 0)
         edge_count = artifact.get("edge_count", 0)
         output_path = artifact.get("output_path") or ""
+        anchor_id = int(artifact.get("anchor_entity_id", 0) or 0)
+
+        # Emit the rendered diagram as a markdown image so it lands in
+        # the page body. The composer prompt instructs the LLM to
+        # preserve this link verbatim.
+        image_md = ""
+        if output_path:
+            href = self._image_link(output_path)
+            image_md = f"![{name}]({href})\n\n"
+
+        extractors = artifact.get("extractors_used") or []
+        extractor_line = (
+            f"- extractors: {', '.join(extractors)}\n"
+            if isinstance(extractors, list) and extractors
+            else ""
+        )
+
+        # Look up the actual edges so the LLM has a concrete graph to
+        # narrate; without this it can only state token counts and
+        # invariably writes "no transformations documented".
+        edge_payload = list_artifact_edges(hs, artifact=artifact, limit=200)
+        anchor_label = self._resolve_anchor_label(hs, anchor_id)
+        edge_section = self._render_edge_section(edge_payload, anchor_id)
+
         return (
             f"## Lineage `{name}`\n\n"
+            f"{image_md}"
+            f"{anchor_label}"
             f"- nodes: {node_count}\n"
             f"- edges: {edge_count}\n"
-            f"- output: {output_path}"
-        )
+            f"{extractor_line}"
+            f"{edge_section}"
+        ).rstrip() + "\n"
+
+    @staticmethod
+    def _resolve_anchor_label(history: Any, anchor_id: int) -> str:
+        """Return the anchor's display path + kind as a markdown line."""
+        if anchor_id <= 0:
+            return ""
+        try:
+            with history._connect() as conn:
+                row = conn.execute(
+                    "SELECT db_profile, database_name, schema_name, table_name, "
+                    "column_name, entity_kind FROM catalog_entities WHERE id = ?",
+                    (anchor_id,),
+                ).fetchone()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("anchor lookup failed for id=%s: %s", anchor_id, exc)
+            return ""
+        if not row:
+            return ""
+
+        from amx.lineage.store import _format_entity_path
+
+        path = _format_entity_path(row[0], row[1], row[2], row[3], row[4] or "")
+        kind = str(row[5] or "table")
+        return f"- anchor: [{kind}] {path}\n"
+
+    @staticmethod
+    def _render_edge_section(
+        payload: dict[str, Any],
+        anchor_id: int,
+    ) -> str:
+        """Format the resolved edges as upstream/downstream bullet lists.
+
+        Every node kind (table, column, report, operator, custom) is
+        labelled inline so the composer LLM can correctly classify a
+        Power BI visual, an Excel workbook, or a custom-annotated
+        operator without guessing.
+        """
+        edges = payload.get("edges") or []
+        if not edges:
+            return ""
+
+        upstream: list[str] = []
+        downstream: list[str] = []
+        other: list[str] = []
+
+        for e in edges:
+            from_id = int(e.get("from_id", 0) or 0)
+            to_id = int(e.get("to_id", 0) or 0)
+            from_label = f"[{e['from_kind']}] {e['from_path']}"
+            to_label = f"[{e['to_kind']}] {e['to_path']}"
+            rel = e.get("relationship_type", "") or ""
+            src = e.get("source", "") or ""
+            badge_bits = [b for b in (rel, src) if b]
+            badge = f" ({' · '.join(badge_bits)})" if badge_bits else ""
+            line = f"- {from_label} → {to_label}{badge}"
+
+            if to_id == anchor_id:
+                upstream.append(line)
+            elif from_id == anchor_id:
+                downstream.append(line)
+            else:
+                other.append(line)
+
+        sections: list[str] = []
+        if upstream:
+            sections.append(
+                "### Upstream edges (sources flowing into anchor)\n\n" + "\n".join(upstream)
+            )
+        if downstream:
+            sections.append(
+                "### Downstream edges (targets consuming from anchor)\n\n" + "\n".join(downstream)
+            )
+        if other:
+            sections.append("### Adjacent edges (within the lineage scope)\n\n" + "\n".join(other))
+
+        # Node kind distribution helps the LLM know it is documenting a
+        # heterogeneous graph (e.g. tables + Power BI reports + custom
+        # annotated operators) rather than assuming everything is a
+        # database table.
+        nodes = payload.get("nodes") or []
+        if nodes:
+            from collections import Counter
+
+            kinds = Counter(str(n.get("kind") or "table") for n in nodes)
+            kind_summary = ", ".join(f"{count} {kind}" for kind, count in kinds.most_common())
+            sections.append(f"### Node mix\n\n- {kind_summary}")
+
+        if payload.get("truncated"):
+            sections.append("_Edge list truncated at 200 rows; the underlying graph is larger._")
+
+        return "\n\n" + "\n\n".join(sections) + "\n"
+
+    @staticmethod
+    def _image_link(output_path: str) -> str:
+        """Return a portable link to a rendered lineage image.
+
+        If the rendered file lives under the current working directory,
+        a POSIX-form relative path keeps markdown exports portable
+        across machines. Otherwise the absolute path is returned
+        verbatim so Studio's markdown renderer can still resolve it.
+        """
+        try:
+            abs_path = Path(output_path).resolve()
+            rel = abs_path.relative_to(Path.cwd().resolve())
+            return rel.as_posix()
+        except (ValueError, OSError):
+            return str(output_path)
 
     def _resolve_source(self, src: SourceRef) -> str:
         path = Path(src.path)
