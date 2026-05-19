@@ -49,6 +49,7 @@ class PageStore:
         sources: Iterable[SourceRef],
         created_by: str | None,
         now: datetime,
+        db_profile: str | None = None,
     ) -> str:
         pid = str(uuid.uuid4())
         self._history.create_documentation_page(
@@ -63,6 +64,7 @@ class PageStore:
             created_by=created_by,
             generation_prompt=intent,
             model_used=None,
+            db_profile=db_profile,
         )
         for a in assets:
             self._history.attach_documentation_page_asset(pid, asset_kind=a.kind, asset_ref=a.ref)
@@ -114,3 +116,16 @@ class PageStore:
 
     def soft_delete(self, page_id: str, *, now: datetime) -> None:
         self._history.soft_delete_documentation_page(page_id, updated_at=now)
+
+    def assign_db_profile(
+        self, *, slug: str, db_profile: str | None, now: datetime
+    ) -> bool:
+        """Update the db_profile field for the page identified by *slug*.
+
+        Returns ``True`` if a row was updated, ``False`` when no page with
+        that slug was found.  Passing ``db_profile=None`` clears the field
+        (marks the page as unscoped / cross-profile).
+        """
+        return self._history.update_documentation_page_db_profile(
+            slug=slug, db_profile=db_profile, updated_at=now
+        )

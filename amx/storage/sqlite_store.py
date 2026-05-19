@@ -1881,6 +1881,11 @@ class SQLiteHistoryStore:
 
         return list_documentation_page_versions(self, *args, **kwargs)
 
+    def update_documentation_page_db_profile(self, *args, **kwargs):
+        from amx.storage._history_pages import update_documentation_page_db_profile
+
+        return update_documentation_page_db_profile(self, *args, **kwargs)
+
     def _connect(self) -> sqlite3.Connection:
         # ``timeout=30`` and the matching ``PRAGMA busy_timeout`` both
         # bump the lock-wait budget so concurrent Studio + CLI writers
