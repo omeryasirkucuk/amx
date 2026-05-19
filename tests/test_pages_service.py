@@ -72,6 +72,15 @@ def test_create_generate_save_export(tmp_path: Path) -> None:
     assert isinstance(md, str)
     assert md.startswith("# Edited")
 
+    # PDF export depends on the optional ``[pages]`` extra
+    # (``xhtml2pdf``); skip the binary check when it isn't installed
+    # so the matrix runners pass without needing native Cairo.
+    import pytest
+
+    pytest.importorskip(
+        "xhtml2pdf",
+        reason="xhtml2pdf is only installed with the [pages] extra",
+    )
     pdf = svc.export(pid, "pdf")
     assert isinstance(pdf, bytes)
     assert pdf.startswith(b"%PDF-")
