@@ -7,11 +7,14 @@ import {
   FileText,
   PanelLeft,
   Pin,
+  ShieldCheck,
   Sparkles,
   Workflow,
   History as HistoryIcon,
   Settings as SettingsIcon,
 } from "lucide-react";
+
+import { useCurrentUserRole } from "../hooks/useCurrentUserRole";
 
 import { useUi } from "../lib/store";
 import { useIsMobile } from "../lib/useIsMobile";
@@ -29,7 +32,7 @@ import MobileNavMenu from "./topbar/MobileNavMenu";
 // the nav link below points users at it for the token / cost
 // breakdown. Browse no longer needs its own top-bar link because
 // the sidebar tree is the browse surface and it's always visible.
-const navItems = [
+const BASE_NAV_ITEMS = [
   { to: "/overview", label: "Overview", icon: BarChart3, match: ["/overview"] },
   {
     to: "/runs",
@@ -54,6 +57,13 @@ const navItems = [
   { to: "/system", label: "System", icon: Activity, match: ["/system"] },
 ];
 
+const ADMIN_NAV_ITEM = {
+  to: "/workspace-admin",
+  label: "Admin",
+  icon: ShieldCheck,
+  match: ["/workspace-admin"],
+};
+
 /**
  * Persistent top bar. Three regions, left to right:
  *   1. Sidebar toggle + brand + breadcrumb (where am I?)
@@ -69,6 +79,10 @@ export default function TopBar() {
   const isMobile = useIsMobile();
   const location = useLocation();
   const params = useParams();
+  const { role } = useCurrentUserRole();
+  const navItems = role === "admin"
+    ? [...BASE_NAV_ITEMS, ADMIN_NAV_ITEM]
+    : BASE_NAV_ITEMS;
 
   function onToggle() {
     if (isMobile) setMobileSidebarOpen(true);

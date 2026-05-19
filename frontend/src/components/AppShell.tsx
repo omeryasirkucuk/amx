@@ -4,6 +4,7 @@ import TopBar from "./TopBar";
 import Sidebar from "./Sidebar";
 import Footer from "./Footer";
 import MobileSidebar from "./MobileSidebar";
+import BackfillBanner from "./BackfillBanner";
 import { useUi } from "../lib/store";
 import { cn } from "../lib/cn";
 
@@ -20,6 +21,7 @@ export default function AppShell() {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-bg text-ink">
       <TopBar />
+      <BackfillBanner />
       <div className="flex flex-1 min-h-0">
         <aside
           className={cn(
