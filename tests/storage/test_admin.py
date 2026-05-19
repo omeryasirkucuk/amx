@@ -213,11 +213,11 @@ def test_list_members_orders_admin_first_then_recent(shared):
     """list_members returns admins before viewers, most recent within each group."""
     import time as _time
 
-    admin_rec = _register(shared, username="alice", hostname="box1")
-    viewer_rec1 = _register(shared, username="bob", hostname="box2")
+    _register(shared, username="alice", hostname="box1")
+    _register(shared, username="bob", hostname="box2")
     # Touch alice again to update last_seen_at (makes ordering meaningful).
     _time.sleep(0.01)
-    viewer_rec2 = _register(shared, username="carol", hostname="box3")
+    _register(shared, username="carol", hostname="box3")
 
     members = list_members(shared)
     assert len(members) == 3
