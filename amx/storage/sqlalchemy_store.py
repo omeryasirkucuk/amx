@@ -113,6 +113,10 @@ class SQLAlchemyHistoryStore:
         self._t_events = self._md.tables[f"{schema}.app_events"]
         self._t_session = self._md.tables[f"{schema}.session_state"]
         self._t_meta = self._md.tables[f"{schema}.schema_meta"]
+        self._t_lineage_artifacts = self._md.tables[f"{schema}.lineage_artifacts"]
+        self._t_lineage_artifact_nodes = self._md.tables[f"{schema}.lineage_artifact_nodes"]
+        self._t_lineage_artifact_edges = self._md.tables[f"{schema}.lineage_artifact_edges"]
+        self._t_lineage_comments = self._md.tables[f"{schema}.lineage_comments"]
         self._hostname = _hostname()
         self._username = _username()
         self._client_version = _client_version()
