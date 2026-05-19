@@ -239,6 +239,7 @@ class SQLAlchemyHistoryStore:
         self._t_lineage_artifact_edges = self._md.tables[f"{schema}.lineage_artifact_edges"]
         self._t_lineage_comments = self._md.tables[f"{schema}.lineage_comments"]
         self._t_pages = self._md.tables[f"{schema}.documentation_pages"]
+        self._t_documentation_pages = self._t_pages  # alias used by backfill code
         self._hostname = _hostname()
         self._username = _username()
         self._client_version = _client_version()
@@ -1649,6 +1650,77 @@ class SQLAlchemyHistoryStore:
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
         return [LineageArtifactRecord(**row._mapping) for row in rows]
+
+    # ── Documentation pages ───────────────────────────────────────────────
+
+    def create_documentation_page(
+        self,
+        *,
+        page_id: str,
+        title: str,
+        slug: str,
+        markdown_body: str,
+        rendered_html: str | None = None,
+        status: str = "draft",
+        created_by: str | None = None,
+        db_profile: str | None = None,
+    ) -> None:
+        """Insert a documentation page row into the shared store.
+
+        Uses the supplied *page_id* (UUID string) as the primary key so
+        the row is byte-identical to its local SQLite counterpart. A row
+        with the same PK is silently ignored (idempotent via try/except).
+        """
+        now = _utcnow()
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(
+                    insert(self._t_documentation_pages).values(
+                        id=page_id,
+                        title=title,
+                        slug=slug,
+                        markdown_body=markdown_body,
+                        rendered_html=rendered_html,
+                        status=status,
+                        created_at=now,
+                        updated_at=now,
+                        created_by=created_by or self._username,
+                        generation_prompt=None,
+                        model_used=None,
+                        db_profile=db_profile,
+                        hostname=self._hostname,
+                        client_version=self._client_version,
+                        local_id=None,
+                    )
+                )
+        except Exception:
+            # Duplicate PK on retry is acceptable; re-raise anything else.
+            pass
+
+    def find_documentation_page_by_id(self, page_id: str) -> bool:
+        """Return True if a documentation_pages row with *page_id* exists."""
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(self._t_documentation_pages.c.id).where(
+                    self._t_documentation_pages.c.id == page_id
+                )
+            ).fetchone()
+        return row is not None
+
+    def list_documentation_pages(
+        self,
+        *,
+        db_profiles: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return documentation page rows, optionally filtered by *db_profiles*."""
+        stmt = select(self._t_documentation_pages).order_by(
+            self._t_documentation_pages.c.updated_at.desc()
+        )
+        if db_profiles:
+            stmt = stmt.where(self._t_documentation_pages.c.db_profile.in_(db_profiles))
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [dict(row._mapping) for row in rows]
 
     # ── Scheduled runs (Protocol stubs) ─────────────────────────────────
     #

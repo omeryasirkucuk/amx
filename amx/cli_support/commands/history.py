@@ -852,4 +852,125 @@ def register_history_commands(
             },
         )
 
+    @history.command("status")
+    def history_status() -> None:
+        """Show shared-history connection state and pending outbox count.
+
+        Prints the active shared profile, schema name, number of queued
+        outbox rows, and the current ``_amx_backfill_state`` sentinels so
+        operators can confirm whether the initial backfill has completed.
+        """
+        hs = history_store()
+        if hs is None:
+            error("History store is not initialized.")
+            return
+
+        shared = getattr(hs, "shared", None)
+        profile = getattr(getattr(hs, "_cfg", None), "history_store_profile", None) or "—"
+        schema = getattr(getattr(hs, "_cfg", None), "history_store_schema", None) or "AMX"
+
+        pending = 0
+        if callable(getattr(hs, "pending_count", None)):
+            pending = hs.pending_count()
+
+        info(f"Shared profile : {profile}")
+        info(f"Shared schema  : {schema}")
+        info(f"Shared store   : {'connected' if shared is not None else 'local-only'}")
+        info(f"Pending outbox : {pending} row(s)")
+
+        # Read backfill sentinels from the local SQLite store.
+        local = getattr(hs, "local", None) or getattr(hs, "_local", None)
+        if local is None:
+            return
+        try:
+            with local._connect() as conn:
+                rows = conn.execute(
+                    "SELECT scope, shared_profile, shared_schema, completed_at, "
+                    "rows_pushed, last_error FROM _amx_backfill_state"
+                ).fetchall()
+            if not rows:
+                info("Backfill state : no sentinels (backfill has not run yet).")
+            else:
+                render_table(
+                    "Backfill sentinels",
+                    ["Scope", "Profile", "Schema", "Completed at", "Rows pushed", "Error"],
+                    [
+                        [
+                            str(r[0]),
+                            str(r[1]),
+                            str(r[2]),
+                            f"{float(r[3]):.0f}" if r[3] else "—",
+                            str(r[4]),
+                            str(r[5]) if r[5] else "—",
+                        ]
+                        for r in rows
+                    ],
+                )
+        except Exception as exc:
+            info(f"Backfill state : could not read sentinels ({exc})")
+
+    @history.command("sync-local")
+    @pass_config
+    def history_sync_local(cfg: AMXConfig) -> None:
+        """Push local lineage and pages rows to the shared warehouse.
+
+        Runs the BackfillRunner synchronously so you can see progress in the
+        terminal. Idempotent: rows already present in the shared store are
+        skipped. Use ``/history status`` afterwards to confirm completion.
+        """
+        from amx.storage.backfill import BackfillRunner
+        from amx.storage.factory import history_store as _hs_factory
+
+        hs = _hs_factory()
+        if hs is None:
+            error("History store is not initialized.")
+            return
+
+        shared = getattr(hs, "shared", None)
+        if shared is None:
+            warn(
+                "No shared store is connected. Enable shared mode with "
+                "``/history-store enable`` first."
+            )
+            return
+
+        local = getattr(hs, "local", None) or getattr(hs, "_local", None)
+        if local is None:
+            error("Could not resolve local SQLite store.")
+            return
+
+        shared_profile = str(getattr(cfg, "history_store_profile", "") or "")
+        shared_schema = str(getattr(cfg, "history_store_schema", "") or "AMX")
+
+        info(f"Starting backfill to profile={shared_profile!r}, schema={shared_schema!r} …")
+
+        def _progress(table: str, done: int, total: int) -> None:
+            info(f"  {table}: {done}/{total}")
+
+        runner = BackfillRunner(
+            local,
+            shared,
+            shared_profile=shared_profile,
+            shared_schema=shared_schema,
+            progress_cb=_progress,
+        )
+        report = runner.run()
+
+        render_table(
+            "Backfill report",
+            ["Metric", "Value"],
+            [
+                ["succeeded", report.succeeded],
+                ["skipped", report.skipped],
+                ["failed", report.failed],
+                ["last_error", report.last_error or "—"],
+                *[[f"  {tbl}", cnt] for tbl, cnt in sorted(report.per_table_counts.items())],
+            ],
+        )
+
+        if report.last_error:
+            warn(f"Backfill finished with error: {report.last_error}")
+        else:
+            success("Backfill complete.")
+
     return history
