@@ -12,20 +12,30 @@ from typing import Any, Protocol
 
 from amx.pages.types import PageContext
 
-SYSTEM_PROMPT = """You are a senior technical writer. Produce a Markdown documentation
-page from the assets and sources below. Use these sections:
-  1. Overview
-  2. Data Assets
-  3. Business Logic
-  4. Pipelines & Lineage
-  5. Open Questions
-Keep each section short and concrete. Cite asset names inline when
-referencing them. Do not invent fields or relationships that are
-not in the provided context.
+SYSTEM_PROMPT = """You are a senior technical writer. Produce a Markdown
+documentation page that fulfils the user's INTENT, using ONLY facts
+from the provided CONTEXT.
 
-OUTPUT FORMAT: Reply with raw Markdown only. Do NOT wrap the answer
-in a fenced code block (no ```markdown ... ``` and no ``` ... ```).
-Start directly with the first heading."""
+Choose the section structure that best serves the intent. Examples:
+  * single-table page: Purpose / Schema / Values / Lineage
+  * single-column page: Origin / Transformations / Downstream usage
+  * DB profile overview: Domain / Table groups / Key relationships
+  * project overview: Systems / Domains / Entities / Data Flows
+  * lineage narrative: Sources / Pipeline / Targets / Operational notes
+Do not impose a fixed template. Do not append generic placeholder
+sections (e.g. "Open Questions", "TBD", "Notes") unless the intent
+specifically asks for them.
+
+Do not invent fields, relationships, owners, or numbers that are not
+in the CONTEXT. Cite asset names inline using backticks.
+
+When the CONTEXT contains lineage artifacts, embed each referenced
+image using the markdown image link exactly as provided — do not
+rewrite the path, do not omit the image.
+
+OUTPUT FORMAT: raw Markdown only. Do NOT wrap the answer in a fenced
+code block (no ```markdown ... ``` and no ``` ... ```). Start
+directly with the first heading."""
 
 
 _FENCE_RE = re.compile(
@@ -55,11 +65,28 @@ class LLMClient(Protocol):
 
 def compose(ctx: PageContext, *, llm: LLMClient, model_name: str) -> tuple[str, str]:
     user = f"INTENT: {ctx.intent}\n\nCONTEXT:\n{ctx.serialise()}"
-    result = llm.chat(
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user},
-        ]
-    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+    result = llm.chat(messages=messages)
     body = getattr(result, "content", "") or ""
+
+    # Record into the global token tracker so /usage, Studio's total
+    # cost banner, and per-run cost breakdowns include page generation.
+    # Failures here must not break the page composition — the LLM call
+    # already succeeded by the time we get here.
+    try:
+        from amx.utils.token_tracker import estimate_tokens, tracker
+
+        est = estimate_tokens(messages)
+        tracker.record_for(
+            "pages_compose",
+            est,
+            llm,
+            usage=getattr(result, "usage", None),
+        )
+    except Exception:  # noqa: BLE001 — cost tracking is opportunistic
+        pass
+
     return strip_outer_markdown_fence(str(body)), model_name

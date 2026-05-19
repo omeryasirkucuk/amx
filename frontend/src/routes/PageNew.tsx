@@ -13,6 +13,8 @@ import { cn } from "../lib/cn";
 import {
   useCreatePage,
   useGeneratePage,
+  useIntentTemplates,
+  type IntentTemplate,
   type PageAssetRef,
   type PageSource,
 } from "../hooks/usePages";
@@ -34,9 +36,12 @@ export default function PageNewRoute() {
   const [step, setStep] = useState<Step>(1);
   const [title, setTitle] = useState("");
   const [intent, setIntent] = useState("");
+  const [pickedTemplate, setPickedTemplate] = useState<string | null>(null);
   const [assets, setAssets] = useState<PageAssetRef[]>([]);
   const [pageId, setPageId] = useState<string | null>(null);
   const [sources, setSources] = useState<PageSource[]>([]);
+
+  const intentTemplates = useIntentTemplates();
 
   const generate = useGeneratePage(pageId ?? "");
 
@@ -89,11 +94,23 @@ export default function PageNewRoute() {
             </Field>
             <Field
               label="Intent"
-              hint="Optional. A short description of what this page should cover."
+              hint="Pick a template to seed the text below, or write your own."
             >
+              <IntentTemplateGrid
+                templates={intentTemplates.data ?? []}
+                loading={intentTemplates.isLoading}
+                pickedSlug={pickedTemplate}
+                onPick={(tpl) => {
+                  setPickedTemplate(tpl.slug);
+                  setIntent(tpl.prompt_skeleton);
+                }}
+              />
               <Textarea
                 value={intent}
-                onChange={(e) => setIntent(e.target.value)}
+                onChange={(e) => {
+                  setIntent(e.target.value);
+                  if (pickedTemplate) setPickedTemplate(null);
+                }}
                 placeholder="What story should this page tell?"
                 rows={4}
               />
@@ -189,6 +206,50 @@ export default function PageNewRoute() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function IntentTemplateGrid({
+  templates,
+  loading,
+  pickedSlug,
+  onPick,
+}: {
+  templates: IntentTemplate[];
+  loading: boolean;
+  pickedSlug: string | null;
+  onPick: (tpl: IntentTemplate) => void;
+}) {
+  if (loading) {
+    return (
+      <p className="mb-2 text-[11px] text-ink-dim">Loading templates...</p>
+    );
+  }
+  if (!templates.length) return null;
+  return (
+    <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      {templates.map((tpl) => {
+        const active = pickedSlug === tpl.slug;
+        return (
+          <button
+            key={tpl.slug}
+            type="button"
+            onClick={() => onPick(tpl)}
+            className={cn(
+              "rounded-md border px-3 py-2 text-left text-xs transition",
+              active
+                ? "border-accent bg-accent/10 text-accent-ink"
+                : "border-border bg-surface text-ink hover:border-accent/40 hover:bg-accent/5",
+            )}
+          >
+            <div className="font-medium">{tpl.label}</div>
+            <div className="mt-1 line-clamp-2 text-[10px] text-ink-muted">
+              {tpl.prompt_skeleton}
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }

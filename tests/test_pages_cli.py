@@ -160,3 +160,68 @@ def test_pages_delete_purge_removes_row(cli) -> None:
     result = runner.invoke(root, ["pages", "delete", pid, "--purge"])
     assert result.exit_code == 0, result.output
     assert hs.get_documentation_page(pid) is None
+
+
+def test_pages_new_with_intent_template_flag(cli) -> None:
+    """Power-user mode: --intent-template + --asset + --no-generate skips
+    the wizard entirely and stores a template-rendered intent string on
+    the page draft."""
+    root, _hs, cfg = cli
+    runner = CliRunner()
+    # ``--source`` is absent so the sources wizard prompt fires; feed it
+    # an empty stdin so click takes the prompt default ("" = skip) on
+    # every Click version. Without ``input``, older Click releases abort
+    # on EOFError when the test runner has no TTY (which is exactly the
+    # CI matrix shape for py3.10-py3.13).
+    result = runner.invoke(
+        root,
+        [
+            "pages",
+            "new",
+            "--title",
+            "Orders Table Doc",
+            "--intent-template",
+            "single-table",
+            "--asset",
+            "db_table:prod/main/sales/orders",
+            "--no-generate",
+        ],
+        input="\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Created page" in result.output
+
+    svc = pages_factory.build_pages_service(cfg)
+    rows = svc.store.list_active()
+    assert len(rows) == 1
+    page = svc.store.get(rows[0]["id"])
+    assert page is not None
+    intent = page.get("generation_prompt", "")
+    # The template's prompt skeleton must have rendered.
+    assert "documentation page" in intent
+    # No placeholder values were supplied via flags, so the template
+    # was rendered with no params — but the prompt skeleton itself
+    # must still be present (not a free-text empty string).
+    assert "{table}" in intent or "table" in intent
+
+
+def test_pages_new_rejects_unknown_template(cli) -> None:
+    root, _hs, _cfg = cli
+    runner = CliRunner()
+    result = runner.invoke(
+        root,
+        [
+            "pages",
+            "new",
+            "--title",
+            "x",
+            "--intent-template",
+            "made-up-slug",
+            "--asset",
+            "db_profile:p",
+            "--no-generate",
+        ],
+    )
+    # Error path returns cleanly (no exception) but logs the error.
+    assert result.exit_code == 0
+    assert "Unknown intent template" in result.output

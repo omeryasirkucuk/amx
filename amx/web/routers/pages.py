@@ -16,6 +16,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from amx.docs.extensions import SUPPORTED_EXTENSIONS
+from amx.pages.intent_templates import INTENT_TEMPLATES
 from amx.pages.service import PagesService
 from amx.pages.types import AssetRef
 from amx.web.deps import get_pages_service
@@ -72,6 +73,26 @@ def create_page(
         now=_now(),
     )
     return {"id": pid}
+
+
+@router.get("/intent-templates")
+def list_intent_templates() -> list[dict]:
+    """Return the preset intent templates as a list of pickable cards.
+
+    Studio's New-page wizard renders these above the Intent textarea so
+    a user can seed the intent string with a stock phrasing for the
+    most common documentation shapes (single table, project overview,
+    ...) instead of writing it from scratch.
+    """
+    return [
+        {
+            "slug": t.slug,
+            "label": t.label,
+            "required_assets": t.required_assets,
+            "prompt_skeleton": t.prompt_skeleton,
+        }
+        for t in INTENT_TEMPLATES
+    ]
 
 
 @router.get("/{page_id}")
