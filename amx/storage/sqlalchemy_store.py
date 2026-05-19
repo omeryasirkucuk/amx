@@ -75,6 +75,32 @@ class LineageArtifactRecord:
     local_id: int
 
 
+@dataclass(frozen=True)
+class LineageNodeRecord:
+    """Immutable view of a single row from the ``lineage_artifact_nodes`` table."""
+
+    id: str
+    artifact_id: str
+    entity_ref: str
+    entity_kind: str
+    db_profile: str
+    x: float | None
+    y: float | None
+    width: float | None
+    height: float | None
+    z_index: int | None
+    display_label: str | None
+    column_list_json: list | None
+    logo_key: str | None
+    custom_style_json: dict | None
+    created_by: str
+    hostname: str
+    client_version: str
+    created_at: datetime
+    updated_at: datetime
+    local_id: int
+
+
 def _new_uuid() -> str:
     return str(uuid.uuid4())
 
@@ -896,6 +922,101 @@ class SQLAlchemyHistoryStore:
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).fetchall()
         return [LineageArtifactRecord(**row._mapping) for row in rows]
+
+    # ── Lineage nodes ─────────────────────────────────────────────────────
+
+    def upsert_lineage_node(
+        self,
+        *,
+        local_id: int,
+        artifact_uuid: str,
+        entity_ref: str,
+        entity_kind: str,
+        db_profile: str,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        z_index: int = 0,
+        display_label: str | None = None,
+        column_list_json: list | None = None,
+        logo_key: str | None = None,
+        custom_style_json: dict | None = None,
+    ) -> str:
+        """Insert or update a lineage node; return its UUID.
+
+        Lookup is by (hostname, local_id). If a matching row exists the
+        positional and style fields are updated; otherwise a new row is
+        inserted with a fresh UUID.
+        """
+        now = _utcnow()
+        existing = self._find_node_uuid_by_local_id(self._hostname, local_id)
+        if existing:
+            with self.engine.begin() as conn:
+                conn.execute(
+                    update(self._t_lineage_artifact_nodes)
+                    .where(self._t_lineage_artifact_nodes.c.id == existing)
+                    .values(
+                        x=x,
+                        y=y,
+                        width=width,
+                        height=height,
+                        z_index=z_index,
+                        display_label=display_label,
+                        column_list_json=column_list_json,
+                        logo_key=logo_key,
+                        custom_style_json=custom_style_json,
+                        updated_at=now,
+                    )
+                )
+            return existing
+        uuid_value = _new_uuid()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(self._t_lineage_artifact_nodes).values(
+                    id=uuid_value,
+                    artifact_id=artifact_uuid,
+                    entity_ref=entity_ref,
+                    entity_kind=entity_kind,
+                    db_profile=db_profile,
+                    x=x,
+                    y=y,
+                    width=width,
+                    height=height,
+                    z_index=z_index,
+                    display_label=display_label,
+                    column_list_json=column_list_json,
+                    logo_key=logo_key,
+                    custom_style_json=custom_style_json,
+                    created_by=self._username,
+                    hostname=self._hostname,
+                    client_version=self._client_version,
+                    created_at=now,
+                    updated_at=now,
+                    local_id=local_id,
+                )
+            )
+        return uuid_value
+
+    def _find_node_uuid_by_local_id(self, hostname: str, local_id: int) -> str | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(self._t_lineage_artifact_nodes.c.id)
+                .where(self._t_lineage_artifact_nodes.c.hostname == hostname)
+                .where(self._t_lineage_artifact_nodes.c.local_id == local_id)
+            ).fetchone()
+        return row[0] if row else None
+
+    def list_lineage_nodes(self, *, artifact_uuid: str) -> list[LineageNodeRecord]:
+        """Return all nodes for an artifact ordered by z_index ascending."""
+        stmt = (
+            select(self._t_lineage_artifact_nodes)
+            .where(self._t_lineage_artifact_nodes.c.artifact_id == artifact_uuid)
+            .order_by(self._t_lineage_artifact_nodes.c.z_index)
+        )
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [LineageNodeRecord(**row._mapping) for row in rows]
 
     # ── Scheduled runs (Protocol stubs) ─────────────────────────────────
     #

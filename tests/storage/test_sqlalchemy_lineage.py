@@ -58,3 +58,44 @@ def test_create_lineage_artifact_stamps_attribution(store):
     assert row.created_by == store._username
     assert row.hostname == store._hostname
     assert row.client_version == store._client_version
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — upsert_lineage_node + list_lineage_nodes
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_lineage_node_creates_then_updates(store):
+    artifact_uuid = store.create_lineage_artifact(
+        local_id=1, name="t", db_profile="x",
+        anchor_entity_ref="x|a|b|c",
+    )
+    node_uuid = store.upsert_lineage_node(
+        local_id=100,
+        artifact_uuid=artifact_uuid,
+        entity_ref="x|a|b|c",
+        entity_kind="table",
+        db_profile="x",
+        x=10.0, y=20.0, width=120.0, height=80.0,
+        z_index=0,
+        display_label=None,
+        column_list_json=[{"name": "id", "type": "int", "nullable": False}],
+        logo_key="postgres",
+        custom_style_json=None,
+    )
+    assert isinstance(node_uuid, str)
+
+    # Upsert again with the same local_id moves the node.
+    moved_uuid = store.upsert_lineage_node(
+        local_id=100,
+        artifact_uuid=artifact_uuid,
+        entity_ref="x|a|b|c",
+        entity_kind="table",
+        db_profile="x",
+        x=99.0, y=99.0, width=120.0, height=80.0,
+    )
+    assert moved_uuid == node_uuid
+
+    nodes = store.list_lineage_nodes(artifact_uuid=artifact_uuid)
+    assert len(nodes) == 1
+    assert nodes[0].x == 99.0
