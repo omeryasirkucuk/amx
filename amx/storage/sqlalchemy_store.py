@@ -101,6 +101,31 @@ class LineageNodeRecord:
     local_id: int
 
 
+@dataclass(frozen=True)
+class LineageEdgeRecord:
+    """Immutable view of a single row from the ``lineage_artifact_edges`` table."""
+
+    id: str
+    artifact_id: str
+    source_node_id: str
+    target_node_id: str
+    edge_kind: str
+    join_type: str | None
+    on_condition: str | None
+    where_clause: str | None
+    source_columns_json: list | None
+    target_columns_json: list | None
+    label: str | None
+    style_json: dict | None
+    waypoints_json: list | None
+    created_by: str
+    hostname: str
+    client_version: str
+    created_at: datetime
+    updated_at: datetime
+    local_id: int
+
+
 def _new_uuid() -> str:
     return str(uuid.uuid4())
 
@@ -1017,6 +1042,98 @@ class SQLAlchemyHistoryStore:
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
         return [LineageNodeRecord(**row._mapping) for row in rows]
+
+    # ── Lineage edges ─────────────────────────────────────────────────────
+
+    def upsert_lineage_edge(
+        self,
+        *,
+        local_id: int,
+        artifact_uuid: str,
+        source_node_uuid: str,
+        target_node_uuid: str,
+        edge_kind: str,
+        join_type: str | None = None,
+        on_condition: str | None = None,
+        where_clause: str | None = None,
+        source_columns_json: list | None = None,
+        target_columns_json: list | None = None,
+        label: str | None = None,
+        style_json: dict | None = None,
+        waypoints_json: list | None = None,
+    ) -> str:
+        """Insert or update a lineage edge; return its UUID.
+
+        Lookup is by (hostname, local_id). If a matching row exists the
+        semantic and style fields are updated; otherwise a new row is
+        inserted with a fresh UUID.
+        """
+        now = _utcnow()
+        existing = self._find_edge_uuid_by_local_id(self._hostname, local_id)
+        if existing:
+            with self.engine.begin() as conn:
+                conn.execute(
+                    update(self._t_lineage_artifact_edges)
+                    .where(self._t_lineage_artifact_edges.c.id == existing)
+                    .values(
+                        edge_kind=edge_kind,
+                        join_type=join_type,
+                        on_condition=on_condition,
+                        where_clause=where_clause,
+                        source_columns_json=source_columns_json,
+                        target_columns_json=target_columns_json,
+                        label=label,
+                        style_json=style_json,
+                        waypoints_json=waypoints_json,
+                        updated_at=now,
+                    )
+                )
+            return existing
+        uuid_value = _new_uuid()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(self._t_lineage_artifact_edges).values(
+                    id=uuid_value,
+                    artifact_id=artifact_uuid,
+                    source_node_id=source_node_uuid,
+                    target_node_id=target_node_uuid,
+                    edge_kind=edge_kind,
+                    join_type=join_type,
+                    on_condition=on_condition,
+                    where_clause=where_clause,
+                    source_columns_json=source_columns_json,
+                    target_columns_json=target_columns_json,
+                    label=label,
+                    style_json=style_json,
+                    waypoints_json=waypoints_json,
+                    created_by=self._username,
+                    hostname=self._hostname,
+                    client_version=self._client_version,
+                    created_at=now,
+                    updated_at=now,
+                    local_id=local_id,
+                )
+            )
+        return uuid_value
+
+    def _find_edge_uuid_by_local_id(self, hostname: str, local_id: int) -> str | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(self._t_lineage_artifact_edges.c.id)
+                .where(self._t_lineage_artifact_edges.c.hostname == hostname)
+                .where(self._t_lineage_artifact_edges.c.local_id == local_id)
+            ).fetchone()
+        return row[0] if row else None
+
+    def list_lineage_edges(self, *, artifact_uuid: str) -> list[LineageEdgeRecord]:
+        """Return all edges for an artifact in insertion order."""
+        stmt = (
+            select(self._t_lineage_artifact_edges)
+            .where(self._t_lineage_artifact_edges.c.artifact_id == artifact_uuid)
+        )
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [LineageEdgeRecord(**row._mapping) for row in rows]
 
     # ── Scheduled runs (Protocol stubs) ─────────────────────────────────
     #

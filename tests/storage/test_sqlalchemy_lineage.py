@@ -99,3 +99,37 @@ def test_upsert_lineage_node_creates_then_updates(store):
     nodes = store.list_lineage_nodes(artifact_uuid=artifact_uuid)
     assert len(nodes) == 1
     assert nodes[0].x == 99.0
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — upsert_lineage_edge + list_lineage_edges
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_lineage_edge_round_trip(store):
+    a = store.create_lineage_artifact(
+        local_id=1, name="t", db_profile="x", anchor_entity_ref="x|a|b|c"
+    )
+    n1 = store.upsert_lineage_node(
+        local_id=10, artifact_uuid=a, entity_ref="x|a|b|c", entity_kind="table",
+        db_profile="x", x=0, y=0, width=100, height=80,
+    )
+    n2 = store.upsert_lineage_node(
+        local_id=11, artifact_uuid=a, entity_ref="x|a|b|d", entity_kind="table",
+        db_profile="x", x=200, y=0, width=100, height=80,
+    )
+    edge = store.upsert_lineage_edge(
+        local_id=50, artifact_uuid=a,
+        source_node_uuid=n1, target_node_uuid=n2,
+        edge_kind="join", join_type="LEFT",
+        on_condition="a.id = b.a_id",
+        where_clause="a.active = true",
+        source_columns_json=["id"],
+        target_columns_json=["a_id"],
+        label=None, style_json=None, waypoints_json=None,
+    )
+    edges = store.list_lineage_edges(artifact_uuid=a)
+    assert len(edges) == 1
+    assert edges[0].id == edge
+    assert edges[0].join_type == "LEFT"
+    assert edges[0].on_condition == "a.id = b.a_id"
