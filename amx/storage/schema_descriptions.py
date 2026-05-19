@@ -1045,6 +1045,10 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
         "updated_at": "Shared-only: UTC timestamp of the last edit.",
         "local_id": ATTRIBUTION_LOCAL_ID,
+        "version": (
+            "Optimistic concurrency control version. Incremented on every UPDATE. "
+            "Pre-PR-3 rows default to 1."
+        ),
     },
     # ── lineage_artifact_nodes ────────────────────────────────────────────
     "lineage_artifact_nodes": {
@@ -1115,6 +1119,10 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "created_at": "UTC timestamp of insertion.",
         "updated_at": "UTC timestamp of last edit.",
         "local_id": ATTRIBUTION_LOCAL_ID,
+        "version": (
+            "Optimistic concurrency control version. Incremented on every UPDATE. "
+            "Pre-PR-3 rows default to 1."
+        ),
     },
     # ── lineage_artifact_edges ────────────────────────────────────────────
     "lineage_artifact_edges": {
@@ -1146,6 +1154,10 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "created_at": "UTC timestamp of insertion.",
         "updated_at": "UTC timestamp of last edit.",
         "local_id": ATTRIBUTION_LOCAL_ID,
+        "version": (
+            "Optimistic concurrency control version. Incremented on every UPDATE. "
+            "Pre-PR-3 rows default to 1."
+        ),
     },
     # ── lineage_logos (local only) ────────────────────────────────────────
     "lineage_logos": {
@@ -1250,6 +1262,10 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "hostname": ATTRIBUTION_HOSTNAME,
         "client_version": ATTRIBUTION_CLIENT_VERSION,
         "local_id": ATTRIBUTION_LOCAL_ID,
+        "version": (
+            "Optimistic concurrency control version. Incremented on every UPDATE. "
+            "Pre-PR-3 rows default to 1."
+        ),
     },
     # ── catalog_usage_evidence (local only) ───────────────────────────────
     "catalog_usage_evidence": {
@@ -1586,6 +1602,10 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "hostname": ATTRIBUTION_HOSTNAME,
         "client_version": ATTRIBUTION_CLIENT_VERSION,
         "local_id": ATTRIBUTION_LOCAL_ID,
+        "version": (
+            "Optimistic concurrency control version. Incremented on every UPDATE. "
+            "Pre-PR-3 rows default to 1."
+        ),
     },
     # ── documentation_page_assets (local + shared) ────────────────────────
     "documentation_page_assets": {

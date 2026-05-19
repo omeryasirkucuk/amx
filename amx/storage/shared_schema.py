@@ -129,7 +129,7 @@ DEFAULT_HISTORY_SCHEMA_COMMENT = SHARED_SCHEMA_COMMENT
 # All client versions writing into a shared store record this as their
 # ``schema_version`` so an older client refuses to write into a schema
 # bumped by a newer client (avoids losing columns the new client added).
-SHARED_SCHEMA_VERSION = 4
+SHARED_SCHEMA_VERSION = 5
 
 
 def _desc(table: str, column: str | None = None) -> str:
@@ -582,6 +582,14 @@ def build_metadata(schema: str | None = None) -> MetaData:
             BigInteger,
             comment=_desc("documentation_pages", "local_id"),
         ),
+        Column(
+            "version",
+            Integer,
+            nullable=False,
+            default=1,
+            server_default="1",
+            comment=_desc("documentation_pages", "version"),
+        ),
         Index("ix_documentation_pages_status", "status"),
         Index("ix_documentation_pages_updated_at", "updated_at"),
         Index("ix_documentation_pages_db_profile", "db_profile"),
@@ -788,6 +796,14 @@ def build_metadata(schema: str | None = None) -> MetaData:
         Column(
             "local_id", BigInteger, nullable=False, comment=_desc("lineage_artifacts", "local_id")
         ),
+        Column(
+            "version",
+            Integer,
+            nullable=False,
+            default=1,
+            server_default="1",
+            comment=_desc("lineage_artifacts", "version"),
+        ),
         Index("ix_lineage_artifacts_db_profile", "db_profile"),
         Index("ix_lineage_artifacts_local_lookup", "hostname", "local_id"),
         Index("ix_lineage_artifacts_name_profile", "name", "db_profile", unique=True),
@@ -878,6 +894,14 @@ def build_metadata(schema: str | None = None) -> MetaData:
             BigInteger,
             nullable=False,
             comment=_desc("lineage_artifact_nodes", "local_id"),
+        ),
+        Column(
+            "version",
+            Integer,
+            nullable=False,
+            default=1,
+            server_default="1",
+            comment=_desc("lineage_artifact_nodes", "version"),
         ),
         Index("ix_lineage_nodes_artifact", "artifact_id"),
         Index("ix_lineage_nodes_entity_profile", "entity_ref", "db_profile"),
@@ -975,6 +999,14 @@ def build_metadata(schema: str | None = None) -> MetaData:
             nullable=False,
             comment=_desc("lineage_artifact_edges", "local_id"),
         ),
+        Column(
+            "version",
+            Integer,
+            nullable=False,
+            default=1,
+            server_default="1",
+            comment=_desc("lineage_artifact_edges", "version"),
+        ),
         Index("ix_lineage_edges_artifact", "artifact_id"),
         Index("ix_lineage_edges_source", "source_node_id"),
         Index("ix_lineage_edges_target", "target_node_id"),
@@ -1032,6 +1064,14 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
         Column(
             "local_id", BigInteger, nullable=False, comment=_desc("lineage_comments", "local_id")
+        ),
+        Column(
+            "version",
+            Integer,
+            nullable=False,
+            default=1,
+            server_default="1",
+            comment=_desc("lineage_comments", "version"),
         ),
         Index("ix_lineage_comments_artifact", "artifact_id"),
         Index("ix_lineage_comments_local_lookup", "hostname", "local_id"),
