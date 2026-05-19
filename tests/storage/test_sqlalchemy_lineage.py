@@ -169,3 +169,38 @@ def test_delete_lineage_comment_removes_row(store):
     store.delete_lineage_comment(uuid=cuuid)
     comments = store.list_lineage_comments(artifact_uuid=a)
     assert len(comments) == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 11 — find_prior_lineage_by_others
+# ---------------------------------------------------------------------------
+
+
+def test_find_prior_lineage_by_others_excludes_self(store):
+    # Two artifacts: one from this host, one from a different host.
+    store.create_lineage_artifact(
+        local_id=1, name="mine", db_profile="prod_pg",
+        anchor_entity_ref="prod_pg|main|public|orders",
+    )
+    # Simulate another host by inserting directly.
+    from datetime import datetime, timezone
+    with store.engine.begin() as conn:
+        conn.execute(store._t_lineage_artifacts.insert().values(
+            id="other-uuid-from-alice",
+            name="alice_orders",
+            db_profile="prod_pg",
+            anchor_entity_ref="prod_pg|main|public|orders",
+            created_by="alice",
+            hostname="alice-laptop",
+            client_version="0.14.0",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            local_id=999,
+        ))
+    others = store.find_prior_lineage_by_others(
+        db_profile="prod_pg",
+        anchor_entity_ref="prod_pg|main|public|orders",
+        exclude_hostname=store._hostname,
+    )
+    assert len(others) == 1
+    assert others[0].created_by == "alice"

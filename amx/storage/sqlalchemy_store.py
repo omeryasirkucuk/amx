@@ -1247,6 +1247,37 @@ class SQLAlchemyHistoryStore:
                 )
             )
 
+    def find_prior_lineage_by_others(
+        self,
+        *,
+        db_profile: str,
+        anchor_entity_ref: str,
+        exclude_hostname: str,
+    ) -> list[LineageArtifactRecord]:
+        """Return lineage artifacts for the same anchor authored by other hosts.
+
+        Mirrors :meth:`find_prior_runs_by_others` for the lineage surface:
+        given a ``(db_profile, anchor_entity_ref)`` pair, returns every
+        artifact created by a host other than ``exclude_hostname`` (typically
+        the calling machine's hostname). Used by the CLI to warn that a
+        teammate has already mapped the same entity, enabling conflict
+        detection before overwriting shared lineage work.
+
+        Results are ordered newest-updated-first.
+        """
+        stmt = (
+            select(self._t_lineage_artifacts)
+            .where(self._t_lineage_artifacts.c.db_profile == db_profile)
+            .where(
+                self._t_lineage_artifacts.c.anchor_entity_ref == anchor_entity_ref
+            )
+            .where(self._t_lineage_artifacts.c.hostname != exclude_hostname)
+            .order_by(self._t_lineage_artifacts.c.updated_at.desc())
+        )
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [LineageArtifactRecord(**row._mapping) for row in rows]
+
     # ── Scheduled runs (Protocol stubs) ─────────────────────────────────
     #
     # Phase 1 of the scheduler keeps the scheduled_runs surface local-
