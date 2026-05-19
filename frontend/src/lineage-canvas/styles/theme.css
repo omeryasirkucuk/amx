@@ -17,14 +17,24 @@
   --lcv-ink-muted: rgb(var(--ink-muted));
   --lcv-ink-dim: rgb(var(--ink-dim));
   --lcv-accent: rgb(var(--accent));
+  /* Canvas surface — one step lighter than --bg so the lineage area
+     reads as a distinct working surface instead of merging with the
+     page chrome. Uses the existing surface token so it adapts when
+     the design palette shifts. */
+  --lcv-canvas-bg: rgb(var(--surface));
+  /* Grid dot — kept separate from --lcv-border so brightening the
+     grid does not over-emphasize node/edge borders. Alpha on the
+     ink token gives a dot that adapts to both light and dark
+     themes via CSS Color Level 4 syntax. */
+  --lcv-grid-dot: rgb(var(--ink) / 0.16);
 }
 
-/* React Flow background dots — subtle on dark surface. */
+/* React Flow background dots — visible on the canvas surface. */
 .lcv-canvas-root .react-flow__background {
-  background-color: var(--lcv-bg);
+  background-color: var(--lcv-canvas-bg);
 }
 .lcv-canvas-root .react-flow__background pattern circle {
-  fill: var(--lcv-border);
+  fill: var(--lcv-grid-dot);
 }
 
 /* Controls (zoom in/out/fit) — match design tokens. */

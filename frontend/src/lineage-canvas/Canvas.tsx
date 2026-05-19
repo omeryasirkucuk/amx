@@ -20,6 +20,7 @@ import {
   KeyboardEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -120,8 +121,35 @@ function CanvasInner() {
   const [sqlOutput, setSqlOutput] = useState("");
 
   const canvasShellRef = useRef<HTMLDivElement | null>(null);
+  const pageWrapperRef = useRef<HTMLDivElement | null>(null);
+  const [pageWrapperHeight, setPageWrapperHeight] = useState<number | undefined>(
+    undefined,
+  );
   const autoLayout = useAutoLayout();
   const exportPng = usePngExport();
+
+  // Size the Lineage page to exactly fit the viewport below whatever
+  // chrome AppShell renders above it (TopBar, padding, sidebar resize,
+  // etc.). The wrapper's top edge is measured relative to the
+  // viewport, so any future chrome change is absorbed automatically
+  // without re-tuning a hardcoded ``calc(100vh - …)``. The canvas
+  // itself takes the remaining space via ``flex-1``.
+  useLayoutEffect(() => {
+    function measure() {
+      const el = pageWrapperRef.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top;
+      // Small gutter for the AppShell main's bottom padding + Footer
+      // slot — keeps the canvas border visible instead of sitting
+      // flush against the viewport edge.
+      const bottomGutter = 32;
+      const next = Math.max(360, window.innerHeight - top - bottomGutter);
+      setPageWrapperHeight(next);
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
 
   // ── Re-open from /lineage?artifact=<id> ─────────────────────────────────
   const loadQ = useQuery({
@@ -759,8 +787,25 @@ function CanvasInner() {
     [nodes],
   );
 
+  // Conservative "has work to preserve" check for the Saved-lineage
+  // dropdown's confirm prompt. Any node on the canvas counts — we
+  // don't track per-edit dirtiness, so the menu errs on the side of
+  // asking once before replacing user work. The menu itself
+  // suppresses the prompt when the user picks the artifact already
+  // open, so the only case that triggers it is "switching away from
+  // something I can see on screen."
+  const hasUnsavedWork = nodes.length > 0;
+
+  function handleOpenSavedArtifact(id: number) {
+    setParams({ artifact: String(id) });
+  }
+
   return (
-    <div className="flex h-full flex-col gap-2">
+    <div
+      ref={pageWrapperRef}
+      className="flex flex-col gap-2"
+      style={{ height: pageWrapperHeight }}
+    >
       <PageHeader
         title="Lineage"
         breadcrumbs={[{ label: "Lineage", to: "/lineage" }]}
@@ -801,10 +846,13 @@ function CanvasInner() {
         onShare={handleShare}
         onImportSql={() => setSqlImportOpen(true)}
         onExportSql={handleSqlExport}
+        hasUnsavedWork={hasUnsavedWork}
+        activeArtifactId={activeArtifactId}
+        onOpenSavedArtifact={handleOpenSavedArtifact}
       />
       <div
         ref={canvasShellRef}
-        className="lcv-canvas-root relative h-[calc(100vh-220px)] overflow-hidden rounded-xl border border-surface-border"
+        className="lcv-canvas-root relative min-h-0 flex-1 overflow-hidden rounded-xl border border-surface-border"
         tabIndex={0}
         onKeyDown={onCanvasKeyDown}
       >

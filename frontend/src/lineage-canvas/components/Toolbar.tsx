@@ -32,6 +32,8 @@ import {
   Upload,
 } from "lucide-react";
 
+import { SavedLineagesMenu } from "./SavedLineagesMenu";
+
 interface ToolbarProps {
   onAddTable: () => void;
   onAddFilter: () => void;
@@ -56,6 +58,16 @@ interface ToolbarProps {
   onImportSql: () => void;
   onExportSql: () => void;
   primaryProfile: string;
+  /** Whether the canvas currently has user work that would be lost
+   *  by loading a different artifact — drives the confirm in the
+   *  saved-lineages dropdown. */
+  hasUnsavedWork: boolean;
+  /** Currently loaded artifact id (or null for a fresh canvas). The
+   *  saved-lineages dropdown uses this to mark the active row and to
+   *  skip the confirm when the user picks the artifact already open. */
+  activeArtifactId: number | null;
+  /** Called with the chosen artifact id after the optional confirm. */
+  onOpenSavedArtifact: (id: number) => void;
 }
 
 interface IconButtonProps {
@@ -94,6 +106,14 @@ function Divider() {
 export function Toolbar(p: ToolbarProps) {
   return (
     <div className="flex items-center gap-0.5 rounded-xl border border-surface-border bg-surface-raised px-2 py-1 shadow-lg">
+      <SavedLineagesMenu
+        hasUnsavedWork={p.hasUnsavedWork}
+        activeArtifactId={p.activeArtifactId}
+        onPick={p.onOpenSavedArtifact}
+      />
+
+      <Divider />
+
       <IconBtn label="Add table" shortcut="D" onClick={p.onAddTable}>
         <Table size={15} />
       </IconBtn>
