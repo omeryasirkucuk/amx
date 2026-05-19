@@ -21,10 +21,7 @@ rather than silently completing the operation.
 
 from __future__ import annotations
 
-import getpass
-import json
 import logging
-import socket
 import sys
 import uuid
 from dataclasses import dataclass
@@ -252,9 +249,7 @@ def register_session(
         )
 
         # Re-fetch the final row to return a complete record.
-        row = conn.execute(
-            select(t_users).where(t_users.c.id == user_id)
-        ).fetchone()
+        row = conn.execute(select(t_users).where(t_users.c.id == user_id)).fetchone()
 
     return _row_to_record(row)
 
@@ -317,18 +312,12 @@ def promote_to_admin(
     with shared.engine.begin() as conn:
         # Fetch actor details for denormalization.
         actor = conn.execute(
-            select(t_users.c.username, t_users.c.hostname).where(
-                t_users.c.id == actor_user_id
-            )
+            select(t_users.c.username, t_users.c.hostname).where(t_users.c.id == actor_user_id)
         ).fetchone()
         actor_username = actor.username if actor else ""
         actor_hostname = actor.hostname if actor else ""
 
-        conn.execute(
-            update(t_users)
-            .where(t_users.c.id == target_user_id)
-            .values(role="admin")
-        )
+        conn.execute(update(t_users).where(t_users.c.id == target_user_id).values(role="admin"))
         conn.execute(
             insert(t_audit).values(
                 id=_new_uuid(),
@@ -365,9 +354,7 @@ def demote_admin(
         # If the target is an admin and the only one, the demotion
         # would leave zero admins — reject.
         target_row = conn.execute(
-            select(t_users.c.role, t_users.c.revoked_at).where(
-                t_users.c.id == target_user_id
-            )
+            select(t_users.c.role, t_users.c.revoked_at).where(t_users.c.id == target_user_id)
         ).fetchone()
         if (
             target_row is not None
@@ -380,18 +367,12 @@ def demote_admin(
             )
 
         actor = conn.execute(
-            select(t_users.c.username, t_users.c.hostname).where(
-                t_users.c.id == actor_user_id
-            )
+            select(t_users.c.username, t_users.c.hostname).where(t_users.c.id == actor_user_id)
         ).fetchone()
         actor_username = actor.username if actor else ""
         actor_hostname = actor.hostname if actor else ""
 
-        conn.execute(
-            update(t_users)
-            .where(t_users.c.id == target_user_id)
-            .values(role="viewer")
-        )
+        conn.execute(update(t_users).where(t_users.c.id == target_user_id).values(role="viewer"))
         conn.execute(
             insert(t_audit).values(
                 id=_new_uuid(),
@@ -427,15 +408,9 @@ def revoke_user(
 
     with shared.engine.begin() as conn:
         target_row = conn.execute(
-            select(t_users.c.role, t_users.c.revoked_at).where(
-                t_users.c.id == target_user_id
-            )
+            select(t_users.c.role, t_users.c.revoked_at).where(t_users.c.id == target_user_id)
         ).fetchone()
-        if (
-            target_row is not None
-            and target_row.role == "admin"
-            and target_row.revoked_at is None
-        ):
+        if target_row is not None and target_row.role == "admin" and target_row.revoked_at is None:
             active_admins = _count_active_admins(conn, t_users)
             if active_admins <= 1:
                 raise AdminInvariantError(
@@ -443,9 +418,7 @@ def revoke_user(
                 )
 
         actor = conn.execute(
-            select(t_users.c.username, t_users.c.hostname).where(
-                t_users.c.id == actor_user_id
-            )
+            select(t_users.c.username, t_users.c.hostname).where(t_users.c.id == actor_user_id)
         ).fetchone()
         actor_username = actor.username if actor else ""
         actor_hostname = actor.hostname if actor else ""
@@ -486,9 +459,7 @@ def unrevoke_user(
 
     with shared.engine.begin() as conn:
         actor = conn.execute(
-            select(t_users.c.username, t_users.c.hostname).where(
-                t_users.c.id == actor_user_id
-            )
+            select(t_users.c.username, t_users.c.hostname).where(t_users.c.id == actor_user_id)
         ).fetchone()
         actor_username = actor.username if actor else ""
         actor_hostname = actor.hostname if actor else ""
@@ -552,9 +523,7 @@ def record_audit_event(
     with shared.engine.begin() as conn:
         if actor_user_id is not None:
             actor = conn.execute(
-                select(t_users.c.username, t_users.c.hostname).where(
-                    t_users.c.id == actor_user_id
-                )
+                select(t_users.c.username, t_users.c.hostname).where(t_users.c.id == actor_user_id)
             ).fetchone()
             actor_username = actor.username if actor else ""
             actor_hostname = actor.hostname if actor else ""

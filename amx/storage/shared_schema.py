@@ -1163,9 +1163,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
     Table(
         "_amx_session_events",
         md,
-        Column(
-            "id", String(36), primary_key=True, comment=_desc("_amx_session_events", "id")
-        ),
+        Column("id", String(36), primary_key=True, comment=_desc("_amx_session_events", "id")),
         Column(
             "event_at",
             DateTime(timezone=True),

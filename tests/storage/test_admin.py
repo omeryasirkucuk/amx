@@ -23,11 +23,9 @@ from amx.storage.admin import (
     record_audit_event,
     register_session,
     revoke_user,
-    unrevoke_user,
 )
 from amx.storage.shared_schema import build_metadata
 from amx.storage.sqlalchemy_store import SQLAlchemyHistoryStore
-
 
 # ── Fixture ───────────────────────────────────────────────────────────────────
 
@@ -171,9 +169,7 @@ def test_revoke_user_sets_fields_and_audits(shared):
     # Check fields on the user row.
     t = shared._md.tables[f"{SCHEMA}._amx_users"]
     with shared.engine.connect() as conn:
-        row = conn.execute(
-            select(t).where(t.c.id == viewer_rec.id)
-        ).fetchone()
+        row = conn.execute(select(t).where(t.c.id == viewer_rec.id)).fetchone()
 
     assert row.revoked_at is not None
     assert row.revoked_by == admin_rec.id
