@@ -49,3 +49,23 @@ def test_lineage_artifact_nodes_has_required_columns():
     }
     actual = {c.name for c in table.columns}
     assert expected <= actual, f"missing: {expected - actual}"
+
+
+def test_lineage_artifact_edges_table_exists():
+    md = build_metadata(schema="AMX")
+    assert "AMX.lineage_artifact_edges" in md.tables
+
+
+def test_lineage_artifact_edges_has_required_columns():
+    md = build_metadata(schema="AMX")
+    table = md.tables["AMX.lineage_artifact_edges"]
+    expected = {
+        "id", "artifact_id", "source_node_id", "target_node_id",
+        "edge_kind", "join_type", "on_condition", "where_clause",
+        "source_columns_json", "target_columns_json",
+        "label", "style_json", "waypoints_json",
+        "created_by", "hostname", "client_version",
+        "created_at", "updated_at", "local_id",
+    }
+    actual = {c.name for c in table.columns}
+    assert expected <= actual, f"missing: {expected - actual}"

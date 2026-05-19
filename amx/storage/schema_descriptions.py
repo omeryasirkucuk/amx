@@ -1126,6 +1126,52 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "updated_at": "UTC timestamp of last edit.",
         "local_id": ATTRIBUTION_LOCAL_ID,
     },
+    # ── lineage_artifact_edges ────────────────────────────────────────────
+    "lineage_artifact_edges": {
+        "__table__": (
+            "Relations between nodes on a lineage canvas: data flow, foreign "
+            "keys, SQL joins, view references. Stores full SQL semantics so "
+            "teammates can inspect joins, WHERE filters, and column mappings."
+        ),
+        "id": "UUID primary key.",
+        "artifact_id": "FK to lineage_artifacts.id.",
+        "source_node_id": "FK to lineage_artifact_nodes.id at the source end.",
+        "target_node_id": "FK to lineage_artifact_nodes.id at the target end.",
+        "edge_kind": (
+            "One of 'lineage', 'fk', 'join', 'reference', 'view_source'."
+        ),
+        "join_type": (
+            "For join edges: 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'. "
+            "NULL for non-join edges."
+        ),
+        "on_condition": (
+            "SQL ON expression for join edges, e.g. 'a.id = b.user_id'."
+        ),
+        "where_clause": (
+            "SQL WHERE filter associated with this edge (often pulled "
+            "from view definitions)."
+        ),
+        "source_columns_json": (
+            "JSON list of source-side column names involved in this edge."
+        ),
+        "target_columns_json": (
+            "JSON list of target-side column names involved in this edge."
+        ),
+        "label": (
+            "User override label for the edge. NULL means derive from "
+            "edge_kind."
+        ),
+        "style_json": "JSON of edge style: color, line type, arrow style.",
+        "waypoints_json": (
+            "JSON list of intermediate routing points for orthogonal layout."
+        ),
+        "created_by": ATTRIBUTION_CREATED_BY,
+        "hostname": ATTRIBUTION_HOSTNAME,
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
+        "created_at": "UTC timestamp of insertion.",
+        "updated_at": "UTC timestamp of last edit.",
+        "local_id": ATTRIBUTION_LOCAL_ID,
+    },
     # ── lineage_logos (local only) ────────────────────────────────────────
     "lineage_logos": {
         "__table__": (
