@@ -95,15 +95,29 @@ export type CanvasNodeData =
 
 export type CanvasNode = RFNode<CanvasNodeData>;
 
+export type EdgeCardinality = "1:1" | "1:N" | "N:M";
+
 export interface CanvasEdgeData {
   relationshipType: string;
   source: string;
   confidence: number;
   verdict: string;
-  /** Backend edge id once persisted (manual edges only). */
+  /** Backend edge id once persisted. Set for manual edges and for
+   *  any edge that arrived from a saved-artifact load. AI-stream
+   *  edges that haven't been saved yet leave this undefined. */
   edgeId?: number;
   /** Edge label rendered on hover. */
   hoverLabel?: string;
+  /** Studio-canvas style override: stroke color (CSS hex). When
+   *  set, beats the relationship_type-derived default. */
+  styleColor?: string;
+  /** Studio-canvas style override: forced dashed (true) or solid
+   *  (false). Undefined keeps the auto-derived behaviour
+   *  (name_match / low-confidence LLM dash by default). */
+  styleDashed?: boolean;
+  /** Relationship cardinality marker rendered at the edge
+   *  endpoints. Undefined = no marker. */
+  cardinality?: EdgeCardinality;
 }
 
 export type CanvasEdge = RFEdge<CanvasEdgeData>;

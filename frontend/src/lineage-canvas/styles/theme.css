@@ -55,15 +55,19 @@
   color: var(--lcv-ink);
 }
 
-/* Edge labels — only visible on hover (Dataloom-style overlay). */
+/* Edge labels — only visible on hover (Dataloom-style overlay).
+   ``pre-line`` so the multi-line hover label (column · kind ·
+   confidence) renders with visual breaks. */
 .lcv-edge-label {
   background: var(--lcv-surface-raised);
   border: 1px solid var(--lcv-border-strong);
   color: var(--lcv-ink-muted);
   font-size: 10.5px;
-  padding: 2px 6px;
+  line-height: 1.35;
+  padding: 4px 7px;
   border-radius: 4px;
-  white-space: nowrap;
+  white-space: pre-line;
+  max-width: 240px;
   font-family: ui-monospace, "JetBrains Mono", monospace;
   pointer-events: none;
 }

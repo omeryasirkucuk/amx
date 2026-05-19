@@ -9,12 +9,16 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, FolderOpen } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronDown, FolderOpen, Trash2 } from "lucide-react";
 import clsx from "clsx";
 
-import { AlertDialog } from "../../components/ui";
-import { lineageList, type LineageArtifact } from "../../lib/api";
+import { AlertDialog, useToast } from "../../components/ui";
+import {
+  lineageDelete,
+  lineageList,
+  type LineageArtifact,
+} from "../../lib/api";
 
 interface Props {
   /**
@@ -34,6 +38,13 @@ interface Props {
    * load-by-id effect picks it up.
    */
   onPick: (id: number) => void;
+  /**
+   * Called when the user deletes the artifact that is currently
+   * loaded. The caller resets the canvas and drops the
+   * ``?artifact=`` URL parameter so the user does not stare at a
+   * stale view of a row that no longer exists.
+   */
+  onActiveArtifactDeleted: () => void;
 }
 
 function relativeTime(epochSeconds: number): string {
@@ -55,10 +66,36 @@ export function SavedLineagesMenu({
   hasUnsavedWork,
   activeArtifactId,
   onPick,
+  onActiveArtifactDeleted,
 }: Props) {
+  const toast = useToast();
+  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<LineageArtifact | null>(null);
+  const [deleting, setDeleting] = useState<LineageArtifact | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const deleteMut = useMutation({
+    mutationFn: (artifact: LineageArtifact) => lineageDelete(artifact.id),
+    onSuccess: (_void, artifact) => {
+      qc.invalidateQueries({ queryKey: ["lineage-artifacts"] });
+      if (artifact.id === activeArtifactId) onActiveArtifactDeleted();
+      toast.push({
+        title: "Lineage deleted",
+        description: `"${artifact.name}" removed.`,
+        tone: "success",
+      });
+      setDeleting(null);
+    },
+    onError: (e: Error, artifact) => {
+      toast.push({
+        title: "Delete failed",
+        description: `${artifact.name}: ${e.message}`,
+        tone: "error",
+      });
+      setDeleting(null);
+    },
+  });
 
   const listQ = useQuery({
     queryKey: ["lineage-artifacts"],
@@ -158,16 +195,18 @@ export function SavedLineagesMenu({
               {artifacts.map((a) => {
                 const active = a.id === activeArtifactId;
                 return (
-                  <li key={a.id}>
+                  <li
+                    key={a.id}
+                    className={clsx(
+                      "group flex items-stretch transition hover:bg-surface",
+                      active && "bg-surface",
+                    )}
+                  >
                     <button
                       type="button"
                       role="menuitem"
                       onClick={() => handleRowClick(a)}
-                      className={clsx(
-                        "block w-full px-3 py-2 text-left transition",
-                        "hover:bg-surface",
-                        active && "bg-surface",
-                      )}
+                      className="flex-1 min-w-0 px-3 py-2 text-left"
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate text-[12.5px] font-medium text-ink">
@@ -184,6 +223,19 @@ export function SavedLineagesMenu({
                         {a.db_profile || "no profile"} · saved{" "}
                         {relativeTime(a.generated_at)}
                       </div>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete ${a.name}`}
+                      title="Delete this lineage"
+                      onClick={(e) => {
+                        // Stop the row-pick handler from also firing.
+                        e.stopPropagation();
+                        setDeleting(a);
+                      }}
+                      className="flex shrink-0 items-center px-3 text-fg-muted opacity-0 transition group-hover:opacity-100 hover:text-critical focus:opacity-100 focus:outline-none"
+                    >
+                      <Trash2 size={13} />
                     </button>
                   </li>
                 );
@@ -205,6 +257,24 @@ export function SavedLineagesMenu({
         }
         confirmLabel="Discard and open"
         cancelLabel="Keep editing"
+      />
+
+      <AlertDialog
+        open={deleting !== null}
+        onClose={() => (deleteMut.isPending ? undefined : setDeleting(null))}
+        onConfirm={() => {
+          if (deleting) deleteMut.mutate(deleting);
+        }}
+        title="Delete saved lineage?"
+        description={
+          deleting
+            ? `"${deleting.name}" will be removed permanently — its nodes and comments go with it. The relationships themselves stay in the catalog so other canvases that surface them are unaffected. This cannot be undone.`
+            : ""
+        }
+        confirmLabel="Delete forever"
+        cancelLabel="Keep it"
+        tone="danger"
+        loading={deleteMut.isPending}
       />
     </div>
   );

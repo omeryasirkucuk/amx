@@ -68,6 +68,9 @@ interface ToolbarProps {
   activeArtifactId: number | null;
   /** Called with the chosen artifact id after the optional confirm. */
   onOpenSavedArtifact: (id: number) => void;
+  /** Called when the user deletes the currently-loaded saved
+   *  artifact — Canvas clears state + strips the URL param. */
+  onActiveSavedArtifactDeleted: () => void;
 }
 
 interface IconButtonProps {
@@ -110,6 +113,7 @@ export function Toolbar(p: ToolbarProps) {
         hasUnsavedWork={p.hasUnsavedWork}
         activeArtifactId={p.activeArtifactId}
         onPick={p.onOpenSavedArtifact}
+        onActiveArtifactDeleted={p.onActiveSavedArtifactDeleted}
       />
 
       <Divider />

@@ -184,6 +184,9 @@ def write_column_edge(
     verdict: str = "",
     audit_actor: str = "",
     audit_at: float | None = None,
+    style_color: str | None = None,
+    style_dashed: bool | None = None,
+    cardinality: str | None = None,
 ) -> int:
     """Write a single column-level edge. Returns the row id.
 
@@ -191,10 +194,15 @@ def write_column_edge(
     to_entity_id, to_column, relationship_type)`` — re-inserting the
     same column edge updates ``score``, ``details_json``,
     ``last_seen``, and the audit fields without stacking duplicates.
+
+    ``style_color`` / ``style_dashed`` / ``cardinality`` are
+    Studio-canvas visual overrides; ``None`` clears the column back
+    to the default-rendering state.
     """
     details_json = json.dumps(details or {}, ensure_ascii=False)
     now = time.time()
     audit_ts = now if audit_at is None else float(audit_at)
+    dashed_int = (1 if style_dashed else 0) if style_dashed is not None else None
     with hs._lock, hs._connect() as conn:
         conn.execute(
             """
@@ -216,8 +224,9 @@ def write_column_edge(
             INSERT INTO catalog_relationships
                 (from_entity_id, to_entity_id, relationship_type, score, source,
                  details_json, last_seen, verdict, audit_actor, audit_at,
-                 from_column, to_column)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 from_column, to_column,
+                 style_color, style_dashed, cardinality)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(from_entity_id),
@@ -232,6 +241,9 @@ def write_column_edge(
                 audit_ts,
                 str(from_column),
                 str(to_column),
+                style_color,
+                dashed_int,
+                cardinality,
             ),
         )
         return int(cur.lastrowid or 0)

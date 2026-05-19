@@ -570,7 +570,8 @@ def get_artifact_by_id(
             rels = conn.execute(
                 f"""
                 SELECT id, from_entity_id, to_entity_id, from_column, to_column,
-                       relationship_type, source, score, verdict
+                       relationship_type, source, score, verdict,
+                       style_color, style_dashed, cardinality
                 FROM catalog_relationships
                 WHERE from_entity_id IN ({placeholders})
                   AND to_entity_id IN ({placeholders})
@@ -578,6 +579,13 @@ def get_artifact_by_id(
                 tuple(node_ids) + tuple(node_ids),
             ).fetchall()
         for r in rels:
+            # ``style_dashed`` is a nullable INTEGER (0/1); preserve
+            # ``None`` so the frontend can tell "user left it
+            # untouched" apart from "user explicitly picked solid".
+            dashed_raw = r[10]
+            dashed_out: bool | None = (
+                bool(int(dashed_raw)) if dashed_raw is not None else None
+            )
             edges_out.append(
                 {
                     "id": int(r[0]),
@@ -589,6 +597,9 @@ def get_artifact_by_id(
                     "source": str(r[6] or ""),
                     "score": float(r[7] or 0.0),
                     "verdict": str(r[8] or ""),
+                    "style_color": (str(r[9]) if r[9] else None),
+                    "style_dashed": dashed_out,
+                    "cardinality": (str(r[11]) if r[11] else None),
                 }
             )
 
@@ -619,6 +630,63 @@ def get_artifact_by_id(
         "comments": comments_out,
         "logo_nodes": logo_nodes_out,
     }
+
+
+@router.delete("/by-id/{artifact_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_artifact_by_id(
+    artifact_id: int,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> None:
+    """Hard-delete a saved canvas. Cascade-removes its nodes, logo
+    nodes and comments; does NOT touch ``catalog_relationships``
+    because those edges are shared across artifacts (deleting them
+    here would yank the same edge out of every other canvas that
+    surfaces it).
+
+    Idempotent on the artifact row itself: returns 404 if the
+    artifact does not exist so callers can detect the difference,
+    but children that were already orphaned by a half-applied
+    delete are tolerated silently.
+    """
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    aid = int(artifact_id)
+    with hs._lock, hs._connect() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM lineage_artifacts WHERE id = ?",
+            (aid,),
+        ).fetchone()
+        if not exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Lineage artifact {artifact_id} not found.",
+            )
+        # Explicit cascade — SQLite respects ``ON DELETE CASCADE``
+        # only when ``PRAGMA foreign_keys`` is on, and we don't rely
+        # on that being set everywhere the store is opened. Run the
+        # deletes in a single connection so an interruption can't
+        # leave half-purged children behind.
+        conn.execute(
+            "DELETE FROM lineage_artifact_nodes WHERE artifact_id = ?",
+            (aid,),
+        )
+        conn.execute(
+            "DELETE FROM lineage_logo_nodes WHERE artifact_id = ?",
+            (aid,),
+        )
+        conn.execute(
+            "DELETE FROM lineage_comments WHERE artifact_id = ?",
+            (aid,),
+        )
+        conn.execute(
+            "DELETE FROM lineage_artifacts WHERE id = ?",
+            (aid,),
+        )
+    return None
 
 
 @router.get("/{anchor_path:path}/suggest/stream")
@@ -1309,6 +1377,82 @@ def patch_edge_verdict(
     return {"id": int(edge_id), "verdict": verdict, "audit_actor": actor, "audit_at": now}
 
 
+_VALID_CARDINALITIES = {"1:1", "1:N", "N:M"}
+
+
+@router.patch("/edges/{edge_id}/style")
+def patch_edge_style(
+    edge_id: int,
+    payload: dict[str, Any] = Body(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Update Studio-canvas style overrides for an edge.
+
+    Body keys are all optional; absent keys leave the column
+    untouched, ``null`` clears the override back to the default.
+
+    * ``style_color``: hex string (e.g. ``"#60a5fa"``) or ``null``.
+    * ``style_dashed``: bool or ``null``.
+    * ``cardinality``: one of ``"1:1"``, ``"1:N"``, ``"N:M"``, or
+      ``null``.
+    """
+    sets: list[str] = []
+    args: list[Any] = []
+    if "style_color" in payload:
+        v = payload["style_color"]
+        if v is not None and not isinstance(v, str):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="style_color must be a string or null.",
+            )
+        sets.append("style_color = ?")
+        args.append(v)
+    if "style_dashed" in payload:
+        v = payload["style_dashed"]
+        if v is None:
+            sets.append("style_dashed = NULL")
+        else:
+            if not isinstance(v, bool):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="style_dashed must be a bool or null.",
+                )
+            sets.append("style_dashed = ?")
+            args.append(1 if v else 0)
+    if "cardinality" in payload:
+        v = payload["cardinality"]
+        if v is not None and v not in _VALID_CARDINALITIES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="cardinality must be one of: '1:1', '1:N', 'N:M', or null.",
+            )
+        sets.append("cardinality = ?")
+        args.append(v)
+    if not sets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No style fields provided.",
+        )
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    args.append(int(edge_id))
+    with hs._lock, hs._connect() as conn:
+        cur = conn.execute(
+            f"UPDATE catalog_relationships SET {', '.join(sets)} WHERE id = ?",
+            tuple(args),
+        )
+    if cur.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Edge {edge_id} not found.",
+        )
+    return {"id": int(edge_id), "ok": True}
+
+
 @router.delete("/edges/{edge_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_edge(
     edge_id: int,
@@ -1566,6 +1710,17 @@ def post_manual_artifact(
             "source_profile": src_profile,
             "target_profile": tgt_profile,
         }
+        # Optional Studio-canvas overrides: only forwarded when the
+        # payload sets them so a re-save of an old canvas does not
+        # accidentally null out fields it never knew about.
+        style_color = edge.get("style_color")
+        style_dashed_raw = edge.get("style_dashed")
+        style_dashed: bool | None = (
+            bool(style_dashed_raw) if style_dashed_raw is not None else None
+        )
+        cardinality = edge.get("cardinality")
+        if cardinality is not None and cardinality not in _VALID_CARDINALITIES:
+            cardinality = None
         write_column_edge(
             hs,
             from_entity_id=src_id,
@@ -1579,6 +1734,9 @@ def post_manual_artifact(
             verdict="approved",
             audit_actor=actor,
             audit_at=now,
+            style_color=str(style_color) if style_color else None,
+            style_dashed=style_dashed,
+            cardinality=str(cardinality) if cardinality else None,
         )
         persisted += 1
 
