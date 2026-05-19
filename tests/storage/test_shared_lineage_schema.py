@@ -11,13 +11,27 @@ def test_lineage_artifacts_has_required_columns():
     md = build_metadata(schema="AMX")
     table = md.tables["AMX.lineage_artifacts"]
     expected = {
-        "id", "name", "db_profile", "anchor_entity_ref",
-        "depth_up", "depth_down", "format", "output_path",
-        "edge_set_hash", "node_count", "edge_count",
-        "generated_at", "extractors_used", "extractors_partial",
+        "id",
+        "name",
+        "db_profile",
+        "anchor_entity_ref",
+        "depth_up",
+        "depth_down",
+        "format",
+        "output_path",
+        "edge_set_hash",
+        "node_count",
+        "edge_count",
+        "generated_at",
+        "extractors_used",
+        "extractors_partial",
         "canvas_meta",
-        "created_by", "hostname", "client_version",
-        "created_at", "updated_at", "local_id",
+        "created_by",
+        "hostname",
+        "client_version",
+        "created_at",
+        "updated_at",
+        "local_id",
     }
     actual = {c.name for c in table.columns}
     assert expected <= actual, f"missing: {expected - actual}"
@@ -41,11 +55,26 @@ def test_lineage_artifact_nodes_has_required_columns():
     md = build_metadata(schema="AMX")
     table = md.tables["AMX.lineage_artifact_nodes"]
     expected = {
-        "id", "artifact_id", "entity_ref", "entity_kind", "db_profile",
-        "x", "y", "width", "height", "z_index",
-        "display_label", "column_list_json", "logo_key", "custom_style_json",
-        "created_by", "hostname", "client_version",
-        "created_at", "updated_at", "local_id",
+        "id",
+        "artifact_id",
+        "entity_ref",
+        "entity_kind",
+        "db_profile",
+        "x",
+        "y",
+        "width",
+        "height",
+        "z_index",
+        "display_label",
+        "column_list_json",
+        "logo_key",
+        "custom_style_json",
+        "created_by",
+        "hostname",
+        "client_version",
+        "created_at",
+        "updated_at",
+        "local_id",
     }
     actual = {c.name for c in table.columns}
     assert expected <= actual, f"missing: {expected - actual}"
@@ -60,12 +89,25 @@ def test_lineage_artifact_edges_has_required_columns():
     md = build_metadata(schema="AMX")
     table = md.tables["AMX.lineage_artifact_edges"]
     expected = {
-        "id", "artifact_id", "source_node_id", "target_node_id",
-        "edge_kind", "join_type", "on_condition", "where_clause",
-        "source_columns_json", "target_columns_json",
-        "label", "style_json", "waypoints_json",
-        "created_by", "hostname", "client_version",
-        "created_at", "updated_at", "local_id",
+        "id",
+        "artifact_id",
+        "source_node_id",
+        "target_node_id",
+        "edge_kind",
+        "join_type",
+        "on_condition",
+        "where_clause",
+        "source_columns_json",
+        "target_columns_json",
+        "label",
+        "style_json",
+        "waypoints_json",
+        "created_by",
+        "hostname",
+        "client_version",
+        "created_at",
+        "updated_at",
+        "local_id",
     }
     actual = {c.name for c in table.columns}
     assert expected <= actual, f"missing: {expected - actual}"
@@ -80,12 +122,19 @@ def test_lineage_comments_has_attribution_columns():
     md = build_metadata(schema="AMX")
     table = md.tables["AMX.lineage_comments"]
     actual = {c.name for c in table.columns}
-    for expected_col in ("created_by", "hostname", "client_version",
-                         "created_at", "updated_at", "local_id"):
+    for expected_col in (
+        "created_by",
+        "hostname",
+        "client_version",
+        "created_at",
+        "updated_at",
+        "local_id",
+    ):
         assert expected_col in actual, f"missing attribution: {expected_col}"
 
 
 def test_shared_schema_version_bumped():
     from amx.storage.shared_schema import SHARED_SCHEMA_VERSION
+
     # PR-1 increments the schema version to add lineage tables.
     assert SHARED_SCHEMA_VERSION >= 2

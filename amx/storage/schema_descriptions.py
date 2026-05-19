@@ -1006,12 +1006,8 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "'db_profile|database|schema|table[|column]'. "
             "Not present in the local store, which uses anchor_entity_id."
         ),
-        "depth_up": (
-            "Upstream hops included when this artifact was rendered."
-        ),
-        "depth_down": (
-            "Downstream hops included when this artifact was rendered."
-        ),
+        "depth_up": ("Upstream hops included when this artifact was rendered."),
+        "depth_down": ("Downstream hops included when this artifact was rendered."),
         "format": "Image format on disk: 'png' | 'svg' | 'jpg'.",
         "output_path": (
             "Absolute filesystem path of the rendered image file. "
@@ -1038,16 +1034,14 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
         # Shared-only: canvas viewport state
         "canvas_meta": (
-            "Shared-only: JSON of canvas viewport state: zoom, pan, "
-            "layout direction, theme."
+            "Shared-only: JSON of canvas viewport state: zoom, pan, layout direction, theme."
         ),
         # Shared-only attribution columns
         "created_by": ATTRIBUTION_CREATED_BY,
         "hostname": ATTRIBUTION_HOSTNAME,
         "client_version": ATTRIBUTION_CLIENT_VERSION,
         "created_at": (
-            "Shared-only: UTC timestamp when the row was inserted into "
-            "the shared store."
+            "Shared-only: UTC timestamp when the row was inserted into the shared store."
         ),
         "updated_at": "Shared-only: UTC timestamp of the last edit.",
         "local_id": ATTRIBUTION_LOCAL_ID,
@@ -1081,8 +1075,7 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
         # Shared-only: entity kind discriminator
         "entity_kind": (
-            "Shared-only: one of 'table', 'view', 'column', 'external', "
-            "'cte', 'temp'."
+            "Shared-only: one of 'table', 'view', 'column', 'external', 'cte', 'temp'."
         ),
         "db_profile": (
             "Source database profile of the entity at the time of capture. "
@@ -1095,13 +1088,11 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "width": "Rendered node width in ReactFlow units.",
         "height": "Rendered node height in ReactFlow units.",
         "z_index": (
-            "Stack order for overlapping nodes. Higher z renders on top of "
-            "lower z. Defaults to 0."
+            "Stack order for overlapping nodes. Higher z renders on top of lower z. Defaults to 0."
         ),
         # Shared-only: user override label
         "display_label": (
-            "Shared-only: user override label (e.g. table alias). "
-            "NULL means use entity_ref."
+            "Shared-only: user override label (e.g. table alias). NULL means use entity_ref."
         ),
         # Shared-only: column snapshot
         "column_list_json": (
@@ -1116,8 +1107,7 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
         # Shared-only: per-node style overrides
         "custom_style_json": (
-            "Shared-only: JSON of per-node style overrides: colors, border, "
-            "font."
+            "Shared-only: JSON of per-node style overrides: colors, border, font."
         ),
         "created_by": ATTRIBUTION_CREATED_BY,
         "hostname": ATTRIBUTION_HOSTNAME,
@@ -1137,34 +1127,19 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "artifact_id": "FK to lineage_artifacts.id.",
         "source_node_id": "FK to lineage_artifact_nodes.id at the source end.",
         "target_node_id": "FK to lineage_artifact_nodes.id at the target end.",
-        "edge_kind": (
-            "One of 'lineage', 'fk', 'join', 'reference', 'view_source'."
-        ),
+        "edge_kind": ("One of 'lineage', 'fk', 'join', 'reference', 'view_source'."),
         "join_type": (
-            "For join edges: 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'. "
-            "NULL for non-join edges."
+            "For join edges: 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'. NULL for non-join edges."
         ),
-        "on_condition": (
-            "SQL ON expression for join edges, e.g. 'a.id = b.user_id'."
-        ),
+        "on_condition": ("SQL ON expression for join edges, e.g. 'a.id = b.user_id'."),
         "where_clause": (
-            "SQL WHERE filter associated with this edge (often pulled "
-            "from view definitions)."
+            "SQL WHERE filter associated with this edge (often pulled from view definitions)."
         ),
-        "source_columns_json": (
-            "JSON list of source-side column names involved in this edge."
-        ),
-        "target_columns_json": (
-            "JSON list of target-side column names involved in this edge."
-        ),
-        "label": (
-            "User override label for the edge. NULL means derive from "
-            "edge_kind."
-        ),
+        "source_columns_json": ("JSON list of source-side column names involved in this edge."),
+        "target_columns_json": ("JSON list of target-side column names involved in this edge."),
+        "label": ("User override label for the edge. NULL means derive from edge_kind."),
         "style_json": "JSON of edge style: color, line type, arrow style.",
-        "waypoints_json": (
-            "JSON list of intermediate routing points for orthogonal layout."
-        ),
+        "waypoints_json": ("JSON list of intermediate routing points for orthogonal layout."),
         "created_by": ATTRIBUTION_CREATED_BY,
         "hostname": ATTRIBUTION_HOSTNAME,
         "client_version": ATTRIBUTION_CLIENT_VERSION,
@@ -1250,9 +1225,7 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "Primary key. Surrogate INT in the local SQLite store; "
             "UUID string in the shared warehouse for cross-host stability."
         ),
-        "artifact_id": (
-            "FK to lineage_artifacts.id. Cascades on artifact delete."
-        ),
+        "artifact_id": ("FK to lineage_artifacts.id. Cascades on artifact delete."),
         "x": "Canvas X coordinate of the comment's top-left corner.",
         "y": "Canvas Y coordinate of the comment's top-left corner.",
         "width": "Comment width in canvas units.",

@@ -1,6 +1,7 @@
 # tests/storage/test_sqlalchemy_lineage.py
 import pytest
 from sqlalchemy import create_engine
+
 from amx.storage.sqlalchemy_store import SQLAlchemyHistoryStore
 
 
@@ -40,9 +41,7 @@ def test_create_lineage_artifact_inserts_and_returns_uuid(store):
     )
     assert isinstance(artifact_uuid, str) and len(artifact_uuid) == 36
 
-    found = store.find_lineage_uuid_by_local_id(
-        hostname=store._hostname, local_id=42
-    )
+    found = store.find_lineage_uuid_by_local_id(hostname=store._hostname, local_id=42)
     assert found == artifact_uuid
 
 
@@ -67,7 +66,9 @@ def test_create_lineage_artifact_stamps_attribution(store):
 
 def test_upsert_lineage_node_creates_then_updates(store):
     artifact_uuid = store.create_lineage_artifact(
-        local_id=1, name="t", db_profile="x",
+        local_id=1,
+        name="t",
+        db_profile="x",
         anchor_entity_ref="x|a|b|c",
     )
     node_uuid = store.upsert_lineage_node(
@@ -76,7 +77,10 @@ def test_upsert_lineage_node_creates_then_updates(store):
         entity_ref="x|a|b|c",
         entity_kind="table",
         db_profile="x",
-        x=10.0, y=20.0, width=120.0, height=80.0,
+        x=10.0,
+        y=20.0,
+        width=120.0,
+        height=80.0,
         z_index=0,
         display_label=None,
         column_list_json=[{"name": "id", "type": "int", "nullable": False}],
@@ -92,7 +96,10 @@ def test_upsert_lineage_node_creates_then_updates(store):
         entity_ref="x|a|b|c",
         entity_kind="table",
         db_profile="x",
-        x=99.0, y=99.0, width=120.0, height=80.0,
+        x=99.0,
+        y=99.0,
+        width=120.0,
+        height=80.0,
     )
     assert moved_uuid == node_uuid
 
@@ -111,22 +118,41 @@ def test_upsert_lineage_edge_round_trip(store):
         local_id=1, name="t", db_profile="x", anchor_entity_ref="x|a|b|c"
     )
     n1 = store.upsert_lineage_node(
-        local_id=10, artifact_uuid=a, entity_ref="x|a|b|c", entity_kind="table",
-        db_profile="x", x=0, y=0, width=100, height=80,
+        local_id=10,
+        artifact_uuid=a,
+        entity_ref="x|a|b|c",
+        entity_kind="table",
+        db_profile="x",
+        x=0,
+        y=0,
+        width=100,
+        height=80,
     )
     n2 = store.upsert_lineage_node(
-        local_id=11, artifact_uuid=a, entity_ref="x|a|b|d", entity_kind="table",
-        db_profile="x", x=200, y=0, width=100, height=80,
+        local_id=11,
+        artifact_uuid=a,
+        entity_ref="x|a|b|d",
+        entity_kind="table",
+        db_profile="x",
+        x=200,
+        y=0,
+        width=100,
+        height=80,
     )
     edge = store.upsert_lineage_edge(
-        local_id=50, artifact_uuid=a,
-        source_node_uuid=n1, target_node_uuid=n2,
-        edge_kind="join", join_type="LEFT",
+        local_id=50,
+        artifact_uuid=a,
+        source_node_uuid=n1,
+        target_node_uuid=n2,
+        edge_kind="join",
+        join_type="LEFT",
         on_condition="a.id = b.a_id",
         where_clause="a.active = true",
         source_columns_json=["id"],
         target_columns_json=["a_id"],
-        label=None, style_json=None, waypoints_json=None,
+        label=None,
+        style_json=None,
+        waypoints_json=None,
     )
     edges = store.list_lineage_edges(artifact_uuid=a)
     assert len(edges) == 1
@@ -145,9 +171,14 @@ def test_upsert_lineage_comment_round_trip(store):
         local_id=1, name="t", db_profile="x", anchor_entity_ref="x|a|b|c"
     )
     cuuid = store.upsert_lineage_comment(
-        local_id=200, artifact_uuid=a,
-        x=10.0, y=20.0, width=200.0, height=80.0,
-        color="#fef3c7", style="note",
+        local_id=200,
+        artifact_uuid=a,
+        x=10.0,
+        y=20.0,
+        width=200.0,
+        height=80.0,
+        color="#fef3c7",
+        style="note",
         text="Check this join with @bob",
     )
     comments = store.list_lineage_comments(artifact_uuid=a)
@@ -162,8 +193,12 @@ def test_delete_lineage_comment_removes_row(store):
         local_id=2, name="t2", db_profile="x", anchor_entity_ref="x|a|b|c"
     )
     cuuid = store.upsert_lineage_comment(
-        local_id=201, artifact_uuid=a,
-        x=0.0, y=0.0, width=100.0, height=50.0,
+        local_id=201,
+        artifact_uuid=a,
+        x=0.0,
+        y=0.0,
+        width=100.0,
+        height=50.0,
         text="to be deleted",
     )
     store.delete_lineage_comment(uuid=cuuid)
@@ -179,24 +214,29 @@ def test_delete_lineage_comment_removes_row(store):
 def test_find_prior_lineage_by_others_excludes_self(store):
     # Two artifacts: one from this host, one from a different host.
     store.create_lineage_artifact(
-        local_id=1, name="mine", db_profile="prod_pg",
+        local_id=1,
+        name="mine",
+        db_profile="prod_pg",
         anchor_entity_ref="prod_pg|main|public|orders",
     )
     # Simulate another host by inserting directly.
     from datetime import datetime, timezone
+
     with store.engine.begin() as conn:
-        conn.execute(store._t_lineage_artifacts.insert().values(
-            id="other-uuid-from-alice",
-            name="alice_orders",
-            db_profile="prod_pg",
-            anchor_entity_ref="prod_pg|main|public|orders",
-            created_by="alice",
-            hostname="alice-laptop",
-            client_version="0.14.0",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-            local_id=999,
-        ))
+        conn.execute(
+            store._t_lineage_artifacts.insert().values(
+                id="other-uuid-from-alice",
+                name="alice_orders",
+                db_profile="prod_pg",
+                anchor_entity_ref="prod_pg|main|public|orders",
+                created_by="alice",
+                hostname="alice-laptop",
+                client_version="0.14.0",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+                local_id=999,
+            )
+        )
     others = store.find_prior_lineage_by_others(
         db_profile="prod_pg",
         anchor_entity_ref="prod_pg|main|public|orders",

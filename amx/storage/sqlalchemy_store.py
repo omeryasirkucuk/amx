@@ -930,9 +930,7 @@ class SQLAlchemyHistoryStore:
             )
         return uuid_value
 
-    def find_lineage_uuid_by_local_id(
-        self, *, hostname: str, local_id: int
-    ) -> str | None:
+    def find_lineage_uuid_by_local_id(self, *, hostname: str, local_id: int) -> str | None:
         """Return the shared UUID for a lineage artifact given hostname + local int id.
 
         Returns ``None`` if no matching row exists.
@@ -957,13 +955,9 @@ class SQLAlchemyHistoryStore:
         """
         stmt = select(self._t_lineage_artifacts)
         if db_profiles:
-            stmt = stmt.where(
-                self._t_lineage_artifacts.c.db_profile.in_(db_profiles)
-            )
+            stmt = stmt.where(self._t_lineage_artifacts.c.db_profile.in_(db_profiles))
         if created_by:
-            stmt = stmt.where(
-                self._t_lineage_artifacts.c.created_by.in_(created_by)
-            )
+            stmt = stmt.where(self._t_lineage_artifacts.c.created_by.in_(created_by))
         stmt = stmt.order_by(self._t_lineage_artifacts.c.updated_at.desc())
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).fetchall()
@@ -1148,9 +1142,8 @@ class SQLAlchemyHistoryStore:
 
     def list_lineage_edges(self, *, artifact_uuid: str) -> list[LineageEdgeRecord]:
         """Return all edges for an artifact in insertion order."""
-        stmt = (
-            select(self._t_lineage_artifact_edges)
-            .where(self._t_lineage_artifact_edges.c.artifact_id == artifact_uuid)
+        stmt = select(self._t_lineage_artifact_edges).where(
+            self._t_lineage_artifact_edges.c.artifact_id == artifact_uuid
         )
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
@@ -1230,9 +1223,8 @@ class SQLAlchemyHistoryStore:
 
     def list_lineage_comments(self, *, artifact_uuid: str) -> list[LineageCommentRecord]:
         """Return all comments for an artifact in insertion order."""
-        stmt = (
-            select(self._t_lineage_comments)
-            .where(self._t_lineage_comments.c.artifact_id == artifact_uuid)
+        stmt = select(self._t_lineage_comments).where(
+            self._t_lineage_comments.c.artifact_id == artifact_uuid
         )
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
@@ -1242,9 +1234,7 @@ class SQLAlchemyHistoryStore:
         """Hard-delete a comment by its UUID PK."""
         with self.engine.begin() as conn:
             conn.execute(
-                delete(self._t_lineage_comments).where(
-                    self._t_lineage_comments.c.id == uuid
-                )
+                delete(self._t_lineage_comments).where(self._t_lineage_comments.c.id == uuid)
             )
 
     def find_prior_lineage_by_others(
@@ -1268,9 +1258,7 @@ class SQLAlchemyHistoryStore:
         stmt = (
             select(self._t_lineage_artifacts)
             .where(self._t_lineage_artifacts.c.db_profile == db_profile)
-            .where(
-                self._t_lineage_artifacts.c.anchor_entity_ref == anchor_entity_ref
-            )
+            .where(self._t_lineage_artifacts.c.anchor_entity_ref == anchor_entity_ref)
             .where(self._t_lineage_artifacts.c.hostname != exclude_hostname)
             .order_by(self._t_lineage_artifacts.c.updated_at.desc())
         )
