@@ -200,6 +200,7 @@ class HiveWizardTests(unittest.TestCase):
             ]
         )
 
+        info_messages: list[str] = []
         with (
             patch(
                 "amx.cli_support.commands.db._offer_to_install_backend_driver",
@@ -218,6 +219,10 @@ class HiveWizardTests(unittest.TestCase):
                 side_effect=lambda *a, **kw: "hive-secret",
             ),
             patch(
+                "amx.cli_support.commands.db.info",
+                side_effect=lambda msg, *a, **kw: info_messages.append(str(msg)),
+            ),
+            patch(
                 "amx.cli_support.commands.db.warn",
                 side_effect=lambda *a, **kw: None,
             ),
@@ -231,6 +236,13 @@ class HiveWizardTests(unittest.TestCase):
         self.assertEqual(updated.password, "hive-secret")
         self.assertEqual(updated.auth_mode, "PLAIN")
         self.assertEqual(updated.database, "warehouse")
+        # Wizard surfaces the deployment-disambiguation hint so users
+        # configuring a Databricks legacy hive_metastore catalog don't
+        # accidentally configure the wrong backend.
+        self.assertTrue(
+            any("Databricks" in m and "hive_metastore" in m for m in info_messages),
+            f"Expected a Databricks/hive_metastore disambiguation hint, got {info_messages!r}",
+        )
 
     def test_nosasl_skips_password_prompt(self) -> None:
         defaults = DBConfig(backend="hive")
@@ -266,6 +278,10 @@ class HiveWizardTests(unittest.TestCase):
             patch(
                 "amx.cli_support.commands.db.ask_password",
                 side_effect=lambda *a, **kw: "",
+            ),
+            patch(
+                "amx.cli_support.commands.db.info",
+                side_effect=lambda *a, **kw: None,
             ),
             patch(
                 "amx.cli_support.commands.db.warn",

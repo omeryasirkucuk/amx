@@ -235,15 +235,16 @@ clickhouse = [
 trino = [
     "trino[sqlalchemy]>=0.330",
 ]
-# Hive (HiveServer2) — PR-A ships the registration stub only. The
-# extra is wired up here so the import-error message points at the
-# right ``pip install amx-cli[hive]`` remediation, but the actual
-# driver pull lands when PR-B implements the adapter. Pinning
-# ``thrift-sasl`` ≥0.4.3 + ``pure-sasl`` keeps the install working on
-# Windows (the legacy ``sasl`` C extension has no Windows wheels).
+# Hive (HiveServer2) — pure-Python install path. Bare ``pyhive`` ships
+# the SQLAlchemy dialect submodule (``pyhive.sqlalchemy_hive``) that
+# registers the ``hive://`` URL scheme. We DELIBERATELY do NOT pull
+# ``pyhive[hive]`` because that extra brings in ``sasl`` (the C
+# extension) which has no Windows wheels for modern Pythons and fails
+# to build on macOS. Pinning ``thrift-sasl`` ≥0.4.3 + ``pure-sasl``
+# instead routes SASL through pure-Python code that wheels cleanly on
+# all three target OSes.
 hive = [
     "pyhive>=0.7",
-    "sqlalchemy-hive>=0.6",
     "thrift>=0.16",
     "thrift-sasl>=0.4.3",
     "pure-sasl>=0.6",
@@ -266,11 +267,10 @@ all = [
     "clickhouse-connect>=0.7",
     "clickhouse-sqlalchemy>=0.3",
     "trino[sqlalchemy]>=0.330",
-    # ``hive`` driver pull lives in the ``[hive]`` extra only; it is
-    # intentionally NOT in ``[all]`` until PR-B implements the adapter.
-    # Pulling it now would saddle users who pick ``[all]`` with
-    # ``pyhive`` and ``thrift-sasl`` for a backend that immediately
-    # raises ``UnsupportedDatabaseOperation``.
+    "pyhive>=0.7",
+    "thrift>=0.16",
+    "thrift-sasl>=0.4.3",
+    "pure-sasl>=0.6",
     # Every optional feature cluster (auto-installed on demand
     # otherwise). Studio + DuckDB are core deps now and intentionally
     # NOT repeated here.
