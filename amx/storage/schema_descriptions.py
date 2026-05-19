@@ -1588,6 +1588,43 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "that never refresh."
         ),
     },
+    # ── lineage_artifacts (shared) ────────────────────────────────────────
+    "lineage_artifacts": {
+        "__table__": (
+            "Saved lineage diagrams shared across the team workspace, "
+            "including all structural data needed to re-render and edit."
+        ),
+        "id": "UUID primary key, stable across hosts.",
+        "name": "Human-readable artifact name shown in lists.",
+        "db_profile": "Name of the source database profile this lineage was extracted from.",
+        "anchor_entity_ref": (
+            "FQN of the anchor entity in the form "
+            "'db_profile|database|schema|table[|column]'."
+        ),
+        "depth_up": "Upstream traversal depth at extraction time.",
+        "depth_down": "Downstream traversal depth at extraction time.",
+        "format": "Rendering format used for the local export, e.g. 'svg', 'png', 'dot'.",
+        "output_path": (
+            "Local filesystem path of the exported artifact "
+            "(optional; teammates re-render from structural data)."
+        ),
+        "edge_set_hash": "Stable hash of the edge set used for change detection.",
+        "node_count": "Number of nodes in the artifact at save time.",
+        "edge_count": "Number of edges in the artifact at save time.",
+        "generated_at": "Timestamp when the lineage was first generated.",
+        "extractors_used": "JSON list of extractor identifiers that contributed edges.",
+        "extractors_partial": "1 if any extractor returned a partial result, else 0.",
+        "canvas_meta": "JSON of canvas viewport state: zoom, pan, layout direction, theme.",
+        "created_by": "Username that originally created this artifact.",
+        "hostname": "Hostname where the artifact was originally created.",
+        "client_version": "AMX client version at creation time.",
+        "created_at": "UTC timestamp when the row was inserted into the shared store.",
+        "updated_at": "UTC timestamp of the last edit.",
+        "local_id": (
+            "Integer primary key in the originating local SQLite store; "
+            "used together with hostname for idempotent backfill."
+        ),
+    },
 }
 
 
