@@ -31,7 +31,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, inspect, insert, select, text
+from sqlalchemy import and_, insert, inspect, select, text
 from sqlalchemy.engine import Engine
 
 from amx.storage.sqlalchemy_store import SQLAlchemyHistoryStore
@@ -540,9 +540,7 @@ def ensure_column_exists(
     # Pre-flight: skip if column already present.
     try:
         inspector = inspect(engine)
-        existing_cols = {
-            c["name"] for c in inspector.get_columns(table, schema=schema or None)
-        }
+        existing_cols = {c["name"] for c in inspector.get_columns(table, schema=schema or None)}
         if column_name in existing_cols:
             log.debug("ensure_column_exists: %s.%s already has %s", table, schema, column_name)
             return
@@ -559,9 +557,7 @@ def ensure_column_exists(
         # SQLite: suppress "duplicate column name" OperationalError.
         try:
             with engine.begin() as conn:
-                conn.execute(
-                    text(f"ALTER TABLE {fq_table} ADD COLUMN {column_name} {column_spec}")
-                )
+                conn.execute(text(f"ALTER TABLE {fq_table} ADD COLUMN {column_name} {column_spec}"))
         except Exception as exc:  # noqa: BLE001
             err = str(exc).lower()
             if "duplicate column" in err or "already exists" in err:
@@ -572,11 +568,7 @@ def ensure_column_exists(
         # Oracle raises ORA-01430 when the column already exists.
         try:
             with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        f"ALTER TABLE {fq_table} ADD {column_name} {column_spec}"
-                    )
-                )
+                conn.execute(text(f"ALTER TABLE {fq_table} ADD {column_name} {column_spec}"))
         except Exception as exc:  # noqa: BLE001
             err = str(exc)
             if "ORA-01430" in err or "already exists" in err.lower():
@@ -588,9 +580,7 @@ def ensure_column_exists(
         try:
             with engine.begin() as conn:
                 conn.execute(
-                    text(
-                        f"ALTER TABLE {fq_table} ADD COLUMNS ({column_name} {column_spec})"
-                    )
+                    text(f"ALTER TABLE {fq_table} ADD COLUMNS ({column_name} {column_spec})")
                 )
         except Exception as exc:  # noqa: BLE001
             err = str(exc).lower()
@@ -602,10 +592,7 @@ def ensure_column_exists(
         # PostgreSQL, MySQL, Snowflake, BigQuery — all support IF NOT EXISTS.
         with engine.begin() as conn:
             conn.execute(
-                text(
-                    f"ALTER TABLE {fq_table} "
-                    f"ADD COLUMN IF NOT EXISTS {column_name} {column_spec}"
-                )
+                text(f"ALTER TABLE {fq_table} ADD COLUMN IF NOT EXISTS {column_name} {column_spec}")
             )
 
 

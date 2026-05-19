@@ -47,7 +47,9 @@ class _StubResolver:
     def resolve_db_asset(self, ref: str) -> str:  # pragma: no cover
         return ""
 
-    def resolve_doc_profile(self, ref: str, intent: str, k: int = 5) -> list[str]:  # pragma: no cover
+    def resolve_doc_profile(
+        self, ref: str, intent: str, k: int = 5
+    ) -> list[str]:  # pragma: no cover
         return []
 
     def resolve_lineage(self, ref: str) -> str:  # pragma: no cover
@@ -147,9 +149,7 @@ def test_assign_profile_flag_form_updates_row(tmp_store: SQLiteHistoryStore) -> 
 
 def test_assign_profile_unknown_slug_reports_error(tmp_store: SQLiteHistoryStore) -> None:
     """A non-existent slug causes an error message and exits cleanly."""
-    result = _invoke(
-        tmp_store, ["pages", "assign-profile", "ghost-page", "--profile", "prod"]
-    )
+    result = _invoke(tmp_store, ["pages", "assign-profile", "ghost-page", "--profile", "prod"])
     assert result.exit_code == 0, f"Unexpected exception:\n{result.output}"
     assert "ghost-page" in result.output
 

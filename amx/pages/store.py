@@ -117,9 +117,7 @@ class PageStore:
     def soft_delete(self, page_id: str, *, now: datetime) -> None:
         self._history.soft_delete_documentation_page(page_id, updated_at=now)
 
-    def assign_db_profile(
-        self, *, slug: str, db_profile: str | None, now: datetime
-    ) -> bool:
+    def assign_db_profile(self, *, slug: str, db_profile: str | None, now: datetime) -> bool:
         """Update the db_profile field for the page identified by *slug*.
 
         Returns ``True`` if a row was updated, ``False`` when no page with

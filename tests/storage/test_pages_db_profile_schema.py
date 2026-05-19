@@ -86,8 +86,9 @@ def test_ensure_column_exists_is_idempotent_on_sqlite(tmp_path: Path) -> None:
     Uses an in-memory SQLite store to exercise the idempotency path of
     the migration helper — the second call must be a silent no-op.
     """
-    from amx.storage.migration import ensure_column_exists
     from sqlalchemy import create_engine, text
+
+    from amx.storage.migration import ensure_column_exists
 
     engine = create_engine("sqlite:///:memory:", future=True)
     with engine.begin() as conn:

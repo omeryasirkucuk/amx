@@ -732,9 +732,7 @@ def register_pages_commands(
                     return
                 info("Active pages:")
                 for idx, row in enumerate(active, start=1):
-                    click.echo(
-                        f"  {idx}. [{row.get('slug', '')}] {row.get('title', '')}"
-                    )
+                    click.echo(f"  {idx}. [{row.get('slug', '')}] {row.get('title', '')}")
                 raw = click.prompt("Select page (number or slug)").strip()
                 try:
                     choice = int(raw)

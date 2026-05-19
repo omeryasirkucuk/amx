@@ -1144,9 +1144,7 @@ class SQLiteHistoryStore:
                 "local_id INTEGER",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
-                    conn.execute(
-                        f"ALTER TABLE documentation_pages ADD COLUMN {_col_spec}"
-                    )
+                    conn.execute(f"ALTER TABLE documentation_pages ADD COLUMN {_col_spec}")
             # ── documentation_page_assets: per-page asset list ──────────
             conn.execute(
                 """

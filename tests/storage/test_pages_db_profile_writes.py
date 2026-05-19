@@ -56,9 +56,7 @@ def test_create_page_with_db_profile_round_trip(store: SQLiteHistoryStore) -> No
     page_id = _create_page(store, db_profile="prod")
     row = store.get_documentation_page(page_id)
     assert row is not None, "Page must exist after creation"
-    assert row["db_profile"] == "prod", (
-        f"Expected db_profile='prod', got {row['db_profile']!r}"
-    )
+    assert row["db_profile"] == "prod", f"Expected db_profile='prod', got {row['db_profile']!r}"
 
 
 def test_create_page_without_db_profile_remains_null(store: SQLiteHistoryStore) -> None:
@@ -66,9 +64,7 @@ def test_create_page_without_db_profile_remains_null(store: SQLiteHistoryStore) 
     page_id = _create_page(store, db_profile=None)
     row = store.get_documentation_page(page_id)
     assert row is not None, "Page must exist after creation"
-    assert row["db_profile"] is None, (
-        f"Expected db_profile=None (NULL), got {row['db_profile']!r}"
-    )
+    assert row["db_profile"] is None, f"Expected db_profile=None (NULL), got {row['db_profile']!r}"
 
 
 def test_update_page_preserves_db_profile(store: SQLiteHistoryStore) -> None:
