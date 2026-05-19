@@ -13,7 +13,9 @@ from __future__ import annotations
 import getpass
 import json
 import re
+import sqlite3
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
@@ -162,6 +164,97 @@ def _bulk_anchor_fqns(hs: Any, anchor_ids: set[int]) -> dict[int, dict[str, str]
         }
         for r in rows
     }
+
+
+@router.get("/artifacts-with-table")
+def artifacts_with_table(
+    profile: str = Query(...),
+    database: str = Query(default=""),
+    schema: str = Query(default=""),
+    table: str = Query(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """List every saved lineage artifact that contains the given
+    table. Drives the table page's ``Open lineage`` button:
+
+    * 0 results → frontend opens a fresh canvas seeded with the table
+    * 1 result  → frontend navigates straight to ``?artifact=<id>``
+    * 2+        → frontend offers a picker
+
+    Match is by ``(profile, database, schema, table)`` against
+    ``catalog_entities`` joined with ``lineage_artifact_nodes`` — the
+    same identity used by every other lineage flow.
+    """
+    if not profile or not table:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="profile and table are required.",
+        )
+    profile = _resolve_profile(cfg, profile)
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    with hs._connect() as conn:
+        # ``database_name`` is matched leniently: an AI-stream table
+        # often lands in ``catalog_entities`` with the database
+        # column empty (the streamed 2-part FQN didn't carry one),
+        # while the same table added via the picker lands with the
+        # database populated. A strict equality match would split
+        # those two saves into "different" entities and the
+        # button's multi-match picker would only ever surface one
+        # of them. We treat empty-on-either-side as a wildcard so
+        # both representations of the same logical table fold into
+        # the same artifact list.
+        rows = conn.execute(
+            """
+            SELECT DISTINCT la.id, la.name, la.db_profile,
+                   la.anchor_entity_id, la.depth_up, la.depth_down,
+                   la.format, la.output_path, la.edge_set_hash,
+                   la.node_count, la.edge_count, la.generated_at,
+                   la.extractors_used, la.extractors_partial
+            FROM lineage_artifacts la
+            JOIN lineage_artifact_nodes lan ON lan.artifact_id = la.id
+            JOIN catalog_entities ce       ON ce.id = lan.entity_id
+            WHERE ce.db_profile    = ?
+              AND ce.schema_name   = ?
+              AND ce.table_name    = ?
+              AND (
+                ce.database_name = ?
+                OR ce.database_name = ''
+                OR ? = ''
+              )
+            ORDER BY la.generated_at DESC
+            """,
+            (profile, schema, table, database, database),
+        ).fetchall()
+    artifacts: list[dict[str, Any]] = []
+    for r in rows:
+        try:
+            extractors = json.loads(r[12] or "[]")
+        except (TypeError, ValueError):
+            extractors = []
+        artifacts.append(
+            {
+                "id": int(r[0]),
+                "name": str(r[1] or ""),
+                "db_profile": str(r[2] or ""),
+                "anchor_entity_id": int(r[3] or 0),
+                "depth_up": int(r[4] or 0),
+                "depth_down": int(r[5] or 0),
+                "format": str(r[6] or ""),
+                "output_path": str(r[7] or ""),
+                "edge_set_hash": str(r[8] or ""),
+                "node_count": int(r[9] or 0),
+                "edge_count": int(r[10] or 0),
+                "generated_at": float(r[11] or 0.0),
+                "extractors_used": extractors if isinstance(extractors, list) else [],
+                "extractors_partial": bool(r[13] or 0),
+            }
+        )
+    return {"artifacts": artifacts, "count": len(artifacts)}
 
 
 @router.get("/audit")
@@ -1858,6 +1951,19 @@ def post_manual_artifact(
     operators_in = payload.get("operators") or []
     comments_in = payload.get("comments") or []
     logo_nodes_in = payload.get("logo_nodes") or []
+    # Optional artifact_id signals an update of an already-loaded
+    # canvas. When present and the row exists, the handler purges
+    # the old children + re-inserts under the same id (the URL
+    # ``?artifact=<id>`` stays stable). When absent, a name clash
+    # bounces the request with a 409 so the frontend can surface a
+    # rename hint instead of a 500.
+    supplied_artifact_id = payload.get("artifact_id")
+    update_id: int | None = None
+    if supplied_artifact_id is not None:
+        try:
+            update_id = int(supplied_artifact_id)
+        except (TypeError, ValueError):
+            update_id = None
     if not primary_profile or not name or not anchor_fqn:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1871,6 +1977,39 @@ def post_manual_artifact(
             detail="History store not initialised.",
         )
     from amx.lineage.operator_ops import upsert_operator_entity, write_column_edge
+
+    # Resolve whether the requested name clashes with a different
+    # already-saved artifact. The frontend treats the 409 as a
+    # signal to surface an inline "rename or open existing" hint.
+    with hs._connect() as conn:
+        existing_row = conn.execute(
+            "SELECT id, name FROM lineage_artifacts WHERE name = ? LIMIT 1",
+            (name,),
+        ).fetchone()
+    existing_id = int(existing_row[0]) if existing_row else None
+    if existing_id is not None and existing_id != update_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "name_in_use",
+                "message": f"Lineage name '{name}' is already used by another saved canvas.",
+                "existing_id": existing_id,
+                "existing_name": name,
+            },
+        )
+
+    # Guard against the case where the client thought it was
+    # updating an artifact that has since been deleted: drop the
+    # update intent so the request creates a fresh row instead of
+    # failing the children-update DELETE+INSERT on a missing parent.
+    if update_id is not None:
+        with hs._connect() as conn:
+            still_there = conn.execute(
+                "SELECT 1 FROM lineage_artifacts WHERE id = ?",
+                (update_id,),
+            ).fetchone()
+        if not still_there:
+            update_id = None
 
     anchor_id = _resolve_entity_id_strict(hs, primary_profile, anchor_fqn)
     actor = _actor_name()
@@ -2033,22 +2172,90 @@ def post_manual_artifact(
     slug_base = re.sub(r"[^A-Za-z0-9_-]+", "_", name) or "lineage"
     slug = f"{slug_base}_{int(now)}"
     out = _P(_resolve_config_dir()) / "lineage" / f"{slug}.svg"
-    try:
-        result = lineage_service.create_lineage(
-            hs=hs,
-            scope=scope,
-            name=name,
-            output_path=out,
-            fmt="svg",
-            fill_decision="skip",
-        )
-    except Exception as exc:  # render failure should not lose the edges
-        return {
-            "ok": True,
-            "persisted_edges": persisted,
-            "artifact_id": 0,
-            "render_error": str(exc),
-        }
+
+    @dataclass
+    class _ArtifactStub:
+        """Mini-LineageRunResult for the in-place update path so the
+        downstream children-insertion blocks (which all read
+        ``result.artifact_id``) stay untouched."""
+
+        artifact_id: int
+
+    if update_id is not None:
+        # Update-in-place: drop every child row of the existing
+        # artifact, then rename + refresh the parent row. The
+        # downstream blocks re-INSERT the new children with the
+        # same artifact_id so the URL ``?artifact=<id>`` stays
+        # stable across saves.
+        node_count = sum(1 for n in nodes_in if isinstance(n, dict))
+        edge_count = persisted
+        with hs._lock, hs._connect() as conn:
+            conn.execute(
+                "DELETE FROM lineage_artifact_nodes WHERE artifact_id = ?",
+                (update_id,),
+            )
+            conn.execute(
+                "DELETE FROM lineage_logo_nodes WHERE artifact_id = ?",
+                (update_id,),
+            )
+            conn.execute(
+                "DELETE FROM lineage_comments WHERE artifact_id = ?",
+                (update_id,),
+            )
+            conn.execute(
+                """
+                UPDATE lineage_artifacts
+                SET name = ?, db_profile = ?, anchor_entity_id = ?,
+                    node_count = ?, edge_count = ?, generated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    name,
+                    primary_profile,
+                    int(anchor_id),
+                    int(node_count),
+                    int(edge_count),
+                    float(now),
+                    update_id,
+                ),
+            )
+        result = _ArtifactStub(artifact_id=update_id)
+    else:
+        try:
+            result = lineage_service.create_lineage(
+                hs=hs,
+                scope=scope,
+                name=name,
+                output_path=out,
+                fmt="svg",
+                fill_decision="skip",
+            )
+        except sqlite3.IntegrityError as exc:
+            # Race: another save grabbed the name between our
+            # pre-flight check and the insert. Bounce with the
+            # same 409 shape so the frontend's name-conflict UI
+            # behaves identically.
+            with hs._connect() as conn:
+                row = conn.execute(
+                    "SELECT id FROM lineage_artifacts WHERE name = ? LIMIT 1",
+                    (name,),
+                ).fetchone()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "name_in_use",
+                    "message": f"Lineage name '{name}' is already used by another saved canvas.",
+                    "existing_id": int(row[0]) if row else None,
+                    "existing_name": name,
+                },
+            ) from exc
+        except Exception as exc:  # render failure should not lose the edges
+            return {
+                "ok": True,
+                "persisted_edges": persisted,
+                "artifact_id": 0,
+                "render_error": str(exc),
+            }
 
     # Persist operator-node placements alongside table nodes so the
     # load endpoint can re-render the canvas exactly as it was —

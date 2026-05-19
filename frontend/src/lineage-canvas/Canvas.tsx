@@ -42,6 +42,7 @@ import "reactflow/dist/style.css";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
+import clsx from "clsx";
 
 import PageHeader from "../components/PageHeader";
 import Modal from "../components/Modal";
@@ -72,8 +73,9 @@ import {
   makeTableNode,
 } from "./amx-bridge/payload";
 import { fetchTableColumns } from "./amx-bridge/catalog";
-import { lineageEdgesAmong } from "../lib/api";
+import { ApiError, lineageEdgesAmong } from "../lib/api";
 import { proposeNameMatchEdges } from "./heuristics/nameMatch";
+import { findFreeSpot, viewportCenterFlowCoords } from "./placement";
 import { parseSql, renderSql } from "./amx-bridge/sqlIo";
 import { logoKeyForBackend } from "./logos/backendMap";
 import { LogoPicker } from "./logos/LogoPicker";
@@ -110,6 +112,13 @@ function CanvasInner() {
     artifactId,
   );
   const [generating, setGenerating] = useState(false);
+  // Tracks whether the canvas has been mutated since the last save /
+  // load. We mark it true on user-driven mutations (drag-end,
+  // add / remove, edit) and reset it after a successful save or a
+  // fresh load. ``hasUnsavedWork`` reads from this rather than
+  // ``nodes.length`` so the discard confirm doesn't fire after a
+  // clean save just because the nodes still happen to be on screen.
+  const [dirty, setDirty] = useState<boolean>(false);
 
   // Modals
   const [addOpen, setAddOpen] = useState(false);
@@ -123,6 +132,13 @@ function CanvasInner() {
 
   const [saveName, setSaveName] = useState("");
   const [aiAnchor, setAiAnchor] = useState("");
+  // Cleared when the user edits the name input or after a clean save;
+  // populated by the save mutation's onError handler when the backend
+  // returns 409 ``name_in_use``. Drives the inline error + the
+  // "Open existing →" affordance inside the Save modal.
+  const [nameConflict, setNameConflict] = useState<
+    { existingId: number | null; existingName: string } | null
+  >(null);
   const [sqlInput, setSqlInput] = useState("");
   const [sqlOutput, setSqlOutput] = useState("");
 
@@ -176,15 +192,68 @@ function CanvasInner() {
       setPrimaryProfile(conv.primaryProfile);
       setArtifactName(conv.artifactName);
       setActiveArtifactId(conv.artifactId);
+      // Freshly loaded canvas matches whatever the backend persisted —
+      // until the user touches a node, the discard confirm should
+      // stay quiet.
+      setDirty(false);
     }
   }, [loadQ.data]);
+
+  // Seed-from-table support for the browse page's ``Open lineage``
+  // button when no saved artifact already contains the picked
+  // table. The browse handler routes here with
+  // ``?seed=<profile>|<database>|<schema>|<table>|<backend>``; we
+  // call ``onPickTable`` once with those coords, then strip the
+  // seed param so a refresh doesn't re-seed the same table.
+  const seedParam = params.get("seed");
+  useEffect(() => {
+    if (!seedParam || artifactId) return;
+    const parts = seedParam.split("|");
+    if (parts.length < 4) return;
+    const [profile, database, schema, table, backend = ""] = parts;
+    if (!profile || !table) return;
+    onPickTable({
+      profile,
+      backend,
+      database,
+      schema,
+      table,
+      columns: [],
+    });
+    // Drop ``?seed=…`` without firing the load-by-id effect (no
+    // ``artifact`` param either way) so a reload of the URL doesn't
+    // duplicate the seed.
+    const next = new URLSearchParams(params);
+    next.delete("seed");
+    setParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedParam, artifactId]);
 
   // ── ReactFlow change handlers ───────────────────────────────────────────
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setNodes((nds) => applyNodeChanges(changes, nds) as CanvasNode[]);
+    // A change qualifies as "dirty" when it actually mutates the
+    // persisted graph — drag-end position, node removal,
+    // dimensions. Selection / hover / mid-drag movement is noise
+    // and would mark the canvas dirty every time the user just
+    // clicked around.
+    if (
+      changes.some(
+        (c) =>
+          c.type === "remove" ||
+          c.type === "add" ||
+          c.type === "dimensions" ||
+          (c.type === "position" && c.dragging === false),
+      )
+    ) {
+      setDirty(true);
+    }
   }, []);
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     setEdges((eds) => applyEdgeChanges(changes, eds) as CanvasEdge[]);
+    if (changes.some((c) => c.type === "remove" || c.type === "add")) {
+      setDirty(true);
+    }
   }, []);
   const onConnect = useCallback((conn: Connection) => {
     if (!conn.source || !conn.target || conn.source === conn.target) return;
@@ -212,6 +281,7 @@ function CanvasInner() {
       };
       return addEdge(newEdge, eds) as CanvasEdge[];
     });
+    setDirty(true);
   }, []);
 
   // ── Toolbar actions ─────────────────────────────────────────────────────
@@ -226,13 +296,14 @@ function CanvasInner() {
 
   function onPickTable(pick: AddTablePick) {
     const autoLogo = logoKeyForBackend(pick.backend);
+    const hint = viewportCenterFlowCoords(canvasShellRef.current, (p) =>
+      rf.screenToFlowPosition(p),
+    );
     setNodes((nds) => {
       // Compute geometry from the latest ``nds`` rather than the
       // stale closure ``nodes`` — the multi-select Add Table modal
       // fires ``onPick`` N times in a tight loop before any React
-      // commit lands, so reading ``nodes.length`` outside this
-      // updater gave every pick the same position and the new
-      // tables stacked at identical coordinates.
+      // commit lands.
       const tableCount = nds.filter((n) => n.data.kind === "table").length;
       const multi = nds.some(
         (n) =>
@@ -240,9 +311,18 @@ function CanvasInner() {
           n.data.profile &&
           n.data.profile !== pick.profile,
       );
+      const pos = findFreeSpot({
+        existing: nds,
+        hint,
+        // Slightly conservative footprint so the spiral walks past
+        // already-placed operators / wide expanded tables. The
+        // measured node will end up smaller than this when
+        // collapsed; that just means a touch extra breathing room.
+        size: { width: 320, height: 180 },
+      });
       const node = makeTableNode({
         ...pick,
-        position: { x: 80 + tableCount * 32, y: 80 + tableCount * 32 },
+        position: pos,
         multiProfile: multi,
         isAnchor: tableCount === 0,
       });
@@ -285,55 +365,103 @@ function CanvasInner() {
       return appended;
     });
     if (!primaryProfile) setPrimaryProfile(pick.profile);
+    setDirty(true);
+  }
+
+  /** Shared placement seed: the viewport centre in flow coords. The
+   *  spiral-walk in ``findFreeSpot`` opens outward from here, so
+   *  whatever the user is currently looking at is the first cell
+   *  considered when a new node lands. */
+  function placementHint(): { x: number; y: number } {
+    return viewportCenterFlowCoords(canvasShellRef.current, (p) =>
+      rf.screenToFlowPosition(p),
+    );
   }
 
   function addOperatorNode(kind: OperatorKind) {
     const id = `op-tmp-${kind}-${Date.now()}`;
-    const node: CanvasNode = {
-      id,
-      type: nodeTypeForOperator(kind),
-      position: { x: 240, y: 140 },
-      data: {
-        kind: "operator",
+    const hint = placementHint();
+    setNodes((nds) => {
+      const pos = findFreeSpot({
+        existing: nds,
+        hint,
+        // Real FilterNode / JoinNode / etc. render at ~300×200
+        // (header + 3-row textarea); ReactFlow only measures the
+        // DOM after the first paint, so until then the next
+        // ``findFreeSpot`` call would see a default 240×120 box
+        // and let a sibling land on top.
+        size: { width: 300, height: 200 },
+      });
+      const node: CanvasNode = {
         id,
-        opKind: kind,
-        expression: "",
-        upstreamColumns: [],
-      },
-    };
-    setNodes((nds) => [...nds, node]);
+        type: nodeTypeForOperator(kind),
+        position: pos,
+        // Explicit width/height so the collision check has a
+        // truthful footprint immediately, without waiting for
+        // ReactFlow's measurement pass.
+        width: 300,
+        height: 200,
+        data: {
+          kind: "operator",
+          id,
+          opKind: kind,
+          expression: "",
+          upstreamColumns: [],
+        },
+      };
+      return [...nds, node];
+    });
+    setDirty(true);
   }
 
   function addLogoNode(logo: LogoRow) {
     const id = `logo-tmp-${logo.key}-${Date.now()}`;
-    const node: CanvasNode = {
-      id,
-      type: "logo",
-      position: { x: 200 + nodes.length * 20, y: 200 + nodes.length * 20 },
-      width: 120,
-      height: 120,
-      data: {
-        kind: "logo",
+    const hint = placementHint();
+    setNodes((nds) => {
+      const pos = findFreeSpot({
+        existing: nds,
+        hint,
+        size: { width: 120, height: 120 },
+      });
+      const node: CanvasNode = {
         id,
-        logoKey: logo.key,
-        label: logo.label,
-      },
-    };
-    setNodes((nds) => [...nds, node]);
+        type: "logo",
+        position: pos,
+        width: 120,
+        height: 120,
+        data: {
+          kind: "logo",
+          id,
+          logoKey: logo.key,
+          label: logo.label,
+        },
+      };
+      return [...nds, node];
+    });
+    setDirty(true);
   }
 
   function addCommentNode() {
     const id = `comment-tmp-${Date.now()}`;
-    const node: CanvasNode = {
-      id,
-      type: "comment",
-      position: { x: 120, y: 120 },
-      width: 220,
-      height: 140,
-      data: { kind: "comment", id, color: "amber", text: "", style: "note" },
-      dragHandle: ".lcv-comment-grip",
-    };
-    setNodes((nds) => [...nds, node]);
+    const hint = placementHint();
+    setNodes((nds) => {
+      const pos = findFreeSpot({
+        existing: nds,
+        hint,
+        size: { width: 220, height: 140 },
+      });
+      const node: CanvasNode = {
+        id,
+        type: "comment",
+        position: pos,
+        width: 220,
+        height: 140,
+        data: { kind: "comment", id, color: "amber", text: "", style: "note" },
+        dragHandle: ".lcv-comment-grip",
+      };
+      return [...nds, node];
+    });
+    setDirty(true);
   }
 
   function addTextNode() {
@@ -344,15 +472,24 @@ function CanvasInner() {
     // gives us "click outside text to drag, click inside to edit"
     // out of the box.
     const id = `text-tmp-${Date.now()}`;
-    const node: CanvasNode = {
-      id,
-      type: "comment",
-      position: { x: 160, y: 160 },
-      width: 220,
-      height: 36,
-      data: { kind: "comment", id, color: "amber", text: "", style: "text" },
-    };
-    setNodes((nds) => [...nds, node]);
+    const hint = placementHint();
+    setNodes((nds) => {
+      const pos = findFreeSpot({
+        existing: nds,
+        hint,
+        size: { width: 220, height: 36 },
+      });
+      const node: CanvasNode = {
+        id,
+        type: "comment",
+        position: pos,
+        width: 220,
+        height: 36,
+        data: { kind: "comment", id, color: "amber", text: "", style: "text" },
+      };
+      return [...nds, node];
+    });
+    setDirty(true);
   }
 
   /** Discover persisted edges (FK / view DDL / query log / earlier
@@ -418,6 +555,7 @@ function CanvasInner() {
       }
       return next;
     });
+    if (added > 0) setDirty(true);
     return added;
   }
 
@@ -490,6 +628,7 @@ function CanvasInner() {
       });
     }
     const total = catalogAdded + heuristicAdded;
+    if (total > 0) setDirty(true);
     const parts: string[] = [];
     if (catalogAdded) parts.push(`${catalogAdded} catalog`);
     if (heuristicAdded) parts.push(`${heuristicAdded} name-match`);
@@ -664,6 +803,7 @@ function CanvasInner() {
           ensureTable(ed.to);
         }
         streamingAddedRef.current += newlySynthesised.length;
+        if (newlySynthesised.length > 0) setDirty(true);
         return next;
       });
 
@@ -819,6 +959,10 @@ function CanvasInner() {
         primaryProfile: profile,
         artifactName: saveName.trim(),
         anchorFqn,
+        // When the canvas was loaded from a saved artifact, signal an
+        // update-in-place so the save modal's name-conflict check
+        // doesn't fire against the artifact's own row.
+        artifactId: activeArtifactId,
         nodes,
         edges,
       });
@@ -835,9 +979,29 @@ function CanvasInner() {
       // Navigate by id — never by name. This is the save-canvas bug fix.
       setParams({ artifact: String(res.artifact_id) });
       qc.invalidateQueries({ queryKey: ["lineage-artifacts"] });
+      // The canvas matches the backend again — discard confirm
+      // should stay quiet until the user touches a node.
+      setDirty(false);
+      setNameConflict(null);
     },
-    onError: (e: Error) =>
-      toast.push({ title: "Save failed", description: e.message, tone: "error" }),
+    onError: (e: Error) => {
+      // Map the backend's 409 onto a structured inline error in the
+      // save modal so the user can rename without losing the typed
+      // canvas state. Other errors keep the existing toast path.
+      const apiErr = e as ApiError;
+      if (apiErr instanceof ApiError && apiErr.status === 409) {
+        const data = apiErr.data || {};
+        const existingId =
+          typeof data.existing_id === "number" ? data.existing_id : null;
+        const existingName =
+          typeof data.existing_name === "string"
+            ? data.existing_name
+            : saveName.trim();
+        setNameConflict({ existingId, existingName });
+        return;
+      }
+      toast.push({ title: "Save failed", description: e.message, tone: "error" });
+    },
   });
 
   // ── PNG export ───────────────────────────────────────────────────────────
@@ -1038,14 +1202,12 @@ function CanvasInner() {
     [nodes],
   );
 
-  // Conservative "has work to preserve" check for the Saved-lineage
-  // dropdown's confirm prompt. Any node on the canvas counts — we
-  // don't track per-edit dirtiness, so the menu errs on the side of
-  // asking once before replacing user work. The menu itself
-  // suppresses the prompt when the user picks the artifact already
-  // open, so the only case that triggers it is "switching away from
-  // something I can see on screen."
-  const hasUnsavedWork = nodes.length > 0;
+  // "Has work to preserve" reads from the dirty flag — set by user-
+  // driven mutations, cleared by save / load. We still gate it on
+  // having something on canvas at all so a fresh blank canvas
+  // doesn't ever prompt, but otherwise the discard confirm only
+  // fires when the user actually has unsaved edits.
+  const hasUnsavedWork = dirty && nodes.length > 0;
 
   function handleOpenSavedArtifact(id: number) {
     setParams({ artifact: String(id) });
@@ -1058,6 +1220,7 @@ function CanvasInner() {
     setArtifactName("");
     setActiveArtifactId(null);
     setParams({});
+    setDirty(false);
   }
 
   /** Clear the canvas back to a blank slate. Confirms first when
@@ -1219,19 +1382,37 @@ function CanvasInner() {
 
       <Modal
         open={saveOpen}
-        onClose={() => setSaveOpen(false)}
+        onClose={() => {
+          setSaveOpen(false);
+          setNameConflict(null);
+        }}
         title={<span>Save canvas</span>}
         description="Persist this canvas as a lineage artifact. The artifact id is the identifier we use to re-open it — the name is purely display."
         footer={
           <div className="flex justify-end gap-2">
-            <Button variant="secondary" size="md" onClick={() => setSaveOpen(false)}>
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={() => {
+                setSaveOpen(false);
+                setNameConflict(null);
+              }}
+            >
               Cancel
             </Button>
             <Button
               variant="primary"
               size="md"
               loading={saveMut.isPending}
-              disabled={!saveName.trim() || saveMut.isPending}
+              disabled={
+                !saveName.trim() ||
+                saveMut.isPending ||
+                // While the conflict is unresolved the typed name still
+                // matches a different artifact — block the Save button
+                // until the user actually changes the input.
+                (nameConflict !== null &&
+                  nameConflict.existingName.trim() === saveName.trim())
+              }
               onClick={() => saveMut.mutate()}
             >
               Save
@@ -1246,10 +1427,49 @@ function CanvasInner() {
           <input
             type="text"
             value={saveName}
-            onChange={(e) => setSaveName(e.target.value)}
+            onChange={(e) => {
+              setSaveName(e.target.value);
+              // Typing clears the conflict so the Save button enables
+              // again as soon as the user picks a different name.
+              if (
+                nameConflict &&
+                nameConflict.existingName.trim() !== e.target.value.trim()
+              ) {
+                setNameConflict(null);
+              }
+            }}
             placeholder="my-canvas"
-            className="block w-full rounded-md border border-surface-border bg-surface-raised px-3 py-2 text-sm focus:border-accent-default focus:outline-none"
+            className={clsx(
+              "block w-full rounded-md border bg-surface-raised px-3 py-2 text-sm focus:outline-none",
+              nameConflict &&
+                nameConflict.existingName.trim() === saveName.trim()
+                ? "border-critical focus:border-critical"
+                : "border-surface-border focus:border-accent-default",
+            )}
           />
+          {nameConflict &&
+            nameConflict.existingName.trim() === saveName.trim() && (
+              <div className="flex items-center justify-between gap-2 pt-1 text-[11.5px] text-critical">
+                <span>
+                  ⚠ Already used by another saved lineage. Rename or open it.
+                </span>
+                {nameConflict.existingId !== null && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const id = nameConflict.existingId;
+                      if (id === null) return;
+                      setSaveOpen(false);
+                      setNameConflict(null);
+                      setParams({ artifact: String(id) });
+                    }}
+                    className="rounded border border-critical/40 px-2 py-0.5 text-[11px] text-critical transition hover:bg-critical-soft"
+                  >
+                    Open existing →
+                  </button>
+                )}
+              </div>
+            )}
         </label>
       </Modal>
 

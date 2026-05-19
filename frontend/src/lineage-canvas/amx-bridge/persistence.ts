@@ -18,6 +18,11 @@ export interface ManualSavePayload {
   profile: string;          // primary profile (used for AI generate/refresh)
   name: string;             // display name only
   anchor_fqn: string;       // primary anchor table
+  /** When set, the backend updates this artifact in place (purges
+   *  its child rows and re-inserts them under the same id). When
+   *  absent, the backend creates a fresh artifact and 409s on
+   *  name conflict. */
+  artifact_id?: number | null;
   nodes: ManualSaveNode[];
   edges: ManualSaveEdge[];
   /** Operator-kind canvas nodes (filter / join / aggregate / function).
@@ -216,6 +221,9 @@ export function buildSavePayload(args: {
   primaryProfile: string;
   artifactName: string;
   anchorFqn: string;
+  /** When set, signals the backend to update this artifact in
+   *  place instead of creating a fresh one. */
+  artifactId?: number | null;
   nodes: CanvasNode[];
   edges: CanvasEdge[];
 }): ManualSavePayload {
@@ -303,6 +311,7 @@ export function buildSavePayload(args: {
     profile: primaryProfile,
     name: artifactName,
     anchor_fqn: anchorFqn,
+    artifact_id: args.artifactId ?? null,
     nodes,
     edges,
     operators,

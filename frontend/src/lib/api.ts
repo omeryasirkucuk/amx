@@ -26,12 +26,23 @@ export class ApiError extends Error {
   status: number;
   detail: string;
   hint?: string;
+  /** Raw ``detail`` from the backend when it's a JSON object —
+   *  carries structured fields (``existing_id`` on the lineage
+   *  409, etc.) that callers occasionally need to drive UI
+   *  decisions without re-parsing the message string. */
+  data?: Record<string, unknown>;
 
-  constructor(status: number, detail: string, hint?: string) {
+  constructor(
+    status: number,
+    detail: string,
+    hint?: string,
+    data?: Record<string, unknown>,
+  ) {
     super(detail);
     this.status = status;
     this.detail = detail;
     this.hint = hint;
+    this.data = data;
   }
 }
 
@@ -84,6 +95,7 @@ export async function apiFetch<T>(
     }
     let detail = text;
     let hint: string | undefined;
+    let data: Record<string, unknown> | undefined;
     try {
       const parsed = JSON.parse(text);
       // FastAPI puts HTTPException payload under ``detail``. When the
@@ -96,6 +108,7 @@ export async function apiFetch<T>(
       // surfaces.
       const rawDetail = parsed.detail;
       if (rawDetail && typeof rawDetail === "object") {
+        data = rawDetail as Record<string, unknown>;
         const message = (rawDetail as { message?: unknown }).message;
         const detailHint = (rawDetail as { hint?: unknown }).hint;
         detail =
@@ -115,7 +128,7 @@ export async function apiFetch<T>(
     } catch {
       /* response wasn't JSON; keep the raw text */
     }
-    throw new ApiError(res.status, detail || res.statusText, hint);
+    throw new ApiError(res.status, detail || res.statusText, hint, data);
   }
   // 204 No Content
   if (res.status === 204) return undefined as T;
@@ -1381,6 +1394,26 @@ function encodeAnchorPath(anchor: string): string {
 export async function lineageList(profile?: string): Promise<LineageArtifactList> {
   const qs = profile ? `?profile=${encodeURIComponent(profile)}` : "";
   return apiFetch<LineageArtifactList>(`/api/lineage${qs}`);
+}
+
+/** List saved artifacts that already contain the given table.
+ *  Drives the table page's ``Open lineage`` button: 0 → seed a new
+ *  canvas, 1 → jump, multiple → picker. */
+export async function lineageArtifactsForTable(args: {
+  profile: string;
+  database?: string;
+  schema?: string;
+  table: string;
+}): Promise<LineageArtifactList> {
+  const params = new URLSearchParams({
+    profile: args.profile,
+    database: args.database ?? "",
+    schema: args.schema ?? "",
+    table: args.table,
+  });
+  return apiFetch<LineageArtifactList>(
+    `/api/lineage/artifacts-with-table?${params.toString()}`,
+  );
 }
 
 /** Hard-delete a saved lineage artifact (cascades to its nodes,
