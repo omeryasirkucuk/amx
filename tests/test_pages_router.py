@@ -201,6 +201,14 @@ def test_export_md_returns_markdown_attachment(client: TestClient, headers: dict
 
 
 def test_export_pdf_returns_pdf_bytes(client: TestClient, headers: dict[str, str]) -> None:
+    # Same rationale as ``test_to_pdf_returns_bytes_starting_with_pdf_header``
+    # in ``tests/test_pages_exporters.py``: PDF export needs the
+    # optional ``[pages]`` extra (``xhtml2pdf`` + its native chain),
+    # which is not installed on CI runners.
+    pytest.importorskip(
+        "xhtml2pdf",
+        reason="xhtml2pdf is only installed with the [pages] extra",
+    )
     pid = client.post(
         "/api/pages",
         json={"title": "PdfDoc", "intent": ""},
