@@ -24,5 +24,13 @@ class AMXLLMClient:
     def model_name(self) -> str:
         return self._provider.model_name
 
+    @property
+    def cfg(self) -> Any:
+        """Expose the ``LLMConfig`` (provider/model) so the token tracker
+        can resolve a price for each pages_compose call. The tracker
+        reads ``llm.cfg.provider`` and ``llm.cfg.model`` via
+        :meth:`amx.utils.token_tracker.TokenTracker.record_for`."""
+        return self._cfg.llm
+
     def chat(self, messages: list[dict[str, str]], **kw: Any) -> Any:
         return self._provider.chat(messages, **kw)

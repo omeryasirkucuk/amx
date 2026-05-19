@@ -15,6 +15,7 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
+  Plus,
   Trash2,
 } from "lucide-react";
 
@@ -228,6 +229,14 @@ export default function PageEditRoute() {
             </Badge>
             <SavedIndicator saving={saving} lastSavedAt={lastSavedAt} />
             <PageExportMenu pageId={page.id} pageTitle={title} />
+            <Button
+              variant="secondary"
+              leadingIcon={<Plus size={14} />}
+              onClick={() => navigate("/pages/new")}
+              title="Start a new documentation page"
+            >
+              New
+            </Button>
           </div>
         </div>
       </header>

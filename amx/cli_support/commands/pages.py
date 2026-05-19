@@ -25,6 +25,14 @@ from rich.table import Table
 
 from amx.config import AMXConfig
 from amx.pages.factory import build_pages_service
+from amx.pages.intent_templates import (
+    INTENT_TEMPLATES,
+    IntentTemplate,
+    template_by_slug,
+)
+from amx.pages.intent_templates import (
+    render as render_intent,
+)
 from amx.pages.service import PagesService
 from amx.pages.types import AssetRef, SourceRef
 from amx.utils.console import error, info, success, warn
@@ -70,6 +78,110 @@ def _parse_asset_flag(raw: str) -> AssetRef:
     return AssetRef(kind=kind, ref=ref)  # type: ignore[arg-type]
 
 
+def _pick_intent_template() -> IntentTemplate | None:
+    """Render the picker and return the chosen template (None = custom)."""
+    info("Pick an intent template:")
+    for idx, tpl in enumerate(INTENT_TEMPLATES, start=1):
+        click.echo(f"  {idx}. {tpl.label}")
+    click.echo(f"  {len(INTENT_TEMPLATES) + 1}. Custom (free text)")
+    raw = click.prompt(
+        "Selection",
+        default=str(len(INTENT_TEMPLATES) + 1),
+        show_default=True,
+    ).strip()
+    try:
+        choice = int(raw)
+    except ValueError:
+        return None
+    if 1 <= choice <= len(INTENT_TEMPLATES):
+        return INTENT_TEMPLATES[choice - 1]
+    return None
+
+
+def _collect_template_params(
+    cfg: AMXConfig,
+    template: IntentTemplate,
+) -> tuple[list[AssetRef], dict[str, str]]:
+    """Prompt for the assets the chosen template requires.
+
+    Returns the asset list to attach and the placeholder map used to
+    render the prompt skeleton into a concrete intent string.
+    """
+    assets: list[AssetRef] = []
+    params: dict[str, str] = {}
+    req = template.required_assets
+
+    db_names = sorted((cfg.db_profiles or {}).keys())
+
+    if req in {"one_db_table", "one_db_column", "one_db_profile"}:
+        if db_names:
+            info("Configured DB profiles: " + ", ".join(db_names))
+        profile = click.prompt("DB profile name").strip()
+        params["db_profile"] = profile
+        if req == "one_db_profile":
+            assets.append(AssetRef(kind="db_profile", ref=profile))
+        else:
+            database = click.prompt("Database name", default="", show_default=False).strip()
+            schema = click.prompt("Schema name").strip()
+            table = click.prompt("Table name").strip()
+            params["table"] = f"{schema}.{table}" if schema else table
+            if req == "one_db_column":
+                column = click.prompt("Column name").strip()
+                params["column"] = column
+                ref = "/".join(p for p in (profile, database, schema, f"{table}.{column}") if p)
+                assets.append(AssetRef(kind="db_column", ref=ref))
+            else:
+                ref = "/".join(p for p in (profile, database, schema, table) if p)
+                assets.append(AssetRef(kind="db_table", ref=ref))
+    elif req == "many_db_profiles":
+        if db_names:
+            info("Configured DB profiles: " + ", ".join(db_names))
+        raw = click.prompt("DB profiles (comma-separated)").strip()
+        picks = [p.strip() for p in raw.split(",") if p.strip()]
+        params["db_profiles"] = ", ".join(f"`{p}`" for p in picks)
+        for name in picks:
+            assets.append(AssetRef(kind="db_profile", ref=name))
+    elif req == "one_lineage":
+        rows = _list_lineage_artifacts_safe()
+        if rows:
+            info(
+                "Lineage artifacts: "
+                + ", ".join(str(r.get("name") or r.get("id")) for r in rows[:20])
+            )
+        lineage_ref = click.prompt("Lineage artifact name or id").strip()
+        params["lineage"] = lineage_ref
+        assets.append(AssetRef(kind="lineage_artifact", ref=lineage_ref))
+    elif req == "any":
+        assets.extend(_collect_assets_wizard(cfg))
+
+    # Doc-profile RAG retrieval helps virtually every page; offer it
+    # regardless of the template's required assets.
+    doc_names = sorted((cfg.doc_profiles or {}).keys())
+    if doc_names:
+        info("Configured doc profiles: " + ", ".join(doc_names))
+        pick_doc = click.prompt(
+            "Attach doc profile(s)? Comma-separated names (or empty to skip)",
+            default="",
+            show_default=False,
+        ).strip()
+        if pick_doc:
+            for name in [p.strip() for p in pick_doc.split(",") if p.strip()]:
+                assets.append(AssetRef(kind="doc_profile", ref=name))
+
+    return assets, params
+
+
+def _list_lineage_artifacts_safe() -> list[dict[str, Any]]:
+    try:
+        from amx.lineage.store import list_lineage_artifacts
+        from amx.storage.sqlite_store import history_store
+
+        hs = history_store()
+        return list_lineage_artifacts(hs) if hs is not None else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _collect_assets_wizard(cfg: AMXConfig) -> list[AssetRef]:
     """Walk the user through DB / doc-profile / lineage pickers."""
     assets: list[AssetRef] = []
@@ -101,14 +213,7 @@ def _collect_assets_wizard(cfg: AMXConfig) -> list[AssetRef]:
             assets.append(AssetRef(kind="doc_profile", ref=name))
 
     # Lineage artifacts — read from the history store.
-    try:
-        from amx.lineage.store import list_lineage_artifacts
-        from amx.storage.sqlite_store import history_store
-
-        hs = history_store()
-        artifact_rows = list_lineage_artifacts(hs) if hs is not None else []
-    except Exception:  # noqa: BLE001 — best-effort listing
-        artifact_rows = []
+    artifact_rows = _list_lineage_artifacts_safe()
     if artifact_rows:
         info(
             "Lineage artifacts: "
@@ -127,9 +232,16 @@ def _collect_assets_wizard(cfg: AMXConfig) -> list[AssetRef]:
 
 
 def _collect_sources_wizard() -> list[Path]:
-    """Prompt for local file paths to attach as sources."""
+    """Prompt for local file paths to attach as sources.
+
+    Sources are scratch input for THIS page only. For permanent RAG
+    storage, register a doc profile via ``/docs add`` and attach it as
+    an asset; the page generator will RAG-query the indexed corpus
+    automatically. This wizard step deliberately defaults to empty.
+    """
     raw = click.prompt(
-        "Attach local source files? Comma-separated paths (or empty to skip)",
+        "Attach ad-hoc source files for THIS page? Comma-separated paths "
+        "(empty to skip; for permanent indexing use /docs add instead)",
         default="",
         show_default=False,
     ).strip()
@@ -144,8 +256,87 @@ def _collect_sources_wizard() -> list[Path]:
         if not path.is_file():
             warn(f"Skipping {path}: not a regular file")
             continue
+        _notice_multi_sheet_xlsx(path)
         paths.append(path)
     return paths
+
+
+def _notice_multi_sheet_xlsx(path: Path) -> None:
+    """Tell the user how many sheets a source xlsx has so they aren't
+    surprised when the LLM sees one big concatenated markdown rather
+    than just the first sheet."""
+    if path.suffix.lower() != ".xlsx":
+        return
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(filename=str(path), read_only=True, data_only=True)
+        sheets = wb.sheetnames
+        wb.close()
+    except Exception:  # noqa: BLE001
+        return
+    if len(sheets) > 1:
+        info(
+            f"note: {path.name} has {len(sheets)} sheets — all will be "
+            "inlined as separate tables in the page context."
+        )
+
+
+def _maybe_promote_to_doc_profile(cfg: AMXConfig, paths: list[Path]) -> None:
+    """Offer to also index source paths into a permanent doc profile.
+
+    Reuses the same upload + ingest path as ``/docs add`` so the file
+    becomes RAG-retrievable for future pages.
+    """
+    if not paths:
+        return
+    doc_names = sorted((cfg.doc_profiles or {}).keys())
+    if not doc_names:
+        return
+    if not click.confirm(
+        "Also index these source(s) into a doc profile for future pages?",
+        default=False,
+    ):
+        return
+    info("Doc profiles: " + ", ".join(doc_names))
+    profile = click.prompt("Target doc profile name").strip()
+    if not profile:
+        return
+    try:
+        from amx.docs.rag import RAGStore
+        from amx.docs.scanner import cleanup_scan_artifacts, scan_all_sources
+        from amx.docs.uploads import UploadError, save_uploaded_file
+    except ImportError as exc:
+        error(f"docs subsystem unavailable: {exc}")
+        return
+
+    saved: list[Any] = []
+    for path in paths:
+        try:
+            payload = path.read_bytes()
+            res = save_uploaded_file(cfg, profile, path.name, payload)
+            saved.append(res)
+        except UploadError as exc:
+            error(f"{path}: {exc}")
+        except OSError as exc:
+            error(f"{path}: {exc}")
+    if not saved:
+        return
+    upload_root = str(Path(saved[0].saved_path).parent)
+    documents: list[Any] = []
+    try:
+        scan_result = scan_all_sources([upload_root])
+        documents = list(scan_result)
+        store = RAGStore()
+        summary = store.ingest(documents, refresh=False)
+        success(
+            f"Indexed {len(saved)} file(s) into doc profile `{profile}` "
+            f"({summary.chunk_count} chunks)"
+        )
+    except Exception as exc:  # noqa: BLE001
+        error(f"Ingest failed: {exc}. Files saved; run `/docs ingest` to retry.")
+    finally:
+        cleanup_scan_artifacts(documents)
 
 
 def _attach_sources(
@@ -210,6 +401,16 @@ def register_pages_commands(
     @click.option("--title", default=None, help="Page title (prompted when omitted).")
     @click.option("--intent", default=None, help="Free-text generation intent.")
     @click.option(
+        "--intent-template",
+        "intent_template_slug",
+        default=None,
+        help=(
+            "Preset intent shape. Slugs: "
+            + ", ".join(t.slug for t in INTENT_TEMPLATES)
+            + ". Bypassed when --intent is also given."
+        ),
+    )
+    @click.option(
         "--asset",
         "assets_flag",
         multiple=True,
@@ -220,7 +421,11 @@ def register_pages_commands(
         "sources_flag",
         multiple=True,
         type=click.Path(exists=True, dir_okay=False, path_type=Path),
-        help="Repeatable. Local file path to attach as a source.",
+        help=(
+            "Repeatable. Local file path to attach as a source for THIS page "
+            "only. For permanent RAG indexing, use /docs add instead and "
+            "attach the doc profile as an asset."
+        ),
     )
     @click.option(
         "--no-generate",
@@ -233,6 +438,7 @@ def register_pages_commands(
         cfg: AMXConfig,
         title: str | None,
         intent: str | None,
+        intent_template_slug: str | None,
         assets_flag: tuple[str, ...],
         sources_flag: tuple[Path, ...],
         no_generate: bool,
@@ -248,23 +454,54 @@ def register_pages_commands(
                 error("Title is required.")
                 return
 
-        # Assets: flag wins; otherwise run the wizard.
+        # Intent template + assets: resolve in one step when no
+        # asset/intent flags were given, since the template choice
+        # drives which assets the wizard collects.
+        final_assets: list[AssetRef]
+        final_intent: str = (intent or "").strip()
+        template_params: dict[str, str] = {}
+
         if assets_flag:
             try:
                 final_assets = [_parse_asset_flag(a) for a in assets_flag]
             except click.BadParameter as exc:
                 error(str(exc))
                 return
+            # Power-user mode: assets came from flags. If the user also
+            # passed --intent-template, render it with no params; the
+            # user can supply --intent to override.
+            if not final_intent and intent_template_slug:
+                tpl = template_by_slug(intent_template_slug)
+                if tpl is None:
+                    error(f"Unknown intent template: {intent_template_slug}")
+                    return
+                final_intent = render_intent(tpl)
         else:
-            final_assets = _collect_assets_wizard(cfg)
+            # Wizard mode.
+            template: IntentTemplate | None = None
+            if intent_template_slug:
+                template = template_by_slug(intent_template_slug)
+                if template is None:
+                    error(f"Unknown intent template: {intent_template_slug}")
+                    return
+            elif not final_intent:
+                template = _pick_intent_template()
 
-        # Intent: flag wins, otherwise prompt.
-        final_intent = (intent or "").strip()
+            if template is not None:
+                final_assets, template_params = _collect_template_params(cfg, template)
+                if not final_intent:
+                    final_intent = render_intent(template, **template_params)
+            else:
+                final_assets = _collect_assets_wizard(cfg)
+
+        # Intent fallback for the "Custom" picker choice.
         if not final_intent:
             final_intent = click.prompt("Intent (free text)", default="").strip()
 
         # Sources: flag wins; otherwise prompt for paths.
         source_paths = list(sources_flag) if sources_flag else _collect_sources_wizard()
+        if source_paths and not sources_flag:
+            _maybe_promote_to_doc_profile(cfg, source_paths)
 
         now = _utcnow()
         page_id = svc.create_draft(

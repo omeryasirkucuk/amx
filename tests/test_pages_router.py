@@ -89,6 +89,22 @@ def test_list_pages_empty(client: TestClient, headers: dict[str, str]) -> None:
     assert r.json() == []
 
 
+def test_list_intent_templates(client: TestClient, headers: dict[str, str]) -> None:
+    """Studio's New-page wizard fetches preset intent shapes from this
+    endpoint to render the picker grid above the Intent textarea."""
+    r = client.get("/api/pages/intent-templates", headers=headers)
+    assert r.status_code == 200
+    payload = r.json()
+    assert isinstance(payload, list)
+    slugs = {t["slug"] for t in payload}
+    assert "single-table" in slugs
+    assert "project-overview" in slugs
+    one = next(t for t in payload if t["slug"] == "single-table")
+    assert "label" in one
+    assert "prompt_skeleton" in one
+    assert "required_assets" in one
+
+
 def test_create_then_list_then_get(client: TestClient, headers: dict[str, str]) -> None:
     r = client.post(
         "/api/pages",
