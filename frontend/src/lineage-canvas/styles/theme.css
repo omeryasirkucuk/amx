@@ -37,21 +37,32 @@
   fill: var(--lcv-grid-dot);
 }
 
-/* Controls (zoom in/out/fit) — match design tokens. */
+/* Controls (zoom in/out / fit). The default ink-muted glyph sat
+   too close to the surface and the user couldn't see what the
+   buttons were. Brighten the stroke + lift the background so the
+   trio reads at a glance on the dark canvas. */
 .lcv-canvas-root .react-flow__controls {
-  background: var(--lcv-surface-raised);
-  border: 1px solid var(--lcv-border);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  background: rgb(var(--surface-raised));
+  border: 1px solid rgb(var(--ink) / 0.20);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
   border-radius: 8px;
   overflow: hidden;
 }
 .lcv-canvas-root .react-flow__controls-button {
-  background: transparent;
-  border-bottom: 1px solid var(--lcv-border);
-  color: var(--lcv-ink-muted);
+  background: rgb(var(--surface-raised));
+  border-bottom: 1px solid rgb(var(--ink) / 0.16);
+  color: var(--lcv-ink);
+  fill: var(--lcv-ink);
+  width: 30px;
+  height: 30px;
+}
+.lcv-canvas-root .react-flow__controls-button svg {
+  fill: var(--lcv-ink);
+  width: 14px;
+  height: 14px;
 }
 .lcv-canvas-root .react-flow__controls-button:hover {
-  background: var(--lcv-surface);
+  background: rgb(var(--ink) / 0.12);
   color: var(--lcv-ink);
 }
 

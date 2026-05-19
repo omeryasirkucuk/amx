@@ -15,10 +15,12 @@ import {
   Combine,
   Download,
   FileCode2,
+  FilePlus,
   Filter,
   Image as ImageIcon,
   LayoutGrid,
   Layers3,
+  Network,
   Plus,
   Redo2,
   Save,
@@ -71,6 +73,14 @@ interface ToolbarProps {
   /** Called when the user deletes the currently-loaded saved
    *  artifact — Canvas clears state + strips the URL param. */
   onActiveSavedArtifactDeleted: () => void;
+  /** Manual trigger for the "find every known edge between the
+   *  tables on canvas" pass. Surfaces deterministic FK / view
+   *  DDL / query log edges the anchor-centric LLM skips. */
+  onDiscoverRelated: () => void;
+  /** Clear the canvas back to a blank state. The Canvas owns the
+   *  unsaved-work confirm so this prop is just the user intent
+   *  signal. */
+  onNewLineage: () => void;
 }
 
 interface IconButtonProps {
@@ -115,6 +125,9 @@ export function Toolbar(p: ToolbarProps) {
         onPick={p.onOpenSavedArtifact}
         onActiveArtifactDeleted={p.onActiveSavedArtifactDeleted}
       />
+      <IconBtn label="New lineage" onClick={p.onNewLineage}>
+        <FilePlus size={15} />
+      </IconBtn>
 
       <Divider />
 
@@ -156,6 +169,9 @@ export function Toolbar(p: ToolbarProps) {
 
       <IconBtn label="Auto-arrange" shortcut="L" onClick={p.onAutoLayout}>
         <LayoutGrid size={15} />
+      </IconBtn>
+      <IconBtn label="Discover related edges" onClick={p.onDiscoverRelated}>
+        <Network size={15} />
       </IconBtn>
 
       <Divider />

@@ -42,6 +42,7 @@ import "reactflow/dist/style.css";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
+import clsx from "clsx";
 
 import PageHeader from "../components/PageHeader";
 import Modal from "../components/Modal";
@@ -68,9 +69,13 @@ import {
 } from "./amx-bridge/persistence";
 import {
   convertLoadedCanvas,
+  loadedEdgeToCanvasEdge,
   makeTableNode,
 } from "./amx-bridge/payload";
 import { fetchTableColumns } from "./amx-bridge/catalog";
+import { ApiError, lineageEdgesAmong } from "../lib/api";
+import { proposeNameMatchEdges } from "./heuristics/nameMatch";
+import { findFreeSpot, viewportCenterFlowCoords } from "./placement";
 import { parseSql, renderSql } from "./amx-bridge/sqlIo";
 import { logoKeyForBackend } from "./logos/backendMap";
 import { LogoPicker } from "./logos/LogoPicker";
@@ -107,6 +112,13 @@ function CanvasInner() {
     artifactId,
   );
   const [generating, setGenerating] = useState(false);
+  // Tracks whether the canvas has been mutated since the last save /
+  // load. We mark it true on user-driven mutations (drag-end,
+  // add / remove, edit) and reset it after a successful save or a
+  // fresh load. ``hasUnsavedWork`` reads from this rather than
+  // ``nodes.length`` so the discard confirm doesn't fire after a
+  // clean save just because the nodes still happen to be on screen.
+  const [dirty, setDirty] = useState<boolean>(false);
 
   // Modals
   const [addOpen, setAddOpen] = useState(false);
@@ -120,6 +132,13 @@ function CanvasInner() {
 
   const [saveName, setSaveName] = useState("");
   const [aiAnchor, setAiAnchor] = useState("");
+  // Cleared when the user edits the name input or after a clean save;
+  // populated by the save mutation's onError handler when the backend
+  // returns 409 ``name_in_use``. Drives the inline error + the
+  // "Open existing →" affordance inside the Save modal.
+  const [nameConflict, setNameConflict] = useState<
+    { existingId: number | null; existingName: string } | null
+  >(null);
   const [sqlInput, setSqlInput] = useState("");
   const [sqlOutput, setSqlOutput] = useState("");
 
@@ -173,15 +192,68 @@ function CanvasInner() {
       setPrimaryProfile(conv.primaryProfile);
       setArtifactName(conv.artifactName);
       setActiveArtifactId(conv.artifactId);
+      // Freshly loaded canvas matches whatever the backend persisted —
+      // until the user touches a node, the discard confirm should
+      // stay quiet.
+      setDirty(false);
     }
   }, [loadQ.data]);
+
+  // Seed-from-table support for the browse page's ``Open lineage``
+  // button when no saved artifact already contains the picked
+  // table. The browse handler routes here with
+  // ``?seed=<profile>|<database>|<schema>|<table>|<backend>``; we
+  // call ``onPickTable`` once with those coords, then strip the
+  // seed param so a refresh doesn't re-seed the same table.
+  const seedParam = params.get("seed");
+  useEffect(() => {
+    if (!seedParam || artifactId) return;
+    const parts = seedParam.split("|");
+    if (parts.length < 4) return;
+    const [profile, database, schema, table, backend = ""] = parts;
+    if (!profile || !table) return;
+    onPickTable({
+      profile,
+      backend,
+      database,
+      schema,
+      table,
+      columns: [],
+    });
+    // Drop ``?seed=…`` without firing the load-by-id effect (no
+    // ``artifact`` param either way) so a reload of the URL doesn't
+    // duplicate the seed.
+    const next = new URLSearchParams(params);
+    next.delete("seed");
+    setParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedParam, artifactId]);
 
   // ── ReactFlow change handlers ───────────────────────────────────────────
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setNodes((nds) => applyNodeChanges(changes, nds) as CanvasNode[]);
+    // A change qualifies as "dirty" when it actually mutates the
+    // persisted graph — drag-end position, node removal,
+    // dimensions. Selection / hover / mid-drag movement is noise
+    // and would mark the canvas dirty every time the user just
+    // clicked around.
+    if (
+      changes.some(
+        (c) =>
+          c.type === "remove" ||
+          c.type === "add" ||
+          c.type === "dimensions" ||
+          (c.type === "position" && c.dragging === false),
+      )
+    ) {
+      setDirty(true);
+    }
   }, []);
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     setEdges((eds) => applyEdgeChanges(changes, eds) as CanvasEdge[]);
+    if (changes.some((c) => c.type === "remove" || c.type === "add")) {
+      setDirty(true);
+    }
   }, []);
   const onConnect = useCallback((conn: Connection) => {
     if (!conn.source || !conn.target || conn.source === conn.target) return;
@@ -209,6 +281,7 @@ function CanvasInner() {
       };
       return addEdge(newEdge, eds) as CanvasEdge[];
     });
+    setDirty(true);
   }, []);
 
   // ── Toolbar actions ─────────────────────────────────────────────────────
@@ -222,20 +295,40 @@ function CanvasInner() {
   }
 
   function onPickTable(pick: AddTablePick) {
-    const multi = nodes.some(
-      (n) => n.data.kind === "table" && n.data.profile && n.data.profile !== pick.profile,
-    );
     const autoLogo = logoKeyForBackend(pick.backend);
-    const node = makeTableNode({
-      ...pick,
-      position: { x: 80 + nodes.length * 20, y: 80 + nodes.length * 20 },
-      multiProfile: multi,
-      isAnchor: nodes.length === 0,
-    });
-    if (autoLogo && node.data.kind === "table") {
-      node.data.logoKey = autoLogo;
-    }
+    const hint = viewportCenterFlowCoords(canvasShellRef.current, (p) =>
+      rf.screenToFlowPosition(p),
+    );
     setNodes((nds) => {
+      // Compute geometry from the latest ``nds`` rather than the
+      // stale closure ``nodes`` — the multi-select Add Table modal
+      // fires ``onPick`` N times in a tight loop before any React
+      // commit lands.
+      const tableCount = nds.filter((n) => n.data.kind === "table").length;
+      const multi = nds.some(
+        (n) =>
+          n.data.kind === "table" &&
+          n.data.profile &&
+          n.data.profile !== pick.profile,
+      );
+      const pos = findFreeSpot({
+        existing: nds,
+        hint,
+        // Slightly conservative footprint so the spiral walks past
+        // already-placed operators / wide expanded tables. The
+        // measured node will end up smaller than this when
+        // collapsed; that just means a touch extra breathing room.
+        size: { width: 320, height: 180 },
+      });
+      const node = makeTableNode({
+        ...pick,
+        position: pos,
+        multiProfile: multi,
+        isAnchor: tableCount === 0,
+      });
+      if (autoLogo && node.data.kind === "table") {
+        node.data.logoKey = autoLogo;
+      }
       // Dedupe: AddTableModal optimistically calls onPick twice —
       // once with empty columns (immediate), once after the
       // background fetchTableColumns settles. If the node already
@@ -272,55 +365,103 @@ function CanvasInner() {
       return appended;
     });
     if (!primaryProfile) setPrimaryProfile(pick.profile);
+    setDirty(true);
+  }
+
+  /** Shared placement seed: the viewport centre in flow coords. The
+   *  spiral-walk in ``findFreeSpot`` opens outward from here, so
+   *  whatever the user is currently looking at is the first cell
+   *  considered when a new node lands. */
+  function placementHint(): { x: number; y: number } {
+    return viewportCenterFlowCoords(canvasShellRef.current, (p) =>
+      rf.screenToFlowPosition(p),
+    );
   }
 
   function addOperatorNode(kind: OperatorKind) {
     const id = `op-tmp-${kind}-${Date.now()}`;
-    const node: CanvasNode = {
-      id,
-      type: nodeTypeForOperator(kind),
-      position: { x: 240, y: 140 },
-      data: {
-        kind: "operator",
+    const hint = placementHint();
+    setNodes((nds) => {
+      const pos = findFreeSpot({
+        existing: nds,
+        hint,
+        // Real FilterNode / JoinNode / etc. render at ~300×200
+        // (header + 3-row textarea); ReactFlow only measures the
+        // DOM after the first paint, so until then the next
+        // ``findFreeSpot`` call would see a default 240×120 box
+        // and let a sibling land on top.
+        size: { width: 300, height: 200 },
+      });
+      const node: CanvasNode = {
         id,
-        opKind: kind,
-        expression: "",
-        upstreamColumns: [],
-      },
-    };
-    setNodes((nds) => [...nds, node]);
+        type: nodeTypeForOperator(kind),
+        position: pos,
+        // Explicit width/height so the collision check has a
+        // truthful footprint immediately, without waiting for
+        // ReactFlow's measurement pass.
+        width: 300,
+        height: 200,
+        data: {
+          kind: "operator",
+          id,
+          opKind: kind,
+          expression: "",
+          upstreamColumns: [],
+        },
+      };
+      return [...nds, node];
+    });
+    setDirty(true);
   }
 
   function addLogoNode(logo: LogoRow) {
     const id = `logo-tmp-${logo.key}-${Date.now()}`;
-    const node: CanvasNode = {
-      id,
-      type: "logo",
-      position: { x: 200 + nodes.length * 20, y: 200 + nodes.length * 20 },
-      width: 120,
-      height: 120,
-      data: {
-        kind: "logo",
+    const hint = placementHint();
+    setNodes((nds) => {
+      const pos = findFreeSpot({
+        existing: nds,
+        hint,
+        size: { width: 120, height: 120 },
+      });
+      const node: CanvasNode = {
         id,
-        logoKey: logo.key,
-        label: logo.label,
-      },
-    };
-    setNodes((nds) => [...nds, node]);
+        type: "logo",
+        position: pos,
+        width: 120,
+        height: 120,
+        data: {
+          kind: "logo",
+          id,
+          logoKey: logo.key,
+          label: logo.label,
+        },
+      };
+      return [...nds, node];
+    });
+    setDirty(true);
   }
 
   function addCommentNode() {
     const id = `comment-tmp-${Date.now()}`;
-    const node: CanvasNode = {
-      id,
-      type: "comment",
-      position: { x: 120, y: 120 },
-      width: 220,
-      height: 140,
-      data: { kind: "comment", id, color: "amber", text: "", style: "note" },
-      dragHandle: ".lcv-comment-grip",
-    };
-    setNodes((nds) => [...nds, node]);
+    const hint = placementHint();
+    setNodes((nds) => {
+      const pos = findFreeSpot({
+        existing: nds,
+        hint,
+        size: { width: 220, height: 140 },
+      });
+      const node: CanvasNode = {
+        id,
+        type: "comment",
+        position: pos,
+        width: 220,
+        height: 140,
+        data: { kind: "comment", id, color: "amber", text: "", style: "note" },
+        dragHandle: ".lcv-comment-grip",
+      };
+      return [...nds, node];
+    });
+    setDirty(true);
   }
 
   function addTextNode() {
@@ -331,39 +472,204 @@ function CanvasInner() {
     // gives us "click outside text to drag, click inside to edit"
     // out of the box.
     const id = `text-tmp-${Date.now()}`;
-    const node: CanvasNode = {
-      id,
-      type: "comment",
-      position: { x: 160, y: 160 },
-      width: 220,
-      height: 36,
-      data: { kind: "comment", id, color: "amber", text: "", style: "text" },
-    };
-    setNodes((nds) => [...nds, node]);
+    const hint = placementHint();
+    setNodes((nds) => {
+      const pos = findFreeSpot({
+        existing: nds,
+        hint,
+        size: { width: 220, height: 36 },
+      });
+      const node: CanvasNode = {
+        id,
+        type: "comment",
+        position: pos,
+        width: 220,
+        height: 36,
+        data: { kind: "comment", id, color: "amber", text: "", style: "text" },
+      };
+      return [...nds, node];
+    });
+    setDirty(true);
+  }
+
+  /** Discover persisted edges (FK / view DDL / query log / earlier
+   *  manual saves) that sit between two tables on the current
+   *  canvas. Runs after AI Generate completes and also on the
+   *  toolbar's "Discover related" trigger. Tables already on the
+   *  canvas keep their geometry; only edges merge in. */
+  async function discoverRelatedEdges(): Promise<number> {
+    const tables = nodes.filter((n) => n.data.kind === "table");
+    if (tables.length < 2) return 0;
+    const entityIds: number[] = [];
+    const fqnPairs: { profile: string; fqn: string }[] = [];
+    for (const n of tables) {
+      const d = n.data as TableNodeData;
+      if (typeof d.entityId === "number" && d.entityId > 0) {
+        entityIds.push(d.entityId);
+      } else if (d.profile && d.fqn) {
+        fqnPairs.push({ profile: d.profile, fqn: d.fqn });
+      }
+    }
+    if (entityIds.length + fqnPairs.length < 2) return 0;
+    let response: Awaited<ReturnType<typeof lineageEdgesAmong>>;
+    try {
+      response = await lineageEdgesAmong({
+        entityIds,
+        tables: fqnPairs,
+      });
+    } catch {
+      return 0;
+    }
+    if (response.edges.length === 0) return 0;
+    // Build entity_id → node-id and FQN → node-id maps so backend
+    // edges latch onto whichever node id the canvas already uses.
+    const entityToNodeId = new Map<number, string>();
+    const fqnToNodeId = new Map<string, string>();
+    for (const n of tables) {
+      const d = n.data as TableNodeData;
+      if (typeof d.entityId === "number" && d.entityId > 0) {
+        entityToNodeId.set(d.entityId, n.id);
+      }
+      if (d.fqn) {
+        fqnToNodeId.set(d.fqn, n.id);
+        const parts = d.fqn.split(".");
+        if (parts.length >= 3) {
+          const alias = parts.slice(-2).join(".");
+          if (!fqnToNodeId.has(alias)) fqnToNodeId.set(alias, n.id);
+        }
+      }
+    }
+    let added = 0;
+    setEdges((prev) => {
+      const next = [...prev];
+      const seen = new Set(next.map((e) => e.id));
+      for (const row of response.edges) {
+        const sId = entityToNodeId.get(row.from_entity_id);
+        const tId = entityToNodeId.get(row.to_entity_id);
+        if (!sId || !tId) continue;
+        const ce = loadedEdgeToCanvasEdge(row, sId, tId);
+        if (seen.has(ce.id)) continue;
+        seen.add(ce.id);
+        next.push(ce);
+        added += 1;
+      }
+      return next;
+    });
+    if (added > 0) setDirty(true);
+    return added;
+  }
+
+  /** Hydrate columns for every table on canvas that's still showing
+   *  ``(no columns cached)`` — the name-match heuristic needs them
+   *  on both sides to produce anything useful. Mirrors the
+   *  fire-and-forget shape used inside the streaming AI hook. */
+  async function hydrateMissingColumns(): Promise<number> {
+    const tables = (rf.getNodes() as CanvasNode[]).filter(
+      (n) => n.data.kind === "table",
+    );
+    const targets = tables.filter((n) => {
+      const d = n.data as TableNodeData;
+      return (d.columns?.length ?? 0) === 0 && d.profile && d.table;
+    });
+    if (targets.length === 0) return 0;
+    const fetched = await Promise.all(
+      targets.map((n) => {
+        const d = n.data as TableNodeData;
+        return fetchTableColumns({
+          profile: d.profile,
+          database: d.database || "",
+          schema: d.schema || "",
+          table: d.table,
+        })
+          .then((cols) => ({ id: n.id, cols }))
+          .catch(() => ({ id: n.id, cols: [] }));
+      }),
+    );
+    let updated = 0;
+    rf.setNodes((curr) =>
+      (curr as CanvasNode[]).map((cn) => {
+        const hit = fetched.find((r) => r.id === cn.id);
+        if (!hit || hit.cols.length === 0) return cn;
+        if (cn.data.kind !== "table") return cn;
+        updated += 1;
+        return {
+          ...cn,
+          data: { ...(cn.data as TableNodeData), columns: hit.cols },
+        };
+      }),
+    );
+    return updated;
+  }
+
+  async function handleDiscoverRelated() {
+    const catalogAdded = await discoverRelatedEdges();
+    // Make sure every table has its columns loaded before we ask the
+    // heuristic to compare — without this, AI-spawned 2-part FQNs
+    // come in column-less and the name-match yields nothing on the
+    // user's first click of the Discover button.
+    await hydrateMissingColumns();
+    const liveNodes = rf.getNodes() as CanvasNode[];
+    const liveEdges = rf.getEdges() as CanvasEdge[];
+    const proposed = proposeNameMatchEdges(liveNodes, {
+      existingEdges: liveEdges,
+    });
+    let heuristicAdded = 0;
+    if (proposed.edges.length > 0) {
+      rf.setEdges((eds) => {
+        const next = [...(eds as CanvasEdge[])];
+        const seen = new Set(next.map((e) => e.id));
+        for (const e of proposed.edges) {
+          if (seen.has(e.id)) continue;
+          seen.add(e.id);
+          next.push(e);
+          heuristicAdded += 1;
+        }
+        return next;
+      });
+    }
+    const total = catalogAdded + heuristicAdded;
+    if (total > 0) setDirty(true);
+    const parts: string[] = [];
+    if (catalogAdded) parts.push(`${catalogAdded} catalog`);
+    if (heuristicAdded) parts.push(`${heuristicAdded} name-match`);
+    toast.push({
+      title: "Discover related",
+      description: total
+        ? `Added ${parts.join(" + ")} edge${total === 1 ? "" : "s"}.`
+        : "No additional edges between the tables on canvas.",
+      tone: total ? "success" : "info",
+    });
   }
 
   function handleAutoLayout() {
-    // Resolve the anchor node id from the current AI Generate
-    // selection so the hook can run its radial mode. When no anchor
-    // is in play (e.g. the user manually built the canvas and is
-    // tapping ``L``), the hook falls back to dagre LR.
+    // Source the latest nodes / edges straight from ReactFlow's store
+    // instead of the React closure: ``onDone`` (and the streaming
+    // hook's callback machinery in general) caches its handler at
+    // mount, so reading from the rendered ``nodes`` / ``edges``
+    // closure here returns stale state and dagre / radial run over
+    // an empty graph. ``rf.getNodes()`` / ``rf.getEdges()`` always
+    // return the live ReactFlow internals.
+    const liveNodes = rf.getNodes() as CanvasNode[];
+    const liveEdges = rf.getEdges() as CanvasEdge[];
     let anchorId: string | undefined;
     if (aiAnchor) {
-      const found = nodes.find(
+      const found = liveNodes.find(
         (n) =>
           n.data.kind === "table" &&
           (n.data as TableNodeData).fqn === aiAnchor,
       );
       anchorId = found?.id;
     }
-    setNodes((nds) => autoLayout(nds, edges, { anchorId }));
+    const laidOut = autoLayout(liveNodes, liveEdges, { anchorId });
+    rf.setNodes(laidOut);
     // Center the freshly laid-out graph in the viewport so the user
-    // sees the whole anchor + neighbourhood after AI Generate
-    // without having to pan around. ``requestAnimationFrame`` waits
-    // for the setNodes commit so ReactFlow has the new positions
-    // before computing the bounds.
+    // sees the whole anchor + neighbourhood without panning. Defer
+    // until ReactFlow has committed the new positions — no
+    // ``maxZoom`` cap so a small neighbourhood can actually scale
+    // up enough to fill the viewport instead of sitting tiny in
+    // the middle.
     requestAnimationFrame(() => {
-      rf.fitView({ padding: 0.25, duration: 300, maxZoom: 1.0 });
+      rf.fitView({ padding: 0.2, duration: 300 });
     });
   }
 
@@ -497,6 +803,7 @@ function CanvasInner() {
           ensureTable(ed.to);
         }
         streamingAddedRef.current += newlySynthesised.length;
+        if (newlySynthesised.length > 0) setDirty(true);
         return next;
       });
 
@@ -591,12 +898,22 @@ function CanvasInner() {
         description: `${totals.total_edges} edge(s) streamed in.`,
         tone: "success",
       });
+      // Pull deterministic edges (FK / view DDL / query log) that the
+      // anchor-centric LLM extractor never proposes, so neighbour-to-
+      // neighbour relationships surface as soon as the stream ends.
+      // Fire-and-forget; failures are silent so the stream completion
+      // toast stays the primary signal.
+      void discoverRelatedEdges();
       // Auto-arrange only when this run actually added new tables —
       // an edges-only stream shouldn't disturb a canvas the user has
-      // already laid out by hand. Defer one frame so the last
-      // batch's React commit has flushed and dagre sees every node.
+      // already laid out by hand. Wait ~80 ms so React has flushed
+      // the last batch's setNodes AND the fire-and-forget column
+      // enrichment commits have landed; without that the layout
+      // pass runs before some neighbours exist and the visual
+      // result is exactly the pre-layout cluster the user
+      // complained about.
       if (streamingAddedRef.current > 0) {
-        requestAnimationFrame(() => handleAutoLayout());
+        window.setTimeout(() => handleAutoLayout(), 80);
       }
     },
   });
@@ -642,6 +959,10 @@ function CanvasInner() {
         primaryProfile: profile,
         artifactName: saveName.trim(),
         anchorFqn,
+        // When the canvas was loaded from a saved artifact, signal an
+        // update-in-place so the save modal's name-conflict check
+        // doesn't fire against the artifact's own row.
+        artifactId: activeArtifactId,
         nodes,
         edges,
       });
@@ -658,9 +979,29 @@ function CanvasInner() {
       // Navigate by id — never by name. This is the save-canvas bug fix.
       setParams({ artifact: String(res.artifact_id) });
       qc.invalidateQueries({ queryKey: ["lineage-artifacts"] });
+      // The canvas matches the backend again — discard confirm
+      // should stay quiet until the user touches a node.
+      setDirty(false);
+      setNameConflict(null);
     },
-    onError: (e: Error) =>
-      toast.push({ title: "Save failed", description: e.message, tone: "error" }),
+    onError: (e: Error) => {
+      // Map the backend's 409 onto a structured inline error in the
+      // save modal so the user can rename without losing the typed
+      // canvas state. Other errors keep the existing toast path.
+      const apiErr = e as ApiError;
+      if (apiErr instanceof ApiError && apiErr.status === 409) {
+        const data = apiErr.data || {};
+        const existingId =
+          typeof data.existing_id === "number" ? data.existing_id : null;
+        const existingName =
+          typeof data.existing_name === "string"
+            ? data.existing_name
+            : saveName.trim();
+        setNameConflict({ existingId, existingName });
+        return;
+      }
+      toast.push({ title: "Save failed", description: e.message, tone: "error" });
+    },
   });
 
   // ── PNG export ───────────────────────────────────────────────────────────
@@ -861,14 +1202,12 @@ function CanvasInner() {
     [nodes],
   );
 
-  // Conservative "has work to preserve" check for the Saved-lineage
-  // dropdown's confirm prompt. Any node on the canvas counts — we
-  // don't track per-edit dirtiness, so the menu errs on the side of
-  // asking once before replacing user work. The menu itself
-  // suppresses the prompt when the user picks the artifact already
-  // open, so the only case that triggers it is "switching away from
-  // something I can see on screen."
-  const hasUnsavedWork = nodes.length > 0;
+  // "Has work to preserve" reads from the dirty flag — set by user-
+  // driven mutations, cleared by save / load. We still gate it on
+  // having something on canvas at all so a fresh blank canvas
+  // doesn't ever prompt, but otherwise the discard confirm only
+  // fires when the user actually has unsaved edits.
+  const hasUnsavedWork = dirty && nodes.length > 0;
 
   function handleOpenSavedArtifact(id: number) {
     setParams({ artifact: String(id) });
@@ -881,6 +1220,21 @@ function CanvasInner() {
     setArtifactName("");
     setActiveArtifactId(null);
     setParams({});
+    setDirty(false);
+  }
+
+  /** Clear the canvas back to a blank slate. Confirms first when
+   *  there is unsaved work so a stray click cannot blow away
+   *  in-progress edits. */
+  function handleNewLineage() {
+    if (hasUnsavedWork) {
+      if (!window.confirm("Discard the current canvas and start a new lineage?")) {
+        return;
+      }
+    }
+    handleActiveSavedArtifactDeleted();
+    setAiAnchor("");
+    setSaveName("");
   }
 
   return (
@@ -933,6 +1287,8 @@ function CanvasInner() {
         activeArtifactId={activeArtifactId}
         onOpenSavedArtifact={handleOpenSavedArtifact}
         onActiveSavedArtifactDeleted={handleActiveSavedArtifactDeleted}
+        onDiscoverRelated={() => void handleDiscoverRelated()}
+        onNewLineage={handleNewLineage}
       />
       <div
         ref={canvasShellRef}
@@ -961,6 +1317,11 @@ function CanvasInner() {
           fitView
           fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}
+          // Loosen the zoom range so the user can scale the canvas
+          // way out (default min 0.5 capped large lineages mid-screen)
+          // and in (default max 2 lost detail on dense graphs).
+          minZoom={0.1}
+          maxZoom={4}
           // Multi-select + delete keys. Arrays so both Mac and
           // Windows / Linux work without sniffing the platform:
           //   * Hold ⌘ / Ctrl + click to add a node to the selection.
@@ -988,6 +1349,15 @@ function CanvasInner() {
         onClose={() => setAddOpen(false)}
         defaultProfile={primaryProfile}
         onPick={onPickTable}
+        onBatchAdded={(n) => {
+          // Multi-pick lands every node along a tight diagonal so
+          // the picks are at least visually distinct, then we run
+          // the regular auto-layout so they snap into the canvas's
+          // standard grid (or radial when an anchor exists).
+          if (n > 1) {
+            window.setTimeout(() => handleAutoLayout(), 60);
+          }
+        }}
       />
 
       <LogoPicker
@@ -1012,19 +1382,37 @@ function CanvasInner() {
 
       <Modal
         open={saveOpen}
-        onClose={() => setSaveOpen(false)}
+        onClose={() => {
+          setSaveOpen(false);
+          setNameConflict(null);
+        }}
         title={<span>Save canvas</span>}
         description="Persist this canvas as a lineage artifact. The artifact id is the identifier we use to re-open it — the name is purely display."
         footer={
           <div className="flex justify-end gap-2">
-            <Button variant="secondary" size="md" onClick={() => setSaveOpen(false)}>
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={() => {
+                setSaveOpen(false);
+                setNameConflict(null);
+              }}
+            >
               Cancel
             </Button>
             <Button
               variant="primary"
               size="md"
               loading={saveMut.isPending}
-              disabled={!saveName.trim() || saveMut.isPending}
+              disabled={
+                !saveName.trim() ||
+                saveMut.isPending ||
+                // While the conflict is unresolved the typed name still
+                // matches a different artifact — block the Save button
+                // until the user actually changes the input.
+                (nameConflict !== null &&
+                  nameConflict.existingName.trim() === saveName.trim())
+              }
               onClick={() => saveMut.mutate()}
             >
               Save
@@ -1039,10 +1427,49 @@ function CanvasInner() {
           <input
             type="text"
             value={saveName}
-            onChange={(e) => setSaveName(e.target.value)}
+            onChange={(e) => {
+              setSaveName(e.target.value);
+              // Typing clears the conflict so the Save button enables
+              // again as soon as the user picks a different name.
+              if (
+                nameConflict &&
+                nameConflict.existingName.trim() !== e.target.value.trim()
+              ) {
+                setNameConflict(null);
+              }
+            }}
             placeholder="my-canvas"
-            className="block w-full rounded-md border border-surface-border bg-surface-raised px-3 py-2 text-sm focus:border-accent-default focus:outline-none"
+            className={clsx(
+              "block w-full rounded-md border bg-surface-raised px-3 py-2 text-sm focus:outline-none",
+              nameConflict &&
+                nameConflict.existingName.trim() === saveName.trim()
+                ? "border-critical focus:border-critical"
+                : "border-surface-border focus:border-accent-default",
+            )}
           />
+          {nameConflict &&
+            nameConflict.existingName.trim() === saveName.trim() && (
+              <div className="flex items-center justify-between gap-2 pt-1 text-[11.5px] text-critical">
+                <span>
+                  ⚠ Already used by another saved lineage. Rename or open it.
+                </span>
+                {nameConflict.existingId !== null && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const id = nameConflict.existingId;
+                      if (id === null) return;
+                      setSaveOpen(false);
+                      setNameConflict(null);
+                      setParams({ artifact: String(id) });
+                    }}
+                    className="rounded border border-critical/40 px-2 py-0.5 text-[11px] text-critical transition hover:bg-critical-soft"
+                  >
+                    Open existing →
+                  </button>
+                )}
+              </div>
+            )}
         </label>
       </Modal>
 

@@ -121,10 +121,15 @@ export function loadedNodeToCanvasNode(
   opts: { multiProfile: boolean; isAnchor: boolean },
 ): CanvasNode {
   if (n.kind === "operator") {
-    const op: OperatorKind = (["filter", "join", "aggregate", "function", "projection"]
-      .includes(n.column)
-      ? n.column
-      : "function") as OperatorKind;
+    // The backend now surfaces ``op_kind`` and ``expression`` as
+    // first-class fields parsed out of the entity's ``search_text``
+    // JSON. Earlier versions read them out of ``column`` / ``table``
+    // (which was wrong — those fields hold the operator path + host
+    // table); keep a defensive fallback so canvases saved against
+    // the older response still round-trip.
+    const rawKind = (n.op_kind || "").toLowerCase();
+    const validKinds = new Set(["filter", "join", "aggregate", "function", "projection"]);
+    const op: OperatorKind = (validKinds.has(rawKind) ? rawKind : "function") as OperatorKind;
     return {
       id: nodeIdFor(n),
       type: "operator",
@@ -133,7 +138,7 @@ export function loadedNodeToCanvasNode(
         kind: "operator",
         id: nodeIdFor(n),
         opKind: op,
-        expression: n.table || "",
+        expression: n.expression ?? "",
         operatorId: n.entity_id,
       },
       sourcePosition: Position.Right,
@@ -152,7 +157,12 @@ export function loadedNodeToCanvasNode(
       schema: n.schema,
       table: n.table,
       fqn: n.fqn,
-      columns: [],
+      // Hydrate the column rail from the backend when present so the
+      // canvas re-renders with real columns instead of the empty
+      // "(no columns cached)" placeholder. Older responses omit
+      // ``columns`` entirely; falling back to ``[]`` keeps the load
+      // path working unchanged.
+      columns: Array.isArray(n.columns) ? n.columns : [],
       entityId: n.entity_id,
       showProfileChip: opts.multiProfile,
       isAnchor: opts.isAnchor,

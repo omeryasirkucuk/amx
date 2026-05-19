@@ -3,12 +3,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { AlignLeft, Columns, Sparkles, Database, Workflow } from "lucide-react";
 
-import { api, lineageRefresh } from "../lib/api";
+import { api, lineageArtifactsForTable } from "../lib/api";
+import type { LineageArtifact } from "../lib/api";
 import { useScope, scopePath } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
 import GenerateScopeDialog from "../components/GenerateScopeDialog";
+import Modal from "../components/Modal";
 import StatusPill from "../components/StatusPill";
 import { useUi } from "../lib/store";
 import {
@@ -182,30 +184,49 @@ export default function Table() {
     },
   });
 
-  // "Open lineage" button on the table page: ensures an artifact
-  // exists for the current anchor (creating it if needed), then routes
-  // the user into the canvas. Refresh is cache-only by default so the
-  // round-trip never blocks on a live DB call.
+  // "Open lineage" button on the table page. Routes by how many
+  // saved canvases already contain this table:
+  //   * 0   → fresh /lineage canvas seeded with the table
+  //   * 1   → straight to that artifact's canvas
+  //   * 2+  → small picker so the user chooses which canvas to open
+  const [pickerArtifacts, setPickerArtifacts] = useState<LineageArtifact[] | null>(null);
   const openLineage = useMutation({
     mutationFn: async () => {
-      if (!scope || !schema || !table) return null;
-      const anchorPath = [schema, table].filter(Boolean).join(".");
-      const result = await lineageRefresh(anchorPath, {
+      if (!scope || !table) {
+        throw new Error("Pick a table from the sidebar first.");
+      }
+      const database = scope.database || scope.catalog || "";
+      const resp = await lineageArtifactsForTable({
         profile: scope.profile,
-        // Always pass the active database / catalog so the backend
-        // can look the anchor up correctly — without it the lookup
-        // falls back to profile.database which is empty for most
-        // multi-database backends and 404s.
-        database: scope.database || scope.catalog || undefined,
+        database,
+        schema,
+        table,
       });
-      const slug = `${schema}-${table}`.replace(/[^A-Za-z0-9_-]+/g, "_");
-      return { slug, anchorPath, profile: scope.profile, result };
+      return { artifacts: resp.artifacts, database };
     },
     onSuccess: (payload) => {
-      if (!payload) return;
-      navigate(
-        `/lineage/${encodeURIComponent(payload.profile)}/${encodeURIComponent(payload.slug)}`,
-      );
+      if (!scope || !table) return;
+      const { artifacts, database } = payload;
+      if (artifacts.length === 0) {
+        // Seed a blank canvas with the picked table so the user
+        // doesn't have to re-find it in the picker.
+        const seed = [
+          scope.profile,
+          database,
+          schema,
+          table,
+          "", // backend left empty — logo can be picked manually
+        ]
+          .map(encodeURIComponent)
+          .join("|");
+        navigate(`/lineage?seed=${encodeURIComponent(seed)}`);
+        return;
+      }
+      if (artifacts.length === 1) {
+        navigate(`/lineage?artifact=${artifacts[0].id}`);
+        return;
+      }
+      setPickerArtifacts(artifacts);
     },
     onError: (e: Error) => {
       toast.push({
@@ -409,6 +430,34 @@ export default function Table() {
           onClick: () => generate.mutate(),
         }}
       />
+      <Modal
+        open={pickerArtifacts !== null}
+        onClose={() => setPickerArtifacts(null)}
+        size="md"
+        title={<span>Open lineage</span>}
+        description={`${pickerArtifacts?.length ?? 0} saved canvases include this table. Pick one to open.`}
+      >
+        <ul className="max-h-[420px] divide-y divide-surface-border overflow-y-auto rounded-md border border-surface-border">
+          {(pickerArtifacts ?? []).map((a) => (
+            <li key={a.id}>
+              <button
+                type="button"
+                onClick={() => {
+                  setPickerArtifacts(null);
+                  navigate(`/lineage?artifact=${a.id}`);
+                }}
+                className="block w-full px-3 py-2 text-left transition hover:bg-surface-raised"
+              >
+                <div className="text-[13px] font-medium text-ink">{a.name}</div>
+                <div className="mt-0.5 text-[11px] text-fg-muted">
+                  {a.node_count} nodes · {a.edge_count} edges ·{" "}
+                  {a.db_profile || "no profile"}
+                </div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Modal>
     </>
   );
 }
