@@ -484,6 +484,110 @@ def unrevoke_user(
         )
 
 
+def list_audit_events(
+    shared: SQLAlchemyHistoryStore,
+    *,
+    limit: int = 50,
+    actor_username: str | None = None,
+    action: str | None = None,
+) -> list[dict]:
+    """Return recent audit events from ``_amx_admin_audit``, newest first.
+
+    Optional ``actor_username`` and ``action`` filters narrow the result.
+    """
+    t_audit = _t_audit(shared)
+    stmt = select(t_audit).order_by(t_audit.c.event_at.desc()).limit(limit)
+    if actor_username:
+        stmt = stmt.where(t_audit.c.actor_username == actor_username)
+    if action:
+        stmt = stmt.where(t_audit.c.action == action)
+    with shared.engine.connect() as conn:
+        rows = conn.execute(stmt).fetchall()
+    return [
+        {
+            "id": r.id,
+            "event_at": r.event_at.isoformat() if r.event_at else None,
+            "actor_user_id": r.actor_user_id,
+            "actor_username": r.actor_username,
+            "actor_hostname": r.actor_hostname,
+            "action": r.action,
+            "target_user_id": r.target_user_id,
+            "target_resource": r.target_resource,
+            "details": r.details_json,
+        }
+        for r in rows
+    ]
+
+
+def list_session_events(
+    shared: SQLAlchemyHistoryStore,
+    *,
+    since: datetime | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return recent session events from ``_amx_session_events``, newest first.
+
+    Optional ``since`` (UTC datetime) restricts to events after that timestamp.
+    """
+    t_sessions = _t_sessions(shared)
+    stmt = select(t_sessions).order_by(t_sessions.c.event_at.desc()).limit(limit)
+    if since is not None:
+        stmt = stmt.where(t_sessions.c.event_at >= since)
+    with shared.engine.connect() as conn:
+        rows = conn.execute(stmt).fetchall()
+    return [
+        {
+            "id": r.id,
+            "event_at": r.event_at.isoformat() if r.event_at else None,
+            "user_id": r.user_id,
+            "username": r.username,
+            "hostname": r.hostname,
+            "event_kind": r.event_kind,
+            "client_version": r.client_version,
+            "os_platform": r.os_platform,
+            "db_profiles_seen": r.db_profiles_seen,
+        }
+        for r in rows
+    ]
+
+
+def resolve_user_by_username(
+    shared: SQLAlchemyHistoryStore,
+    username: str,
+) -> AdminUserRecord | None:
+    """Return the most-recently-seen ``AdminUserRecord`` for ``username``.
+
+    Resolves the ``username`` column of ``_amx_users``.  Returns ``None``
+    when no matching row exists.
+    """
+    t_users = _t_users(shared)
+    with shared.engine.connect() as conn:
+        row = conn.execute(
+            select(t_users)
+            .where(t_users.c.username == username)
+            .order_by(t_users.c.last_seen_at.desc())
+            .limit(1)
+        ).fetchone()
+    if row is None:
+        return None
+    return _row_to_record(row)
+
+
+def list_active_admins(shared: SQLAlchemyHistoryStore) -> list[str]:
+    """Return usernames of all non-revoked admins."""
+    t_users = _t_users(shared)
+    with shared.engine.connect() as conn:
+        rows = conn.execute(
+            select(t_users.c.username).where(
+                and_(
+                    t_users.c.role == "admin",
+                    t_users.c.revoked_at.is_(None),
+                )
+            )
+        ).fetchall()
+    return [r.username for r in rows]
+
+
 def record_audit_event(
     shared: SQLAlchemyHistoryStore,
     *,
@@ -551,10 +655,14 @@ __all__ = [
     "AdminUserRecord",
     "current_role",
     "demote_admin",
+    "list_active_admins",
+    "list_audit_events",
     "list_members",
+    "list_session_events",
     "promote_to_admin",
     "record_audit_event",
     "register_session",
+    "resolve_user_by_username",
     "revoke_user",
     "unrevoke_user",
 ]
