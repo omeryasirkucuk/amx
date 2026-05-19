@@ -39,6 +39,7 @@ from sqlalchemy import and_, delete, insert, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
+from amx.storage.conflicts import StaleVersionError, StaleVersionSnapshot
 from amx.storage.shared_schema import (
     SHARED_SCHEMA_VERSION,
     build_metadata,
@@ -73,6 +74,7 @@ class LineageArtifactRecord:
     created_at: datetime
     updated_at: datetime
     local_id: int
+    version: int = 1
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,7 @@ class LineageNodeRecord:
     created_at: datetime
     updated_at: datetime
     local_id: int
+    version: int = 1
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,7 @@ class LineageEdgeRecord:
     created_at: datetime
     updated_at: datetime
     local_id: int
+    version: int = 1
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,7 @@ class LineageCommentRecord:
     created_at: datetime
     updated_at: datetime
     local_id: int
+    version: int = 1
 
 
 def _new_uuid() -> str:
@@ -153,6 +158,22 @@ def _new_uuid() -> str:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _jsonable(value: Any) -> Any:
+    """Recursively convert a value to a JSON-serializable form.
+
+    Datetimes become ISO-8601 strings; everything else passes through.
+    Used to sanitise ``before``-row snapshots before storing them in
+    the ``details_json`` column of ``_amx_admin_audit``.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return value
 
 
 def _ts_to_dt(ts: float | None) -> datetime | None:
@@ -217,6 +238,7 @@ class SQLAlchemyHistoryStore:
         self._t_lineage_artifact_nodes = self._md.tables[f"{schema}.lineage_artifact_nodes"]
         self._t_lineage_artifact_edges = self._md.tables[f"{schema}.lineage_artifact_edges"]
         self._t_lineage_comments = self._md.tables[f"{schema}.lineage_comments"]
+        self._t_pages = self._md.tables[f"{schema}.documentation_pages"]
         self._hostname = _hostname()
         self._username = _username()
         self._client_version = _client_version()
@@ -255,6 +277,18 @@ class SQLAlchemyHistoryStore:
         ):
             ensure_column_exists(
                 self.engine, self.schema, "documentation_pages", _col_name, _col_spec
+            )
+
+        # PR-3: version column for OCC on all concurrent-edit tables.
+        for _occ_table in (
+            "lineage_artifacts",
+            "lineage_artifact_nodes",
+            "lineage_artifact_edges",
+            "lineage_comments",
+            "documentation_pages",
+        ):
+            ensure_column_exists(
+                self.engine, self.schema, _occ_table, "version", "INTEGER DEFAULT 1"
             )
 
         with self.engine.begin() as conn:
@@ -971,9 +1005,96 @@ class SQLAlchemyHistoryStore:
                     created_at=now,
                     updated_at=now,
                     local_id=local_id,
+                    version=1,
                 )
             )
         return uuid_value
+
+    def update_lineage_artifact(
+        self,
+        uuid: str,
+        *,
+        expected_version: int,
+        force_overwrite: bool = False,
+        canvas_meta: dict | None = None,
+        edge_set_hash: str | None = None,
+        node_count: int | None = None,
+        edge_count: int | None = None,
+        generated_at: datetime | None = None,
+        extractors_used: list | None = None,
+        extractors_partial: int | None = None,
+        output_path: str | None = None,
+    ) -> None:
+        """Update mutable fields on a lineage artifact with OCC protection.
+
+        ``expected_version`` must match the row's current ``version``
+        unless ``force_overwrite=True`` is passed. On a version mismatch
+        :class:`~amx.storage.conflicts.StaleVersionError` is raised with
+        the current row snapshot so the caller can offer a merge/cancel UI.
+
+        When ``force_overwrite=True`` the check is bypassed and an audit
+        entry is written to ``_amx_admin_audit`` via
+        :func:`amx.storage.admin.record_audit_event`.
+        """
+        t = self._t_lineage_artifacts
+        now = _utcnow()
+        fields: dict[str, Any] = {"updated_at": now}
+        if canvas_meta is not None:
+            fields["canvas_meta"] = canvas_meta
+        if edge_set_hash is not None:
+            fields["edge_set_hash"] = edge_set_hash
+        if node_count is not None:
+            fields["node_count"] = node_count
+        if edge_count is not None:
+            fields["edge_count"] = edge_count
+        if generated_at is not None:
+            fields["generated_at"] = generated_at
+        if extractors_used is not None:
+            fields["extractors_used"] = extractors_used
+        if extractors_partial is not None:
+            fields["extractors_partial"] = extractors_partial
+        if output_path is not None:
+            fields["output_path"] = output_path
+
+        if force_overwrite:
+            with self.engine.begin() as conn:
+                before_row = conn.execute(select(t).where(t.c.id == uuid)).fetchone()
+                before = dict(before_row._mapping) if before_row else {}
+                conn.execute(
+                    update(t).where(t.c.id == uuid).values(version=t.c.version + 1, **fields)
+                )
+            from amx.storage import admin as _admin
+
+            _admin.record_audit_event(
+                self,
+                actor_user_id=None,
+                action="forced_overwrite",
+                target_resource=f"lineage_artifacts:{uuid}",
+                details={"before": _jsonable(before), "fields_updated": list(fields.keys())},
+            )
+            return
+
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                update(t)
+                .where(t.c.id == uuid)
+                .where(t.c.version == expected_version)
+                .values(version=t.c.version + 1, **fields)
+            )
+            if result.rowcount == 0:
+                row = conn.execute(select(t).where(t.c.id == uuid)).fetchone()
+                if row is None:
+                    raise KeyError(uuid)
+                raise StaleVersionError(
+                    resource=f"lineage_artifacts:{uuid}",
+                    expected_version=expected_version,
+                    actual=StaleVersionSnapshot(
+                        version=int(row.version),
+                        updated_by=str(row.created_by or ""),
+                        updated_at=row.updated_at,
+                        current_value=dict(row._mapping),
+                    ),
+                )
 
     def find_lineage_uuid_by_local_id(self, *, hostname: str, local_id: int) -> str | None:
         """Return the shared UUID for a lineage artifact given hostname + local int id.
@@ -1027,38 +1148,87 @@ class SQLAlchemyHistoryStore:
         column_list_json: list | None = None,
         logo_key: str | None = None,
         custom_style_json: dict | None = None,
+        expected_version: int = 1,
+        force_overwrite: bool = False,
     ) -> str:
         """Insert or update a lineage node; return its UUID.
 
         Lookup is by (hostname, local_id). If a matching row exists the
-        positional and style fields are updated; otherwise a new row is
-        inserted with a fresh UUID.
+        positional and style fields are updated with OCC protection via
+        ``expected_version``; otherwise a new row is inserted with
+        ``version=1``.
+
+        On an UPDATE with a stale ``expected_version`` and
+        ``force_overwrite=False``, :class:`~amx.storage.conflicts.StaleVersionError`
+        is raised. Pass ``force_overwrite=True`` to bypass the check and
+        write an audit entry.
         """
         now = _utcnow()
+        t = self._t_lineage_artifact_nodes
         existing = self._find_node_uuid_by_local_id(self._hostname, local_id)
         if existing:
-            with self.engine.begin() as conn:
-                conn.execute(
-                    update(self._t_lineage_artifact_nodes)
-                    .where(self._t_lineage_artifact_nodes.c.id == existing)
-                    .values(
-                        x=x,
-                        y=y,
-                        width=width,
-                        height=height,
-                        z_index=z_index,
-                        display_label=display_label,
-                        column_list_json=column_list_json,
-                        logo_key=logo_key,
-                        custom_style_json=custom_style_json,
-                        updated_at=now,
+            update_fields = {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "z_index": z_index,
+                "display_label": display_label,
+                "column_list_json": column_list_json,
+                "logo_key": logo_key,
+                "custom_style_json": custom_style_json,
+                "updated_at": now,
+            }
+            if force_overwrite:
+                with self.engine.begin() as conn:
+                    before_row = conn.execute(select(t).where(t.c.id == existing)).fetchone()
+                    before = dict(before_row._mapping) if before_row else {}
+                    conn.execute(
+                        update(t)
+                        .where(t.c.id == existing)
+                        .values(version=t.c.version + 1, **update_fields)
                     )
+                from amx.storage import admin as _admin
+
+                _admin.record_audit_event(
+                    self,
+                    actor_user_id=None,
+                    action="forced_overwrite",
+                    target_resource=f"lineage_artifact_nodes:{existing}",
+                    details={
+                        "before": _jsonable(before),
+                        "fields_updated": list(update_fields.keys()),
+                    },
                 )
+                return existing
+
+            with self.engine.begin() as conn:
+                result = conn.execute(
+                    update(t)
+                    .where(t.c.id == existing)
+                    .where(t.c.version == expected_version)
+                    .values(version=t.c.version + 1, **update_fields)
+                )
+                if result.rowcount == 0:
+                    row = conn.execute(select(t).where(t.c.id == existing)).fetchone()
+                    if row is None:
+                        raise KeyError(existing)
+                    raise StaleVersionError(
+                        resource=f"lineage_artifact_nodes:{existing}",
+                        expected_version=expected_version,
+                        actual=StaleVersionSnapshot(
+                            version=int(row.version),
+                            updated_by=str(row.created_by or ""),
+                            updated_at=row.updated_at,
+                            current_value=dict(row._mapping),
+                        ),
+                    )
             return existing
+
         uuid_value = _new_uuid()
         with self.engine.begin() as conn:
             conn.execute(
-                insert(self._t_lineage_artifact_nodes).values(
+                insert(t).values(
                     id=uuid_value,
                     artifact_id=artifact_uuid,
                     entity_ref=entity_ref,
@@ -1079,6 +1249,7 @@ class SQLAlchemyHistoryStore:
                     created_at=now,
                     updated_at=now,
                     local_id=local_id,
+                    version=1,
                 )
             )
         return uuid_value
@@ -1121,38 +1292,87 @@ class SQLAlchemyHistoryStore:
         label: str | None = None,
         style_json: dict | None = None,
         waypoints_json: list | None = None,
+        expected_version: int = 1,
+        force_overwrite: bool = False,
     ) -> str:
         """Insert or update a lineage edge; return its UUID.
 
         Lookup is by (hostname, local_id). If a matching row exists the
-        semantic and style fields are updated; otherwise a new row is
-        inserted with a fresh UUID.
+        semantic and style fields are updated with OCC protection via
+        ``expected_version``; otherwise a new row is inserted with
+        ``version=1``.
+
+        On an UPDATE with a stale ``expected_version`` and
+        ``force_overwrite=False``, :class:`~amx.storage.conflicts.StaleVersionError`
+        is raised. Pass ``force_overwrite=True`` to bypass the check and
+        write an audit entry.
         """
         now = _utcnow()
+        t = self._t_lineage_artifact_edges
         existing = self._find_edge_uuid_by_local_id(self._hostname, local_id)
         if existing:
-            with self.engine.begin() as conn:
-                conn.execute(
-                    update(self._t_lineage_artifact_edges)
-                    .where(self._t_lineage_artifact_edges.c.id == existing)
-                    .values(
-                        edge_kind=edge_kind,
-                        join_type=join_type,
-                        on_condition=on_condition,
-                        where_clause=where_clause,
-                        source_columns_json=source_columns_json,
-                        target_columns_json=target_columns_json,
-                        label=label,
-                        style_json=style_json,
-                        waypoints_json=waypoints_json,
-                        updated_at=now,
+            update_fields = {
+                "edge_kind": edge_kind,
+                "join_type": join_type,
+                "on_condition": on_condition,
+                "where_clause": where_clause,
+                "source_columns_json": source_columns_json,
+                "target_columns_json": target_columns_json,
+                "label": label,
+                "style_json": style_json,
+                "waypoints_json": waypoints_json,
+                "updated_at": now,
+            }
+            if force_overwrite:
+                with self.engine.begin() as conn:
+                    before_row = conn.execute(select(t).where(t.c.id == existing)).fetchone()
+                    before = dict(before_row._mapping) if before_row else {}
+                    conn.execute(
+                        update(t)
+                        .where(t.c.id == existing)
+                        .values(version=t.c.version + 1, **update_fields)
                     )
+                from amx.storage import admin as _admin
+
+                _admin.record_audit_event(
+                    self,
+                    actor_user_id=None,
+                    action="forced_overwrite",
+                    target_resource=f"lineage_artifact_edges:{existing}",
+                    details={
+                        "before": _jsonable(before),
+                        "fields_updated": list(update_fields.keys()),
+                    },
                 )
+                return existing
+
+            with self.engine.begin() as conn:
+                result = conn.execute(
+                    update(t)
+                    .where(t.c.id == existing)
+                    .where(t.c.version == expected_version)
+                    .values(version=t.c.version + 1, **update_fields)
+                )
+                if result.rowcount == 0:
+                    row = conn.execute(select(t).where(t.c.id == existing)).fetchone()
+                    if row is None:
+                        raise KeyError(existing)
+                    raise StaleVersionError(
+                        resource=f"lineage_artifact_edges:{existing}",
+                        expected_version=expected_version,
+                        actual=StaleVersionSnapshot(
+                            version=int(row.version),
+                            updated_by=str(row.created_by or ""),
+                            updated_at=row.updated_at,
+                            current_value=dict(row._mapping),
+                        ),
+                    )
             return existing
+
         uuid_value = _new_uuid()
         with self.engine.begin() as conn:
             conn.execute(
-                insert(self._t_lineage_artifact_edges).values(
+                insert(t).values(
                     id=uuid_value,
                     artifact_id=artifact_uuid,
                     source_node_id=source_node_uuid,
@@ -1172,6 +1392,7 @@ class SQLAlchemyHistoryStore:
                     created_at=now,
                     updated_at=now,
                     local_id=local_id,
+                    version=1,
                 )
             )
         return uuid_value
@@ -1208,36 +1429,85 @@ class SQLAlchemyHistoryStore:
         color: str | None = None,
         style: str = "note",
         text: str = "",
+        expected_version: int = 1,
+        force_overwrite: bool = False,
     ) -> str:
         """Insert or update a sticky-note comment on a lineage canvas.
 
         Lookup is by (hostname, local_id). If a matching row exists the
-        position, appearance, and text are updated; otherwise a new row is
-        inserted stamped with the current user attribution.
+        position, appearance, and text are updated with OCC protection via
+        ``expected_version``; otherwise a new row is inserted with
+        ``version=1``.
+
+        On an UPDATE with a stale ``expected_version`` and
+        ``force_overwrite=False``, :class:`~amx.storage.conflicts.StaleVersionError`
+        is raised. Pass ``force_overwrite=True`` to bypass the check and
+        write an audit entry.
         """
         now = _utcnow()
+        t = self._t_lineage_comments
         existing = self._find_comment_uuid_by_local_id(self._hostname, local_id)
         if existing:
-            with self.engine.begin() as conn:
-                conn.execute(
-                    update(self._t_lineage_comments)
-                    .where(self._t_lineage_comments.c.id == existing)
-                    .values(
-                        x=x,
-                        y=y,
-                        width=width,
-                        height=height,
-                        color=color,
-                        style=style,
-                        text=text,
-                        updated_at=now,
+            update_fields = {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "color": color,
+                "style": style,
+                "text": text,
+                "updated_at": now,
+            }
+            if force_overwrite:
+                with self.engine.begin() as conn:
+                    before_row = conn.execute(select(t).where(t.c.id == existing)).fetchone()
+                    before = dict(before_row._mapping) if before_row else {}
+                    conn.execute(
+                        update(t)
+                        .where(t.c.id == existing)
+                        .values(version=t.c.version + 1, **update_fields)
                     )
+                from amx.storage import admin as _admin
+
+                _admin.record_audit_event(
+                    self,
+                    actor_user_id=None,
+                    action="forced_overwrite",
+                    target_resource=f"lineage_comments:{existing}",
+                    details={
+                        "before": _jsonable(before),
+                        "fields_updated": list(update_fields.keys()),
+                    },
                 )
+                return existing
+
+            with self.engine.begin() as conn:
+                result = conn.execute(
+                    update(t)
+                    .where(t.c.id == existing)
+                    .where(t.c.version == expected_version)
+                    .values(version=t.c.version + 1, **update_fields)
+                )
+                if result.rowcount == 0:
+                    row = conn.execute(select(t).where(t.c.id == existing)).fetchone()
+                    if row is None:
+                        raise KeyError(existing)
+                    raise StaleVersionError(
+                        resource=f"lineage_comments:{existing}",
+                        expected_version=expected_version,
+                        actual=StaleVersionSnapshot(
+                            version=int(row.version),
+                            updated_by=str(row.created_by or ""),
+                            updated_at=row.updated_at,
+                            current_value=dict(row._mapping),
+                        ),
+                    )
             return existing
+
         uuid_value = _new_uuid()
         with self.engine.begin() as conn:
             conn.execute(
-                insert(self._t_lineage_comments).values(
+                insert(t).values(
                     id=uuid_value,
                     artifact_id=artifact_uuid,
                     x=x,
@@ -1253,6 +1523,7 @@ class SQLAlchemyHistoryStore:
                     created_at=now,
                     updated_at=now,
                     local_id=local_id,
+                    version=1,
                 )
             )
         return uuid_value
@@ -1281,6 +1552,74 @@ class SQLAlchemyHistoryStore:
             conn.execute(
                 delete(self._t_lineage_comments).where(self._t_lineage_comments.c.id == uuid)
             )
+
+    # ── Documentation pages ───────────────────────────────────────────────
+
+    def update_documentation_page_body(
+        self,
+        page_id: str,
+        *,
+        markdown_body: str,
+        rendered_html: str | None = None,
+        expected_version: int,
+        force_overwrite: bool = False,
+    ) -> None:
+        """Update the markdown body of a documentation page with OCC protection.
+
+        ``expected_version`` must match the row's current ``version``
+        unless ``force_overwrite=True`` is passed. On a version mismatch
+        :class:`~amx.storage.conflicts.StaleVersionError` is raised with
+        the current row snapshot so the caller can offer a merge/cancel UI.
+
+        When ``force_overwrite=True`` the check is bypassed and an audit
+        entry is written to ``_amx_admin_audit`` via
+        :func:`amx.storage.admin.record_audit_event`.
+        """
+        t = self._t_pages
+        now = _utcnow()
+        fields: dict[str, Any] = {"markdown_body": markdown_body, "updated_at": now}
+        if rendered_html is not None:
+            fields["rendered_html"] = rendered_html
+
+        if force_overwrite:
+            with self.engine.begin() as conn:
+                before_row = conn.execute(select(t).where(t.c.id == page_id)).fetchone()
+                before = dict(before_row._mapping) if before_row else {}
+                conn.execute(
+                    update(t).where(t.c.id == page_id).values(version=t.c.version + 1, **fields)
+                )
+            from amx.storage import admin as _admin
+
+            _admin.record_audit_event(
+                self,
+                actor_user_id=None,
+                action="forced_overwrite",
+                target_resource=f"documentation_pages:{page_id}",
+                details={"before": _jsonable(before), "fields_updated": list(fields.keys())},
+            )
+            return
+
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                update(t)
+                .where(t.c.id == page_id)
+                .where(t.c.version == expected_version)
+                .values(version=t.c.version + 1, **fields)
+            )
+            if result.rowcount == 0:
+                row = conn.execute(select(t).where(t.c.id == page_id)).fetchone()
+                if row is None:
+                    raise KeyError(page_id)
+                raise StaleVersionError(
+                    resource=f"documentation_pages:{page_id}",
+                    expected_version=expected_version,
+                    actual=StaleVersionSnapshot(
+                        version=int(row.version),
+                        updated_by=str(row.created_by or ""),
+                        updated_at=row.updated_at,
+                        current_value=dict(row._mapping),
+                    ),
+                )
 
     def find_prior_lineage_by_others(
         self,
