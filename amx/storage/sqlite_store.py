@@ -929,6 +929,17 @@ class SQLiteHistoryStore:
             # rather than a second table.
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute("ALTER TABLE lineage_comments ADD COLUMN style TEXT DEFAULT 'note'")
+            # PR-3: OCC version columns on concurrent-edit lineage tables.
+            for _occ_tbl in (
+                "lineage_artifacts",
+                "lineage_artifact_nodes",
+                "lineage_artifact_edges",
+                "lineage_comments",
+            ):
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(
+                        f"ALTER TABLE {_occ_tbl} ADD COLUMN version INTEGER DEFAULT 1"
+                    )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_usage_evidence (

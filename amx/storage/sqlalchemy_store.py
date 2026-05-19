@@ -73,6 +73,7 @@ class LineageArtifactRecord:
     created_at: datetime
     updated_at: datetime
     local_id: int
+    version: int = 1
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,7 @@ class LineageNodeRecord:
     created_at: datetime
     updated_at: datetime
     local_id: int
+    version: int = 1
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,7 @@ class LineageEdgeRecord:
     created_at: datetime
     updated_at: datetime
     local_id: int
+    version: int = 1
 
 
 @dataclass(frozen=True)
@@ -145,6 +148,7 @@ class LineageCommentRecord:
     created_at: datetime
     updated_at: datetime
     local_id: int
+    version: int = 1
 
 
 def _new_uuid() -> str:
@@ -255,6 +259,18 @@ class SQLAlchemyHistoryStore:
         ):
             ensure_column_exists(
                 self.engine, self.schema, "documentation_pages", _col_name, _col_spec
+            )
+
+        # PR-3: version column for OCC on all concurrent-edit tables.
+        for _occ_table in (
+            "lineage_artifacts",
+            "lineage_artifact_nodes",
+            "lineage_artifact_edges",
+            "lineage_comments",
+            "documentation_pages",
+        ):
+            ensure_column_exists(
+                self.engine, self.schema, _occ_table, "version", "INTEGER DEFAULT 1"
             )
 
         with self.engine.begin() as conn:
