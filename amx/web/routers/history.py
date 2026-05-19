@@ -314,6 +314,43 @@ def list_recent_events(
     return {"events": rows, "count": len(rows)}
 
 
+@router.get("/status")
+def history_status() -> dict[str, Any]:
+    """Surface the shared history store status and any in-flight backfill.
+
+    Used by the Studio backfill banner to poll for migration progress.
+    Returns:
+      - ``enabled``: whether shared mode is configured
+      - ``backfill``: backfill state per scope (running / done / idle)
+      - ``shared_profile``: the configured history_store_profile
+    """
+    store = _store()
+    enabled = True
+    shared_profile = ""
+    backfill: dict[str, Any] = {}
+    try:
+        from amx.config import AMXConfig
+
+        cfg = AMXConfig.load()
+        shared_profile = cfg.history_store_profile or ""
+        enabled = bool(cfg.history_store_enabled)
+    except Exception:
+        pass
+    # Attempt to surface backfill state from the dual-write store
+    try:
+        if hasattr(store, "backfill_state"):
+            backfill = store.backfill_state() or {}
+        elif hasattr(store, "_local") and hasattr(store._local, "backfill_state"):
+            backfill = store._local.backfill_state() or {}
+    except Exception:
+        backfill = {}
+    return {
+        "enabled": enabled,
+        "shared_profile": shared_profile,
+        "backfill": backfill,
+    }
+
+
 @router.get("/apply-events")
 def list_apply_events(
     run_id: int | None = Query(default=None, description="Filter to a specific run."),

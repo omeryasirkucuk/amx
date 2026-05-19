@@ -2,14 +2,18 @@
 // Renders a table of pages with quick actions, plus a "New page" CTA.
 // Collapses to a card layout on narrow screens.
 
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FileText, Plus, Trash2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 
 import PageHeader from "../components/PageHeader";
 import EmptyState from "../components/EmptyState";
+import ProfileFilterChips from "../components/ProfileFilterChips";
 import { Badge, Button, DataTable, useToast } from "../components/ui";
 import type { DataTableColumn, BadgeTone } from "../components/ui";
 import { useDeletePage, usePagesList, type Page } from "../hooks/usePages";
+import { apiFetch } from "../lib/api";
 
 const STATUS_TONE: Record<string, BadgeTone> = {
   draft: "neutral",
@@ -17,11 +21,32 @@ const STATUS_TONE: Record<string, BadgeTone> = {
   deleted: "warning",
 };
 
+interface DbProfilesResponse {
+  profiles: { name: string }[];
+}
+
 export default function PagesRoute() {
   const navigate = useNavigate();
   const list = usePagesList();
   const toast = useToast();
-  const pages = (list.data ?? []).filter((p) => p.status !== "deleted");
+  const [profileFilter, setProfileFilter] = useState<string[]>([]);
+
+  const dbProfiles = useQuery({
+    queryKey: ["db-profiles", "list"],
+    queryFn: () => apiFetch<DbProfilesResponse>("/api/profiles/db"),
+    staleTime: 60_000,
+  });
+  const allProfileNames = (dbProfiles.data?.profiles ?? []).map((p) => p.name);
+
+  const allPages = (list.data ?? []).filter((p) => p.status !== "deleted");
+  // Apply profile filter. No filter = all pages (including unscoped).
+  const pages =
+    profileFilter.length === 0
+      ? allPages
+      : allPages.filter((p) => {
+          const pf = (p as Page & { db_profile?: string | null }).db_profile;
+          return pf != null && profileFilter.includes(pf);
+        });
 
   const columns: DataTableColumn<Page>[] = [
     {
@@ -75,6 +100,16 @@ export default function PagesRoute() {
           </Button>
         }
       />
+      {/* Cross-profile filter chips — only shown when multiple profiles exist */}
+      {allProfileNames.length > 1 && (
+        <div className="mb-4">
+          <ProfileFilterChips
+            profiles={allProfileNames}
+            selected={profileFilter}
+            onChange={setProfileFilter}
+          />
+        </div>
+      )}
       {list.isLoading ? (
         <div className="text-sm text-ink-dim">Loading pages...</div>
       ) : pages.length === 0 ? (

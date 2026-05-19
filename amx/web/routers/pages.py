@@ -11,14 +11,15 @@ import os
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from amx.docs.extensions import SUPPORTED_EXTENSIONS
 from amx.pages.intent_templates import INTENT_TEMPLATES
 from amx.pages.service import PagesService
 from amx.pages.types import AssetRef
+from amx.storage.conflicts import StaleVersionError
 from amx.web.deps import get_pages_service
 from amx.web.permissions import require_writer_role
 
@@ -56,8 +57,20 @@ def _ext_to_source_kind(saved_path: str) -> str:
 
 
 @router.get("")
-def list_pages(svc: PagesService = Depends(get_pages_service)) -> list[dict]:
-    return svc.store.list_active()
+def list_pages(
+    db_profiles: list[str] | None = Query(default=None),
+    svc: PagesService = Depends(get_pages_service),
+) -> list[dict]:
+    """List active documentation pages.
+
+    ``?db_profiles=a&db_profiles=b`` filters to pages owned by those DB
+    profiles. ``None`` (the default) returns pages for all profiles,
+    including pages with no profile association (shown as "unscoped").
+    """
+    pages = svc.store.list_active()
+    if db_profiles:
+        pages = [p for p in pages if p.get("db_profile") in db_profiles]
+    return pages
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -135,13 +148,33 @@ def patch_page(
     if page is None:
         raise HTTPException(status_code=404, detail="page not found")
     if body.markdown_body is not None:
-        svc.save_revision(
-            page_id,
-            markdown_body=body.markdown_body,
-            now=_now(),
-            saved_by=None,
-            note=body.note,
-        )
+        try:
+            svc.save_revision(
+                page_id,
+                markdown_body=body.markdown_body,
+                now=_now(),
+                saved_by=None,
+                note=body.note,
+            )
+        except StaleVersionError as exc:
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "error": "stale_version",
+                    "resource": exc.resource,
+                    "expected_version": exc.expected_version,
+                    "actual": {
+                        "version": exc.actual.version,
+                        "updated_by": exc.actual.updated_by,
+                        "updated_at": (
+                            exc.actual.updated_at.isoformat()
+                            if hasattr(exc.actual.updated_at, "isoformat")
+                            else str(exc.actual.updated_at)
+                        ),
+                        "current_value": exc.actual.current_value,
+                    },
+                },
+            )
     updated = svc.store.get(page_id)
     if updated is None:
         raise HTTPException(status_code=404, detail="page not found")

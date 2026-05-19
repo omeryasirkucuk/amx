@@ -32,6 +32,18 @@ from amx.web.permissions import require_writer_role
 router = APIRouter(prefix="/api/lineage", tags=["lineage"])
 
 
+def _artifact_record_to_dict(record: Any) -> dict[str, Any]:
+    """Convert a SQLAlchemy LineageArtifactRecord dataclass to a plain dict.
+
+    The local SQLite path already returns plain dicts; the shared-store
+    path returns dataclass instances that need converting so both code
+    paths emit the same shape to the frontend.
+    """
+    if isinstance(record, dict):
+        return record
+    return dict(vars(record)) if hasattr(record, "__dict__") else dict(record)
+
+
 def _resolve_profile(cfg: AMXConfig, profile: str | None) -> str:
     name = (profile or getattr(cfg, "active_db_profile", "") or "").strip()
     if not name:
@@ -115,9 +127,14 @@ def _scope(
 @router.get("")
 def list_artifacts(
     profile: str | None = Query(default=None),
+    db_profiles: list[str] | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """List rendered lineage artifacts. Optional ``?profile=`` filter.
+    """List rendered lineage artifacts.
+
+    ``?profile=`` filters to a single profile (legacy parameter, kept for
+    back-compat). ``?db_profiles=a&db_profiles=b`` filters to multiple
+    profiles. When neither is provided all artifacts are returned.
 
     Each row is enriched with the anchor's ``(database, schema, table,
     column)`` so the Studio canvas can construct subsequent API calls
@@ -129,7 +146,26 @@ def list_artifacts(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="History store not initialised.",
         )
-    rows = lineage_store.list_lineage_artifacts(hs, db_profile=profile or "")
+    # Resolve the effective profile filter. ``db_profiles`` (multi-value)
+    # takes precedence; fall back to the legacy single ``profile`` param.
+    effective_profiles: list[str] | None = None
+    if db_profiles:
+        effective_profiles = [p for p in db_profiles if p]
+    elif profile:
+        effective_profiles = [profile]
+
+    # SQLAlchemyHistoryStore supports db_profiles= natively; the local
+    # SQLite store only accepts a single db_profile string. Detect which
+    # store is active and route accordingly.
+    if hasattr(hs, "list_lineage_artifacts") and hasattr(hs, "engine"):
+        # Shared (SQLAlchemy) path
+        rows = hs.list_lineage_artifacts(db_profiles=effective_profiles)
+        rows = [_artifact_record_to_dict(r) for r in rows]
+    else:
+        # Local SQLite path — list all then filter in Python
+        rows = lineage_store.list_lineage_artifacts(hs, db_profile="")
+        if effective_profiles:
+            rows = [r for r in rows if r.get("db_profile") in effective_profiles]
     if rows:
         anchor_ids = {int(r["anchor_entity_id"]) for r in rows}
         anchors = _bulk_anchor_fqns(hs, anchor_ids)

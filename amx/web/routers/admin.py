@@ -120,6 +120,30 @@ class UserTargetIn(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
+@router.get("/me")
+def get_me(request: Request) -> dict[str, Any]:
+    """Return the current caller's identity and role in the workspace.
+
+    Used by the Studio frontend to decide whether to show the Workspace
+    Admin panel — only admin-role users see it in the sidebar.
+
+    Falls back gracefully when no shared store is available, returning
+    ``role: "viewer"`` so the frontend never crashes.
+    """
+    from amx.storage import admin as _admin
+
+    username, hostname = _caller_identity(request)
+    try:
+        shared = _get_shared_store()
+        role = _admin.current_role(shared, username=username, hostname=hostname)
+    except HTTPException:
+        # No shared store configured — everyone is a viewer by default.
+        role = "viewer"
+    except Exception:
+        role = "viewer"
+    return {"username": username, "hostname": hostname, "role": role}
+
+
 @router.get("/members")
 def list_members(request: Request) -> dict[str, Any]:
     """Return all workspace members ordered by role then last activity."""
