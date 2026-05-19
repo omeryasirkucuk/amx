@@ -168,6 +168,11 @@ def test_pages_new_with_intent_template_flag(cli) -> None:
     the page draft."""
     root, _hs, cfg = cli
     runner = CliRunner()
+    # ``--source`` is absent so the sources wizard prompt fires; feed it
+    # an empty stdin so click takes the prompt default ("" = skip) on
+    # every Click version. Without ``input``, older Click releases abort
+    # on EOFError when the test runner has no TTY (which is exactly the
+    # CI matrix shape for py3.10-py3.13).
     result = runner.invoke(
         root,
         [
@@ -181,6 +186,7 @@ def test_pages_new_with_intent_template_flag(cli) -> None:
             "db_table:prod/main/sales/orders",
             "--no-generate",
         ],
+        input="\n",
     )
     assert result.exit_code == 0, result.output
     assert "Created page" in result.output
