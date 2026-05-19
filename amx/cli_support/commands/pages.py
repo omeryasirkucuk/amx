@@ -1,8 +1,13 @@
-"""Flat ``/pages-*`` commands for the AMX interactive CLI.
+"""``/pages`` namespace commands for the AMX interactive CLI.
 
-Each command lives directly on the root Click group so the REPL
-exposes ``/pages-new``, ``/pages-list``, etc. (per CLAUDE.md rule #9).
-A bare ``/pages-new`` runs the wizard; flags are optional power-user
+Mirrors the ``/lineage`` shape: a single Click group ``pages`` with
+subcommands (``new``, ``list``, ``show``, ``edit``, ``export``,
+``delete``). Inside the ``/pages`` REPL tab the user types ``/new``,
+``/list``, etc.; from any other tab the same commands stay reachable
+as ``/pages new`` / ``/pages list`` thanks to the cross-namespace
+dispatch in :mod:`amx.cli_support.session`.
+
+A bare subcommand call runs the wizard; flags are optional power-user
 shortcuts.
 """
 
@@ -193,11 +198,15 @@ def register_pages_commands(
     main: click.Group,
     *,
     finalize_scope: FinalizeScope | None = None,
-) -> None:
-    """Attach ``/pages-*`` flat commands to the main Click group."""
+) -> click.Group:
+    """Attach the ``/pages`` namespace + subcommands to the main Click group."""
     del finalize_scope  # reserved for future per-asset scope expansion
 
-    @main.command("pages-new")
+    @main.group()
+    def pages() -> None:
+        """Compose, edit, and export documentation pages."""
+
+    @pages.command("new")
     @click.option("--title", default=None, help="Page title (prompted when omitted).")
     @click.option("--intent", default=None, help="Free-text generation intent.")
     @click.option(
@@ -280,13 +289,13 @@ def register_pages_commands(
         success(f"Created page {page_id}")
 
         if no_generate:
-            info("Skipped LLM composition (--no-generate). Use /pages-edit to write the body.")
+            info("Skipped LLM composition (--no-generate). Use /pages edit to write the body.")
             return
 
         try:
             svc.generate(page_id, now=_utcnow())
         except Exception as exc:  # noqa: BLE001
-            error(f"Generation failed: {exc}. Draft was saved; re-run with /pages-edit.")
+            error(f"Generation failed: {exc}. Draft was saved; re-run with /pages edit.")
             return
 
         page = svc.store.get(page_id)
@@ -295,14 +304,14 @@ def register_pages_commands(
         info("Preview (first 10 lines):")
         click.echo(preview)
 
-    @main.command("pages-list")
+    @pages.command("list")
     @click.pass_obj
     def pages_list(cfg: AMXConfig) -> None:
         """List active documentation pages."""
         svc = _svc(cfg)
         rows = svc.store.list_active()
         if not rows:
-            info("No pages yet. Create one with /pages-new.")
+            info("No pages yet. Create one with /pages new.")
             return
         table = Table(title="Documentation pages", show_lines=False)
         table.add_column("ID")
@@ -318,7 +327,7 @@ def register_pages_commands(
             )
         Console().print(table)
 
-    @main.command("pages-show")
+    @pages.command("show")
     @click.argument("page_id")
     @click.pass_obj
     def pages_show(cfg: AMXConfig, page_id: str) -> None:
@@ -330,7 +339,7 @@ def register_pages_commands(
             return
         click.echo(page.get("markdown_body", "") or "")
 
-    @main.command("pages-edit")
+    @pages.command("edit")
     @click.argument("page_id")
     @click.option("--note", default=None, help="Optional revision note.")
     @click.pass_obj
@@ -372,7 +381,7 @@ def register_pages_commands(
         )
         success(f"Saved new revision for {page_id}")
 
-    @main.command("pages-export")
+    @pages.command("export")
     @click.argument("page_id")
     @click.option(
         "--format",
@@ -417,7 +426,7 @@ def register_pages_commands(
         else:
             click.echo(payload, nl=False)
 
-    @main.command("pages-delete")
+    @pages.command("delete")
     @click.argument("page_id")
     @click.option(
         "--purge",
@@ -443,6 +452,8 @@ def register_pages_commands(
 
         svc.soft_delete(page_id, now=_utcnow())
         success(f"Soft-deleted page {page_id}")
+
+    return pages
 
 
 __all__ = ["register_pages_commands"]
