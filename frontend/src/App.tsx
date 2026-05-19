@@ -43,7 +43,6 @@ const LineageRedirect = lazy(() => import("./routes/LineageRedirect"));
 const Pages = lazy(() => import("./routes/Pages"));
 const PageNew = lazy(() => import("./routes/PageNew"));
 const PageEdit = lazy(() => import("./routes/PageEdit"));
-const WorkspaceAdmin = lazy(() => import("./routes/WorkspaceAdmin"));
 
 // Suspense fallback is intentionally minimal — chunk fetches over
 // loopback land in milliseconds, so a heavy skeleton would flash
@@ -110,7 +109,7 @@ export default function App() {
                 path="runs/catalog-refresh-schedules"
                 element={<Navigate to="/db-cache" replace />}
               />
-              <Route path="workspace-admin" element={<WorkspaceAdmin />} />
+              <Route path="workspace-admin" element={<Navigate to="/settings?tab=team" replace />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>
