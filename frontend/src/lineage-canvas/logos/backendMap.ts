@@ -15,6 +15,9 @@ export const BACKEND_TO_LOGO: Record<string, string> = {
   databricks: "databricks",
   bigquery: "bigquery",
   redshift: "redshift",
+  trino: "trino",
+  presto: "trino",
+  hive: "hive",
 };
 
 export function logoKeyForBackend(backend: string | undefined | null): string {

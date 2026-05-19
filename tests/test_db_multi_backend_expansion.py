@@ -45,6 +45,18 @@ def _fixture(backend: str) -> dict[str, object]:
         },
         "clickhouse": {"host": "ch.example.com", "user": "default"},
         "duckdb": {"database": "/tmp/x.duckdb"},
+        "trino": {
+            "host": "trino.example.com",
+            "user": "alice",
+            "password": "x",
+            "catalog": "hive",
+        },
+        "hive": {
+            "host": "hive.example.com",
+            "user": "alice",
+            "password": "x",
+            "database": "default",
+        },
     }[backend]
 
 

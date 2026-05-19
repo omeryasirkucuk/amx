@@ -37,6 +37,11 @@ from amx.db.profile_schema import spec_for, supported_backends
 # coverage check skips them.
 _NOT_IN_URL: dict[str, set[str]] = {
     "databricks": {"tls_no_verify", "tls_trusted_ca_file"},
+    # Trino's TLS bundle path travels via ``connect_args`` (verify=<path>)
+    # on the SQLAlchemy engine, not via a URL query param — same
+    # rationale as Databricks. ``jwt_token`` similarly travels via
+    # ``connect_args["auth"]``.
+    "trino": {"tls_trusted_ca_file", "jwt_token"},
 }
 
 
@@ -252,6 +257,55 @@ _SCENARIOS: dict[str, list[tuple[str, dict[str, object], list[str]]]] = {
             "motherduck",
             {"database": "md:warehouse", "motherduck_token": "tok-1"},
             ["md:warehouse", "motherduck_token=tok-1"],
+        ),
+    ],
+    "trino": [
+        (
+            "https-basic-with-catalog",
+            {
+                "host": "trino.example.com",
+                "port": 443,
+                "user": "alice",
+                "password": "secret",
+                "catalog": "hive",
+                "database": "default",
+                "http_scheme": "https",
+                "verify": False,
+            },
+            [
+                "trino.example.com",
+                "443",
+                "alice",
+                "hive",
+                "default",
+                "http_scheme=https",
+                "verify=false",
+            ],
+        ),
+        (
+            "http-no-catalog",
+            {
+                "host": "localhost",
+                "port": 8080,
+                "user": "amx",
+                "password": "",
+                "http_scheme": "http",
+            },
+            ["localhost", "8080", "http_scheme=http"],
+        ),
+    ],
+    "hive": [
+        (
+            "plain-auth-with-db",
+            {
+                "host": "hive.example.com",
+                "port": 10000,
+                "user": "alice",
+                "password": "secret",
+                "database": "warehouse",
+                "auth_mode": "PLAIN",
+            },
+            ["hive.example.com", "10000", "alice", "warehouse", "auth=PLAIN"],
         ),
     ],
 }

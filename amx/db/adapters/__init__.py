@@ -21,6 +21,8 @@ SUPPORTED_BACKENDS = (
     "redshift",
     "clickhouse",
     "duckdb",
+    "trino",
+    "hive",
 )
 
 # Each backend lives in its own optional-dependencies extra in
@@ -38,6 +40,8 @@ _BACKEND_EXTRAS: dict[str, str] = {
     "redshift": "redshift",
     "clickhouse": "clickhouse",
     "duckdb": "duckdb",
+    "trino": "trino",
+    "hive": "hive",
 }
 
 
@@ -94,6 +98,14 @@ def _import_adapter(backend: str) -> type[DatabaseAdapter]:
             from amx.db.adapters.duckdb import DuckDBAdapter
 
             return DuckDBAdapter
+        if backend == "trino":
+            from amx.db.adapters.trino import TrinoAdapter
+
+            return TrinoAdapter
+        if backend == "hive":
+            from amx.db.adapters.hive import HiveAdapter
+
+            return HiveAdapter
     except ImportError as exc:
         extra = _BACKEND_EXTRAS.get(backend, backend)
         raise MissingDriverError(
