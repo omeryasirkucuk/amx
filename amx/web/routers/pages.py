@@ -20,6 +20,7 @@ from amx.pages.intent_templates import INTENT_TEMPLATES
 from amx.pages.service import PagesService
 from amx.pages.types import AssetRef
 from amx.web.deps import get_pages_service
+from amx.web.permissions import require_writer_role
 
 router = APIRouter(prefix="/api/pages", tags=["pages"])
 
@@ -63,6 +64,7 @@ def list_pages(svc: PagesService = Depends(get_pages_service)) -> list[dict]:
 def create_page(
     body: PageCreateIn,
     svc: PagesService = Depends(get_pages_service),
+    _: None = Depends(require_writer_role),
 ) -> dict:
     pid = svc.create_draft(
         title=body.title,
@@ -110,6 +112,7 @@ def get_page(
 def generate_page(
     page_id: str,
     svc: PagesService = Depends(get_pages_service),
+    _: None = Depends(require_writer_role),
 ) -> dict:
     try:
         svc.generate(page_id, now=_now())
@@ -126,6 +129,7 @@ def patch_page(
     page_id: str,
     body: PagePatchIn,
     svc: PagesService = Depends(get_pages_service),
+    _: None = Depends(require_writer_role),
 ) -> dict:
     page = svc.store.get(page_id)
     if page is None:
@@ -148,6 +152,7 @@ def patch_page(
 def delete_page(
     page_id: str,
     svc: PagesService = Depends(get_pages_service),
+    _: None = Depends(require_writer_role),
 ) -> dict:
     if svc.store.get(page_id) is None:
         raise HTTPException(status_code=404, detail="page not found")
@@ -160,6 +165,7 @@ async def upload_source(
     page_id: str,
     file: UploadFile = File(...),
     svc: PagesService = Depends(get_pages_service),
+    _: None = Depends(require_writer_role),
 ) -> dict:
     if svc.store.get(page_id) is None:
         raise HTTPException(status_code=404, detail="page not found")
