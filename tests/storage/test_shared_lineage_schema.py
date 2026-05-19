@@ -30,3 +30,22 @@ def test_lineage_artifacts_indexes():
     assert "ix_lineage_artifacts_db_profile" in idx_names
     assert "ix_lineage_artifacts_local_lookup" in idx_names
     assert "ix_lineage_artifacts_name_profile" in idx_names
+
+
+def test_lineage_artifact_nodes_table_exists():
+    md = build_metadata(schema="AMX")
+    assert "AMX.lineage_artifact_nodes" in md.tables
+
+
+def test_lineage_artifact_nodes_has_required_columns():
+    md = build_metadata(schema="AMX")
+    table = md.tables["AMX.lineage_artifact_nodes"]
+    expected = {
+        "id", "artifact_id", "entity_ref", "entity_kind", "db_profile",
+        "x", "y", "width", "height", "z_index",
+        "display_label", "column_list_json", "logo_key", "custom_style_json",
+        "created_by", "hostname", "client_version",
+        "created_at", "updated_at", "local_id",
+    }
+    actual = {c.name for c in table.columns}
+    assert expected <= actual, f"missing: {expected - actual}"

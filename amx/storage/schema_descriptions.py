@@ -1052,43 +1052,79 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "updated_at": "Shared-only: UTC timestamp of the last edit.",
         "local_id": ATTRIBUTION_LOCAL_ID,
     },
-    # ── lineage_artifact_nodes (local only) ───────────────────────────────
+    # ── lineage_artifact_nodes ────────────────────────────────────────────
     "lineage_artifact_nodes": {
         "__table__": (
-            "Per-canvas node placement for a saved lineage artifact. "
-            "One row per node on the canvas. Carries its own db_profile so "
-            "a single canvas can host nodes from multiple DB profiles "
-            "(cross-profile lineage). x/y persist the user's manual layout "
-            "so re-open restores the same arrangement without re-running "
-            "dagre."
+            "Per-entity placement on a lineage canvas; captures position, "
+            "label, logo, and a full column snapshot so teammates see the "
+            "same schema view as the author. One row per node on the canvas. "
+            "Carries its own db_profile so a single canvas can host nodes "
+            "from multiple DB profiles (cross-profile lineage). x/y persist "
+            "the user's manual layout so re-open restores the same "
+            "arrangement without re-running dagre."
         ),
-        "id": "Surrogate INT primary key.",
+        "id": "UUID primary key.",
         "artifact_id": (
-            "lineage_artifacts.id this node belongs to. Cascades on artifact "
-            "delete so orphan node rows cannot accumulate."
+            "FK to lineage_artifacts.id. Cascades on artifact delete so "
+            "orphan node rows cannot accumulate."
         ),
+        # Local-only: integer FK into catalog_entities
         "entity_id": (
-            "catalog_entities.id of the table, view, or operator the node represents on the canvas."
+            "Local-only: catalog_entities.id of the table, view, or operator "
+            "the node represents on the canvas. Not present in the shared "
+            "store, which uses entity_ref."
+        ),
+        # Shared-only: FQN string identifying the entity
+        "entity_ref": (
+            "Shared-only: FQN of the entity rendered by this node, in the "
+            "form 'db_profile|database|schema|table[|column]'."
+        ),
+        # Shared-only: entity kind discriminator
+        "entity_kind": (
+            "Shared-only: one of 'table', 'view', 'column', 'external', "
+            "'cte', 'temp'."
         ),
         "db_profile": (
-            "DB profile the entity belongs to. Stored per-node (not just on "
-            "the parent artifact) so cross-profile canvases can render each "
-            "node with its own profile context."
+            "Source database profile of the entity at the time of capture. "
+            "Stored per-node (not just on the parent artifact) so "
+            "cross-profile canvases can render each node with its own "
+            "profile context."
         ),
-        "x": "Canvas x coordinate in ReactFlow units.",
-        "y": "Canvas y coordinate in ReactFlow units.",
+        "x": "Canvas X coordinate in ReactFlow units.",
+        "y": "Canvas Y coordinate in ReactFlow units.",
         "width": "Rendered node width in ReactFlow units.",
         "height": "Rendered node height in ReactFlow units.",
         "z_index": (
-            "Stacking order. Higher z renders on top of lower z when nodes "
-            "visually overlap. Defaults to 0."
+            "Stack order for overlapping nodes. Higher z renders on top of "
+            "lower z. Defaults to 0."
+        ),
+        # Shared-only: user override label
+        "display_label": (
+            "Shared-only: user override label (e.g. table alias). "
+            "NULL means use entity_ref."
+        ),
+        # Shared-only: column snapshot
+        "column_list_json": (
+            "Shared-only: JSON list of columns shown on the node: name, "
+            "type, nullable, primary_key flags."
         ),
         "logo_key": (
-            "Optional override for the table node's header logo badge. "
-            "References lineage_logos.key. Empty string = no override; "
-            "the frontend falls back to the backend-derived auto-bound "
-            "logo (postgres profile -> 'postgres' logo, etc.)."
+            "Identifier for a predefined logo such as 'postgres', "
+            "'snowflake'. References lineage_logos.key. Empty string = no "
+            "override; the frontend falls back to the backend-derived "
+            "auto-bound logo."
         ),
+        # Shared-only: per-node style overrides
+        "custom_style_json": (
+            "Shared-only: JSON of per-node style overrides: colors, border, "
+            "font."
+        ),
+        "created_by": ATTRIBUTION_CREATED_BY,
+        "hostname": ATTRIBUTION_HOSTNAME,
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
+        "created_at": "UTC timestamp of insertion.",
+        "updated_at": "UTC timestamp of last edit.",
+        "local_id": ATTRIBUTION_LOCAL_ID,
     },
     # ── lineage_logos (local only) ────────────────────────────────────────
     "lineage_logos": {

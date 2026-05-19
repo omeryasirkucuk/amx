@@ -749,6 +749,53 @@ def build_metadata(schema: str | None = None) -> MetaData:
         comment=_desc("lineage_artifacts"),
     )
 
+    # ── lineage_artifact_nodes: per-entity canvas placement ──────────────────
+    Table(
+        "lineage_artifact_nodes",
+        md,
+        Column("id", String(36), primary_key=True,
+               comment=_desc("lineage_artifact_nodes", "id")),
+        Column("artifact_id", String(36),
+               ForeignKey(f"{schema}.lineage_artifacts.id"),
+               nullable=False,
+               comment=_desc("lineage_artifact_nodes", "artifact_id")),
+        Column("entity_ref", String(1024), nullable=False,
+               comment=_desc("lineage_artifact_nodes", "entity_ref")),
+        Column("entity_kind", String(40), nullable=False,
+               comment=_desc("lineage_artifact_nodes", "entity_kind")),
+        Column("db_profile", String(120), nullable=False,
+               comment=_desc("lineage_artifact_nodes", "db_profile")),
+        Column("x", Float, comment=_desc("lineage_artifact_nodes", "x")),
+        Column("y", Float, comment=_desc("lineage_artifact_nodes", "y")),
+        Column("width", Float, comment=_desc("lineage_artifact_nodes", "width")),
+        Column("height", Float, comment=_desc("lineage_artifact_nodes", "height")),
+        Column("z_index", Integer, comment=_desc("lineage_artifact_nodes", "z_index")),
+        Column("display_label", String(512),
+               comment=_desc("lineage_artifact_nodes", "display_label")),
+        Column("column_list_json", _portable_json(),
+               comment=_desc("lineage_artifact_nodes", "column_list_json")),
+        Column("logo_key", String(120),
+               comment=_desc("lineage_artifact_nodes", "logo_key")),
+        Column("custom_style_json", _portable_json(),
+               comment=_desc("lineage_artifact_nodes", "custom_style_json")),
+        Column("created_by", String(255), nullable=False,
+               comment=_desc("lineage_artifact_nodes", "created_by")),
+        Column("hostname", String(255), nullable=False,
+               comment=_desc("lineage_artifact_nodes", "hostname")),
+        Column("client_version", String(40), nullable=False,
+               comment=_desc("lineage_artifact_nodes", "client_version")),
+        Column("created_at", DateTime(timezone=True), nullable=False,
+               comment=_desc("lineage_artifact_nodes", "created_at")),
+        Column("updated_at", DateTime(timezone=True), nullable=False,
+               comment=_desc("lineage_artifact_nodes", "updated_at")),
+        Column("local_id", BigInteger, nullable=False,
+               comment=_desc("lineage_artifact_nodes", "local_id")),
+        Index("ix_lineage_nodes_artifact", "artifact_id"),
+        Index("ix_lineage_nodes_entity_profile", "entity_ref", "db_profile"),
+        Index("ix_lineage_nodes_local_lookup", "hostname", "local_id"),
+        comment=_desc("lineage_artifact_nodes"),
+    )
+
     return md
 
 

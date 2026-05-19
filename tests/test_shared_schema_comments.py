@@ -54,11 +54,11 @@ def test_create_history_tables_ddl_emits_comments_on_postgres() -> None:
     )
     ddl = PostgreSQLAdapter(cfg).create_history_tables_ddl("AMX")
 
-    assert ddl.count("CREATE TABLE") == 11, "expected 11 CREATE TABLE statements"
-    assert ddl.count("COMMENT ON TABLE") == 11, "expected 11 COMMENT ON TABLE statements"
-    # 133 columns (112 original + 21 in lineage_artifacts), all annotated
-    assert ddl.count("COMMENT ON COLUMN") == 133, (
-        f"expected 133 COMMENT ON COLUMN statements, got {ddl.count('COMMENT ON COLUMN')}"
+    assert ddl.count("CREATE TABLE") == 12, "expected 12 CREATE TABLE statements"
+    assert ddl.count("COMMENT ON TABLE") == 12, "expected 12 COMMENT ON TABLE statements"
+    # 153 columns (112 original + 21 in lineage_artifacts + 20 in lineage_artifact_nodes)
+    assert ddl.count("COMMENT ON COLUMN") == 153, (
+        f"expected 153 COMMENT ON COLUMN statements, got {ddl.count('COMMENT ON COLUMN')}"
     )
 
 
