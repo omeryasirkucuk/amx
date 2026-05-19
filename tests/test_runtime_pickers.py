@@ -72,7 +72,11 @@ def patch_picker_choice():
 
 @pytest.mark.parametrize(
     "backend",
-    ["postgresql", "snowflake", "mysql", "oracle", "mssql", "redshift", "clickhouse"],
+    # 2-level backends — Hive joins this list because Hive treats
+    # databases as schemas (no catalog above). Trino is intentionally
+    # excluded: it's 3-level (catalog > schema > table) and uses the
+    # catalog picker, not the database picker.
+    ["postgresql", "snowflake", "mysql", "oracle", "mssql", "redshift", "clickhouse", "hive"],
 )
 def test_database_picker_runs_for_every_2level_backend(backend: str, patch_picker_choice) -> None:
     """The pre-0.12.3 whitelist locked out 5 backends (mysql, oracle,

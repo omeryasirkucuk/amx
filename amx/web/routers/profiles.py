@@ -50,7 +50,7 @@ log = logging.getLogger("amx.web.routers.profiles")
 SECRET_PLACEHOLDER = "********"
 
 #: DBConfig fields the SPA must never read raw.
-_DB_SECRET_FIELDS = frozenset({"password", "access_token"})
+_DB_SECRET_FIELDS = frozenset({"password", "access_token", "jwt_token"})
 
 #: LLMConfig fields likewise.
 _LLM_SECRET_FIELDS = frozenset({"api_key"})
@@ -83,6 +83,12 @@ _DB_BACKEND_META: dict[str, dict[str, Any]] = {
     "redshift": {"label": "Redshift", "default_port": 5439},
     "clickhouse": {"label": "ClickHouse", "default_port": 8123},
     "duckdb": {"label": "DuckDB"},
+    # Trino's HTTPS port matches the load-balancer convention (443);
+    # the coordinator's native plain-HTTP port is 8080. The wizard
+    # asks the user to pick the scheme, so 443 is the safer Studio
+    # default (anyone running TLS, which is the majority).
+    "trino": {"label": "Trino / Presto", "default_port": 443, "supports_catalog": True},
+    "hive": {"label": "Hive (HiveServer2)", "default_port": 10000},
 }
 
 
@@ -115,7 +121,9 @@ def _serialize_field(spec: FieldSpec) -> dict[str, Any]:
 # UPDATE for the finish_run lifecycle) — and lint guards in
 # ``tests/test_history_store_capability_gating.py`` already prevent it
 # from drifting.
-_BACKENDS_WITHOUT_SHARED_HISTORY: frozenset[str] = frozenset({"duckdb", "clickhouse"})
+_BACKENDS_WITHOUT_SHARED_HISTORY: frozenset[str] = frozenset(
+    {"duckdb", "clickhouse", "trino", "hive"}
+)
 
 
 def _backend_entry(backend: str) -> dict[str, Any]:

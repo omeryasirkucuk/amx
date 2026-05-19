@@ -506,6 +506,8 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             "redshift": "Host/port user/password - Amazon Redshift; PG-compatible + Spectrum",
             "clickhouse": "Host/port user/password - ClickHouse; system.* catalogs, MergeTree engines",
             "duckdb": "Single-file or in-memory; no host/auth (analytical, embedded)",
+            "trino": "Host/port user/password (or JWT) + catalog - Trino / Presto; COMMENT ON DDL",
+            "hive": "Host/port user/password - HiveServer2; partial comment write-back (no columns)",
         },
     )
     # Probe the chosen backend's optional driver up front and offer
@@ -546,6 +548,9 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             trust_server_certificate=False,
             cluster_identifier="",
             secure=False,
+            jwt_token="",
+            http_scheme="https",
+            auth_mode="",
         )
 
     # If the user picked a backend different from what ``defaults``
@@ -1134,6 +1139,180 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             secure=secure,
             ca_cert=ca_cert,
             verify=verify,
+        )
+
+    if backend == "trino":
+        host = _ask_update_text(
+            "Trino coordinator host (e.g. trino.example.com or localhost)",
+            defaults.host or "",
+            required=True,
+            allow_clear=False,
+        )
+        scheme_default = (defaults.http_scheme or "https").lower()
+        scheme = ask_choice(
+            "HTTP scheme (https for production, http for local Docker)",
+            ["https", "http"],
+            default=scheme_default,
+        )
+        default_port = 443 if scheme == "https" else 8080
+        port_raw = _ask_update_text(
+            f"Port (default {default_port} for {scheme})",
+            str(defaults.port) if defaults.port else str(default_port),
+            required=True,
+            allow_clear=False,
+        )
+        while not port_raw.isdigit():
+            warn("Port must be a number.")
+            port_raw = _ask_update_text(
+                f"Port (default {default_port} for {scheme})",
+                str(defaults.port) if defaults.port else str(default_port),
+                required=True,
+                allow_clear=False,
+            )
+        user = _ask_update_text(
+            "Username (Trino user — used for query auditing even with JWT)",
+            defaults.user or "",
+            required=True,
+            allow_clear=False,
+        )
+        # Auth picker — Basic (default) covers most deployments; JWT is
+        # common on Starburst Galaxy and behind OAuth-issued tokens.
+        # OAuth2 / Kerberos are documented as future wizard surface but
+        # not collected here — power users can hand-edit config.yml.
+        auth_choice = ask_choice(
+            "Authentication mode",
+            ["basic", "jwt"],
+            default="jwt" if defaults.jwt_token else "basic",
+            descriptions={
+                "basic": "Username + password (HTTP Basic against the coordinator)",
+                "jwt": "Username + JWT bearer token (Starburst Galaxy, OAuth-minted tokens)",
+            },
+        )
+        password = ""
+        jwt_token = ""
+        if auth_choice == "basic":
+            password = _ask_update_secret(
+                "Password (leave blank for anonymous on a dev cluster)",
+                defaults.password or "",
+                required=False,
+            )
+        else:
+            jwt_token = _ask_update_secret(
+                "JWT bearer token",
+                defaults.jwt_token or "",
+                required=True,
+            )
+        # Catalog — Trino's 3-level hierarchy. Optional at profile
+        # time: when blank, the user picks at command time.
+        catalog = _ask_update_text(
+            "Default catalog (leave blank to pick at command time)",
+            defaults.catalog or "",
+            required=False,
+            allow_clear=True,
+        )
+        # Schema is optional too — kept under ``database`` per AMX
+        # convention so the rest of the codebase reuses one field.
+        database = _ask_update_text(
+            "Default schema (leave blank to pick at command time)",
+            defaults.database or "",
+            required=False,
+            allow_clear=True,
+        )
+        # TLS verification — only meaningful on https. When the user
+        # picked http for a local Docker test, skip the prompt entirely.
+        verify = True
+        tls_ca = ""
+        if scheme == "https":
+            verify = _ask_update_bool(
+                "Verify TLS certificate? (Y for production, N only behind a TLS-inspecting proxy)",
+                current=bool(defaults.verify),
+            )
+            tls_ca = _ask_update_text(
+                "Path to private CA bundle (leave blank for system trust store)",
+                defaults.tls_trusted_ca_file or "",
+                required=False,
+                allow_clear=True,
+            )
+        return replace(
+            defaults,
+            backend="trino",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            jwt_token=jwt_token,
+            catalog=catalog,
+            database=database,
+            http_scheme=scheme,
+            verify=verify,
+            tls_trusted_ca_file=tls_ca,
+        )
+
+    if backend == "hive":
+        host = _ask_update_text(
+            "HiveServer2 host (e.g. hive.example.com or localhost)",
+            defaults.host or "",
+            required=True,
+            allow_clear=False,
+        )
+        port_raw = _ask_update_text(
+            "Port (default 10000 for HiveServer2)",
+            str(defaults.port) if defaults.port else "10000",
+            required=True,
+            allow_clear=False,
+        )
+        while not port_raw.isdigit():
+            warn("Port must be a number.")
+            port_raw = _ask_update_text(
+                "Port (default 10000 for HiveServer2)",
+                str(defaults.port) if defaults.port else "10000",
+                required=True,
+                allow_clear=False,
+            )
+        # Auth picker — NOSASL is dev/local only; PLAIN is the workhorse
+        # against a SASL/PLAIN HiveServer2 (often LDAP-backed); LDAP is
+        # the explicit "auth against an LDAP directory" path. Kerberos
+        # is documented but not in the picker — see CLAUDE.md for the
+        # hand-edit path.
+        auth_default = (defaults.auth_mode or "PLAIN").upper()
+        auth_mode = ask_choice(
+            "Authentication mode (NOSASL is for local dev clusters only)",
+            ["PLAIN", "LDAP", "NOSASL"],
+            default=auth_default if auth_default in {"PLAIN", "LDAP", "NOSASL"} else "PLAIN",
+            descriptions={
+                "PLAIN": "SASL PLAIN — username + password (most production clusters)",
+                "LDAP": "SASL PLAIN against an LDAP directory (Cloudera / EMR pattern)",
+                "NOSASL": "No authentication — dev clusters only",
+            },
+        )
+        user = _ask_update_text(
+            "Username (Hive user — also recorded in query history)",
+            defaults.user or "",
+            required=True,
+            allow_clear=False,
+        )
+        password = ""
+        if auth_mode in {"PLAIN", "LDAP"}:
+            password = _ask_update_secret(
+                "Password",
+                defaults.password or "",
+                required=True,
+            )
+        database = _ask_update_text(
+            "Default database / schema (leave blank to pick at command time)",
+            defaults.database or "",
+            required=False,
+            allow_clear=True,
+        )
+        return replace(
+            defaults,
+            backend="hive",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            database=database,
+            auth_mode=auth_mode,
         )
 
     if backend == "duckdb":

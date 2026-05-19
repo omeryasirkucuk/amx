@@ -36,6 +36,8 @@ def _fixture(backend: str) -> dict[str, object]:
         "redshift": {"host": "h", "user": "u", "password": "p"},
         "clickhouse": {"host": "h", "user": "u", "password": "p"},
         "duckdb": {"database": ":memory:"},
+        "trino": {"host": "h", "user": "u", "password": "p", "catalog": "hive"},
+        "hive": {"host": "h", "user": "u", "password": "p", "database": "default"},
     }[backend]
 
 
