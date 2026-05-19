@@ -1,170 +1,111 @@
 /**
- * Cross-profile Add Table modal.
+ * Multi-select Add Table modal.
  *
- * Profile is picked per add (not pinned canvas-wide) so a single
- * canvas can host nodes from any number of DB profiles. Schema and
- * table pickers cascade from the chosen profile. On submit the modal
- * fetches the table's column list so the new DataFrameNode lands
- * already-typed.
+ * Surfaces the cached catalog tree across every DB profile in a
+ * single hierarchical picker (profile → database → schema → table)
+ * so the user can tick any number of tables in one open / close
+ * cycle. The old per-table chevron flow forced them to re-enter the
+ * modal once per pick — exhausting on canvases that need 8–10
+ * seed tables.
+ *
+ * Adds are still optimistic: the modal calls ``onPick`` once per
+ * checked table with empty ``columns``, and column enrichment runs
+ * in the background for each via ``fetchTableColumns`` (the canvas
+ * already dedupes when the second ``onPick`` for the same node
+ * lands with the freshly-fetched column list).
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Plus, Search } from "lucide-react";
+import { Plus } from "lucide-react";
 
 import { Button } from "../../components/ui";
 import Modal from "../../components/Modal";
-import {
-  fetchAssetsResponse,
-  fetchProfilesResponse,
-  fetchSchemasResponse,
-  fetchTableColumns,
-  supportsCatalogs,
-  type ProfileSummary,
-} from "../amx-bridge/catalog";
+import { fetchTableColumns } from "../amx-bridge/catalog";
 import type { AddTablePick } from "../types";
+import {
+  LineageMultiTablePicker,
+  tableKey,
+  type PickedTable,
+} from "./LineageMultiTablePicker";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   defaultProfile: string;
   onPick: (pick: AddTablePick) => void;
+  /** Called once after the batch finishes adding ``count`` tables,
+   *  giving the canvas a chance to re-layout so the staggered
+   *  positions do not stack on top of each other. */
+  onBatchAdded?: (count: number) => void;
 }
 
-export function AddTableModal({ open, onClose, defaultProfile, onPick }: Props) {
-  const [profile, setProfile] = useState<string>("");
-  const [database, setDatabase] = useState<string>("");
-  const [catalog, setCatalog] = useState<string>("");
-  const [schema, setSchema] = useState<string>("");
-  const [query, setQuery] = useState<string>("");
-  const [loadingPick, setLoadingPick] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setProfile(defaultProfile);
-      setDatabase("");
-      setCatalog("");
-      setSchema("");
-      setQuery("");
-    }
-  }, [open, defaultProfile]);
-
-  const profilesQ = useQuery({
-    queryKey: ["db-profiles", "list"],
-    queryFn: fetchProfilesResponse,
-    enabled: open,
-  });
-  const profilesList: ProfileSummary[] = profilesQ.data?.profiles ?? [];
-
-  const profileMeta: ProfileSummary | undefined = profilesList.find(
-    (p) => p.name === profile,
+export function AddTableModal({ open, onClose, onPick, onBatchAdded }: Props) {
+  const [selected, setSelected] = useState<Map<string, PickedTable>>(
+    () => new Map(),
   );
-  const usesCatalogs = supportsCatalogs(profileMeta);
-
-  const dbsQ = useQuery({
-    queryKey: ["live-databases", profile],
-    queryFn: async () => {
-      const { api } = await import("../../lib/api");
-      return api.liveDatabases({ profile });
-    },
-    enabled: open && !!profile && !usesCatalogs,
-  });
-  const catalogsQ = useQuery({
-    queryKey: ["live-catalogs", profile],
-    queryFn: async () => {
-      const { api } = await import("../../lib/api");
-      return api.liveCatalogs({ profile });
-    },
-    enabled: open && !!profile && usesCatalogs,
-  });
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
-    if (!profile) return;
-    if (usesCatalogs) {
-      const list = catalogsQ.data?.catalogs ?? [];
-      const active =
-        catalogsQ.data?.active_catalog ?? catalogsQ.data?.active_project ?? "";
-      if (active && list.includes(active)) setCatalog(active);
-      else if (list.length === 1) setCatalog(list[0]);
-    } else {
-      const list = dbsQ.data?.databases ?? [];
-      const active = dbsQ.data?.active_database ?? "";
-      if (active && list.includes(active)) setDatabase(active);
-      else if (list.length === 1) setDatabase(list[0]);
+    if (open) setSelected(new Map());
+  }, [open]);
+
+  const count = selected.size;
+  const summary = useMemo(() => {
+    if (count === 0) return "";
+    if (count === 1) {
+      const only = Array.from(selected.values())[0];
+      return `${only.schema}.${only.table}`;
     }
-  }, [profile, usesCatalogs, dbsQ.data, catalogsQ.data]);
+    return `${count} tables`;
+  }, [count, selected]);
 
-  const schemasQ = useQuery({
-    queryKey: ["live-schemas", profile, database, catalog],
-    queryFn: () => fetchSchemasResponse({ profile, database, catalog }),
-    enabled: open && !!profile && (!!database || !!catalog),
-  });
-  const schemasList: string[] = Array.isArray(schemasQ.data?.schemas)
-    ? schemasQ.data!.schemas
-    : [];
-
-  const assetsQ = useQuery({
-    queryKey: ["live-assets", profile, database, catalog, schema],
-    queryFn: () => fetchAssetsResponse({ profile, database, catalog, schema }),
-    enabled: open && !!profile && !!schema,
-  });
-  const assetsList: Array<{ name: string; kind: string }> = Array.isArray(
-    assetsQ.data?.assets,
-  )
-    ? (assetsQ.data!.assets as Array<{ name: string; kind: string }>).filter(
-        (a) => a.kind === "table" || a.kind === "view",
-      )
-    : [];
-
-  const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return assetsList;
-    return assetsList.filter((a) => a.name.toLowerCase().includes(q));
-  }, [assetsList, query]);
-
-  async function handlePick(asset: { name: string }) {
-    if (loadingPick) return;
-    setLoadingPick(true);
+  async function handleAdd() {
+    if (adding || count === 0) return;
+    setAdding(true);
     try {
-      // Optimistic add: drop the node onto the canvas immediately
-      // (empty columns) and close the modal. ``fetchTableColumns``
-      // talks to the live connector for Databricks / BigQuery /
-      // Snowflake profiles and can stall for many seconds when the
-      // warehouse is cold — blocking on it leaves the user staring
-      // at an unresponsive Add button. Columns are enriched in the
-      // background and the node updates in place when they arrive.
-      onPick({
-        profile,
-        backend: String(profileMeta?.backend || ""),
-        database: catalog || database,
-        schema,
-        table: asset.name,
-        columns: [],
-      });
+      // Emit one optimistic onPick per table (empty columns) so the
+      // canvas paints all nodes immediately, then chase each with a
+      // background column fetch — Canvas.onPickTable dedupes by
+      // node id and merges the columns when the fetch lands.
+      for (const p of selected.values()) {
+        onPick({
+          profile: p.profile,
+          backend: p.backend,
+          database: p.database,
+          schema: p.schema,
+          table: p.table,
+          columns: [],
+        });
+      }
       onClose();
-      // Fire-and-forget enrichment — failures are swallowed so the
-      // node stays draggable even when the catalog endpoint is down.
-      void fetchTableColumns({
-        profile,
-        database: usesCatalogs ? "" : database,
-        catalog: usesCatalogs ? catalog : "",
-        schema,
-        table: asset.name,
-      })
-        .then((cols) => {
-          if (!cols.length) return;
-          onPick({
-            profile,
-            backend: String(profileMeta?.backend || ""),
-            database: catalog || database,
-            schema,
-            table: asset.name,
-            columns: cols,
-          });
+      // Let the canvas re-arrange once the optimistic batch has
+      // committed — without this the N nodes land in a tight
+      // diagonal stagger and overlap heavily on dense picks.
+      onBatchAdded?.(count);
+      // Fire-and-forget column enrichment; failures stay silent so the
+      // node stays draggable even when the catalog endpoint is cold.
+      for (const p of selected.values()) {
+        void fetchTableColumns({
+          profile: p.profile,
+          database: p.database,
+          schema: p.schema,
+          table: p.table,
         })
-        .catch(() => undefined);
+          .then((cols) => {
+            if (!cols.length) return;
+            onPick({
+              profile: p.profile,
+              backend: p.backend,
+              database: p.database,
+              schema: p.schema,
+              table: p.table,
+              columns: cols,
+            });
+          })
+          .catch(() => undefined);
+      }
     } finally {
-      setLoadingPick(false);
+      setAdding(false);
     }
   }
 
@@ -175,153 +116,44 @@ export function AddTableModal({ open, onClose, defaultProfile, onPick }: Props) 
       size="md"
       title={
         <span className="inline-flex items-center gap-2">
-          <Plus size={14} /> Add table to canvas
+          <Plus size={14} /> Add tables to canvas
         </span>
       }
-      description="Pick any cached table from any DB profile. The canvas can host nodes from multiple profiles simultaneously."
-    >
-      <div className="space-y-3 text-sm">
-        <div className="grid grid-cols-2 gap-2">
-          <label className="block space-y-1">
-            <span className="text-[10px] uppercase tracking-wide text-fg-muted">
-              Profile
-            </span>
-            <select
-              value={profile}
-              onChange={(e) => {
-                setProfile(e.target.value);
-                setDatabase("");
-                setCatalog("");
-                setSchema("");
-              }}
-              className="block w-full rounded-md border border-surface-border bg-surface-raised px-2 py-1.5 text-sm"
+      description="Tick any number of tables across any DB profile — they all land on the canvas in one shot."
+      footer={
+        <div className="flex w-full items-center justify-between gap-2">
+          <span className="text-[11px] text-fg-muted">
+            {count > 0 ? `Selected: ${summary}` : "Nothing selected yet."}
+          </span>
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={count === 0 || adding}
+              loading={adding}
+              onClick={handleAdd}
             >
-              <option value="">— pick profile —</option>
-              {profilesList.map((p) => (
-                <option key={p.name} value={p.name}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {profile && usesCatalogs ? (
-            <label className="block space-y-1">
-              <span className="text-[10px] uppercase tracking-wide text-fg-muted">
-                Catalog
-              </span>
-              <select
-                value={catalog}
-                onChange={(e) => {
-                  setCatalog(e.target.value);
-                  setSchema("");
-                }}
-                className="block w-full rounded-md border border-surface-border bg-surface-raised px-2 py-1.5 text-sm"
-              >
-                <option value="">— pick catalog —</option>
-                {(catalogsQ.data?.catalogs ?? []).map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : (
-            profile && (
-              <label className="block space-y-1">
-                <span className="text-[10px] uppercase tracking-wide text-fg-muted">
-                  Database
-                </span>
-                <select
-                  value={database}
-                  onChange={(e) => {
-                    setDatabase(e.target.value);
-                    setSchema("");
-                  }}
-                  className="block w-full rounded-md border border-surface-border bg-surface-raised px-2 py-1.5 text-sm"
-                >
-                  <option value="">— pick database —</option>
-                  {(dbsQ.data?.databases ?? []).map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )
-          )}
+              {count > 1 ? `Add ${count} tables` : "Add table"}
+            </Button>
+          </div>
         </div>
-
-        {profile && (database || catalog) && (
-          <label className="block space-y-1">
-            <span className="text-[10px] uppercase tracking-wide text-fg-muted">
-              Schema
-            </span>
-            <select
-              value={schema}
-              onChange={(e) => setSchema(e.target.value)}
-              className="block w-full rounded-md border border-surface-border bg-surface-raised px-2 py-1.5 text-sm"
-            >
-              <option value="">— pick schema —</option>
-              {schemasList.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-
-        {schema && (
-          <>
-            <label className="relative block">
-              <Search
-                size={12}
-                className="absolute left-2 top-2 text-fg-muted"
-              />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Filter tables…"
-                className="block w-full rounded-md border border-surface-border bg-surface-raised pl-7 pr-2 py-1.5 text-sm"
-              />
-            </label>
-            <div className="max-h-72 overflow-y-auto rounded-md border border-surface-border bg-surface">
-              {assetsQ.isLoading ? (
-                <div className="p-3 text-[11px] text-fg-muted">Loading tables…</div>
-              ) : matches.length === 0 ? (
-                <div className="p-3 text-[11px] text-fg-muted">No matching tables.</div>
-              ) : (
-                <ul className="divide-y divide-surface-border text-[12px]">
-                  {matches.map((a) => (
-                    <li
-                      key={a.name}
-                      className="flex items-center justify-between px-3 py-1.5 hover:bg-surface-raised"
-                    >
-                      <span className="font-mono">
-                        {schema}.{a.name}
-                        {a.kind === "view" && (
-                          <span className="ml-2 rounded bg-surface-raised px-1 text-[9px] uppercase tracking-wide text-fg-muted">
-                            view
-                          </span>
-                        )}
-                      </span>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={loadingPick}
-                        onClick={() => handlePick(a)}
-                      >
-                        + Add
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </>
-        )}
+      }
+    >
+      <div className="max-h-[480px] overflow-y-auto pr-1">
+        <LineageMultiTablePicker
+          selected={selected}
+          onChange={setSelected}
+        />
       </div>
     </Modal>
   );
 }
+
+// ``defaultProfile`` is intentionally accepted but unused — the new
+// multi-select tree shows every profile up front so there's no single
+// "default profile" to pre-select. Keeping the prop avoids a wider
+// signature change at the Canvas call site.
+void tableKey;

@@ -18,10 +18,33 @@ export interface ManualSavePayload {
   profile: string;          // primary profile (used for AI generate/refresh)
   name: string;             // display name only
   anchor_fqn: string;       // primary anchor table
+  /** When set, the backend updates this artifact in place (purges
+   *  its child rows and re-inserts them under the same id). When
+   *  absent, the backend creates a fresh artifact and 409s on
+   *  name conflict. */
+  artifact_id?: number | null;
   nodes: ManualSaveNode[];
   edges: ManualSaveEdge[];
+  /** Operator-kind canvas nodes (filter / join / aggregate / function).
+   *  Persisted alongside the table nodes so the load endpoint can
+   *  re-render the user's hand-drawn graph exactly as saved. */
+  operators: ManualSaveOperator[];
   comments: ManualSaveComment[];
   logo_nodes: ManualSaveLogoNode[];
+}
+
+export interface ManualSaveOperator {
+  /** ReactFlow node id from the canvas. The backend maps it to a
+   *  newly-created (or re-used) operator entity id and stores that
+   *  mapping for the same-batch edge resolver. */
+  node_id: string;
+  op_kind: string;          // filter | join | aggregate | function | projection
+  expression: string;       // user-typed expression, may be empty
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  z_index?: number;
 }
 
 export interface ManualSaveLogoNode {
@@ -46,10 +69,16 @@ export interface ManualSaveNode {
 }
 
 export interface ManualSaveEdge {
-  source_fqn: string;
-  source_profile: string;
-  target_fqn: string;
-  target_profile: string;
+  /** Table endpoints round-trip by FQN; operator endpoints round-
+   *  trip by their ReactFlow node id (the backend resolves it via
+   *  the same-batch ``operators`` array). Exactly one of
+   *  ``source_fqn`` / ``source_node_id`` must be set per side. */
+  source_fqn?: string;
+  source_profile?: string;
+  source_node_id?: string;
+  target_fqn?: string;
+  target_profile?: string;
+  target_node_id?: string;
   source_column?: string;
   target_column?: string;
   /** Studio-canvas style override fields — round-trip with the edge
@@ -118,6 +147,21 @@ export interface LoadedNode {
   height: number;
   z_index: number;
   logo_key?: string;
+  /** Backend-supplied column rail for table nodes. Pulled from
+   *  ``column_comments_cache`` server-side so the canvas re-renders
+   *  with full columns instead of the empty "(no columns cached)"
+   *  placeholder. Absent on non-table kinds. */
+  columns?: Array<{
+    name: string;
+    dtype: string;
+    isPrimary?: boolean;
+    isForeign?: boolean;
+  }>;
+  /** Operator-kind nodes carry these straight out of the entity's
+   *  ``search_text`` JSON. ``op_kind`` is one of
+   *  filter / join / aggregate / function / projection. */
+  op_kind?: string;
+  expression?: string;
 }
 
 export interface LoadedEdge {
@@ -177,19 +221,24 @@ export function buildSavePayload(args: {
   primaryProfile: string;
   artifactName: string;
   anchorFqn: string;
+  /** When set, signals the backend to update this artifact in
+   *  place instead of creating a fresh one. */
+  artifactId?: number | null;
   nodes: CanvasNode[];
   edges: CanvasEdge[];
 }): ManualSavePayload {
   const { primaryProfile, artifactName, anchorFqn } = args;
   const nodes: ManualSaveNode[] = [];
   const edges: ManualSaveEdge[] = [];
+  const operators: ManualSaveOperator[] = [];
   const comments: ManualSaveComment[] = [];
   const logo_nodes: ManualSaveLogoNode[] = [];
-  const nodeIndex = new Map<string, TableNodeData>();
+  const tableIndex = new Map<string, TableNodeData>();
+  const operatorIds = new Set<string>();
 
   for (const n of args.nodes) {
     if (n.data.kind === "table") {
-      nodeIndex.set(n.id, n.data);
+      tableIndex.set(n.id, n.data);
       nodes.push({
         profile: n.data.profile || primaryProfile,
         fqn: n.data.fqn,
@@ -198,6 +247,18 @@ export function buildSavePayload(args: {
         width: (n.width || 240),
         height: (n.height || 120),
         logo_key: n.data.logoKey || "",
+      });
+    } else if (n.data.kind === "operator") {
+      const op = n.data as OperatorNodeData;
+      operatorIds.add(n.id);
+      operators.push({
+        node_id: n.id,
+        op_kind: op.opKind,
+        expression: op.expression || "",
+        x: n.position.x,
+        y: n.position.y,
+        width: n.width || 240,
+        height: n.height || 120,
       });
     } else if (n.data.kind === "comment") {
       const c = n.data as CommentNodeData;
@@ -220,22 +281,24 @@ export function buildSavePayload(args: {
         height: n.height || 120,
       });
     }
-    // Operator nodes are persisted separately via /api/lineage/operators
-    // when the user drops one on the canvas. They are not serialized
-    // through the manual save payload — the backend already returns
-    // them as synthetic nodes via the by-id read path.
   }
 
   for (const e of args.edges) {
-    const src = nodeIndex.get(e.source);
-    const tgt = nodeIndex.get(e.target);
-    if (!src || !tgt) continue;
+    const src = tableIndex.get(e.source);
+    const tgt = tableIndex.get(e.target);
+    const srcIsOp = operatorIds.has(e.source);
+    const tgtIsOp = operatorIds.has(e.target);
+    // An endpoint must be either a known table or a known operator
+    // on this same canvas — anything else (orphan id) is dropped.
+    if ((!src && !srcIsOp) || (!tgt && !tgtIsOp)) continue;
     const d = e.data;
     edges.push({
-      source_fqn: src.fqn,
-      source_profile: src.profile || primaryProfile,
-      target_fqn: tgt.fqn,
-      target_profile: tgt.profile || primaryProfile,
+      source_fqn: src?.fqn,
+      source_profile: src ? src.profile || primaryProfile : undefined,
+      source_node_id: srcIsOp ? e.source : undefined,
+      target_fqn: tgt?.fqn,
+      target_profile: tgt ? tgt.profile || primaryProfile : undefined,
+      target_node_id: tgtIsOp ? e.target : undefined,
       source_column: e.sourceHandle || undefined,
       target_column: e.targetHandle || undefined,
       style_color: d?.styleColor ?? null,
@@ -248,8 +311,10 @@ export function buildSavePayload(args: {
     profile: primaryProfile,
     name: artifactName,
     anchor_fqn: anchorFqn,
+    artifact_id: args.artifactId ?? null,
     nodes,
     edges,
+    operators,
     comments,
     logo_nodes,
   };

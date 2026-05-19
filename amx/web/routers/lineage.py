@@ -13,7 +13,9 @@ from __future__ import annotations
 import getpass
 import json
 import re
+import sqlite3
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
@@ -162,6 +164,97 @@ def _bulk_anchor_fqns(hs: Any, anchor_ids: set[int]) -> dict[int, dict[str, str]
         }
         for r in rows
     }
+
+
+@router.get("/artifacts-with-table")
+def artifacts_with_table(
+    profile: str = Query(...),
+    database: str = Query(default=""),
+    schema: str = Query(default=""),
+    table: str = Query(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """List every saved lineage artifact that contains the given
+    table. Drives the table page's ``Open lineage`` button:
+
+    * 0 results → frontend opens a fresh canvas seeded with the table
+    * 1 result  → frontend navigates straight to ``?artifact=<id>``
+    * 2+        → frontend offers a picker
+
+    Match is by ``(profile, database, schema, table)`` against
+    ``catalog_entities`` joined with ``lineage_artifact_nodes`` — the
+    same identity used by every other lineage flow.
+    """
+    if not profile or not table:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="profile and table are required.",
+        )
+    profile = _resolve_profile(cfg, profile)
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    with hs._connect() as conn:
+        # ``database_name`` is matched leniently: an AI-stream table
+        # often lands in ``catalog_entities`` with the database
+        # column empty (the streamed 2-part FQN didn't carry one),
+        # while the same table added via the picker lands with the
+        # database populated. A strict equality match would split
+        # those two saves into "different" entities and the
+        # button's multi-match picker would only ever surface one
+        # of them. We treat empty-on-either-side as a wildcard so
+        # both representations of the same logical table fold into
+        # the same artifact list.
+        rows = conn.execute(
+            """
+            SELECT DISTINCT la.id, la.name, la.db_profile,
+                   la.anchor_entity_id, la.depth_up, la.depth_down,
+                   la.format, la.output_path, la.edge_set_hash,
+                   la.node_count, la.edge_count, la.generated_at,
+                   la.extractors_used, la.extractors_partial
+            FROM lineage_artifacts la
+            JOIN lineage_artifact_nodes lan ON lan.artifact_id = la.id
+            JOIN catalog_entities ce       ON ce.id = lan.entity_id
+            WHERE ce.db_profile    = ?
+              AND ce.schema_name   = ?
+              AND ce.table_name    = ?
+              AND (
+                ce.database_name = ?
+                OR ce.database_name = ''
+                OR ? = ''
+              )
+            ORDER BY la.generated_at DESC
+            """,
+            (profile, schema, table, database, database),
+        ).fetchall()
+    artifacts: list[dict[str, Any]] = []
+    for r in rows:
+        try:
+            extractors = json.loads(r[12] or "[]")
+        except (TypeError, ValueError):
+            extractors = []
+        artifacts.append(
+            {
+                "id": int(r[0]),
+                "name": str(r[1] or ""),
+                "db_profile": str(r[2] or ""),
+                "anchor_entity_id": int(r[3] or 0),
+                "depth_up": int(r[4] or 0),
+                "depth_down": int(r[5] or 0),
+                "format": str(r[6] or ""),
+                "output_path": str(r[7] or ""),
+                "edge_set_hash": str(r[8] or ""),
+                "node_count": int(r[9] or 0),
+                "edge_count": int(r[10] or 0),
+                "generated_at": float(r[11] or 0.0),
+                "extractors_used": extractors if isinstance(extractors, list) else [],
+                "extractors_partial": bool(r[13] or 0),
+            }
+        )
+    return {"artifacts": artifacts, "count": len(artifacts)}
 
 
 @router.get("/audit")
@@ -510,6 +603,8 @@ def get_artifact_by_id(
     for row in node_rows:
         by_profile.setdefault(str(row[1] or ""), []).append(int(row[0]))
 
+    from amx.lineage.operator_ops import decode_operator_details
+
     entity_meta: dict[int, dict[str, Any]] = {}
     for prof, ids in by_profile.items():
         if not ids:
@@ -518,49 +613,126 @@ def get_artifact_by_id(
         with hs._connect() as conn:
             rows = conn.execute(
                 f"SELECT id, database_name, schema_name, table_name, "
-                f"       column_name, entity_kind "
+                f"       column_name, entity_kind, search_text "
                 f"FROM catalog_entities WHERE id IN ({placeholders})",
                 tuple(ids),
             ).fetchall()
         for r in rows:
-            entity_meta[int(r[0])] = {
+            kind = str(r[5] or "table")
+            meta: dict[str, Any] = {
                 "profile": prof,
                 "database": str(r[1] or ""),
                 "schema": str(r[2] or ""),
                 "table": str(r[3] or ""),
                 "column": str(r[4] or ""),
-                "kind": str(r[5] or "table"),
+                "kind": kind,
             }
+            # Operator entities stash their op_kind + expression
+            # inside ``search_text`` JSON. Surface them as first-class
+            # fields so the frontend's ``loadedNodeToCanvasNode`` can
+            # rebuild the OperatorNode without re-parsing.
+            if kind == "operator":
+                details = decode_operator_details(str(r[6] or ""))
+                meta["op_kind"] = str(details.get("op_kind") or "")
+                meta["expression"] = str(details.get("expression") or "")
+            entity_meta[int(r[0])] = meta
+
+    # Bulk-fetch per-table column lists from the column-comments
+    # cache so the canvas re-renders with the real column rail
+    # instead of an empty "(no columns cached)" placeholder.
+    table_columns: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    table_keys = {
+        (
+            entity_meta[int(r[0])].get("profile", str(r[1] or "")),
+            entity_meta[int(r[0])].get("database", ""),
+            entity_meta[int(r[0])].get("schema", ""),
+            entity_meta[int(r[0])].get("table", ""),
+        )
+        for r in node_rows
+        if entity_meta.get(int(r[0]), {}).get("kind") == "table"
+    }
+    if table_keys:
+        with hs._connect() as conn:
+            for prof, db, sch, tbl in table_keys:
+                if not tbl:
+                    continue
+                row = conn.execute(
+                    """
+                    SELECT columns_json FROM column_comments_cache
+                    WHERE db_profile = ? AND database_name = ?
+                      AND schema_name = ? AND table_name = ?
+                    LIMIT 1
+                    """,
+                    (prof, db, sch, tbl),
+                ).fetchone()
+                if not row:
+                    continue
+                try:
+                    raw = json.loads(row[0] or "[]")
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(raw, list):
+                    continue
+                cols: list[dict[str, Any]] = []
+                for c in raw:
+                    if not isinstance(c, dict):
+                        continue
+                    name = str(c.get("name") or "").strip()
+                    if not name:
+                        continue
+                    cols.append(
+                        {
+                            "name": name,
+                            "dtype": str(c.get("dtype") or c.get("type") or ""),
+                            "isPrimary": bool(c.get("pk_flag") or c.get("is_primary")),
+                            "isForeign": bool(c.get("fk_flag") or c.get("is_foreign")),
+                        }
+                    )
+                table_columns[(prof, db, sch, tbl)] = cols
 
     for row in node_rows:
         entity_id = int(row[0])
         meta = entity_meta.get(entity_id, {})
-        nodes_out.append(
-            {
-                "entity_id": entity_id,
-                "profile": str(row[1] or ""),
-                "x": float(row[2] or 0.0),
-                "y": float(row[3] or 0.0),
-                "width": float(row[4] or 240.0),
-                "height": float(row[5] or 120.0),
-                "z_index": int(row[6] or 0),
-                "logo_key": str(row[7] or ""),
-                "database": meta.get("database", ""),
-                "schema": meta.get("schema", ""),
-                "table": meta.get("table", ""),
-                "column": meta.get("column", ""),
-                "kind": meta.get("kind", "table"),
-                "fqn": ".".join(
-                    p
-                    for p in (
-                        meta.get("database", ""),
-                        meta.get("schema", ""),
-                        meta.get("table", ""),
-                    )
-                    if p
+        node_entry: dict[str, Any] = {
+            "entity_id": entity_id,
+            "profile": str(row[1] or ""),
+            "x": float(row[2] or 0.0),
+            "y": float(row[3] or 0.0),
+            "width": float(row[4] or 240.0),
+            "height": float(row[5] or 120.0),
+            "z_index": int(row[6] or 0),
+            "logo_key": str(row[7] or ""),
+            "database": meta.get("database", ""),
+            "schema": meta.get("schema", ""),
+            "table": meta.get("table", ""),
+            "column": meta.get("column", ""),
+            "kind": meta.get("kind", "table"),
+            "fqn": ".".join(
+                p
+                for p in (
+                    meta.get("database", ""),
+                    meta.get("schema", ""),
+                    meta.get("table", ""),
+                )
+                if p
+            ),
+        }
+        if meta.get("kind") == "operator":
+            node_entry["op_kind"] = meta.get("op_kind", "")
+            node_entry["expression"] = meta.get("expression", "")
+        elif meta.get("kind") == "table":
+            cols = table_columns.get(
+                (
+                    str(row[1] or ""),
+                    meta.get("database", ""),
+                    meta.get("schema", ""),
+                    meta.get("table", ""),
                 ),
-            }
-        )
+                [],
+            )
+            if cols:
+                node_entry["columns"] = cols
+        nodes_out.append(node_entry)
 
     edges_out: list[dict[str, Any]] = []
     if node_rows:
@@ -1451,6 +1623,123 @@ def patch_edge_style(
     return {"id": int(edge_id), "ok": True}
 
 
+@router.post("/edges/among")
+def edges_among(
+    payload: dict[str, Any] = Body(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Return every ``catalog_relationships`` row whose endpoints are
+    both in the supplied set of entities.
+
+    Studio calls this after AI Generate (and on demand via the
+    "Discover related" toolbar button) to surface neighbour-to-
+    neighbour edges. The LLM extractor is anchor-centric and never
+    asks for non-anchor pairs, so without this call deterministic
+    edges (FK / view DDL / query log) between newly-spawned tables
+    would stay invisible on the canvas.
+
+    Body — either form is accepted, and they may be mixed:
+
+        ``{"entity_ids": [int, ...]}``
+            Used by canvases loaded from an artifact (every node
+            carries its backend ``entity_id``).
+        ``{"tables": [{"profile": str, "fqn": str}, ...]}``
+            Used by canvases assembled via AI Generate where the
+            new rows have not been persisted yet and only carry an
+            FQN. The handler resolves each pair to an entity_id
+            via the same strict lookup the save flow uses;
+            unresolved entries are silently dropped.
+
+    Returns the same edge shape used by ``GET /by-id/{artifact_id}``
+    (the canvas's load path) so the frontend can dedupe by ``id`` and
+    drop merged rows straight into ReactFlow state.
+    """
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    raw_ids = payload.get("entity_ids") or []
+    raw_tables = payload.get("tables") or []
+    ids: list[int] = []
+    seen: set[int] = set()
+    for v in raw_ids:
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            continue
+        if iv in seen:
+            continue
+        seen.add(iv)
+        ids.append(iv)
+    for entry in raw_tables:
+        if not isinstance(entry, dict):
+            continue
+        profile = str(entry.get("profile") or "").strip()
+        fqn = str(entry.get("fqn") or "").strip()
+        if not profile or not fqn:
+            continue
+        try:
+            iv = _resolve_entity_id_strict(hs, profile, fqn)
+        except HTTPException:
+            # Missing catalog row — skip silently rather than failing
+            # the whole call. Studio's canvas may carry stale FQNs
+            # that no longer resolve, and we'd rather surface the
+            # other edges than 404 the discovery pass.
+            continue
+        if iv in seen:
+            continue
+        seen.add(iv)
+        ids.append(iv)
+    if len(ids) < 2:
+        # Less than two endpoints means no edge can sit between two
+        # distinct nodes — short-circuit with an empty payload rather
+        # than hitting SQLite with a degenerate WHERE.
+        return {"edges": [], "count": 0}
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    placeholders = ",".join("?" for _ in ids)
+    with hs._connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, from_entity_id, to_entity_id, from_column, to_column,
+                   relationship_type, source, score, verdict,
+                   style_color, style_dashed, cardinality
+            FROM catalog_relationships
+            WHERE from_entity_id IN ({placeholders})
+              AND to_entity_id IN ({placeholders})
+              AND from_entity_id != to_entity_id
+            """,
+            tuple(ids) + tuple(ids),
+        ).fetchall()
+    edges_out: list[dict[str, Any]] = []
+    for r in rows:
+        dashed_raw = r[10]
+        dashed_out: bool | None = bool(int(dashed_raw)) if dashed_raw is not None else None
+        edges_out.append(
+            {
+                "id": int(r[0]),
+                "from_entity_id": int(r[1]),
+                "to_entity_id": int(r[2]),
+                "from_column": str(r[3] or ""),
+                "to_column": str(r[4] or ""),
+                "relationship_type": str(r[5] or ""),
+                "source": str(r[6] or ""),
+                "score": float(r[7] or 0.0),
+                "verdict": str(r[8] or ""),
+                "style_color": (str(r[9]) if r[9] else None),
+                "style_dashed": dashed_out,
+                "cardinality": (str(r[11]) if r[11] else None),
+            }
+        )
+    return {"edges": edges_out, "count": len(edges_out)}
+
+
 @router.delete("/edges/{edge_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_edge(
     edge_id: int,
@@ -1659,8 +1948,22 @@ def post_manual_artifact(
     anchor_fqn = str(payload.get("anchor_fqn") or "").strip()
     nodes_in = payload.get("nodes") or []
     edges_in = payload.get("edges") or []
+    operators_in = payload.get("operators") or []
     comments_in = payload.get("comments") or []
     logo_nodes_in = payload.get("logo_nodes") or []
+    # Optional artifact_id signals an update of an already-loaded
+    # canvas. When present and the row exists, the handler purges
+    # the old children + re-inserts under the same id (the URL
+    # ``?artifact=<id>`` stays stable). When absent, a name clash
+    # bounces the request with a 409 so the frontend can surface a
+    # rename hint instead of a 500.
+    supplied_artifact_id = payload.get("artifact_id")
+    update_id: int | None = None
+    if supplied_artifact_id is not None:
+        try:
+            update_id = int(supplied_artifact_id)
+        except (TypeError, ValueError):
+            update_id = None
     if not primary_profile or not name or not anchor_fqn:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1673,32 +1976,132 @@ def post_manual_artifact(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="History store not initialised.",
         )
-    from amx.lineage.operator_ops import write_column_edge
+    from amx.lineage.operator_ops import upsert_operator_entity, write_column_edge
+
+    # Resolve whether the requested name clashes with a different
+    # already-saved artifact. The frontend treats the 409 as a
+    # signal to surface an inline "rename or open existing" hint.
+    with hs._connect() as conn:
+        existing_row = conn.execute(
+            "SELECT id, name FROM lineage_artifacts WHERE name = ? LIMIT 1",
+            (name,),
+        ).fetchone()
+    existing_id = int(existing_row[0]) if existing_row else None
+    if existing_id is not None and existing_id != update_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "name_in_use",
+                "message": f"Lineage name '{name}' is already used by another saved canvas.",
+                "existing_id": existing_id,
+                "existing_name": name,
+            },
+        )
+
+    # Guard against the case where the client thought it was
+    # updating an artifact that has since been deleted: drop the
+    # update intent so the request creates a fresh row instead of
+    # failing the children-update DELETE+INSERT on a missing parent.
+    if update_id is not None:
+        with hs._connect() as conn:
+            still_there = conn.execute(
+                "SELECT 1 FROM lineage_artifacts WHERE id = ?",
+                (update_id,),
+            ).fetchone()
+        if not still_there:
+            update_id = None
 
     anchor_id = _resolve_entity_id_strict(hs, primary_profile, anchor_fqn)
     actor = _actor_name()
     now = time.time()
     persisted = 0
+
+    # Resolve every operator on the canvas to a backend entity_id up
+    # front so the edge loop below can stitch table↔operator edges by
+    # the operator's React Flow node id.
+    db_backend = _profile_backend(cfg, primary_profile)
+    op_node_to_entity: dict[str, int] = {}
+    op_node_meta: dict[str, dict[str, Any]] = {}
+    for op in operators_in:
+        if not isinstance(op, dict):
+            continue
+        node_id = str(op.get("node_id") or "").strip()
+        op_kind = str(op.get("op_kind") or "").strip()
+        if not node_id or not op_kind:
+            continue
+        expression = str(op.get("expression") or "")
+        # The operator entity needs a host (database, schema, table)
+        # so two filters on the same target table don't collide on
+        # the unique key — anchor table is the natural host for the
+        # canvas-floating operators users draw by hand.
+        anchor_database, anchor_schema, anchor_table, _anchor_col = _split_fqn_resolve_column(
+            hs, primary_profile, anchor_fqn
+        )
+        try:
+            entity_id, _path = upsert_operator_entity(
+                hs,
+                profile=primary_profile,
+                db_backend=db_backend or "",
+                database=anchor_database or "",
+                schema=anchor_schema or "",
+                table=anchor_table or "",
+                op_kind=op_kind,
+                expression=expression,
+            )
+        except ValueError:
+            # Unknown op_kind — skip rather than fail the whole save.
+            continue
+        op_node_to_entity[node_id] = entity_id
+        op_node_meta[node_id] = {
+            "entity_id": entity_id,
+            "x": float(op.get("x") or 0.0),
+            "y": float(op.get("y") or 0.0),
+            "width": float(op.get("width") or 240.0),
+            "height": float(op.get("height") or 120.0),
+            "z_index": int(op.get("z_index") or 0),
+        }
     for edge in edges_in:
         if not isinstance(edge, dict):
             continue
+        # Each endpoint can be either an operator on the canvas
+        # (identified by ``source_node_id`` / ``target_node_id``
+        # mapped via ``op_node_to_entity``) or a real table
+        # (identified by ``source_fqn`` / ``target_fqn``). An edge
+        # is dropped only when neither form resolves on a side,
+        # so a freshly-drawn table↔operator edge round-trips.
+        src_node_id = str(edge.get("source_node_id") or "").strip()
+        tgt_node_id = str(edge.get("target_node_id") or "").strip()
+        src_op_id = op_node_to_entity.get(src_node_id) if src_node_id else None
+        tgt_op_id = op_node_to_entity.get(tgt_node_id) if tgt_node_id else None
         src = str(edge.get("source_fqn") or "").strip()
         tgt = str(edge.get("target_fqn") or "").strip()
-        if not src or not tgt or src == tgt:
-            continue
         src_profile = str(edge.get("source_profile") or primary_profile).strip() or primary_profile
         tgt_profile = str(edge.get("target_profile") or primary_profile).strip() or primary_profile
         try:
-            src_id = _resolve_entity_id_strict(hs, src_profile, src)
-            tgt_id = _resolve_entity_id_strict(hs, tgt_profile, tgt)
+            if src_op_id is not None:
+                src_id = src_op_id
+                src_col_from_fqn = ""
+            else:
+                if not src:
+                    continue
+                src_id = _resolve_entity_id_strict(hs, src_profile, src)
+                _sdb, _ssch, _stbl, src_col_from_fqn = _split_fqn_resolve_column(
+                    hs, src_profile, src
+                )
+            if tgt_op_id is not None:
+                tgt_id = tgt_op_id
+                tgt_col_from_fqn = ""
+            else:
+                if not tgt:
+                    continue
+                tgt_id = _resolve_entity_id_strict(hs, tgt_profile, tgt)
+                _tdb, _tsch, _ttbl, tgt_col_from_fqn = _split_fqn_resolve_column(
+                    hs, tgt_profile, tgt
+                )
         except HTTPException:
             continue
-        _src_db, _src_schema, _src_table, src_col_from_fqn = _split_fqn_resolve_column(
-            hs, src_profile, src
-        )
-        _tgt_db, _tgt_schema, _tgt_table, tgt_col_from_fqn = _split_fqn_resolve_column(
-            hs, tgt_profile, tgt
-        )
+        if src_id == tgt_id:
+            continue
         src_col = str(edge.get("source_column") or src_col_from_fqn or "").strip()
         tgt_col = str(edge.get("target_column") or tgt_col_from_fqn or "").strip()
         details = {
@@ -1769,22 +2172,117 @@ def post_manual_artifact(
     slug_base = re.sub(r"[^A-Za-z0-9_-]+", "_", name) or "lineage"
     slug = f"{slug_base}_{int(now)}"
     out = _P(_resolve_config_dir()) / "lineage" / f"{slug}.svg"
-    try:
-        result = lineage_service.create_lineage(
-            hs=hs,
-            scope=scope,
-            name=name,
-            output_path=out,
-            fmt="svg",
-            fill_decision="skip",
-        )
-    except Exception as exc:  # render failure should not lose the edges
-        return {
-            "ok": True,
-            "persisted_edges": persisted,
-            "artifact_id": 0,
-            "render_error": str(exc),
-        }
+
+    @dataclass
+    class _ArtifactStub:
+        """Mini-LineageRunResult for the in-place update path so the
+        downstream children-insertion blocks (which all read
+        ``result.artifact_id``) stay untouched."""
+
+        artifact_id: int
+
+    if update_id is not None:
+        # Update-in-place: drop every child row of the existing
+        # artifact, then rename + refresh the parent row. The
+        # downstream blocks re-INSERT the new children with the
+        # same artifact_id so the URL ``?artifact=<id>`` stays
+        # stable across saves.
+        node_count = sum(1 for n in nodes_in if isinstance(n, dict))
+        edge_count = persisted
+        with hs._lock, hs._connect() as conn:
+            conn.execute(
+                "DELETE FROM lineage_artifact_nodes WHERE artifact_id = ?",
+                (update_id,),
+            )
+            conn.execute(
+                "DELETE FROM lineage_logo_nodes WHERE artifact_id = ?",
+                (update_id,),
+            )
+            conn.execute(
+                "DELETE FROM lineage_comments WHERE artifact_id = ?",
+                (update_id,),
+            )
+            conn.execute(
+                """
+                UPDATE lineage_artifacts
+                SET name = ?, db_profile = ?, anchor_entity_id = ?,
+                    node_count = ?, edge_count = ?, generated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    name,
+                    primary_profile,
+                    int(anchor_id),
+                    int(node_count),
+                    int(edge_count),
+                    float(now),
+                    update_id,
+                ),
+            )
+        result = _ArtifactStub(artifact_id=update_id)
+    else:
+        try:
+            result = lineage_service.create_lineage(
+                hs=hs,
+                scope=scope,
+                name=name,
+                output_path=out,
+                fmt="svg",
+                fill_decision="skip",
+            )
+        except sqlite3.IntegrityError as exc:
+            # Race: another save grabbed the name between our
+            # pre-flight check and the insert. Bounce with the
+            # same 409 shape so the frontend's name-conflict UI
+            # behaves identically.
+            with hs._connect() as conn:
+                row = conn.execute(
+                    "SELECT id FROM lineage_artifacts WHERE name = ? LIMIT 1",
+                    (name,),
+                ).fetchone()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "name_in_use",
+                    "message": f"Lineage name '{name}' is already used by another saved canvas.",
+                    "existing_id": int(row[0]) if row else None,
+                    "existing_name": name,
+                },
+            ) from exc
+        except Exception as exc:  # render failure should not lose the edges
+            return {
+                "ok": True,
+                "persisted_edges": persisted,
+                "artifact_id": 0,
+                "render_error": str(exc),
+            }
+
+    # Persist operator-node placements alongside table nodes so the
+    # load endpoint can re-render the canvas exactly as it was —
+    # without this row, the operator entity exists in the catalog but
+    # the artifact has no idea where to draw it.
+    if result.artifact_id and op_node_meta:
+        with hs._connect() as conn:
+            for _node_id, meta in op_node_meta.items():
+                conn.execute(
+                    """
+                    INSERT INTO lineage_artifact_nodes
+                        (artifact_id, entity_id, db_profile, x, y, width, height,
+                         z_index, logo_key)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(result.artifact_id),
+                        int(meta["entity_id"]),
+                        primary_profile,
+                        meta["x"],
+                        meta["y"],
+                        meta["width"],
+                        meta["height"],
+                        meta["z_index"],
+                        "",
+                    ),
+                )
 
     # Persist per-node placements + cross-profile mapping.
     if result.artifact_id and nodes_in:
