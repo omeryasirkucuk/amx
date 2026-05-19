@@ -583,9 +583,7 @@ def get_artifact_by_id(
             # ``None`` so the frontend can tell "user left it
             # untouched" apart from "user explicitly picked solid".
             dashed_raw = r[10]
-            dashed_out: bool | None = (
-                bool(int(dashed_raw)) if dashed_raw is not None else None
-            )
+            dashed_out: bool | None = bool(int(dashed_raw)) if dashed_raw is not None else None
             edges_out.append(
                 {
                     "id": int(r[0]),
@@ -1715,9 +1713,7 @@ def post_manual_artifact(
         # accidentally null out fields it never knew about.
         style_color = edge.get("style_color")
         style_dashed_raw = edge.get("style_dashed")
-        style_dashed: bool | None = (
-            bool(style_dashed_raw) if style_dashed_raw is not None else None
-        )
+        style_dashed: bool | None = bool(style_dashed_raw) if style_dashed_raw is not None else None
         cardinality = edge.get("cardinality")
         if cardinality is not None and cardinality not in _VALID_CARDINALITIES:
             cardinality = None
