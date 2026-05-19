@@ -291,7 +291,7 @@ class SQLAlchemyHistoryStore:
             )
         except Exception:
             log.warning(
-                "Admin session registration failed — continuing without it.",
+                "Admin session registration failed - continuing without it.",
                 exc_info=True,
             )
 
