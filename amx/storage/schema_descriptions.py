@@ -973,16 +973,18 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "metadata — does not change which rows match the edge."
         ),
     },
-    # ── lineage_artifacts (local only) ────────────────────────────────────
+    # ── lineage_artifacts ─────────────────────────────────────────────────
     "lineage_artifacts": {
         "__table__": (
-            "Registry of rendered lineage diagrams. Each row pairs a focal "
-            "entity (anchor) with the on-disk image file produced for it, "
-            "the edge-set hash that backs the image, and the extractors "
-            "used. Drives /lineage open, refresh, delete, list. /open uses "
-            "the hash to detect drift without re-running extractors."
+            "Saved lineage diagrams. Local rows hold the rendering for this "
+            "host; shared rows are visible to the entire team workspace, with "
+            "full structural data (nodes, edges, joins, where clauses) so "
+            "teammates can re-render and edit them."
         ),
-        "id": "Surrogate INT primary key.",
+        "id": (
+            "Primary key. Integer autoincrement in the local SQLite store; "
+            "UUID string in the shared warehouse for cross-host stability."
+        ),
         "name": (
             "User-facing slug used by /lineage open|refresh|delete. "
             "Unique across all artifacts in this history store."
@@ -992,14 +994,26 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "catalog_entities.db_profile and disambiguates artifacts with "
             "the same anchor name across profiles."
         ),
+        # Local-only: integer FK into catalog_entities (shared uses anchor_entity_ref instead)
         "anchor_entity_id": (
-            "catalog_entities.id of the focal table or column the diagram "
-            "radiates from. Foreign key into catalog_entities."
+            "Local-only: catalog_entities.id of the focal table or column "
+            "the diagram radiates from. Foreign key into catalog_entities. "
+            "Not present in the shared store, which uses anchor_entity_ref."
         ),
-        "depth_up": "Upstream hops included when this artifact was rendered.",
-        "depth_down": "Downstream hops included when this artifact was rendered.",
+        # Shared-only: FQN string identifying the anchor (local uses anchor_entity_id instead)
+        "anchor_entity_ref": (
+            "Shared-only: FQN of the anchor entity in the form "
+            "'db_profile|database|schema|table[|column]'. "
+            "Not present in the local store, which uses anchor_entity_id."
+        ),
+        "depth_up": ("Upstream hops included when this artifact was rendered."),
+        "depth_down": ("Downstream hops included when this artifact was rendered."),
         "format": "Image format on disk: 'png' | 'svg' | 'jpg'.",
-        "output_path": "Absolute filesystem path of the rendered image file.",
+        "output_path": (
+            "Absolute filesystem path of the rendered image file. "
+            "In the shared store this is optional; teammates re-render "
+            "from the stored structural data."
+        ),
         "edge_set_hash": (
             "SHA-256 of the sorted (from_id, to_id, type, score) tuples used "
             "in this render. /lineage open compares against the current hash "
@@ -1018,44 +1032,120 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "0 when every extractor returned a full cache hit or the user "
             "filled the misses. Renderer adds a footer banner when 1."
         ),
+        # Shared-only: canvas viewport state
+        "canvas_meta": (
+            "Shared-only: JSON of canvas viewport state: zoom, pan, layout direction, theme."
+        ),
+        # Shared-only attribution columns
+        "created_by": ATTRIBUTION_CREATED_BY,
+        "hostname": ATTRIBUTION_HOSTNAME,
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
+        "created_at": (
+            "Shared-only: UTC timestamp when the row was inserted into the shared store."
+        ),
+        "updated_at": "Shared-only: UTC timestamp of the last edit.",
+        "local_id": ATTRIBUTION_LOCAL_ID,
     },
-    # ── lineage_artifact_nodes (local only) ───────────────────────────────
+    # ── lineage_artifact_nodes ────────────────────────────────────────────
     "lineage_artifact_nodes": {
         "__table__": (
-            "Per-canvas node placement for a saved lineage artifact. "
-            "One row per node on the canvas. Carries its own db_profile so "
-            "a single canvas can host nodes from multiple DB profiles "
-            "(cross-profile lineage). x/y persist the user's manual layout "
-            "so re-open restores the same arrangement without re-running "
-            "dagre."
+            "Per-entity placement on a lineage canvas; captures position, "
+            "label, logo, and a full column snapshot so teammates see the "
+            "same schema view as the author. One row per node on the canvas. "
+            "Carries its own db_profile so a single canvas can host nodes "
+            "from multiple DB profiles (cross-profile lineage). x/y persist "
+            "the user's manual layout so re-open restores the same "
+            "arrangement without re-running dagre."
         ),
-        "id": "Surrogate INT primary key.",
+        "id": "UUID primary key.",
         "artifact_id": (
-            "lineage_artifacts.id this node belongs to. Cascades on artifact "
-            "delete so orphan node rows cannot accumulate."
+            "FK to lineage_artifacts.id. Cascades on artifact delete so "
+            "orphan node rows cannot accumulate."
         ),
+        # Local-only: integer FK into catalog_entities
         "entity_id": (
-            "catalog_entities.id of the table, view, or operator the node represents on the canvas."
+            "Local-only: catalog_entities.id of the table, view, or operator "
+            "the node represents on the canvas. Not present in the shared "
+            "store, which uses entity_ref."
+        ),
+        # Shared-only: FQN string identifying the entity
+        "entity_ref": (
+            "Shared-only: FQN of the entity rendered by this node, in the "
+            "form 'db_profile|database|schema|table[|column]'."
+        ),
+        # Shared-only: entity kind discriminator
+        "entity_kind": (
+            "Shared-only: one of 'table', 'view', 'column', 'external', 'cte', 'temp'."
         ),
         "db_profile": (
-            "DB profile the entity belongs to. Stored per-node (not just on "
-            "the parent artifact) so cross-profile canvases can render each "
-            "node with its own profile context."
+            "Source database profile of the entity at the time of capture. "
+            "Stored per-node (not just on the parent artifact) so "
+            "cross-profile canvases can render each node with its own "
+            "profile context."
         ),
-        "x": "Canvas x coordinate in ReactFlow units.",
-        "y": "Canvas y coordinate in ReactFlow units.",
+        "x": "Canvas X coordinate in ReactFlow units.",
+        "y": "Canvas Y coordinate in ReactFlow units.",
         "width": "Rendered node width in ReactFlow units.",
         "height": "Rendered node height in ReactFlow units.",
         "z_index": (
-            "Stacking order. Higher z renders on top of lower z when nodes "
-            "visually overlap. Defaults to 0."
+            "Stack order for overlapping nodes. Higher z renders on top of lower z. Defaults to 0."
+        ),
+        # Shared-only: user override label
+        "display_label": (
+            "Shared-only: user override label (e.g. table alias). NULL means use entity_ref."
+        ),
+        # Shared-only: column snapshot
+        "column_list_json": (
+            "Shared-only: JSON list of columns shown on the node: name, "
+            "type, nullable, primary_key flags."
         ),
         "logo_key": (
-            "Optional override for the table node's header logo badge. "
-            "References lineage_logos.key. Empty string = no override; "
-            "the frontend falls back to the backend-derived auto-bound "
-            "logo (postgres profile -> 'postgres' logo, etc.)."
+            "Identifier for a predefined logo such as 'postgres', "
+            "'snowflake'. References lineage_logos.key. Empty string = no "
+            "override; the frontend falls back to the backend-derived "
+            "auto-bound logo."
         ),
+        # Shared-only: per-node style overrides
+        "custom_style_json": (
+            "Shared-only: JSON of per-node style overrides: colors, border, font."
+        ),
+        "created_by": ATTRIBUTION_CREATED_BY,
+        "hostname": ATTRIBUTION_HOSTNAME,
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
+        "created_at": "UTC timestamp of insertion.",
+        "updated_at": "UTC timestamp of last edit.",
+        "local_id": ATTRIBUTION_LOCAL_ID,
+    },
+    # ── lineage_artifact_edges ────────────────────────────────────────────
+    "lineage_artifact_edges": {
+        "__table__": (
+            "Relations between nodes on a lineage canvas: data flow, foreign "
+            "keys, SQL joins, view references. Stores full SQL semantics so "
+            "teammates can inspect joins, WHERE filters, and column mappings."
+        ),
+        "id": "UUID primary key.",
+        "artifact_id": "FK to lineage_artifacts.id.",
+        "source_node_id": "FK to lineage_artifact_nodes.id at the source end.",
+        "target_node_id": "FK to lineage_artifact_nodes.id at the target end.",
+        "edge_kind": ("One of 'lineage', 'fk', 'join', 'reference', 'view_source'."),
+        "join_type": (
+            "For join edges: 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'. NULL for non-join edges."
+        ),
+        "on_condition": ("SQL ON expression for join edges, e.g. 'a.id = b.user_id'."),
+        "where_clause": (
+            "SQL WHERE filter associated with this edge (often pulled from view definitions)."
+        ),
+        "source_columns_json": ("JSON list of source-side column names involved in this edge."),
+        "target_columns_json": ("JSON list of target-side column names involved in this edge."),
+        "label": ("User override label for the edge. NULL means derive from edge_kind."),
+        "style_json": "JSON of edge style: color, line type, arrow style.",
+        "waypoints_json": ("JSON list of intermediate routing points for orthogonal layout."),
+        "created_by": ATTRIBUTION_CREATED_BY,
+        "hostname": ATTRIBUTION_HOSTNAME,
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
+        "created_at": "UTC timestamp of insertion.",
+        "updated_at": "UTC timestamp of last edit.",
+        "local_id": ATTRIBUTION_LOCAL_ID,
     },
     # ── lineage_logos (local only) ────────────────────────────────────────
     "lineage_logos": {
@@ -1121,36 +1211,45 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "created_at": "UTC epoch seconds when the node was placed.",
         "updated_at": "UTC epoch seconds of the most recent move / resize.",
     },
-    # ── lineage_comments (local only) ─────────────────────────────────────
+    # ── lineage_comments ──────────────────────────────────────────────────
     "lineage_comments": {
         "__table__": (
-            "Sticky-note annotations attached to a saved lineage canvas. "
+            "Sticky-note style comments placed on lineage canvases. Used for "
+            "team annotations: questions, decisions, callouts on entities. "
             "Comments are free-floating notes that never participate in "
             "edge resolution; they live alongside the canvas and cascade "
             "on artifact delete."
         ),
-        "id": "Surrogate INT primary key.",
-        "artifact_id": (
-            "lineage_artifacts.id this comment belongs to. Cascades on artifact delete."
+        # Local store uses surrogate INT; shared store uses UUID string
+        "id": (
+            "Primary key. Surrogate INT in the local SQLite store; "
+            "UUID string in the shared warehouse for cross-host stability."
         ),
-        "x": "Canvas x coordinate in ReactFlow units.",
-        "y": "Canvas y coordinate in ReactFlow units.",
-        "width": "Rendered note width in ReactFlow units.",
-        "height": "Rendered note height in ReactFlow units.",
+        "artifact_id": ("FK to lineage_artifacts.id. Cascades on artifact delete."),
+        "x": "Canvas X coordinate of the comment's top-left corner.",
+        "y": "Canvas Y coordinate of the comment's top-left corner.",
+        "width": "Comment width in canvas units.",
+        "height": "Comment height in canvas units.",
         "color": (
-            "Background color palette key: amber | rose | emerald | sky | "
-            "violet | slate. The frontend resolves the key to the actual "
-            "rendered color so the palette can evolve without a migration."
+            "Background color of the sticky note. In the local store this "
+            "is a palette key (amber | rose | emerald | sky | violet | "
+            "slate); in the shared store this is the hex value or palette "
+            "key, e.g. '#fef3c7'."
         ),
-        "text": "Free-form note body. Plain text with @-mention support in the UI.",
         "style": (
-            "Render mode: 'note' (default) is the colored sticky-note "
-            "with a header band; 'text' is a transparent plain-text "
-            "label without background or border, used for canvas "
-            "section headings and free-form annotations."
+            "Display style: 'note' (default) is the colored sticky-note "
+            "with a header band; 'callout' and 'pin' are additional shared "
+            "variants; 'text' is a transparent plain-text label without "
+            "background or border, used for canvas section headings."
         ),
-        "created_at": "UTC epoch seconds when the comment was first saved.",
-        "updated_at": "UTC epoch seconds of the most recent edit.",
+        "text": "Comment body, plain text.",
+        "created_at": "UTC timestamp of creation.",
+        "updated_at": "UTC timestamp of last edit.",
+        # Shared-only attribution columns
+        "created_by": ATTRIBUTION_CREATED_BY,
+        "hostname": ATTRIBUTION_HOSTNAME,
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
+        "local_id": ATTRIBUTION_LOCAL_ID,
     },
     # ── catalog_usage_evidence (local only) ───────────────────────────────
     "catalog_usage_evidence": {
