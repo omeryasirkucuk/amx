@@ -160,6 +160,22 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _jsonable(value: Any) -> Any:
+    """Recursively convert a value to a JSON-serializable form.
+
+    Datetimes become ISO-8601 strings; everything else passes through.
+    Used to sanitise ``before``-row snapshots before storing them in
+    the ``details_json`` column of ``_amx_admin_audit``.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return value
+
+
 def _ts_to_dt(ts: float | None) -> datetime | None:
     """Convert a float epoch second (the SQLite store's native time
     unit) into a timezone-aware ``datetime`` for portable backends."""
@@ -1058,7 +1074,7 @@ class SQLAlchemyHistoryStore:
                 actor_user_id=None,
                 action="forced_overwrite",
                 target_resource=f"lineage_artifacts:{uuid}",
-                details={"before": before, "fields_updated": list(fields.keys())},
+                details={"before": _jsonable(before), "fields_updated": list(fields.keys())},
             )
             return
 
@@ -1183,7 +1199,7 @@ class SQLAlchemyHistoryStore:
                     actor_user_id=None,
                     action="forced_overwrite",
                     target_resource=f"lineage_artifact_nodes:{existing}",
-                    details={"before": before, "fields_updated": list(update_fields.keys())},
+                    details={"before": _jsonable(before), "fields_updated": list(update_fields.keys())},
                 )
                 return existing
 
@@ -1324,7 +1340,7 @@ class SQLAlchemyHistoryStore:
                     actor_user_id=None,
                     action="forced_overwrite",
                     target_resource=f"lineage_artifact_edges:{existing}",
-                    details={"before": before, "fields_updated": list(update_fields.keys())},
+                    details={"before": _jsonable(before), "fields_updated": list(update_fields.keys())},
                 )
                 return existing
 
@@ -1456,7 +1472,7 @@ class SQLAlchemyHistoryStore:
                     actor_user_id=None,
                     action="forced_overwrite",
                     target_resource=f"lineage_comments:{existing}",
-                    details={"before": before, "fields_updated": list(update_fields.keys())},
+                    details={"before": _jsonable(before), "fields_updated": list(update_fields.keys())},
                 )
                 return existing
 
@@ -1576,7 +1592,7 @@ class SQLAlchemyHistoryStore:
                 actor_user_id=None,
                 action="forced_overwrite",
                 target_resource=f"documentation_pages:{page_id}",
-                details={"before": before, "fields_updated": list(fields.keys())},
+                details={"before": _jsonable(before), "fields_updated": list(fields.keys())},
             )
             return
 

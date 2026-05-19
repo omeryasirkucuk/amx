@@ -930,10 +930,10 @@ class SQLiteHistoryStore:
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute("ALTER TABLE lineage_comments ADD COLUMN style TEXT DEFAULT 'note'")
             # PR-3: OCC version columns on concurrent-edit lineage tables.
+            # Note: lineage_artifact_edges is shared-only and not created locally.
             for _occ_tbl in (
                 "lineage_artifacts",
                 "lineage_artifact_nodes",
-                "lineage_artifact_edges",
                 "lineage_comments",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
