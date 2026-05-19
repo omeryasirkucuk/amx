@@ -33,14 +33,16 @@ def create_documentation_page(
     created_by: str | None,
     generation_prompt: str | None,
     model_used: str | None,
+    db_profile: str | None = None,
 ) -> None:
     with hs._connect() as conn:
         conn.execute(
             """
             INSERT INTO documentation_pages (
                 id, title, slug, markdown_body, rendered_html, status,
-                created_at, updated_at, created_by, generation_prompt, model_used
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, created_by, generation_prompt, model_used,
+                db_profile
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 page_id,
@@ -54,6 +56,7 @@ def create_documentation_page(
                 created_by,
                 generation_prompt,
                 model_used,
+                db_profile,
             ),
         )
 
@@ -107,6 +110,26 @@ def soft_delete_documentation_page(
             "UPDATE documentation_pages SET status = 'deleted', updated_at = ? WHERE id = ?",
             (updated_at.isoformat(), page_id),
         )
+
+
+def update_documentation_page_db_profile(
+    hs: SQLiteHistoryStore,
+    *,
+    slug: str,
+    db_profile: str | None,
+    updated_at: datetime,
+) -> bool:
+    """Set (or clear) the db_profile for the page identified by *slug*.
+
+    Returns ``True`` if a row was updated, ``False`` if no page with that
+    slug was found.
+    """
+    with hs._connect() as conn:
+        cur = conn.execute(
+            "UPDATE documentation_pages SET db_profile = ?, updated_at = ? WHERE slug = ?",
+            (db_profile, updated_at.isoformat(), slug),
+        )
+    return bool(cur.rowcount)
 
 
 def append_documentation_page_version(

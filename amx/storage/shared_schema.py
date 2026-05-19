@@ -129,7 +129,7 @@ DEFAULT_HISTORY_SCHEMA_COMMENT = SHARED_SCHEMA_COMMENT
 # All client versions writing into a shared store record this as their
 # ``schema_version`` so an older client refuses to write into a schema
 # bumped by a newer client (avoids losing columns the new client added).
-SHARED_SCHEMA_VERSION = 2
+SHARED_SCHEMA_VERSION = 3
 
 
 def _desc(table: str, column: str | None = None) -> str:
@@ -562,8 +562,30 @@ def build_metadata(schema: str | None = None) -> MetaData:
             String(120),
             comment=_desc("documentation_pages", "model_used"),
         ),
+        Column(
+            "db_profile",
+            String(120),
+            comment=_desc("documentation_pages", "db_profile"),
+        ),
+        Column(
+            "hostname",
+            String(255),
+            comment=_desc("documentation_pages", "hostname"),
+        ),
+        Column(
+            "client_version",
+            String(40),
+            comment=_desc("documentation_pages", "client_version"),
+        ),
+        Column(
+            "local_id",
+            BigInteger,
+            comment=_desc("documentation_pages", "local_id"),
+        ),
         Index("ix_documentation_pages_status", "status"),
         Index("ix_documentation_pages_updated_at", "updated_at"),
+        Index("ix_documentation_pages_db_profile", "db_profile"),
+        Index("ix_documentation_pages_local_lookup", "hostname", "local_id"),
         comment=_desc("documentation_pages"),
     )
 

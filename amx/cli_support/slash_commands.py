@@ -553,6 +553,17 @@ _PAGES_COMMANDS: tuple[SlashCommand, ...] = (
             "and every related row from the history store; not reversible."
         ),
     ),
+    SlashCommand(
+        "/assign-profile",
+        "pages",
+        "Associate a db_profile with a page (/assign-profile [<slug>] [--profile <name>])",
+        long_desc=(
+            "Bare /assign-profile runs a wizard: page picker → profile picker "
+            "→ confirm. Power-user shortcut: /assign-profile <slug> --profile <name>. "
+            "Pass an empty --profile or omit it in the wizard to clear the field "
+            "(marks the page as unscoped / cross-profile)."
+        ),
+    ),
 )
 
 

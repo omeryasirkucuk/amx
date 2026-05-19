@@ -1135,6 +1135,16 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_documentation_pages_updated_at "
                 "ON documentation_pages(updated_at DESC)"
             )
+            # PR-2: db_profile + attribution columns (idempotent ALTERs for
+            # existing installs; CREATE TABLE above handles fresh databases).
+            for _col_spec in (
+                "db_profile TEXT",
+                "hostname TEXT",
+                "client_version TEXT",
+                "local_id INTEGER",
+            ):
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(f"ALTER TABLE documentation_pages ADD COLUMN {_col_spec}")
             # ── documentation_page_assets: per-page asset list ──────────
             conn.execute(
                 """
@@ -1868,6 +1878,11 @@ class SQLiteHistoryStore:
         from amx.storage._history_pages import list_documentation_page_versions
 
         return list_documentation_page_versions(self, *args, **kwargs)
+
+    def update_documentation_page_db_profile(self, *args, **kwargs):
+        from amx.storage._history_pages import update_documentation_page_db_profile
+
+        return update_documentation_page_db_profile(self, *args, **kwargs)
 
     def _connect(self) -> sqlite3.Connection:
         # ``timeout=30`` and the matching ``PRAGMA busy_timeout`` both
