@@ -1597,6 +1597,11 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "id": "UUID primary key, stable across hosts.",
         "name": "Human-readable artifact name shown in lists.",
         "db_profile": "Name of the source database profile this lineage was extracted from.",
+        # local-only: integer FK into catalog_entities (shared uses anchor_entity_ref instead)
+        "anchor_entity_id": (
+            "catalog_entities.id of the focal table or column the diagram "
+            "radiates from. Foreign key into catalog_entities."
+        ),
         "anchor_entity_ref": (
             "FQN of the anchor entity in the form "
             "'db_profile|database|schema|table[|column]'."
@@ -1615,15 +1620,12 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "extractors_used": "JSON list of extractor identifiers that contributed edges.",
         "extractors_partial": "1 if any extractor returned a partial result, else 0.",
         "canvas_meta": "JSON of canvas viewport state: zoom, pan, layout direction, theme.",
-        "created_by": "Username that originally created this artifact.",
-        "hostname": "Hostname where the artifact was originally created.",
-        "client_version": "AMX client version at creation time.",
+        "created_by": ATTRIBUTION_CREATED_BY,
+        "hostname": ATTRIBUTION_HOSTNAME,
+        "client_version": ATTRIBUTION_CLIENT_VERSION,
         "created_at": "UTC timestamp when the row was inserted into the shared store.",
         "updated_at": "UTC timestamp of the last edit.",
-        "local_id": (
-            "Integer primary key in the originating local SQLite store; "
-            "used together with hostname for idempotent backfill."
-        ),
+        "local_id": ATTRIBUTION_LOCAL_ID,
     },
 }
 

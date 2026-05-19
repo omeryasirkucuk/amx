@@ -731,7 +731,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
                comment=_desc("lineage_artifacts", "extractors_partial")),
         Column("canvas_meta", _portable_json(),
                comment=_desc("lineage_artifacts", "canvas_meta")),
-        Column("created_by", String(255), nullable=False,
+        Column("created_by", String(120), nullable=False,
                comment=_desc("lineage_artifacts", "created_by")),
         Column("hostname", String(255), nullable=False,
                comment=_desc("lineage_artifacts", "hostname")),
@@ -746,7 +746,6 @@ def build_metadata(schema: str | None = None) -> MetaData:
         Index("ix_lineage_artifacts_db_profile", "db_profile"),
         Index("ix_lineage_artifacts_local_lookup", "hostname", "local_id"),
         Index("ix_lineage_artifacts_name_profile", "name", "db_profile", unique=True),
-        schema=schema,
         comment=_desc("lineage_artifacts"),
     )
 

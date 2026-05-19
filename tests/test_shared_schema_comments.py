@@ -128,6 +128,8 @@ def test_databricks_create_table_ddl_compiles_for_every_table() -> None:
         "alternatives_json",
         "details_json",
         "value_json",
+        "extractors_used",
+        "canvas_meta",
     }
     seen_json_columns: set[str] = set()
     for table in md.tables.values():
