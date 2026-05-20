@@ -621,3 +621,55 @@ def gc_schemas_cache(hs: SQLiteHistoryStore) -> int:
             (now,),
         )
         return int(cur.rowcount or 0)
+
+
+def purge_out_of_scope(
+    hs: SQLiteHistoryStore,
+    *,
+    db_profile: str,
+    container: str,
+) -> dict[str, int]:
+    """Delete cached rows for ``db_profile`` whose container does not
+    match ``container``. Idempotent. Returns deletion counts per
+    table for the audit log.
+
+    Three cache tables are purged in one transaction:
+
+    * ``catalog_entities`` — keyed by ``database_name``
+    * ``schemas_cache`` — keyed by ``database_name`` and ``catalog_name``
+      (a row is kept when either column equals ``container``)
+    * ``column_comments_cache`` — keyed by ``database_name``
+
+    When ``container`` is empty the call is a no-op (the profile is
+    unpinned and the legacy multi-container behavior applies).
+    """
+    container = str(container or "")
+    counts = {
+        "catalog_entities": 0,
+        "schemas_cache": 0,
+        "column_comments_cache": 0,
+    }
+    if not container:
+        return counts
+    with hs._lock, hs._connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM catalog_entities "
+            "WHERE db_profile = ? AND IFNULL(database_name, '') != ?",
+            (db_profile, container),
+        )
+        counts["catalog_entities"] = int(cur.rowcount or 0)
+        cur = conn.execute(
+            "DELETE FROM schemas_cache "
+            "WHERE db_profile = ? "
+            "AND IFNULL(database_name, '') != ? "
+            "AND IFNULL(catalog_name, '') != ?",
+            (db_profile, container, container),
+        )
+        counts["schemas_cache"] = int(cur.rowcount or 0)
+        cur = conn.execute(
+            "DELETE FROM column_comments_cache "
+            "WHERE db_profile = ? AND IFNULL(database_name, '') != ?",
+            (db_profile, container),
+        )
+        counts["column_comments_cache"] = int(cur.rowcount or 0)
+    return counts

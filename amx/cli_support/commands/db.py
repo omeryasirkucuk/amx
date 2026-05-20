@@ -1762,3 +1762,50 @@ def cmd_cache_clear(cfg: AMXConfig, rest: list[str]) -> None:
         summary_rows,
     )
     success(f"Cleared {report.total} row(s) across {len(report.deleted)} cache table(s).")
+
+
+def cmd_sync_stop(cfg: AMXConfig, rest: list[str]) -> None:
+    """/db sync-stop — cancel an in-flight catalog skeleton sync.
+
+    Bare ``/db sync-stop`` lists running syncs from the registry and
+    cancels them all (the common case is one). ``--profile <name>``
+    cancels only the named profile.
+
+    Cancellation is cooperative: the in-flight table finishes, the
+    sync loop exits, the freshness pill flips to ``cancelled``. Rows
+    already written remain in the cache.
+    """
+    from amx.search._skeleton_jobs import cancel, running_profiles
+
+    profile = ""
+    rest_tokens = list(rest)
+    for i, token in enumerate(rest_tokens):
+        if token == "--profile" and i + 1 < len(rest_tokens):
+            profile = rest_tokens[i + 1].strip()
+            break
+
+    running = sorted(running_profiles())
+    if not running:
+        info("No skeleton sync is currently running.")
+        return
+
+    if profile:
+        if profile not in running:
+            warn(f"No active sync for profile {profile!r}.")
+            return
+        targets = [profile]
+    else:
+        targets = running
+
+    cancelled_any = False
+    for target in targets:
+        if cancel(target):
+            success(
+                f"Cancellation requested for {target!r}. "
+                "The in-flight table will finish, then the sync exits."
+            )
+            cancelled_any = True
+        else:
+            info(f"No active sync to cancel for {target!r}.")
+    if not cancelled_any:
+        info("Nothing to cancel.")
