@@ -20,7 +20,7 @@ disagreed with ``cfg.active_db_profile``.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from amx.config import AMXConfig
 from amx.db.connector import AssetKind, DatabaseConnector
@@ -34,6 +34,24 @@ class CommentBody(BaseModel):
     """Common shape for every comment write-back endpoint."""
 
     comment: str
+
+
+class LocalCommentBody(BaseModel):
+    """Body accepted by ``POST /api/comments/local``.
+
+    ``column`` is optional: when omitted (or empty) the description
+    is attached to the table-level entity row instead of a column.
+    The local override never triggers a writeback to the source DB —
+    that is the whole point of the surface.
+    """
+
+    profile: str = Field(min_length=1)
+    schema_: str = Field(min_length=1, alias="schema")
+    table: str = Field(min_length=1)
+    column: str | None = None
+    description: str = Field(min_length=1)
+
+    model_config = {"populate_by_name": True}
 
 
 def _scoped_connector(
@@ -141,3 +159,69 @@ def set_column_comment(
     # fetch refreshes the entire table's column dict in one bulk call.
     db.invalidate_column_comments_cache(schema=schema, table=table)
     return {"ok": "true"}
+
+
+@router.post("/local")
+def save_local_comment(
+    body: LocalCommentBody,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, object]:
+    """Create a local-only description override for one entity.
+
+    Unlike the PUT endpoints above, this path never issues a
+    ``COMMENT ON …`` to the source DB. The description is recorded
+    as ``source_kind="user_local"`` in ``catalog_descriptions`` and
+    immediately becomes the effective description for the entity
+    (the new source outranks every existing one — see
+    ``SOURCE_PRIORITY``). The Studio asset card / REPL inspect / FTS
+    search will surface it on the next read.
+    """
+    from amx.db._default_scope import profile_default_container
+    from amx.search.catalog import SearchCatalog
+
+    profile = body.profile.strip()
+    db_cfg = (cfg.db_profiles or {}).get(profile)
+    if db_cfg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Unknown DB profile: {profile!r}. Save the profile "
+                "via /db-profiles or pick an existing one."
+            ),
+        )
+
+    catalog = SearchCatalog.from_history_store()
+    if catalog is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "History store isn't initialised — activate any DB "
+                "profile first so the local catalog can open."
+            ),
+        )
+
+    column = (body.column or "").strip() or None
+    entity_kind = "column" if column else "table"
+    db_backend = str(getattr(db_cfg, "backend", "") or "")
+    database_name = profile_default_container(db_cfg) or ""
+
+    result = catalog.record_user_local_description(
+        db_profile=profile,
+        db_backend=db_backend,
+        database_name=database_name,
+        schema_name=body.schema_,
+        table_name=body.table,
+        column_name=column,
+        entity_kind=entity_kind,
+        asset_kind="table",
+        description=body.description,
+    )
+    return {
+        "ok": True,
+        "profile": profile,
+        "schema": body.schema_,
+        "table": body.table,
+        "column": column,
+        "entity_id": result["entity_id"],
+        "description_id": result["description_id"],
+    }
