@@ -323,16 +323,38 @@ class _PerDBConnector:
         return list(self._schemas.get(schema, []))
 
 
+class _UnpinnedStubCfg:
+    """Variant of :class:`_StubCfg` with no pinned default database.
+
+    Used by the multi-database enumeration test below: with no
+    ``database`` pinned on the profile, the skeleton sync falls back
+    to ``list_databases()`` enumeration and walks every reachable
+    database. The hard-limit short-circuit added for pinned profiles
+    is intentionally bypassed.
+    """
+
+    class _DB:
+        backend = "postgresql"
+        database = ""
+        catalog = ""
+        project = ""
+
+    db = _DB()
+
+
 def test_sync_walks_every_database(
     fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The skeleton sync enumerates every database under a profile and
-    upserts each table with its own ``database_name`` stamp.
+    """When the profile pins no default database, the skeleton sync
+    enumerates every database under it and upserts each table with
+    its own ``database_name`` stamp.
 
     Regression guard for the user-reported screenshot where
     ``LOCAL-POSTGRE`` showed identical schemas under SAP, bird_train,
-    and bird_train_desc because the sync only walked the pinned
-    database AND the unique index didn't include ``database_name``.
+    and bird_train_desc because the sync only walked one database
+    AND the unique index didn't include ``database_name``. The
+    pinned-default case is now hard-limited; see
+    ``tests/test_skeleton_sync_pinned_default.py`` for that path.
     """
     databases_payload: dict[str, dict[str, list[tuple[str, str]]]] = {
         "SAP": {"public": [("sap_users", "table"), ("sap_orders", "table")]},
@@ -383,7 +405,7 @@ def test_sync_walks_every_database(
 
     monkeypatch.setattr(drift, "_scoped_connector", _fake_scoped)
 
-    summary = sync_profile_skeleton(_StubCfg(), "local-postgre", fresh_catalog)
+    summary = sync_profile_skeleton(_UnpinnedStubCfg(), "local-postgre", fresh_catalog)
     assert summary["state"] == "done", summary
     assert summary["total"] == 5
     assert summary["processed"] == 5

@@ -257,6 +257,12 @@ def _enumerate_containers(
     failed in a way the caller should surface to the user; ``None``
     otherwise.
     """
+    # Hard-limit scoping: when the profile pins a default container,
+    # walk only that one. Never enumerate the connector — even an
+    # admin user's catalog/database list would be wrong to write into
+    # the cache for a profile scoped out of those containers.
+    if default_container:
+        return [default_container], None
     try:
         connector = _scoped_connector(cfg, profile, None, is_three_level)
     except Exception as exc:
@@ -307,7 +313,17 @@ def sync_profile_skeleton(
     the given container names. Used by the per-database refresh
     button in the sidebar so clicking refresh on `SAP` doesn't
     re-sync `bird_train` and `bird_train_desc`.
+
+    A cooperative cancel event registered for *profile* in
+    :mod:`amx.search._skeleton_jobs` is checked at every loop head;
+    when set, the in-flight table finishes, the function exits via
+    ``finish_skeleton_sync(ok=False, error="cancelled")``, and the
+    rows already written remain in the cache.
     """
+    from amx.search import _skeleton_jobs
+    from amx.storage._history_caches import purge_out_of_scope
+
+    cancel_event = _skeleton_jobs.register(profile)
     summary: dict[str, Any] = {
         "profile": profile,
         "state": "none",
@@ -349,6 +365,32 @@ def sync_profile_skeleton(
                 or ""
             )
 
+    # Idempotent purge: rows from any previous unscoped sync that fall
+    # outside the pinned container are deleted in one transaction so a
+    # profile that just gained a pinned default never serves stale
+    # rows from other databases/catalogs. Skipped for unpinned
+    # profiles to preserve legacy multi-container behavior.
+    if default_container:
+        history_store = getattr(catalog, "history_store", None) or getattr(
+            catalog, "_hs", None
+        )
+        if history_store is not None:
+            try:
+                purge_counts = purge_out_of_scope(
+                    history_store,
+                    db_profile=profile,
+                    container=default_container,
+                )
+                if any(purge_counts.values()):
+                    log.info(
+                        "Skeleton purge for %s/%s: %s",
+                        profile,
+                        default_container,
+                        purge_counts,
+                    )
+            except Exception as exc:  # pragma: no cover - best-effort
+                log.warning("Skeleton purge skipped for %s: %s", profile, exc)
+
     # Step 1: decide which containers to walk.
     if databases:
         containers = [str(d) for d in databases if d]
@@ -367,6 +409,7 @@ def sync_profile_skeleton(
         catalog.finish_skeleton_sync(profile, ok=False, error=enum_error)
         summary["state"] = "failed"
         summary["error"] = enum_error
+        _skeleton_jobs.unregister(profile)
         return summary
 
     summary["containers"] = list(containers)
@@ -383,6 +426,8 @@ def sync_profile_skeleton(
     last_error = ""
     reached_any = False
     for container in containers:
+        if cancel_event.is_set():
+            break
         try:
             connector = _scoped_connector(cfg, profile, container or None, is_three_level)
             schemas = connector.list_schemas() or []
@@ -406,6 +451,8 @@ def sync_profile_skeleton(
             continue
         schema_assets: list[tuple[str, list]] = []
         for schema in schemas:
+            if cancel_event.is_set():
+                break
             try:
                 assets = connector.list_assets(schema) or []
             except Exception as exc:
@@ -421,6 +468,15 @@ def sync_profile_skeleton(
             total += len(assets)
         per_container_plan.append((container, schema_assets))
 
+    if cancel_event.is_set():
+        # Cancelled before pass-1 completed — surface as a clean
+        # cancellation, not a connect failure.
+        catalog.start_skeleton_sync(profile, total_tables=0)
+        catalog.finish_skeleton_sync(profile, ok=False, error="cancelled")
+        summary["state"] = "cancelled"
+        _skeleton_jobs.unregister(profile)
+        return summary
+
     if not reached_any:
         # Every container failed to connect. Surface the last error so
         # the user sees a real reason on the pill.
@@ -429,6 +485,7 @@ def sync_profile_skeleton(
         catalog.finish_skeleton_sync(profile, ok=False, error=err)
         summary["state"] = "failed"
         summary["error"] = err
+        _skeleton_jobs.unregister(profile)
         return summary
 
     if total == 0:
@@ -446,6 +503,7 @@ def sync_profile_skeleton(
         catalog.finish_skeleton_sync(profile, ok=False, error=err)
         summary["state"] = "failed"
         summary["error"] = err
+        _skeleton_jobs.unregister(profile)
         return summary
 
     catalog.start_skeleton_sync(profile, total_tables=total)
@@ -461,9 +519,15 @@ def sync_profile_skeleton(
     try:
         with catalog._connect() as conn:  # noqa: SLF001 — owns the catalog conn
             for container, schema_assets in per_container_plan:
+                if cancel_event.is_set():
+                    break
                 stamp = container or default_container
                 for schema, assets in schema_assets:
+                    if cancel_event.is_set():
+                        break
                     for asset in assets:
+                        if cancel_event.is_set():
+                            break
                         name, kind = _asset_name_and_kind(asset)
                         if not name:
                             continue
@@ -498,11 +562,21 @@ def sync_profile_skeleton(
         summary["state"] = "failed"
         summary["processed"] = processed
         summary["error"] = str(exc)
+        _skeleton_jobs.unregister(profile)
+        return summary
+
+    if cancel_event.is_set():
+        catalog.finish_skeleton_sync(profile, ok=False, error="cancelled")
+        summary["state"] = "cancelled"
+        summary["processed"] = processed
+        summary["error"] = "cancelled"
+        _skeleton_jobs.unregister(profile)
         return summary
 
     catalog.finish_skeleton_sync(profile, ok=True)
     summary["state"] = "done"
     summary["processed"] = processed
+    _skeleton_jobs.unregister(profile)
     return summary
 
 
