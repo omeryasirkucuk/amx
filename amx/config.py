@@ -253,6 +253,32 @@ def _normalize_db_host(raw: str | None) -> str:
     return host.strip()
 
 
+def history_store_profile_set(cfg: AMXConfig) -> list[str]:
+    """Return the deduplicated list of DB profile names that participate
+    in the shared history store.
+
+    The legacy singular ``history_store_profile`` (one primary profile
+    that owns the schema) is unioned with the newer
+    ``history_store_profiles`` (additional opt-in profiles). Order is
+    preserved with the primary first; duplicates and empty strings are
+    dropped so callers can iterate the result directly.
+    """
+    primary = (getattr(cfg, "history_store_profile", "") or "").strip()
+    extras = list(getattr(cfg, "history_store_profiles", []) or [])
+    seen: set[str] = set()
+    result: list[str] = []
+    if primary:
+        seen.add(primary)
+        result.append(primary)
+    for name in extras:
+        text = str(name or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
 def has_legacy_database_default(db: DBConfig) -> bool:
     """Return True when *db* still carries the historical ``database='SAP'`` default.
 
@@ -1926,6 +1952,14 @@ class AMXConfig:
     # workflows keep their fast path. Configure via ``/history-store``.
     history_store_enabled: bool = False
     history_store_profile: str = ""
+    # Additional DB profiles that participate in the shared history
+    # store alongside ``history_store_profile``. The effective set is
+    # the deduplicated union (singular field stays for backward
+    # compatibility with 0.12.x configs and is still treated as the
+    # "primary" profile that owns the schema). Users add profiles via
+    # ``/history-store profiles`` (REPL) or ``PATCH /api/history/profiles``
+    # (Studio). Empty list keeps the legacy single-profile behaviour.
+    history_store_profiles: list[str] = field(default_factory=list)
     history_store_schema: str = "AMX"
     # Overrides the profile's pinned database/catalog when building the
     # shared-history engine. A single DB profile (e.g. ``prod_pg``)
@@ -1980,6 +2014,7 @@ class AMXConfig:
             "write_through_config",
             "history_store_enabled",
             "history_store_profile",
+            "history_store_profiles",
             "history_store_schema",
             "history_store_database",
         }
@@ -2168,6 +2203,15 @@ class AMXConfig:
             # local-only behaviour for users upgrading from 0.11.x.
             cfg.history_store_enabled = bool(data.get("history_store_enabled", False))
             cfg.history_store_profile = str(data.get("history_store_profile") or "")
+            extra_profiles_raw = data.get("history_store_profiles")
+            if isinstance(extra_profiles_raw, list):
+                cfg.history_store_profiles = [
+                    str(p).strip()
+                    for p in extra_profiles_raw
+                    if isinstance(p, str) and p.strip()
+                ]
+            else:
+                cfg.history_store_profiles = []
             cfg.history_store_schema = str(data.get("history_store_schema") or "AMX")
             cfg.history_store_database = str(data.get("history_store_database") or "")
 
@@ -2423,6 +2467,7 @@ class AMXConfig:
                 "run_code_profiles",
                 "history_store_enabled",
                 "history_store_profile",
+                "history_store_profiles",
                 "history_store_database",
                 "history_store_schema",
             ):
@@ -2540,6 +2585,11 @@ class AMXConfig:
             data["write_through_config"] = self.write_through_config
             data["history_store_enabled"] = bool(self.history_store_enabled)
             data["history_store_profile"] = str(self.history_store_profile or "")
+            data["history_store_profiles"] = [
+                str(p).strip()
+                for p in (self.history_store_profiles or [])
+                if isinstance(p, str) and p.strip()
+            ]
             data["history_store_schema"] = str(self.history_store_schema or "AMX")
             data["history_store_database"] = str(self.history_store_database or "")
             data["embedding_docs"] = _embedding_to_mapping(self.embedding_docs)

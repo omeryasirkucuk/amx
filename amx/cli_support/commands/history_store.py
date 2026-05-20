@@ -33,6 +33,7 @@ from amx.config import AMXConfig
 from amx.storage.factory import HistoryStoreBootstrapError, history_store
 from amx.utils.console import (
     ask_choice,
+    ask_multi_choice,
     confirm,
     error,
     heading,
@@ -54,6 +55,7 @@ LogEvent = Callable[..., None]
 ACTION_STATUS = "Status — show shared-mode state and outbox depth"
 ACTION_ENABLE = "Enable — bootstrap an AMX schema on a saved DB profile"
 ACTION_DISABLE = "Disable — stop dual-writing (existing shared rows are kept)"
+ACTION_PROFILES = "Profiles — pick which DB profiles participate in the shared store"
 ACTION_MIGRATE = "Migrate from local — copy local SQLite history into the shared store"
 ACTION_PULL = "Pull from shared — sync teammates' runs into your local SQLite cache"
 ACTION_FLUSH = "Flush pending — retry queued shared writes that failed at write time"
@@ -440,6 +442,59 @@ def _action_disable(cfg: AMXConfig, *, log_event: LogEvent) -> None:
     log_event(event_type="history_store.disable", status="ok", command="/history-store disable")
 
 
+def _action_profiles(cfg: AMXConfig) -> None:
+    """Multi-select wizard for ``history_store_profiles``.
+
+    The primary profile (singular ``history_store_profile``) is always
+    in scope; this picker manages the extras that get dual-written
+    alongside it. Useful for users running AMX against several
+    backends who want every profile's runs to land in one shared
+    catalog.
+    """
+    heading("Shared history-store profiles")
+    if not cfg.db_profiles:
+        error("No DB profiles saved. Configure one with /db-profiles first.")
+        return
+    primary = (cfg.history_store_profile or "").strip()
+    candidates = sorted(p for p in cfg.db_profiles if p and p != primary)
+    if not candidates:
+        info(
+            "No additional profiles available — the only saved profile "
+            "is already the primary history-store profile."
+        )
+        return
+    current = sorted(
+        p
+        for p in (cfg.history_store_profiles or [])
+        if p and p in cfg.db_profiles and p != primary
+    )
+    if primary:
+        info(f"Primary profile (always included): {primary}")
+    if current:
+        info(f"Currently included extras: {', '.join(current)}")
+    else:
+        info("No extra profiles included yet.")
+    picked = ask_multi_choice(
+        "Pick the extra profiles to include (Enter cancels)",
+        candidates,
+    )
+    if not picked:
+        info("No change.")
+        return
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for name in picked:
+        if name in seen or name == primary:
+            continue
+        seen.add(name)
+        deduped.append(name)
+    with cfg.transaction():
+        cfg.history_store_profiles = deduped
+    success(
+        f"Updated extra profiles: {', '.join(deduped) if deduped else '(none)'}"
+    )
+
+
 def _action_migrate(cfg: AMXConfig) -> None:
     if not getattr(cfg, "history_store_enabled", False):
         error("Shared mode is disabled. Pick Enable first.")
@@ -544,6 +599,7 @@ def _run_picker(ctx: click.Context, cfg: AMXConfig, *, log_event: LogEvent) -> N
     # picker to do exactly that).
     options: list[str] = [ACTION_STATUS]
     if enabled:
+        options.append(ACTION_PROFILES)
         options.append(ACTION_PULL)
         options.append(ACTION_MIGRATE)
         options.append(ACTION_FLUSH)
@@ -567,6 +623,9 @@ def _run_picker(ctx: click.Context, cfg: AMXConfig, *, log_event: LogEvent) -> N
         return
     if picked == ACTION_DISABLE:
         _action_disable(cfg, log_event=log_event)
+        return
+    if picked == ACTION_PROFILES:
+        _action_profiles(cfg)
         return
     if picked == ACTION_PULL:
         _action_pull(cfg)
@@ -662,6 +721,17 @@ def register_history_store_commands(
     def hs_disable(cfg: AMXConfig) -> None:
         """Stop dual-writing to the shared store. Local SQLite continues normally."""
         _action_disable(cfg, log_event=log_event)
+
+    @history_store_grp.command("profiles")
+    @pass_config
+    def hs_profiles(cfg: AMXConfig) -> None:
+        """Pick which DB profiles participate in the shared history store.
+
+        The "primary" profile (the one chosen at /history-store enable
+        time) always participates; this picker manages the extra
+        profiles whose runs are also dual-written.
+        """
+        _action_profiles(cfg)
 
     @history_store_grp.command("migrate-from-local")
     @pass_config

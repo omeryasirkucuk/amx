@@ -322,17 +322,23 @@ def history_status() -> dict[str, Any]:
     Returns:
       - ``enabled``: whether shared mode is configured
       - ``backfill``: backfill state per scope (running / done / idle)
-      - ``shared_profile``: the configured history_store_profile
+      - ``shared_profile``: the legacy single-profile field (kept for
+        backward-compat with older Studio builds)
+      - ``shared_profiles``: deduplicated union of the primary profile
+        plus every entry in ``history_store_profiles`` — the full set
+        of DB profiles participating in the shared store
     """
     store = _store()
     enabled = True
     shared_profile = ""
+    shared_profiles: list[str] = []
     backfill: dict[str, Any] = {}
     try:
-        from amx.config import AMXConfig
+        from amx.config import AMXConfig, history_store_profile_set
 
         cfg = AMXConfig.load()
         shared_profile = cfg.history_store_profile or ""
+        shared_profiles = history_store_profile_set(cfg)
         enabled = bool(cfg.history_store_enabled)
     except Exception:
         pass
@@ -347,7 +353,66 @@ def history_status() -> dict[str, Any]:
     return {
         "enabled": enabled,
         "shared_profile": shared_profile,
+        "shared_profiles": shared_profiles,
         "backfill": backfill,
+    }
+
+
+class HistoryProfilesPatch(BaseModel):
+    """Body for ``PATCH /api/history/profiles``."""
+
+    profiles: list[str] = Field(default_factory=list)
+
+
+@router.patch("/profiles")
+def set_history_profiles(body: HistoryProfilesPatch) -> dict[str, Any]:
+    """Replace the additional-profile list for the shared history store.
+
+    The primary profile (singular ``history_store_profile``) is left
+    untouched — it owns the schema and is only changed by
+    ``/history-store enable``. This endpoint manages the *extra*
+    profiles whose runs are also dual-written.
+
+    Returns the new union after save so the Studio Settings page can
+    re-render its chips immediately.
+    """
+    from amx.config import AMXConfig, history_store_profile_set
+
+    try:
+        cfg = AMXConfig.load()
+    except Exception as exc:  # pragma: no cover - load is well-tested elsewhere
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load config: {exc}",
+        ) from exc
+
+    primary = (cfg.history_store_profile or "").strip()
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for name in body.profiles or []:
+        text = str(name or "").strip()
+        if not text:
+            continue
+        # Drop the primary from the extras list — it lives in the
+        # singular field and shouldn't be duplicated on disk.
+        if text == primary:
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text)
+    cfg.history_store_profiles = cleaned
+    try:
+        cfg.save()
+    except Exception as exc:  # pragma: no cover - save errors surface inline
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save config: {exc}",
+        ) from exc
+
+    return {
+        "shared_profile": primary,
+        "shared_profiles": history_store_profile_set(cfg),
     }
 
 
