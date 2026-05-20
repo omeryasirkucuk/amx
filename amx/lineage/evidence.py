@@ -18,12 +18,12 @@ caller still sees neighbour ids, just without direction.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 from amx.lineage.store import list_artifact_edges, lookup_lineage_artifact
 from amx.storage.sqlite_store import SQLiteHistoryStore
-
 
 # Cap on the number of catalog_relationships rows pulled per artifact.
 # ``list_artifact_edges`` enforces this internally; keeping it at 200

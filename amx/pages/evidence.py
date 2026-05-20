@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from amx.storage.sqlite_store import SQLiteHistoryStore
-
 
 _ANCHORED_KINDS = ("db_table", "db_column")
 _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
