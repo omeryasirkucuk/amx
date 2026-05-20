@@ -1899,9 +1899,8 @@ def cmd_comment_local(cfg: AMXConfig, rest: list[str]) -> None:
         info("Cancelled.")
         return
 
-    target_label = (
-        f"{profile}.{schema_name}.{table_name}"
-        + (f".{column_name}" if column_name else " (table-level)")
+    target_label = f"{profile}.{schema_name}.{table_name}" + (
+        f".{column_name}" if column_name else " (table-level)"
     )
     if args["description"] is None and not confirm(
         f"Save local description for {target_label}?",

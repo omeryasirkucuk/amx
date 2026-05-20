@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from amx.config import AMXConfig
+    from amx.storage.sqlite_store import SQLiteHistoryStore
 
 
 def _resolve(
@@ -63,3 +64,25 @@ def resolve_code_profiles_for_scope(cfg: AMXConfig, scope_dbs: Iterable[str]) ->
         cfg.code_profile_linked_dbs,
         cfg.active_code_profile or "",
     )
+
+
+def resolve_lineage_for_scope(
+    *,
+    cfg: AMXConfig,
+    store: SQLiteHistoryStore,
+    scope_db_profiles: list[str],
+) -> list[str]:
+    """Lineage artifacts the ASK agent will consider for the given DB
+    scope. Returns canvas names ordered by ``lineage_artifacts.id``
+    (creation order) so the picker shows a stable list.
+    """
+    del cfg  # reserved for future link-map support; signature mirrors siblings
+    if not scope_db_profiles:
+        return []
+    placeholders = ",".join("?" for _ in scope_db_profiles)
+    with store._connect() as conn:  # noqa: SLF001
+        rows = conn.execute(
+            f"SELECT name FROM lineage_artifacts WHERE db_profile IN ({placeholders}) ORDER BY id",
+            tuple(scope_db_profiles),
+        ).fetchall()
+    return [str(r[0]) for r in rows]

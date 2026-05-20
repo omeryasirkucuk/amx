@@ -31,7 +31,5 @@ def test_cancel_returns_false_when_no_job(client, auth_headers) -> None:
 
 
 def test_cancel_requires_non_empty_profile(client, auth_headers) -> None:
-    response = client.post(
-        "/api/catalog/sync/cancel", json={"profile": ""}, headers=auth_headers
-    )
+    response = client.post("/api/catalog/sync/cancel", json={"profile": ""}, headers=auth_headers)
     assert response.status_code == 422

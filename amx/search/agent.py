@@ -226,6 +226,8 @@ class SearchAgent(
         question: str,
         *,
         cancel_token: threading.Event | None = None,
+        lineage_profiles: list[str] | None = None,
+        pages_enabled: bool | None = None,
     ) -> SearchAnswer:
         """Run one /ask turn.
 
@@ -497,6 +499,22 @@ class SearchAgent(
         t0 = time.monotonic()
         with step_spinner("Search Agent: retrieving grounded evidence"):
             rows, retrieval_details = self._retrieve(clean_question, plan, policy)
+            # Anchor-based lineage + pages enrichment. Mutates
+            # retrieval_details to add the new evidence keys when
+            # supporting data exists in the history store. Auto-mode
+            # (None / None) is the default; SearchPolicy / AskRequest
+            # plumbing in a later task can flip these off per-question.
+            try:
+                retrieval_details = self._enrich_with_lineage_and_pages(
+                    clean_question,
+                    plan,
+                    rows,
+                    retrieval_details,
+                    lineage_profiles=lineage_profiles,
+                    pages_enabled=pages_enabled,
+                )
+            except Exception as exc:
+                log.debug("lineage/pages enrichment failed: %s", exc)
         if retrieval_details.get("tool") == "SchemaExplorer":
             trace_step = "schema_explorer"
             summary = retrieval_details.get("schema_explorer_summary") or {}

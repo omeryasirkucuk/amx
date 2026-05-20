@@ -557,10 +557,7 @@ def ensure_column_exists(
     # ``amx`` schema). The preparer follows each backend's quoting rules.
     preparer = engine.dialect.identifier_preparer
     quoted_table = preparer.quote(table)
-    if schema:
-        fq_table = f"{preparer.quote(schema)}.{quoted_table}"
-    else:
-        fq_table = quoted_table
+    fq_table = f"{preparer.quote(schema)}.{quoted_table}" if schema else quoted_table
 
     if dialect_name == "sqlite":
         # SQLite: suppress "duplicate column name" OperationalError.

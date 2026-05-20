@@ -24,6 +24,7 @@ Calls back into planning + resolution mixins via ``self.``.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from amx.agents.tools import SchemaExplorer
@@ -32,6 +33,224 @@ from amx.search._agent._types import LiveProbePlan, SearchPlan, SearchPolicy
 from amx.utils.logging import get_logger
 
 log = get_logger("search.agent.retrieval")
+
+
+# Tokens removed from question_terms before they reach the BM25-lite
+# scorer in ``amx.pages.evidence``. They are too generic to be useful
+# as keywords and would otherwise dominate the relevance score on
+# pages that mention them in passing.
+_PAGES_STOPWORDS = frozenset(
+    {
+        "what",
+        "which",
+        "where",
+        "when",
+        "show",
+        "list",
+        "tell",
+        "give",
+        "find",
+        "table",
+        "tables",
+        "column",
+        "columns",
+        "row",
+        "rows",
+        "value",
+        "values",
+        "data",
+        "from",
+        "with",
+        "have",
+        "this",
+        "that",
+        "these",
+        "those",
+        "into",
+        "about",
+        "the",
+        "and",
+        "but",
+        "for",
+        "are",
+        "was",
+        "were",
+        "has",
+        "had",
+        "you",
+        "your",
+        "our",
+    }
+)
+
+
+def _asset_refs_for_entities(store: Any, entity_ids: list[int]) -> list[str]:
+    """Convert ``catalog_entities`` ids to ``documentation_page_assets``
+    ``asset_ref`` strings.
+
+    Emits ``profile:schema:table`` for table entities and additionally
+    ``profile:schema:table.column`` for column entities, matching the
+    asset-ref convention used by the pages composer.
+    """
+    if not entity_ids:
+        return []
+    placeholders = ",".join("?" for _ in entity_ids)
+    with store._connect() as conn:  # noqa: SLF001
+        rows = conn.execute(
+            f"""
+            SELECT db_profile, schema_name, table_name, column_name
+            FROM catalog_entities WHERE id IN ({placeholders})
+            """,
+            tuple(entity_ids),
+        ).fetchall()
+    refs: list[str] = []
+    seen: set[str] = set()
+    for prof, schema, table, col in rows:
+        base = f"{prof}:{schema}:{table}"
+        if base not in seen:
+            seen.add(base)
+            refs.append(base)
+        if col:
+            scoped = f"{base}.{col}"
+            if scoped not in seen:
+                seen.add(scoped)
+                refs.append(scoped)
+    return refs
+
+
+def _question_terms_for_pages(question: str, plan: SearchPlan | None) -> list[str]:
+    """Extract de-noised keyword tokens for pages BM25-lite scoring.
+
+    Pulls the question's normalized form plus the planner's entity
+    hints, lowercases everything, splits on word boundaries, and drops
+    short tokens / stopwords so the scorer keys on meaningful nouns.
+    """
+    sources: list[str] = []
+    if question:
+        sources.append(question)
+    if plan is not None:
+        if plan.normalized_question:
+            sources.append(plan.normalized_question)
+        for hint in plan.entity_hints:
+            if hint:
+                sources.append(str(hint))
+    seen: set[str] = set()
+    out: list[str] = []
+    for chunk in sources:
+        for token in re.findall(r"[A-Za-z0-9_]+", chunk):
+            normalized = token.lower()
+            if len(normalized) <= 2:
+                continue
+            if normalized in _PAGES_STOPWORDS:
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            out.append(normalized)
+    return out
+
+
+def _entity_ids_from_rows(rows: list[dict[str, Any]]) -> list[int]:
+    """Pull catalog_entities row ids out of retrieval rows, in order, deduped."""
+    seen: set[int] = set()
+    out: list[int] = []
+    for row in rows or []:
+        raw = row.get("id")
+        if raw is None:
+            continue
+        try:
+            eid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if eid <= 0 or eid in seen:
+            continue
+        seen.add(eid)
+        out.append(eid)
+    return out
+
+
+def enrich_retrieval_details_with_lineage_and_pages(
+    *,
+    store: Any,
+    rows: list[dict[str, Any]],
+    retrieval_details: dict[str, Any],
+    question: str,
+    plan: SearchPlan | None,
+    lineage_profiles: list[str] | None,
+    pages_enabled: bool | None,
+) -> dict[str, Any]:
+    """Fold lineage and pages evidence into ``retrieval_details``.
+
+    Anchor entity ids are derived from ``rows`` (the catalog_entity ids
+    surfaced by the catalog search). When supporting data exists the
+    function appends ``"lineage"`` and / or ``"pages"`` to
+    ``retrieval_details["evidence_sources"]`` and stores the structured
+    payload under ``retrieval_details["lineage"]`` / ``["pages"]``.
+
+    ``lineage_profiles``:
+      * ``None`` — Auto: include every saved canvas touching the anchors.
+      * non-empty list — restrict to canvases whose name is in the list.
+      * empty list — lineage retrieval off.
+
+    ``pages_enabled``:
+      * ``None`` — Auto (treated as enabled here; gating per-question is
+        handled by the policy layer upstream).
+      * ``True`` / ``False`` — explicit override.
+    """
+    if store is None:
+        return retrieval_details
+
+    entity_ids = _entity_ids_from_rows(rows)
+
+    # Anchor-based lineage retrieval. Skips silently when there are no
+    # saved canvases anchored to the resolved entities.
+    from amx.lineage.evidence import build_lineage_evidence
+
+    lineage_payload = build_lineage_evidence(
+        store=store,
+        entity_ids=entity_ids,
+        artifact_filter=lineage_profiles,
+        max_upstream=5,
+        max_downstream=5,
+        max_comments=3,
+    )
+    if not lineage_payload.is_empty:
+        retrieval_details.setdefault("evidence_sources", [])
+        if "lineage" not in retrieval_details["evidence_sources"]:
+            retrieval_details["evidence_sources"].append("lineage")
+        retrieval_details["lineage"] = {
+            "kind": "lineage",
+            "artifact_names": list(lineage_payload.artifact_names),
+            "upstream_entity_ids": list(lineage_payload.upstream_entity_ids),
+            "downstream_entity_ids": list(lineage_payload.downstream_entity_ids),
+            "external_systems": list(lineage_payload.logo_keys),
+            "comments": list(lineage_payload.comments),
+        }
+
+    # Published-pages retrieval. Anchor-scoped, no semantic index.
+    from amx.pages.evidence import build_pages_evidence
+
+    pages_payload = build_pages_evidence(
+        store=store,
+        asset_refs=_asset_refs_for_entities(store, entity_ids),
+        question_terms=_question_terms_for_pages(question, plan),
+        max_pages=3,
+        max_excerpt_chars=400,
+        enabled=True if pages_enabled is None else pages_enabled,
+    )
+    if not pages_payload.is_empty:
+        retrieval_details.setdefault("evidence_sources", [])
+        if "pages" not in retrieval_details["evidence_sources"]:
+            retrieval_details["evidence_sources"].append("pages")
+        retrieval_details["pages"] = {
+            "kind": "pages",
+            "items": [
+                {"title": it.title, "slug": it.slug, "excerpt": it.excerpt}
+                for it in pages_payload.items
+            ],
+        }
+
+    return retrieval_details
 
 
 class RetrievalMixin:
@@ -710,6 +929,42 @@ class RetrievalMixin:
         )
         details["evidence_sources"] = ["effective_metadata", "vector_support"]
         return rows, details
+
+    def _enrich_with_lineage_and_pages(
+        self,
+        question: str,
+        plan: SearchPlan,
+        rows: list[dict[str, Any]],
+        retrieval_details: dict[str, Any],
+        *,
+        lineage_profiles: list[str] | None = None,
+        pages_enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        """Resolve the active history store and fold lineage/pages evidence in.
+
+        Looked up through the catalog rather than imported eagerly so
+        unit tests that pass a hand-rolled catalog (no live history
+        store) skip the enrichment instead of crashing.
+        """
+        store = None
+        try:
+            from amx.storage.sqlite_store import history_store
+
+            store = history_store()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("history_store() unavailable for retrieval enrichment: %s", exc)
+            return retrieval_details
+        if store is None:
+            return retrieval_details
+        return enrich_retrieval_details_with_lineage_and_pages(
+            store=store,
+            rows=rows,
+            retrieval_details=retrieval_details,
+            question=question,
+            plan=plan,
+            lineage_profiles=lineage_profiles,
+            pages_enabled=pages_enabled,
+        )
 
     def _merge_join_rows(
         self,

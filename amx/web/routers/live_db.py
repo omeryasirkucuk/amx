@@ -858,9 +858,7 @@ def list_columns(
     name = _require_profile(profile)
     cache_scope = database or catalog
     if not force_live:
-        cached_rows = _columns_from_cache(
-            name, schema, table, database_scope=cache_scope
-        )
+        cached_rows = _columns_from_cache(name, schema, table, database_scope=cache_scope)
         if cached_rows:
             return {
                 "schema": schema,
@@ -882,10 +880,7 @@ def list_columns(
         f"Listing columns of {schema}.{table}",
         lambda: db.list_column_profiles(schema, table),
     )
-    live_columns = [
-        {"name": c.name, "dtype": c.dtype, "nullable": bool(c.nullable)}
-        for c in cols
-    ]
+    live_columns = [{"name": c.name, "dtype": c.dtype, "nullable": bool(c.nullable)} for c in cols]
     if live_columns and not force_live:
         # Cache-warm for next time: write the column rows into
         # ``catalog_entities`` so a subsequent visit to the same table
@@ -913,9 +908,7 @@ def list_columns(
         # fallback to the column_comments_cache so the Studio page
         # still shows column names + comments when the live DB has
         # since lost the table.
-        salvage = _columns_from_cache(
-            name, schema, table, database_scope=cache_scope
-        )
+        salvage = _columns_from_cache(name, schema, table, database_scope=cache_scope)
         if salvage:
             return {
                 "schema": schema,
@@ -969,9 +962,7 @@ def table_snapshot(
         # Live snapshot blew up entirely (most often
         # ``NoSuchTableError`` propagated from ``get_column_comments``).
         # Try to salvage from the caches before giving up.
-        salvage = _columns_from_cache(
-            name, schema, table, database_scope=cache_scope
-        )
+        salvage = _columns_from_cache(name, schema, table, database_scope=cache_scope)
         if not salvage:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1002,9 +993,7 @@ def table_snapshot(
         # ``NoSuchTableError``. Try the same fallback path the
         # ``/columns`` endpoint uses so the Studio page surfaces names
         # + comments instead of an empty list.
-        salvage = _columns_from_cache(
-            name, schema, table, database_scope=cache_scope
-        )
+        salvage = _columns_from_cache(name, schema, table, database_scope=cache_scope)
         if salvage:
             return {
                 **snapshot,

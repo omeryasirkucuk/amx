@@ -40,9 +40,7 @@ def cfg_with_profile(cfg):
     return cfg
 
 
-def test_save_local_comment_happy_path(
-    client, auth_headers, history_db, cfg_with_profile
-) -> None:
+def test_save_local_comment_happy_path(client, auth_headers, history_db, cfg_with_profile) -> None:
     response = client.post(
         "/api/comments/local",
         json={

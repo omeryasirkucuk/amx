@@ -464,9 +464,7 @@ def _action_profiles(cfg: AMXConfig) -> None:
         )
         return
     current = sorted(
-        p
-        for p in (cfg.history_store_profiles or [])
-        if p and p in cfg.db_profiles and p != primary
+        p for p in (cfg.history_store_profiles or []) if p and p in cfg.db_profiles and p != primary
     )
     if primary:
         info(f"Primary profile (always included): {primary}")
@@ -490,9 +488,7 @@ def _action_profiles(cfg: AMXConfig) -> None:
         deduped.append(name)
     with cfg.transaction():
         cfg.history_store_profiles = deduped
-    success(
-        f"Updated extra profiles: {', '.join(deduped) if deduped else '(none)'}"
-    )
+    success(f"Updated extra profiles: {', '.join(deduped) if deduped else '(none)'}")
 
 
 def _action_migrate(cfg: AMXConfig) -> None:
