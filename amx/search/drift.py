@@ -371,9 +371,7 @@ def sync_profile_skeleton(
     # rows from other databases/catalogs. Skipped for unpinned
     # profiles to preserve legacy multi-container behavior.
     if default_container:
-        history_store = getattr(catalog, "history_store", None) or getattr(
-            catalog, "_hs", None
-        )
+        history_store = getattr(catalog, "history_store", None) or getattr(catalog, "_hs", None)
         if history_store is not None:
             try:
                 purge_counts = purge_out_of_scope(

@@ -341,9 +341,7 @@ def test_snapshot_endpoint_500s_when_no_cache_and_live_raises(
     _patch_connector(
         monkeypatch,
         lambda: MagicMock(
-            get_table_metadata_snapshot=MagicMock(
-                side_effect=RuntimeError("connect timed out")
-            )
+            get_table_metadata_snapshot=MagicMock(side_effect=RuntimeError("connect timed out"))
         ),
     )
     response = client.get(

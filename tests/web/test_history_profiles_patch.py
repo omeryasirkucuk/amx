@@ -30,9 +30,7 @@ def isolated_config(tmp_path, monkeypatch):
     yield cfg_path
 
 
-def test_status_reports_singular_when_extras_empty(
-    client, auth_headers, isolated_config
-) -> None:
+def test_status_reports_singular_when_extras_empty(client, auth_headers, isolated_config) -> None:
     response = client.get("/api/history/status", headers=auth_headers)
     assert response.status_code in (200, 503)
     if response.status_code == 503:
@@ -58,9 +56,7 @@ def test_patch_profiles_replaces_extras_and_dedupes_primary(
     assert payload["shared_profiles"] == ["prod", "dev", "staging"]
 
 
-def test_patch_profiles_empty_list_clears_extras(
-    client, auth_headers, isolated_config
-) -> None:
+def test_patch_profiles_empty_list_clears_extras(client, auth_headers, isolated_config) -> None:
     # Seed.
     client.patch(
         "/api/history/profiles",
@@ -78,9 +74,7 @@ def test_patch_profiles_empty_list_clears_extras(
     assert payload["shared_profiles"] == ["prod"]
 
 
-def test_patch_profiles_strips_whitespace(
-    client, auth_headers, isolated_config
-) -> None:
+def test_patch_profiles_strips_whitespace(client, auth_headers, isolated_config) -> None:
     response = client.patch(
         "/api/history/profiles",
         json={"profiles": ["  dev  ", "", "  ", "staging"]},

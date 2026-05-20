@@ -211,6 +211,196 @@ def _summarise_tool_call(tool_call: Any, result: str) -> dict[str, Any]:
     return summary
 
 
+_MAX_ANCHOR_IDS = 20
+_APPENDIX_MAX_PAGE_ITEMS = 3
+_APPENDIX_MAX_EXCERPT_CHARS = 240
+
+
+def _collect_catalog_refs_from_tool_results(
+    tool_call_log: list[dict[str, Any]],
+) -> list[tuple[str, str, str, str]]:
+    """Harvest ``(db_profile, schema, table, column)`` tuples from the
+    JSON payloads catalog tools surface in their ``result_preview`` /
+    tool-result messages.
+
+    The tool agent's catalog tools (``search_tables_by_concept``,
+    ``find_columns_by_dtype``, ``describe_table``, …) do not surface
+    the underlying ``catalog_entities.id`` directly. We re-derive the
+    anchor entity ids by resolving the human-readable
+    ``(profile, schema, table, column)`` triples back through the
+    history store — same lookup the lineage/pages enricher already
+    expects.
+
+    Only the truncated ``result_preview`` blob is reliably present on
+    every entry of the log (the full tool result is appended into
+    ``messages`` but not retained in ``tool_call_log``). The preview
+    is a 280-char JSON snippet so we parse it best-effort and pull
+    out any ``db_profile`` / ``schema`` / ``table`` / ``column``
+    fields we can find. Failure to parse a preview is silently
+    dropped — anchor harvesting is opportunistic.
+    """
+    refs: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+
+    def _add(prof: Any, schema: Any, table: Any, column: Any = "") -> None:
+        p = str(prof or "").strip()
+        s = str(schema or "").strip()
+        t = str(table or "").strip()
+        c = str(column or "").strip()
+        if not (p and s and t):
+            return
+        key = (p, s, t, c)
+        if key in seen:
+            return
+        seen.add(key)
+        refs.append(key)
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, dict):
+            prof = value.get("db_profile") or value.get("profile") or value.get("database_profile")
+            schema = value.get("schema") or value.get("schema_name")
+            table = value.get("table") or value.get("table_name")
+            column = value.get("column") or value.get("column_name") or ""
+            if prof and schema and table:
+                _add(prof, schema, table, column)
+            for nested in value.values():
+                _walk(nested)
+        elif isinstance(value, list):
+            for item in value:
+                _walk(item)
+
+    for entry in tool_call_log:
+        preview = entry.get("result_preview")
+        if not isinstance(preview, str) or not preview:
+            continue
+        # ``result_preview`` is a 280-char truncation of the full JSON
+        # tool result — frequently the trailing brace is missing. We
+        # try the raw value first and fall back to a salvage parse.
+        parsed: Any = None
+        try:
+            parsed = json.loads(preview)
+        except Exception:
+            try:
+                # Walk back from the last closed brace to recover a
+                # parseable prefix.
+                last_brace = max(preview.rfind("}"), preview.rfind("]"))
+                if last_brace > 0:
+                    parsed = json.loads(preview[: last_brace + 1])
+            except Exception:
+                parsed = None
+        if parsed is not None:
+            _walk(parsed)
+
+    return refs
+
+
+def _resolve_entity_ids_from_refs(store: Any, refs: list[tuple[str, str, str, str]]) -> list[int]:
+    """Resolve ``(profile, schema, table, column)`` tuples to
+    ``catalog_entities.id`` values via a single SELECT.
+
+    The query unions table-level (``column_name IS NULL OR ''``) and
+    column-level lookups; the helper is read-only and returns at most
+    ``_MAX_ANCHOR_IDS`` ids so the enricher stays bounded regardless
+    of how chatty a tool call was.
+    """
+    if not refs or store is None:
+        return []
+    ids: list[int] = []
+    seen: set[int] = set()
+    try:
+        with store._connect() as conn:  # noqa: SLF001
+            for prof, schema, table, column in refs:
+                if column:
+                    row = conn.execute(
+                        """
+                        SELECT id FROM catalog_entities
+                        WHERE db_profile = ? AND schema_name = ?
+                          AND table_name = ? AND column_name = ?
+                        LIMIT 1
+                        """,
+                        (prof, schema, table, column),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        """
+                        SELECT id FROM catalog_entities
+                        WHERE db_profile = ? AND schema_name = ?
+                          AND table_name = ?
+                          AND (column_name IS NULL OR column_name = '')
+                        LIMIT 1
+                        """,
+                        (prof, schema, table),
+                    ).fetchone()
+                if row is None:
+                    continue
+                try:
+                    eid = int(row[0])
+                except (TypeError, ValueError):
+                    continue
+                if eid <= 0 or eid in seen:
+                    continue
+                seen.add(eid)
+                ids.append(eid)
+                if len(ids) >= _MAX_ANCHOR_IDS:
+                    break
+    except Exception:
+        return []
+    return ids
+
+
+def _format_lineage_pages_appendix(
+    lineage: dict[str, Any] | None, pages: dict[str, Any] | None
+) -> str:
+    """Render the lineage / pages evidence blocks as a compact text
+    appendix the synthesis LLM can cite.
+
+    Kept terse on purpose — the appendix rides alongside the tool
+    results in the chat history and we do not want it to dominate
+    the prompt. Lineage gets a one-line summary plus a comma-joined
+    artifact list; pages gets each item's title/slug plus a
+    truncated excerpt.
+    """
+    lines: list[str] = []
+    if lineage:
+        artifact_names = lineage.get("artifact_names") or []
+        upstream_ids = lineage.get("upstream_entity_ids") or []
+        downstream_ids = lineage.get("downstream_entity_ids") or []
+        external = lineage.get("external_systems") or []
+        lines.append("Lineage evidence (from saved canvases anchored to these tables):")
+        if artifact_names:
+            lines.append(f"  Canvases: {', '.join(str(n) for n in artifact_names)}")
+        if upstream_ids:
+            lines.append(f"  Upstream entity ids: {', '.join(str(i) for i in upstream_ids)}")
+        if downstream_ids:
+            lines.append(f"  Downstream entity ids: {', '.join(str(i) for i in downstream_ids)}")
+        if external:
+            lines.append(f"  External systems: {', '.join(str(n) for n in external)}")
+        comments = lineage.get("comments") or []
+        for comment in comments[:3]:
+            text = str(comment).strip()
+            if text:
+                lines.append(f"  Note: {text[:180]}")
+    if pages:
+        items = pages.get("items") or []
+        if items:
+            if lines:
+                lines.append("")
+            lines.append("Documentation pages anchored to these tables:")
+            for item in items[:_APPENDIX_MAX_PAGE_ITEMS]:
+                title = str(item.get("title") or "").strip() or "(untitled)"
+                slug = str(item.get("slug") or "").strip()
+                excerpt = str(item.get("excerpt") or "").strip()
+                if len(excerpt) > _APPENDIX_MAX_EXCERPT_CHARS:
+                    excerpt = excerpt[:_APPENDIX_MAX_EXCERPT_CHARS].rstrip() + "…"
+                header = f"  - {title}"
+                if slug:
+                    header += f" (slug: {slug})"
+                lines.append(header)
+                if excerpt:
+                    lines.append(f"    {excerpt}")
+    return "\n".join(lines).rstrip()
+
+
 def run_tool_agent(
     *,
     cfg: AMXConfig,
@@ -230,6 +420,8 @@ def run_tool_agent(
     doc_profiles: list[str] | None = None,
     code_profiles: list[str] | None = None,
     allow_live_refresh: bool = False,
+    lineage_profiles: list[str] | None = None,
+    pages_enabled: bool | None = None,
 ) -> ToolAgentResult:
     """Run the tool-calling loop and return the final synthesised answer.
 
@@ -276,6 +468,16 @@ def run_tool_agent(
     fresh data from the live DB. The Ask UI exposes a "Live refresh"
     toggle that flips this bit; CLI ``/ask`` keeps the legacy
     cache-only-default contract.
+
+    ``lineage_profiles`` and ``pages_enabled`` are the Studio /
+    legacy-CLI overrides for the anchor-based lineage and published-
+    pages evidence the agent loop injects into the synthesis context
+    after the catalog tools have resolved one or more entities. They
+    mirror the keyword-only parameters on
+    :meth:`amx.search.agent.SearchAgent.ask` and forward through to
+    :func:`amx.search._agent.retrieval.enrich_retrieval_details_with_lineage_and_pages`.
+    Default ``None`` keeps every existing caller (CLI, batch scripts)
+    working without changes — ``None`` means "auto" for both knobs.
     """
     # Use ``with`` so the live DB connector (SQLAlchemy engine + connection
     # pool) is disposed at the end of every question. Without this, each
@@ -303,6 +505,8 @@ def run_tool_agent(
             on_content_delta=on_content_delta,
             on_llm_round=on_llm_round,
             cancel_token=cancel_token,
+            lineage_profiles=lineage_profiles,
+            pages_enabled=pages_enabled,
         )
 
 
@@ -437,6 +641,8 @@ def _run_tool_loop(
     on_content_delta: Callable[[str], None] | None = None,
     on_llm_round: Callable[[dict[str, Any]], None] | None = None,
     cancel_token: threading.Event | None = None,
+    lineage_profiles: list[str] | None = None,
+    pages_enabled: bool | None = None,
 ) -> ToolAgentResult:
     # Pre-fetch the schema list once; if it succeeds we put it into the
     # system prompt so the LLM doesn't have to spend a tool call discovering
@@ -489,6 +695,12 @@ def _run_tool_loop(
     finish_reason: str | None = None
     last_thinking_content: str = ""
     iterations = 0
+    # Sentinel: anchor-based lineage/pages enrichment runs once per
+    # ``/ask`` turn — the first time the catalog tools resolve at
+    # least one ``(profile, schema, table)`` triple. The flag flips
+    # so subsequent iterations skip the work and never duplicate the
+    # appendix in the messages list.
+    _lineage_pages_appendix_injected = False
     # Use the instance method so cache-only mode hides every
     # ``live_only`` tool from the LLM's menu. ``ToolBox.schemas()`` (the
     # static accessor) still returns the full list for callers that
@@ -727,6 +939,64 @@ def _run_tool_loop(
                         ),
                     }
                 )
+
+        # Anchor-based lineage + pages enrichment for the Studio
+        # ``/api/ask`` path. Mirrors the legacy CLI path's
+        # ``SearchAgent._enrich_with_lineage_and_pages``: once the
+        # tool loop has resolved at least one catalog entity, we
+        # ask the enricher whether any saved canvases or published
+        # pages anchor to those tables and, if so, inject a compact
+        # appendix into ``messages`` so the next synthesis round
+        # can cite the evidence. Runs once per turn — gated by
+        # ``_lineage_pages_appendix_injected`` — and wrapped in
+        # ``try/except`` so a misshaped tool payload can never
+        # break Studio.
+        if not _lineage_pages_appendix_injected:
+            try:
+                from amx.search._agent.retrieval import (
+                    enrich_retrieval_details_with_lineage_and_pages,
+                )
+                from amx.storage.sqlite_store import history_store
+
+                store = history_store()
+                if store is not None:
+                    refs = _collect_catalog_refs_from_tool_results(tool_call_log)
+                    anchor_ids = _resolve_entity_ids_from_refs(store, refs)
+                    if anchor_ids:
+                        anchor_rows = [{"id": eid} for eid in anchor_ids]
+                        enrich_details: dict[str, Any] = {"evidence_sources": []}
+                        enrich_retrieval_details_with_lineage_and_pages(
+                            store=store,
+                            rows=anchor_rows,
+                            retrieval_details=enrich_details,
+                            question=question,
+                            plan=None,
+                            lineage_profiles=lineage_profiles,
+                            pages_enabled=pages_enabled,
+                        )
+                        lineage_block = enrich_details.get("lineage")
+                        pages_block = enrich_details.get("pages")
+                        if lineage_block or pages_block:
+                            appendix = _format_lineage_pages_appendix(lineage_block, pages_block)
+                            if appendix:
+                                messages.append(
+                                    {
+                                        "role": "user",
+                                        "content": (
+                                            "(system note) AMX has additional "
+                                            "lineage and documentation-page "
+                                            "evidence anchored to the tables "
+                                            "the tool results above mention. "
+                                            "Use it to ground the answer.\n\n" + appendix
+                                        ),
+                                    }
+                                )
+                                _lineage_pages_appendix_injected = True
+            except Exception:
+                # Best-effort enrichment — a failure here must never
+                # break the answer path. The legacy CLI path applies
+                # the same swallow-and-log policy.
+                pass
     else:
         # Hit the iteration cap without a final answer — force a closing call
         # without ``tools`` so the LLM returns plain text from whatever it

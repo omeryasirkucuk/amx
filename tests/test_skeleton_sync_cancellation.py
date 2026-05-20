@@ -34,9 +34,7 @@ def test_pre_set_cancel_exits_without_completing() -> None:
 
     cfg = SimpleNamespace(
         db_profiles={
-            "prof": SimpleNamespace(
-                backend="postgres", catalog="", database="app", dataset=""
-            ),
+            "prof": SimpleNamespace(backend="postgres", catalog="", database="app", dataset=""),
         }
     )
     catalog = _make_catalog()
@@ -45,17 +43,13 @@ def test_pre_set_cancel_exits_without_completing() -> None:
         summary = drift.sync_profile_skeleton(cfg, "prof", catalog)
 
     assert summary["state"] == "cancelled"
-    catalog.finish_skeleton_sync.assert_called_with(
-        "prof", ok=False, error="cancelled"
-    )
+    catalog.finish_skeleton_sync.assert_called_with("prof", ok=False, error="cancelled")
 
 
 def test_normal_run_finishes_with_ok_true() -> None:
     cfg = SimpleNamespace(
         db_profiles={
-            "prof": SimpleNamespace(
-                backend="postgres", catalog="", database="app", dataset=""
-            ),
+            "prof": SimpleNamespace(backend="postgres", catalog="", database="app", dataset=""),
         }
     )
     catalog = _make_catalog()
@@ -65,7 +59,8 @@ def test_normal_run_finishes_with_ok_true() -> None:
 
     assert summary["state"] == "done"
     final_calls = [
-        call for call in catalog.finish_skeleton_sync.call_args_list
+        call
+        for call in catalog.finish_skeleton_sync.call_args_list
         if call.kwargs.get("ok") is True
     ]
     assert final_calls, "expected at least one finish_skeleton_sync(..., ok=True)"
@@ -74,9 +69,7 @@ def test_normal_run_finishes_with_ok_true() -> None:
 def test_unregister_is_called_after_normal_run() -> None:
     cfg = SimpleNamespace(
         db_profiles={
-            "prof": SimpleNamespace(
-                backend="postgres", catalog="", database="app", dataset=""
-            ),
+            "prof": SimpleNamespace(backend="postgres", catalog="", database="app", dataset=""),
         }
     )
     catalog = _make_catalog()

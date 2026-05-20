@@ -84,6 +84,23 @@ class AskRequest(BaseModel):
             "Explicit code-profile selection for THIS question. Same semantics as ``doc_profiles``."
         ),
     )
+    lineage_profiles: list[str] | None = Field(
+        default=None,
+        description=(
+            "Explicit lineage-artifact selection for THIS question. ``None`` "
+            "(default) uses every artifact anchored to one of the resolved "
+            "entities. An explicit list narrows to those canvas names; ``[]`` "
+            "disables lineage retrieval entirely."
+        ),
+    )
+    pages_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Toggle for published-page retrieval. ``None`` (default) means Auto "
+            "(read pages when anchored to a resolved entity); ``True``/``False`` "
+            "force the behaviour explicitly."
+        ),
+    )
     allow_live_refresh: bool = Field(
         default=False,
         description=(
@@ -250,6 +267,8 @@ def submit_ask(
             body.doc_profiles,
             body.code_profiles,
             body.allow_live_refresh,
+            body.lineage_profiles,
+            body.pages_enabled,
         ),
         name=f"amx-studio-ask-{job.id}",
         daemon=True,
@@ -319,6 +338,7 @@ def ask_context(
     from amx.search._agent.scope import (
         resolve_code_profiles_for_scope,
         resolve_doc_profiles_for_scope,
+        resolve_lineage_for_scope,
     )
 
     if scope_profiles is None:
@@ -380,10 +400,40 @@ def ask_context(
                 }
             )
 
+    # Lineage canvases + anchored doc pages: both surface in the
+    # AskChat scope picker so the user can see how much extra context
+    # /ask will pick up beyond doc / code RAG. Both are best-effort —
+    # if the history store isn't initialised yet, fall back to empty.
+    _store = history_store()
+    lineage_names = (
+        resolve_lineage_for_scope(cfg=cfg, store=_store, scope_db_profiles=scope_dbs)
+        if _store is not None
+        else []
+    )
+    lineage_payload: list[dict[str, Any]] = [
+        {"name": name, "linked_db_profiles": list(scope_dbs)} for name in lineage_names
+    ]
+
+    anchored_pages_count = 0
+    if _store is not None and scope_dbs:
+        with _store._connect() as conn:  # noqa: SLF001
+            for profile in scope_dbs:
+                (n,) = conn.execute(
+                    "SELECT COUNT(DISTINCT p.id) FROM documentation_pages p "
+                    "JOIN documentation_page_assets a ON a.page_id = p.id "
+                    "WHERE p.status = 'published' "
+                    "AND a.asset_kind IN ('db_table','db_column') "
+                    "AND a.asset_ref LIKE ?",
+                    (f"{profile}:%",),
+                ).fetchone()
+                anchored_pages_count += int(n or 0)
+
     return {
         "scope_db_profiles": scope_dbs,
         "doc_profiles": docs_payload,
         "code_profiles": code_payload,
+        "lineage_artifacts": lineage_payload,
+        "anchored_pages": {"count": anchored_pages_count},
     }
 
 
@@ -735,6 +785,8 @@ def _ask_worker(
     doc_profiles_override: list[str] | None = None,
     code_profiles_override: list[str] | None = None,
     allow_live_refresh: bool = False,
+    lineage_profiles: list[str] | None = None,
+    pages_enabled: bool | None = None,
 ) -> None:
     """Run the tool-calling agent and guarantee a terminal SSE event.
 
@@ -758,6 +810,8 @@ def _ask_worker(
             doc_profiles_override,
             code_profiles_override,
             allow_live_refresh,
+            lineage_profiles,
+            pages_enabled,
         )
     except Exception:
         # Last-resort safety net. The two real paths
@@ -811,6 +865,8 @@ def _ask_worker_impl(
     doc_profiles_override: list[str] | None = None,
     code_profiles_override: list[str] | None = None,
     allow_live_refresh: bool = False,
+    lineage_profiles: list[str] | None = None,
+    pages_enabled: bool | None = None,
 ) -> None:
     """Run the tool-calling agent + stream every reasoning chunk and
     tool result back to the SSE consumer. Persists the assistant
@@ -1087,6 +1143,8 @@ def _ask_worker_impl(
             doc_profiles=doc_profiles_override,
             code_profiles=code_profiles_override,
             allow_live_refresh=allow_live_refresh,
+            lineage_profiles=lineage_profiles,
+            pages_enabled=pages_enabled,
         )
     except RunCancelled:
         job.status = "cancelled"
