@@ -627,6 +627,13 @@ def _handle_session_builtin(
             return True
         _cmd_cache_clear(cfg, parts[1:])
         return True
+    if head == "sync-stop":
+        if not _require_namespace(head, namespace, "db", "sync-stop"):
+            return True
+        from amx.cli_support.commands.db import cmd_sync_stop as _cmd_sync_stop
+
+        _cmd_sync_stop(cfg, parts[1:])
+        return True
     if head == "save":
         path = cfg.save()
         success(f"Saved configuration to {path}")

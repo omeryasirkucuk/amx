@@ -52,6 +52,12 @@ class CacheRefreshRequest(BaseModel):
     kind: Literal["cache_refresh"] = "cache_refresh"
 
 
+class CatalogSyncCancelRequest(BaseModel):
+    """Body accepted by ``POST /api/catalog/sync/cancel``."""
+
+    profile: str = Field(min_length=1)
+
+
 def _catalog(cfg: AMXConfig) -> SearchCatalog:
     """Build a SearchCatalog handle bound to the active history store.
 
@@ -438,7 +444,14 @@ def trigger_catalog_sync(
 
     databases_arg: list[str] | None = [database.strip()] if database else None
 
+    from amx.search import _skeleton_jobs
+
     def _spawn(target_profile: str) -> None:
+        # Register the cancel slot synchronously before the thread
+        # starts so a /sync/cancel call landing during thread spin-up
+        # still finds an event to set.
+        _skeleton_jobs.register(target_profile)
+
         def _runner() -> None:
             try:
                 sync_profile_skeleton(cfg, target_profile, catalog, databases=databases_arg)
@@ -447,6 +460,8 @@ def trigger_catalog_sync(
                     catalog.finish_skeleton_sync(target_profile, ok=False, error=str(exc))
                 except Exception:
                     pass
+                finally:
+                    _skeleton_jobs.unregister(target_profile)
 
         threading.Thread(
             target=_runner,
@@ -461,6 +476,31 @@ def trigger_catalog_sync(
         "database": database or None,
         "status": "queued",
     }
+
+
+@router.post("/sync/cancel")
+def cancel_catalog_sync(body: CatalogSyncCancelRequest) -> dict[str, Any]:
+    """Cooperatively cancel an in-flight skeleton sync for ``profile``.
+
+    The running sync thread observes the cancel at its next loop
+    checkpoint (per-container, per-schema, or per-table), finishes
+    the in-flight table, then exits cleanly with
+    ``finish_skeleton_sync(ok=False, error="cancelled")``. Rows
+    already written remain in the cache.
+
+    Returns ``{"cancelled": True}`` when a job was registered for
+    ``profile``, ``{"cancelled": False}`` when nothing was running.
+    """
+    from amx.search import _skeleton_jobs
+
+    profile = (body.profile or "").strip()
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="profile is required.",
+        )
+    cancelled = _skeleton_jobs.cancel(profile)
+    return {"profile": profile, "cancelled": cancelled}
 
 
 @router.post("/refresh")
