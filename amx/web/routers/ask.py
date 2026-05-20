@@ -338,6 +338,7 @@ def ask_context(
     from amx.search._agent.scope import (
         resolve_code_profiles_for_scope,
         resolve_doc_profiles_for_scope,
+        resolve_lineage_for_scope,
     )
 
     if scope_profiles is None:
@@ -399,10 +400,40 @@ def ask_context(
                 }
             )
 
+    # Lineage canvases + anchored doc pages: both surface in the
+    # AskChat scope picker so the user can see how much extra context
+    # /ask will pick up beyond doc / code RAG. Both are best-effort —
+    # if the history store isn't initialised yet, fall back to empty.
+    _store = history_store()
+    lineage_names = (
+        resolve_lineage_for_scope(cfg=cfg, store=_store, scope_db_profiles=scope_dbs)
+        if _store is not None
+        else []
+    )
+    lineage_payload: list[dict[str, Any]] = [
+        {"name": name, "linked_db_profiles": list(scope_dbs)} for name in lineage_names
+    ]
+
+    anchored_pages_count = 0
+    if _store is not None and scope_dbs:
+        with _store._connect() as conn:  # noqa: SLF001
+            for profile in scope_dbs:
+                (n,) = conn.execute(
+                    "SELECT COUNT(DISTINCT p.id) FROM documentation_pages p "
+                    "JOIN documentation_page_assets a ON a.page_id = p.id "
+                    "WHERE p.status = 'published' "
+                    "AND a.asset_kind IN ('db_table','db_column') "
+                    "AND a.asset_ref LIKE ?",
+                    (f"{profile}:%",),
+                ).fetchone()
+                anchored_pages_count += int(n or 0)
+
     return {
         "scope_db_profiles": scope_dbs,
         "doc_profiles": docs_payload,
         "code_profiles": code_payload,
+        "lineage_artifacts": lineage_payload,
+        "anchored_pages": {"count": anchored_pages_count},
     }
 
 
