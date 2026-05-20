@@ -196,6 +196,154 @@ def _require_profile(profile: str | None) -> str:
     return name
 
 
+def _columns_from_cache(
+    profile: str,
+    schema: str,
+    table: str,
+    *,
+    database_scope: str | None,
+) -> list[dict[str, Any]]:
+    """Return cached column rows for ``(profile, schema, table)`` from the
+    best available source. Two layers, in order:
+
+    1. ``catalog_entities`` via ``SearchCatalog.fetch_columns_for_table``
+       — written by deep syncs and agent runs. Carries dtype + nullable.
+    2. ``column_comments_cache.columns_json`` via the history store
+       lookup — written every time the live introspector ran. Carries
+       column names + comments but no dtype/nullable.
+
+    Falling back through both layers means a table that has been seen
+    *at all* (even if it was later dropped from the live DB) still
+    surfaces something in Studio instead of "no introspectable
+    columns". Returned shape is the same as the live path:
+    ``[{"name", "dtype", "nullable", "comment"}]``.
+    """
+    rows: list[dict[str, Any]] = []
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+    except Exception:
+        cat = None
+    if cat is not None:
+        try:
+            cached = cat.fetch_columns_for_table(
+                profile,
+                schema_name=schema,
+                table_name=table,
+                database_name=database_scope,
+            )
+        except Exception:
+            cached = []
+        if cached:
+            return [
+                {
+                    "name": c["name"],
+                    "dtype": c.get("dtype") or "",
+                    "nullable": bool(c.get("nullable", True)),
+                    "comment": "",
+                }
+                for c in cached
+            ]
+
+    # Second-chance fallback: the column_comments_cache row carries the
+    # last live read's column list as a JSON map (name -> comment).
+    # That's enough to render the Studio table page when the catalog
+    # only has a skeleton table-level row and the live DB is currently
+    # returning empty (NoSuchTableError swallowed by list_column_profiles).
+    try:
+        from amx.storage._history_caches import lookup_column_comments_cache
+        from amx.storage.sqlite_store import history_store as _history_store
+
+        hs = _history_store()
+    except Exception:
+        hs = None
+    if hs is not None:
+        try:
+            entry = lookup_column_comments_cache(
+                hs,
+                db_profile=profile,
+                database=database_scope or "",
+                schema=schema,
+                table=table,
+            )
+        except Exception:
+            entry = None
+        columns_map = (entry or {}).get("columns") if entry else None
+        if columns_map:
+            for col_name, comment in columns_map.items():
+                if not col_name:
+                    continue
+                rows.append(
+                    {
+                        "name": str(col_name),
+                        "dtype": "",
+                        "nullable": True,
+                        "comment": str(comment or ""),
+                    }
+                )
+    return rows
+
+
+def _writethrough_columns_to_catalog(
+    profile: str,
+    schema: str,
+    table: str,
+    *,
+    database_scope: str | None,
+    db_backend: str,
+    columns: list[dict[str, Any]],
+) -> None:
+    """Persist freshly-introspected columns into ``catalog_entities``.
+
+    Best-effort: failures are swallowed so a Studio request never
+    breaks because of catalog write contention. The next visit to the
+    same table benefits from the cache-first hit even though this
+    request absorbed the live round-trip cost.
+    """
+    if not columns:
+        return
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+        if cat is None:
+            return
+        with cat._connect() as conn:  # noqa: SLF001 — same access pattern as drift.py
+            cat._upsert_entity(  # noqa: SLF001
+                conn,
+                db_profile=profile,
+                db_backend=db_backend,
+                database_name=database_scope or "",
+                schema_name=schema,
+                table_name=table,
+                column_name=None,
+                entity_kind="table",
+                asset_kind="table",
+            )
+            for col in columns:
+                name = (col.get("name") or "").strip()
+                if not name:
+                    continue
+                cat._upsert_entity(  # noqa: SLF001
+                    conn,
+                    db_profile=profile,
+                    db_backend=db_backend,
+                    database_name=database_scope or "",
+                    schema_name=schema,
+                    table_name=table,
+                    column_name=name,
+                    entity_kind="column",
+                    asset_kind="table",
+                    dtype=str(col.get("dtype") or ""),
+                    nullable=1 if col.get("nullable", True) else 0,
+                )
+    except Exception:
+        # Write-through is a cache-warming nice-to-have. Never fail
+        # the user-facing request because of it.
+        return
+
+
 def _active_scope_for_profile(cfg: AMXConfig, profile_name: str) -> dict[str, Any]:
     """Return the wizard-driven scope envelope for a profile.
 
@@ -660,48 +808,85 @@ def list_columns(
     name = _require_profile(profile)
     cache_scope = database or catalog
     if not force_live:
-        try:
-            from amx.search.catalog import SearchCatalog
-
-            cat = SearchCatalog.from_history_store()
-        except Exception:
-            cat = None
-        if cat is not None:
-            try:
-                cached = cat.fetch_columns_for_table(
-                    name,
-                    schema_name=schema,
-                    table_name=table,
-                    database_name=cache_scope,
-                )
-            except Exception:
-                cached = []
-            if cached:
-                return {
-                    "schema": schema,
-                    "table": table,
-                    "columns": [
-                        {
-                            "name": c["name"],
-                            "dtype": c["dtype"],
-                            "nullable": c["nullable"],
-                        }
-                        for c in cached
-                    ],
-                    "count": len(cached),
-                    "source": "catalog",
-                    "possibly_partial": not _profile_is_fully_synced(name),
-                }
+        cached_rows = _columns_from_cache(
+            name, schema, table, database_scope=cache_scope
+        )
+        if cached_rows:
+            return {
+                "schema": schema,
+                "table": table,
+                "columns": [
+                    {
+                        "name": c["name"],
+                        "dtype": c["dtype"],
+                        "nullable": c["nullable"],
+                    }
+                    for c in cached_rows
+                ],
+                "count": len(cached_rows),
+                "source": "catalog",
+                "possibly_partial": not _profile_is_fully_synced(name),
+            }
     db = _connector_for_scope(cfg, name, database=database, catalog=catalog)
     cols = _coerce_or_500(
         f"Listing columns of {schema}.{table}",
         lambda: db.list_column_profiles(schema, table),
     )
+    live_columns = [
+        {"name": c.name, "dtype": c.dtype, "nullable": bool(c.nullable)}
+        for c in cols
+    ]
+    if live_columns and not force_live:
+        # Cache-warm for next time: write the column rows into
+        # ``catalog_entities`` so a subsequent visit to the same table
+        # serves from the catalog instead of repeating the live
+        # round-trip. Best-effort — swallowed on failure.
+        db_backend = ""
+        try:
+            db_cfg = cfg.db_profiles.get(name) if cfg.db_profiles else None
+            db_backend = str(getattr(db_cfg, "backend", "") or "") if db_cfg else ""
+        except Exception:
+            db_backend = ""
+        _writethrough_columns_to_catalog(
+            name,
+            schema,
+            table,
+            database_scope=cache_scope,
+            db_backend=db_backend,
+            columns=live_columns,
+        )
+    if not live_columns:
+        # Live introspector returned nothing — could be a genuinely
+        # empty table, a ghost row left over from a code-RAG ingest, or
+        # a swallowed ``NoSuchTableError`` (``list_column_profiles``
+        # degrades gracefully for the code-agent path). One last
+        # fallback to the column_comments_cache so the Studio page
+        # still shows column names + comments when the live DB has
+        # since lost the table.
+        salvage = _columns_from_cache(
+            name, schema, table, database_scope=cache_scope
+        )
+        if salvage:
+            return {
+                "schema": schema,
+                "table": table,
+                "columns": [
+                    {
+                        "name": c["name"],
+                        "dtype": c["dtype"],
+                        "nullable": c["nullable"],
+                    }
+                    for c in salvage
+                ],
+                "count": len(salvage),
+                "source": "cache-fallback",
+                "possibly_partial": True,
+            }
     return {
         "schema": schema,
         "table": table,
-        "columns": [{"name": c.name, "dtype": c.dtype, "nullable": bool(c.nullable)} for c in cols],
-        "count": len(cols),
+        "columns": live_columns,
+        "count": len(live_columns),
         "source": "live",
     }
 
@@ -717,10 +902,71 @@ def table_snapshot(
 ) -> dict[str, Any]:
     """Return the lightweight metadata snapshot the orchestrator uses:
     column names + dtypes + comments + table comment. No profiling.
+
+    Resilient against partial introspection: when the live snapshot
+    comes back with zero columns (the table was removed from the live
+    DB after a code-RAG ingest, the user lacks ``USAGE`` on the
+    schema, or the connector swallowed a ``NoSuchTableError``), we
+    fall back to the cached column list so the Studio Table page
+    still renders something useful instead of an empty card.
     """
     name = _require_profile(profile)
+    cache_scope = database or catalog
     db = _connector_for_scope(cfg, name, database=database, catalog=catalog)
-    return _coerce_or_500(
-        f"Reading metadata snapshot of {schema}.{table}",
-        lambda: db.get_table_metadata_snapshot(schema, table),
-    )
+    try:
+        snapshot = db.get_table_metadata_snapshot(schema, table)
+    except Exception as exc:
+        # Live snapshot blew up entirely (most often
+        # ``NoSuchTableError`` propagated from ``get_column_comments``).
+        # Try to salvage from the caches before giving up.
+        salvage = _columns_from_cache(
+            name, schema, table, database_scope=cache_scope
+        )
+        if not salvage:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"Reading metadata snapshot of {schema}.{table} "
+                    f"failed: {exc.__class__.__name__}: {exc}"
+                ),
+            ) from exc
+        return {
+            "schema": schema,
+            "table": table,
+            "table_comment": "",
+            "columns": [
+                {
+                    "name": c["name"],
+                    "dtype": c["dtype"],
+                    "nullable": c["nullable"],
+                    "comment": c["comment"],
+                }
+                for c in salvage
+            ],
+            "source": "cache-fallback",
+        }
+    columns = snapshot.get("columns") or []
+    if not columns:
+        # Live introspector returned zero columns but didn't raise —
+        # ``list_column_profiles`` quietly returns ``[]`` on
+        # ``NoSuchTableError``. Try the same fallback path the
+        # ``/columns`` endpoint uses so the Studio page surfaces names
+        # + comments instead of an empty list.
+        salvage = _columns_from_cache(
+            name, schema, table, database_scope=cache_scope
+        )
+        if salvage:
+            return {
+                **snapshot,
+                "columns": [
+                    {
+                        "name": c["name"],
+                        "dtype": c["dtype"],
+                        "nullable": c["nullable"],
+                        "comment": c["comment"],
+                    }
+                    for c in salvage
+                ],
+                "source": "cache-fallback",
+            }
+    return snapshot
