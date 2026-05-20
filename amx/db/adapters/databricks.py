@@ -42,6 +42,13 @@ class DatabricksAdapter(DatabaseAdapter):
         volumes=True,  # ★ Unity Catalog volumes — distinctively Databricks
         external_tables=True,
         supports_shared_history=True,
+        # Databricks DDL does NOT accept parameter markers like ``:cmt``;
+        # the base ``set_schema_comment_sql`` builds a parameterized
+        # ``COMMENT ON SCHEMA … IS :cmt`` statement which Databricks
+        # rejects with UNEXPECTED_USE_OF_PARAMETER_MARKER. Skip the
+        # schema-level comment on this backend — table / column comments
+        # still ship through inline ``CREATE TABLE … COMMENT`` clauses.
+        schema_comments=False,
         comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
     )
 
@@ -56,6 +63,30 @@ class DatabricksAdapter(DatabaseAdapter):
                 f"{self.quote_identifier(catalog)}.{self.quote_identifier(schema_name)}"
             )
         return f"CREATE SCHEMA IF NOT EXISTS {self.quote_identifier(schema_name)}"
+
+    def create_history_database(self, engine: Engine, name: str) -> None:
+        """Create the Unity Catalog catalog hosting the AMX schema.
+
+        Required because without an explicit catalog Databricks lands
+        the schema in the workspace default (``workspace`` on UC, hive
+        metastore otherwise) — surfacing AMX internal tables to every
+        Databricks user instead of keeping them under the team's own
+        catalog. Issues ``CREATE CATALOG IF NOT EXISTS`` so an existing
+        catalog is left alone.
+
+        Permission: needs Unity Catalog ``CREATE CATALOG`` on the
+        metastore. Without it, Databricks returns ``PERMISSION_DENIED``
+        which propagates up to the Studio enable endpoint and surfaces
+        in the UI as ``schema_bootstrap_warning``.
+        """
+        from sqlalchemy import text
+
+        sanitized = (name or "").strip()
+        if not sanitized:
+            return
+        ddl = f"CREATE CATALOG IF NOT EXISTS {self.quote_identifier(sanitized)}"
+        with engine.begin() as conn:
+            conn.execute(text(ddl))
 
     trusted_ca_env_vars = (
         "AMX_DATABRICKS_TRUSTED_CA_FILE",

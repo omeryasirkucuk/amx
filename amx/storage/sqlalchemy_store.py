@@ -267,7 +267,72 @@ class SQLAlchemyHistoryStore:
         """
         from amx.storage.migration import ensure_column_exists
 
-        self._md.create_all(self.engine)
+        # ``MetaData.create_all`` is idempotent on every backend that
+        # implements ``has_table`` correctly. ``databricks-sqlalchemy``
+        # does NOT — it returns False even for tables that already
+        # exist, so create_all tries to recreate them and Databricks
+        # raises ``TABLE_OR_VIEW_ALREADY_EXISTS``. Fall back to a
+        # per-table create with explicit ``inspect()`` existence check
+        # on Databricks; the standard path stays in place everywhere
+        # else.
+        if self.engine.dialect.name.lower() == "databricks":
+            from sqlalchemy import inspect
+
+            inspector = inspect(self.engine)
+            try:
+                existing = set(inspector.get_table_names(schema=self.schema))
+            except Exception:  # noqa: BLE001
+                existing = set()
+            # Databricks (Delta) does not implement ``CREATE INDEX`` —
+            # secondary indexes are managed via Z-order / bloom filters,
+            # not B-tree indexes. Strip the indexes off each Table
+            # before ``create()`` so SQLAlchemy does not emit DDL the
+            # backend rejects.
+            #
+            # Foreign-key constraints are also stripped: Databricks
+            # supports them only informationally (no enforcement), and
+            # named FKs collide on the catalog when a previous partial
+            # CREATE TABLE attempt left the constraint behind even
+            # after the table itself was rolled back. Uniqueness +
+            # referential integrity stay in app code (the admin /
+            # backfill modules look up rows via ``(hostname, local_id)``
+            # before insert, which is the cross-backend portable path).
+            from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
+
+            for table in self._md.sorted_tables:
+                if table.name in existing:
+                    continue
+                detached_indexes = list(table.indexes)
+                table.indexes.clear()
+                fk_constraints = [
+                    c
+                    for c in list(table.constraints)
+                    if isinstance(c, (ForeignKeyConstraint, UniqueConstraint))
+                ]
+                for c in fk_constraints:
+                    table.constraints.discard(c)
+                try:
+                    table.create(self.engine, checkfirst=False)
+                except Exception as exc:  # noqa: BLE001
+                    msg = str(exc).lower()
+                    if "already exists" in msg or "table_or_view_already_exists" in msg:
+                        continue
+                    raise
+                finally:
+                    # Restore the in-memory metadata so other backends
+                    # that share this MetaData see the original shape.
+                    for idx in detached_indexes:
+                        try:
+                            table.indexes.add(idx)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    for c in fk_constraints:
+                        try:
+                            table.constraints.add(c)
+                        except Exception:  # noqa: BLE001
+                            pass
+        else:
+            self._md.create_all(self.engine)
 
         # PR-2 columns on documentation_pages — added after v1 schema release.
         for _col_name, _col_spec in (

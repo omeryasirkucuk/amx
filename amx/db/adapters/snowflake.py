@@ -43,6 +43,17 @@ class SnowflakeAdapter(DatabaseAdapter):
             )
         return f"CREATE SCHEMA IF NOT EXISTS {self.quote_identifier(schema_name)}"
 
+    def create_history_database(self, engine, name: str) -> None:
+        """Create the Snowflake database hosting the AMX schema."""
+        from sqlalchemy import text
+
+        sanitized = (name or "").strip()
+        if not sanitized:
+            return
+        ddl = f"CREATE DATABASE IF NOT EXISTS {self.quote_identifier(sanitized)}"
+        with engine.begin() as conn:
+            conn.execute(text(ddl))
+
     def create_engine(self) -> Engine:
         try:
             from sqlalchemy import create_engine

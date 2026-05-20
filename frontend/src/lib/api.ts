@@ -780,12 +780,18 @@ export const api = {
       "/api/pending/restore",
       { method: "POST", body: JSON.stringify(body) },
     ),
-  enableHistoryStore: (body: { profile: string; schema?: string; database?: string }) =>
+  enableHistoryStore: (body: {
+    profile: string;
+    schema?: string;
+    database?: string;
+    create_missing?: boolean;
+  }) =>
     apiFetch<{
       enabled: boolean;
       profile: string;
       schema: string;
       database: string;
+      schema_bootstrap_warning?: string | null;
     }>("/api/admin/history-store/enable", {
       method: "POST",
       body: JSON.stringify(body),

@@ -233,20 +233,45 @@ def register_session(
             )
             event_kind = "connect"
 
-        # Write session event.
-        conn.execute(
-            insert(t_sessions).values(
-                id=_new_uuid(),
-                event_at=now,
-                user_id=user_id,
-                username=username,
-                hostname=hostname,
-                event_kind=event_kind,
-                client_version=client_version,
-                os_platform=platform,
-                db_profiles_seen=db_profiles_seen,
+        # Write session event — but coalesce repeat ``connect`` events
+        # within a short window so every ``/api/admin/me`` poll does
+        # NOT produce a new row. ``first_seen`` always writes (it is
+        # the bootstrap marker for a brand-new user).
+        from datetime import timedelta
+
+        session_dedupe_window = timedelta(minutes=5)
+        write_session_event = True
+        if event_kind == "connect":
+            last_event_at = conn.execute(
+                select(func.max(t_sessions.c.event_at)).where(
+                    and_(
+                        t_sessions.c.user_id == user_id,
+                        t_sessions.c.event_kind == "connect",
+                    )
+                )
+            ).scalar()
+            if last_event_at is not None:
+                # Normalise to UTC for the comparison; some backends
+                # store naive datetimes.
+                if last_event_at.tzinfo is None:
+                    last_event_at = last_event_at.replace(tzinfo=timezone.utc)
+                if now - last_event_at < session_dedupe_window:
+                    write_session_event = False
+
+        if write_session_event:
+            conn.execute(
+                insert(t_sessions).values(
+                    id=_new_uuid(),
+                    event_at=now,
+                    user_id=user_id,
+                    username=username,
+                    hostname=hostname,
+                    event_kind=event_kind,
+                    client_version=client_version,
+                    os_platform=platform,
+                    db_profiles_seen=db_profiles_seen,
+                )
             )
-        )
 
         # Re-fetch the final row to return a complete record.
         row = conn.execute(select(t_users).where(t_users.c.id == user_id)).fetchone()
@@ -482,6 +507,75 @@ def unrevoke_user(
                 details_json=None,
             )
         )
+
+
+def claim_admin_if_unmanned(
+    shared: SQLAlchemyHistoryStore,
+    *,
+    username: str,
+    hostname: str,
+) -> AdminUserRecord:
+    """Promote the caller to admin when the workspace has zero active admins.
+
+    Escape hatch for the case where the auto-bootstrap admin entry was
+    consumed by a transient identity (e.g. a test fixture writing into
+    the same warehouse) so a real teammate ended up registered as
+    viewer with no one able to manage the workspace.
+
+    Safety: this function ONLY promotes when ``_count_active_admins``
+    returns 0. If any admin exists (even revoked admins do not count),
+    raises :class:`AdminInvariantError`. The caller must already be
+    registered in ``_amx_users`` (i.e. they have connected at least
+    once).
+
+    Writes an ``admin_claim`` audit row so the action is traceable.
+    """
+    t_users = _t_users(shared)
+    t_audit = _t_audit(shared)
+    now = _utcnow()
+
+    with shared.engine.begin() as conn:
+        active_admins = _count_active_admins(conn, t_users)
+        if active_admins > 0:
+            raise AdminInvariantError(
+                f"Workspace already has {active_admins} active admin(s); "
+                "ask an existing admin to promote you."
+            )
+        row = conn.execute(
+            select(t_users).where(
+                and_(
+                    t_users.c.username == username,
+                    t_users.c.hostname == hostname,
+                )
+            )
+        ).fetchone()
+        if row is None:
+            raise AdminInvariantError("Caller not registered in workspace. Reconnect to register.")
+
+        # Promote.
+        conn.execute(
+            update(t_users)
+            .where(t_users.c.id == row.id)
+            .values(role="admin", revoked_at=None, revoked_by=None, last_seen_at=now)
+        )
+        conn.execute(
+            t_audit.insert().values(
+                id=_new_uuid(),
+                event_at=now,
+                actor_user_id=row.id,
+                actor_username=username,
+                actor_hostname=hostname,
+                action="admin_claim",
+                target_user_id=row.id,
+                target_resource=None,
+                details_json={
+                    "reason": "no_active_admins",
+                    "previous_role": row.role,
+                },
+            )
+        )
+        promoted = conn.execute(select(t_users).where(t_users.c.id == row.id)).fetchone()
+    return _row_to_record(promoted)
 
 
 def list_audit_events(

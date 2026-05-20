@@ -13,10 +13,10 @@ interface SessionEvent {
   id: string;
   username: string;
   hostname: string;
-  event_type: string;
+  event_kind: string;
   client_version: string | null;
-  occurred_at: string;
-  db_profiles_seen: string[];
+  event_at: string | null;
+  db_profiles_seen: string[] | null;
 }
 
 interface SessionsResponse {
@@ -24,9 +24,12 @@ interface SessionsResponse {
   count: number;
 }
 
-function formatDate(iso: string): string {
+function formatDate(iso: string | null): string {
+  if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleString(undefined, {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString(undefined, {
       dateStyle: "short",
       timeStyle: "short",
     });
@@ -94,8 +97,14 @@ export default function AdminActivity() {
                 <span className="ml-1 font-mono text-xs text-ink-dim">@{ev.hostname}</span>
               </td>
               <td className="px-4 py-3">
-                <Badge tone={ev.event_type === "connect" ? "positive" : "neutral"}>
-                  {ev.event_type}
+                <Badge
+                  tone={
+                    ev.event_kind === "connect" || ev.event_kind === "first_seen"
+                      ? "positive"
+                      : "neutral"
+                  }
+                >
+                  {ev.event_kind}
                 </Badge>
                 {ev.client_version && (
                   <span className="ml-2 font-mono text-xs text-ink-dim">
@@ -119,7 +128,7 @@ export default function AdminActivity() {
                 </div>
               </td>
               <td className="px-4 py-3 text-xs text-ink-dim">
-                {formatDate(ev.occurred_at)}
+                {formatDate(ev.event_at)}
               </td>
             </tr>
           ))}
@@ -132,12 +141,18 @@ export default function AdminActivity() {
           <li key={ev.id} className="px-4 py-3">
             <div className="flex items-center justify-between gap-2">
               <span className="font-medium text-ink">{ev.username}</span>
-              <Badge tone={ev.event_type === "connect" ? "positive" : "neutral"}>
-                {ev.event_type}
+              <Badge
+                tone={
+                  ev.event_kind === "connect" || ev.event_kind === "first_seen"
+                    ? "positive"
+                    : "neutral"
+                }
+              >
+                {ev.event_kind}
               </Badge>
             </div>
             <div className="mt-0.5 font-mono text-xs text-ink-dim">
-              @{ev.hostname} · {formatDate(ev.occurred_at)}
+              @{ev.hostname} · {formatDate(ev.event_at)}
             </div>
           </li>
         ))}
