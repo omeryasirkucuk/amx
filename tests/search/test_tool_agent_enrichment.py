@@ -60,7 +60,7 @@ class _FakeToolbox:
         self.db_profiles: list[str] = ["p1"]
         self.db_profile: str = "p1"
 
-    def __enter__(self) -> "_FakeToolbox":
+    def __enter__(self) -> _FakeToolbox:
         return self
 
     def __exit__(self, *exc: Any) -> bool:

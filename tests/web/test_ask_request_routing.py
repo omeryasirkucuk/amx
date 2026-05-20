@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from amx.web.routers import ask as ask_router
 
 

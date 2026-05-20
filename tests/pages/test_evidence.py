@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-import pytest
-
 from amx.pages.evidence import PagesEvidence, build_pages_evidence
 from amx.storage.sqlite_store import SQLiteHistoryStore
 
