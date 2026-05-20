@@ -254,6 +254,33 @@ def _wants_data_signals(pd: PromptDetail) -> bool:
     )
 
 
+def _lite_prompt_detail(pd: PromptDetail) -> PromptDetail:
+    """Return a copy of ``pd`` with every flag that would trigger the
+    heavy ``profile_table`` path turned off.
+
+    Used by the Browse → AI Generate single-asset endpoints so the
+    response time matches Atlan / Databricks (LLM-bound, ~2–4s). The
+    prompt still receives column names, dtypes, and existing comments
+    (all from cheap metadata-only calls); it loses sampling, min/max,
+    cardinality, null counts, usage stats, PK/FK, and unique-check
+    signals. Power users can re-enable the full path via the
+    ``profile_data=true`` query parameter on the endpoint, which the
+    caller passes the original ``pd`` instead of the lite copy.
+    """
+    import dataclasses
+
+    return dataclasses.replace(
+        pd,
+        include_samples=False,
+        include_min_max=False,
+        include_cardinality=False,
+        include_null_counts=False,
+        include_usage_stats=False,
+        include_pk_fk=False,
+        include_unique_check=False,
+    )
+
+
 def _safe_profile_table(db: DatabaseConnector, schema: str, table: str) -> TableProfile | None:
     """Profile a single table for prompt enrichment, swallowing errors.
 
@@ -512,6 +539,7 @@ def _record_and_queue(
     db_backend: str | None = None,
     database: str | None = None,
     catalog: str | None = None,
+    source_path: str = "lite",
 ) -> dict[str, Any]:
     """Persist generated alternatives through history + pending queue.
 
@@ -592,6 +620,7 @@ def _record_and_queue(
                 "trigger": "studio.generate.singleshot",
                 "database": effective_database,
                 "catalog": effective_catalog,
+                "source_path": source_path,
             },
         )
     except Exception as exc:  # pragma: no cover — DB-layer failure
@@ -802,12 +831,22 @@ def generate_table(
     profile: str = Query(...),
     database: str | None = Query(default=None),
     catalog: str | None = Query(default=None),
+    profile_data: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
+    """Generate a description for one table.
+
+    By default the prompt skips the heavy ``profile_table`` path
+    (samples / min-max / null counts / PK-FK fan-out) so response time
+    is LLM-bound — competitive with Atlan / Databricks AI Generate.
+    Pass ``profile_data=true`` to opt back into the full evidence
+    profile when the table is ambiguous and you want richer grounding.
+    """
     token_tracker.reset()
     db, db_label, backend = _resolve_generate_connector(cfg, profile, database, catalog)
     n, verbosity, temperature, pd = _settings(cfg)
-    user_prompt = _build_table_prompt(db, schema, table, pd)
+    effective_pd = pd if profile_data else _lite_prompt_detail(pd)
+    user_prompt = _build_table_prompt(db, schema, table, effective_pd)
     alternatives = _generate(
         _llm(cfg),
         user_prompt,
@@ -829,6 +868,7 @@ def generate_table(
         db_backend=backend or None,
         database=database,
         catalog=catalog,
+        source_path="profile" if profile_data else "lite",
     )
 
 
@@ -840,12 +880,20 @@ def generate_column(
     profile: str = Query(...),
     database: str | None = Query(default=None),
     catalog: str | None = Query(default=None),
+    profile_data: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
+    """Generate a description for one column.
+
+    Same lite-by-default contract as :func:`generate_table`: the
+    sampling / min-max / cardinality path runs only when the caller
+    passes ``profile_data=true``.
+    """
     token_tracker.reset()
     db, db_label, backend = _resolve_generate_connector(cfg, profile, database, catalog)
     n, verbosity, temperature, pd = _settings(cfg)
-    user_prompt = _build_column_prompt(db, schema, table, column, pd)
+    effective_pd = pd if profile_data else _lite_prompt_detail(pd)
+    user_prompt = _build_column_prompt(db, schema, table, column, effective_pd)
     alternatives = _generate(
         _llm(cfg),
         user_prompt,
@@ -867,6 +915,7 @@ def generate_column(
         db_backend=backend or None,
         database=database,
         catalog=catalog,
+        source_path="profile" if profile_data else "lite",
     )
 
 

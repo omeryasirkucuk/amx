@@ -71,3 +71,83 @@ def load_pending() -> list[ReviewResult]:
 def clear_pending() -> None:
     if PENDING_FILE.is_file():
         PENDING_FILE.unlink()
+
+
+def _resolve_run_id_for_result(result_id: int | None) -> int | None:
+    """Look up the ``analysis_runs.id`` that owns ``result_id`` in run_results.
+
+    Returns ``None`` if the history store is unavailable, the result row
+    is gone, or the lookup raises. Best-effort: failure to resolve only
+    drops the deep-link field on the snapshot response, never the merge
+    itself.
+    """
+    if result_id is None:
+        return None
+    try:
+        from amx.storage._history_results import get_run_result
+        from amx.storage.sqlite_store import history_store as _hs
+
+        hs = _hs()
+        if hs is None:
+            return None
+        row = get_run_result(hs, int(result_id))
+        if not row:
+            return None
+        rid = row.get("run_id")
+        return int(rid) if rid is not None else None
+    except Exception:
+        return None
+
+
+def read_pending_for_table(schema: str, table: str) -> dict[str, Any]:
+    """Return the pending entries for one ``(schema, table)`` pair.
+
+    Used by the Studio Table snapshot endpoint so a generated description
+    stays visible after page refresh: the live-DB snapshot has no
+    description yet, but the pending queue does, and the Table page now
+    surfaces both.
+
+    Returns a dict with three keys:
+
+    * ``description`` — the most recent table-level pending description,
+      or ``None`` when no table-level entry exists.
+    * ``columns`` — a ``{column_name: description}`` map of pending
+      column descriptions. Latest entry wins on duplicate column.
+    * ``run_id`` — the ``analysis_runs`` id stitched onto the latest
+      result, or ``None`` if no entry has one. Lets the frontend deep-
+      link to the run that produced the pending entry.
+
+    Multi-profile note: ``pending_metadata.json`` does not currently
+    track the originating ``db_profile`` / ``database`` / ``catalog``,
+    so entries for same-named tables across profiles can collide on
+    read. Acceptable for the common single-profile case; multi-profile
+    disambiguation is tracked separately.
+    """
+    rows = load_pending()
+    table_desc: str | None = None
+    columns: dict[str, str] = {}
+    run_id: int | None = None
+    latest_result_id = -1
+    for r in rows:
+        if r.schema != schema or r.table != table:
+            continue
+        desc = (r.final_description or "").strip()
+        if not desc:
+            continue
+        if r.column:
+            columns[r.column] = desc
+        else:
+            table_desc = desc
+        # The newest write wins on ``run_id``: we sort by ``result_id``
+        # which is monotonically assigned by the history store, so the
+        # latest write has the largest value. ``None`` (rare on the
+        # singleshot path) keeps the prior best.
+        rid = r.result_id if r.result_id is not None else -1
+        if rid > latest_result_id:
+            latest_result_id = rid
+            run_id = _resolve_run_id_for_result(r.result_id)
+    return {
+        "description": table_desc,
+        "columns": columns,
+        "run_id": run_id,
+    }

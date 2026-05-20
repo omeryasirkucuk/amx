@@ -356,6 +356,16 @@ export interface SnapshotResponse {
   table: string;
   table_comment: string;
   columns: SnapshotColumn[];
+  /** Pending review entries layered on top of the live snapshot so the
+   *  Table page can surface a generated description that has not been
+   *  approved yet. ``pending_description`` is the table-level pending
+   *  text; ``pending_column_descriptions`` maps column name → pending
+   *  text. ``pending_run_id`` deep-links into the ``analysis_runs``
+   *  row that produced the entries. All three may be absent on older
+   *  servers — the Table page treats them as optional. */
+  pending_description?: string | null;
+  pending_column_descriptions?: Record<string, string>;
+  pending_run_id?: number | null;
 }
 
 export interface RunRow {

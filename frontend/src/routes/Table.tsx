@@ -77,6 +77,9 @@ export default function Table() {
   const commented =
     snapshot.data?.columns?.filter((c) => (c.comment || "").trim().length > 0).length ?? 0;
   const tableComment = snapshot.data?.table_comment ?? "";
+  const pendingTableDesc = snapshot.data?.pending_description ?? null;
+  const pendingColumnDescs = snapshot.data?.pending_column_descriptions ?? {};
+  const pendingRunId = snapshot.data?.pending_run_id ?? null;
 
   async function saveTableComment(next: string) {
     if (!scope) return;
@@ -265,13 +268,22 @@ export default function Table() {
           { label: table },
         ]}
         description={
-          <InlineEditText
-            value={tableComment}
-            onSave={saveTableComment}
-            multiline
-            italicEmpty
-            emptyLabel="No table description yet — click to add one or use Generate."
-          />
+          <div className="space-y-2">
+            <InlineEditText
+              value={tableComment}
+              onSave={saveTableComment}
+              multiline
+              italicEmpty
+              emptyLabel="No table description yet — click to add one or use Generate."
+            />
+            {pendingTableDesc ? (
+              <PendingDescriptionBlock
+                text={pendingTableDesc}
+                runId={pendingRunId}
+                label="Pending review"
+              />
+            ) : null}
+          </div>
         }
         actions={
           <div className="flex items-center gap-2">
@@ -360,13 +372,23 @@ export default function Table() {
                         </StatusPill>
                       </td>
                       <td className="px-5 py-2 text-ink-muted">
-                        <InlineEditText
-                          value={snap?.comment ?? ""}
-                          onSave={(next) => saveColumnComment(col.name, next)}
-                          multiline
-                          italicEmpty
-                          emptyLabel="no comment — click to add"
-                        />
+                        <div className="space-y-1.5">
+                          <InlineEditText
+                            value={snap?.comment ?? ""}
+                            onSave={(next) => saveColumnComment(col.name, next)}
+                            multiline
+                            italicEmpty
+                            emptyLabel="no comment — click to add"
+                          />
+                          {pendingColumnDescs[col.name] ? (
+                            <PendingDescriptionBlock
+                              text={pendingColumnDescs[col.name]}
+                              runId={pendingRunId}
+                              label="Pending"
+                              compact
+                            />
+                          ) : null}
+                        </div>
                       </td>
                       <td className="px-2 py-2 text-right">
                         <Button
@@ -478,6 +500,53 @@ function SummaryCard({
         <Icon size={14} />
       </div>
       <div className="mt-1.5 font-mono text-xl text-ink tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+/** Visible "this generation is awaiting approval" block.
+ *
+ * Surfaces a description that came out of Browse → AI Generate but
+ * has not been written to the live database yet. The text persists
+ * across page refreshes because the snapshot endpoint merges it from
+ * the pending queue. A "Review in Pending" link deep-links the user
+ * into the existing /pending workflow so the explicit
+ * review-before-apply contract stays in place.
+ */
+function PendingDescriptionBlock({
+  text,
+  runId,
+  label,
+  compact,
+}: {
+  text: string;
+  runId: number | null;
+  label: string;
+  compact?: boolean;
+}) {
+  const target = runId != null ? `/runs/${runId}` : "/pending";
+  return (
+    <div
+      className={
+        compact
+          ? "rounded-md border border-amber-300/60 bg-amber-50/60 px-2 py-1.5 text-[12px] text-amber-900 dark:border-amber-500/40 dark:bg-amber-900/20 dark:text-amber-100"
+          : "rounded-lg border border-amber-300/60 bg-amber-50/60 p-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-900/20 dark:text-amber-100"
+      }
+    >
+      <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-wider">
+        <Sparkles size={11} />
+        <span>{label}</span>
+        {runId != null ? (
+          <span className="font-mono normal-case opacity-80">· Run #{runId}</span>
+        ) : null}
+        <Link
+          to={target}
+          className="ml-auto rounded-sm px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider underline-offset-2 hover:underline"
+        >
+          Review →
+        </Link>
+      </div>
+      <div className={compact ? "mt-1 italic" : "mt-1.5 italic leading-snug"}>{text}</div>
     </div>
   );
 }

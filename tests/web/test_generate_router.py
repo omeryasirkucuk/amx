@@ -389,9 +389,14 @@ def test_table_detailed_prompt_detail_includes_data_signals(
     chat_spy: MagicMock,
     fake_db: FakeConnector,
 ) -> None:
+    """When the caller opts into ``profile_data=true`` the full evidence
+    path runs — samples, min/max, cardinality, PK/FK all land in the
+    prompt. Without the flag the endpoint is lite-by-default (covered
+    by ``test_table_lite_by_default_skips_profile_table``).
+    """
     cfg.llm.prompt_detail = "detailed"
     resp = client.post(
-        "/api/generate/table/sales/orders?profile=demo",
+        "/api/generate/table/sales/orders?profile=demo&profile_data=true",
         headers=auth_headers,
     )
     assert resp.status_code == 200
@@ -415,7 +420,7 @@ def test_column_full_prompt_detail_renders_full_evidence(
 ) -> None:
     cfg.llm.prompt_detail = "full"
     resp = client.post(
-        "/api/generate/column/sales/orders/customer_id?profile=demo",
+        "/api/generate/column/sales/orders/customer_id?profile=demo&profile_data=true",
         headers=auth_headers,
     )
     assert resp.status_code == 200
@@ -425,6 +430,80 @@ def test_column_full_prompt_detail_renders_full_evidence(
     assert "Null count:" in user_prompt
     assert "Distinct values:" in user_prompt
     assert "references customers" in user_prompt
+
+
+def test_table_lite_by_default_skips_profile_table(
+    cfg: AMXConfig,
+    client,
+    auth_headers,
+    chat_spy: MagicMock,
+    fake_db: FakeConnector,
+) -> None:
+    """Single-asset table generate is lite-by-default. Even with the
+    ``detailed`` preset, the endpoint should not call ``profile_table``
+    unless the caller explicitly passes ``profile_data=true``. This is
+    the contract that brings response time in line with Atlan /
+    Databricks AI Generate.
+    """
+    cfg.llm.prompt_detail = "detailed"
+    resp = client.post(
+        "/api/generate/table/sales/orders?profile=demo",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    user_prompt = _user_prompt(chat_spy)
+    # None of the heavy signals make it into the prompt.
+    assert "samples:" not in user_prompt
+    assert "range:" not in user_prompt
+    assert "distinct=" not in user_prompt
+    assert "Primary key:" not in user_prompt
+    # And profile_table was never called.
+    assert ("sales", "orders") not in fake_db.profile_table_calls
+
+
+def test_column_lite_by_default_skips_profile_table(
+    cfg: AMXConfig,
+    client,
+    auth_headers,
+    chat_spy: MagicMock,
+    fake_db: FakeConnector,
+) -> None:
+    cfg.llm.prompt_detail = "full"
+    resp = client.post(
+        "/api/generate/column/sales/orders/customer_id?profile=demo",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    user_prompt = _user_prompt(chat_spy)
+    assert "Sample values:" not in user_prompt
+    assert "Range:" not in user_prompt
+    assert "Distinct values:" not in user_prompt
+    assert ("sales", "orders") not in fake_db.profile_table_calls
+
+
+def test_generate_records_source_path_in_run_settings(
+    cfg: AMXConfig,
+    client,
+    auth_headers,
+    fake_history: FakeHistoryStore,
+) -> None:
+    """``settings_json`` carries ``source_path`` so a future regression
+    investigation can tell whether a run used the lite (catalog cache
+    only) or the heavier ``profile`` path. Default endpoint call →
+    ``"lite"``; opt-in via ``profile_data=true`` → ``"profile"``."""
+    client.post(
+        "/api/generate/table/sales/orders?profile=demo",
+        headers=auth_headers,
+    )
+    lite_run = fake_history.runs[-1]
+    assert lite_run["settings"]["source_path"] == "lite"
+
+    client.post(
+        "/api/generate/table/sales/orders?profile=demo&profile_data=true",
+        headers=auth_headers,
+    )
+    profile_run = fake_history.runs[-1]
+    assert profile_run["settings"]["source_path"] == "profile"
 
 
 def test_table_profile_failure_falls_back(

@@ -65,31 +65,40 @@ interface Row {
 }
 
 // Persisted kind-filter so the user's pick (Analyze / Ask / Generate /
-// Rerun / All) survives page refreshes. Default ``analyze`` mirrors
-// the historical behaviour: /runs is the "what AMX did to the
-// database" log; Ask sessions live behind /ask. Picking another kind
-// from the chip group widens the view.
+// Rerun / All) survives page refreshes. Default ``all`` so a fresh
+// Browse → AI Generate run shows up at the top of the list without
+// the user having to widen the kind filter manually — single-asset
+// generations land with ``command="generate.table"`` /
+// ``"generate.column"`` and used to hide behind a tab the user
+// never opened. The chip group still narrows when wanted.
 const KIND_FILTER_STORAGE_KEY = "amx.runs.kindFilter";
 
 function readStoredKindFilter(): CommandKindFilter {
-  if (typeof window === "undefined") return "analyze";
+  if (typeof window === "undefined") return "all";
   const raw = window.localStorage.getItem(KIND_FILTER_STORAGE_KEY);
-  if (raw === "all" || raw === "analyze" || raw === "rerun" || raw === "generate" || raw === "ask") {
+  if (
+    raw === "all" ||
+    raw === "analyze" ||
+    raw === "rerun" ||
+    raw === "generate" ||
+    raw === "ask" ||
+    raw === "schedule"
+  ) {
     return raw;
   }
-  return "analyze";
+  return "all";
 }
 
 const KIND_FILTER_OPTIONS: ReadonlyArray<{
   value: CommandKindFilter;
   label: string;
 }> = [
+  { value: "all", label: "All activity" },
   { value: "analyze", label: "Analyze" },
-  { value: "rerun", label: "Re-run" },
   { value: "generate", label: "Generate" },
+  { value: "rerun", label: "Re-run" },
   { value: "ask", label: "Ask" },
   { value: "schedule", label: "Schedule" },
-  { value: "all", label: "All activity" },
 ];
 
 export default function RunsList() {
@@ -181,9 +190,12 @@ export default function RunsList() {
         header: "Type",
         sortValue: (r) => humanizeCommand(r.command, r.scope_json ?? r.scope),
         cell: (r) => (
-          <span className="text-sm font-medium text-ink" title={r.command}>
-            {humanizeCommand(r.command, r.scope_json ?? r.scope)}
-          </span>
+          <div className="flex items-center gap-2">
+            <KindPill kind={commandKind(r.command)} />
+            <span className="truncate text-sm font-medium text-ink" title={r.command}>
+              {humanizeCommand(r.command, r.scope_json ?? r.scope)}
+            </span>
+          </div>
         ),
       },
       {
@@ -474,5 +486,53 @@ function StatusBadge({ status }: { status: string }) {
     <Badge tone={tone} dot pulse={pulse}>
       {statusLabel(status)}
     </Badge>
+  );
+}
+
+/** Compact, color-coded chip next to each row's command label so the
+ *  user can scan the timeline at a glance — Generate runs (from
+ *  Browse → AI Generate) used to land behind a separate filter tab
+ *  that the user never opened. With the default filter now "all",
+ *  the kind pill is what distinguishes a single-asset generate row
+ *  from an analyze bulk run without forcing a column-width hit. */
+function KindPill({
+  kind,
+}: {
+  kind: "analyze" | "rerun" | "generate" | "ask" | "schedule" | "other";
+}) {
+  const label =
+    kind === "analyze"
+      ? "Analyze"
+      : kind === "generate"
+        ? "Generate"
+        : kind === "rerun"
+          ? "Re-run"
+          : kind === "ask"
+            ? "Ask"
+            : kind === "schedule"
+              ? "Schedule"
+              : "Other";
+  const cls =
+    kind === "analyze"
+      ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200"
+      : kind === "generate"
+        ? "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-200"
+        : kind === "rerun"
+          ? "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-200"
+          : kind === "ask"
+            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+            : kind === "schedule"
+              ? "border-pink-500/30 bg-pink-500/10 text-pink-700 dark:text-pink-200"
+              : "border-border bg-surface-subtle text-ink-muted";
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+        cls,
+      )}
+      aria-label={`Kind: ${label}`}
+    >
+      {label}
+    </span>
   );
 }
