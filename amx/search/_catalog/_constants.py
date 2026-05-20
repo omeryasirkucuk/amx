@@ -20,6 +20,14 @@ from typing import Any
 # pick which candidate description wins when several sources contribute
 # rows for the same entity.
 SOURCE_PRIORITY: dict[str, int] = {
+    # ``user_local`` is an explicit local-only override authored
+    # through ``POST /api/comments/local`` or ``/db comment-local``.
+    # It outranks every other source on purpose: the user opted into
+    # this surface specifically to override what AMX already had —
+    # generated suggestions, the live DB COMMENT, even a prior
+    # ``manual`` edit that wrote back to the DB. The row never gets
+    # ``applied_to_db=1`` so it stays a private annotation.
+    "user_local": 5,
     "manual": 4,
     "reviewed": 3,
     "generated": 2,

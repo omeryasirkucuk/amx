@@ -634,6 +634,13 @@ def _handle_session_builtin(
 
         _cmd_sync_stop(cfg, parts[1:])
         return True
+    if head == "comment-local":
+        if not _require_namespace(head, namespace, "db", "comment-local"):
+            return True
+        from amx.cli_support.commands.db import cmd_comment_local as _cmd_comment_local
+
+        _cmd_comment_local(cfg, parts[1:])
+        return True
     if head == "save":
         path = cfg.save()
         success(f"Saved configuration to {path}")

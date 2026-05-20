@@ -1809,3 +1809,134 @@ def cmd_sync_stop(cfg: AMXConfig, rest: list[str]) -> None:
             info(f"No active sync to cancel for {target!r}.")
     if not cancelled_any:
         info("Nothing to cancel.")
+
+
+def _parse_comment_local_args(rest: list[str]) -> dict[str, str | None]:
+    """Pull ``--profile/--schema/--table/--column/--description`` from
+    ``rest``. Every flag is optional — the wizard fills in whatever
+    is missing.
+    """
+    args: dict[str, str | None] = {
+        "profile": None,
+        "schema": None,
+        "table": None,
+        "column": None,
+        "description": None,
+    }
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if token.startswith("--") and i + 1 < len(rest):
+            key = token[2:]
+            if key in args:
+                args[key] = rest[i + 1].strip()
+            i += 2
+            continue
+        i += 1
+    return args
+
+
+def cmd_comment_local(cfg: AMXConfig, rest: list[str]) -> None:
+    """/db comment-local — write a local-only description override.
+
+    The description is recorded in the catalog with
+    ``source_kind="user_local"`` and immediately outranks every other
+    source for the targeted entity. **No COMMENT statement is sent
+    to the source database.** Use this when you don't have write
+    privileges, want to keep private annotations, or simply don't
+    want your edits to leak back to a shared DB.
+
+    Bare ``/db comment-local`` runs an interactive wizard. Every
+    ``--profile/--schema/--table/--column/--description`` flag is
+    optional and short-circuits the corresponding picker.
+    """
+    from amx.db._default_scope import profile_default_container
+    from amx.search.catalog import SearchCatalog
+
+    args = _parse_comment_local_args(rest)
+
+    if not cfg.db_profiles:
+        error(
+            "No DB profiles saved. Configure one with /db-profiles "
+            "before recording a local comment."
+        )
+        return
+
+    profile = args["profile"] or ""
+    if not profile:
+        active = cfg.active_db_profile or next(iter(cfg.db_profiles))
+        profile = ask_choice(
+            "Pick a DB profile",
+            sorted(cfg.db_profiles.keys()),
+            default=active,
+        )
+    if not profile:
+        info("Cancelled.")
+        return
+    if profile not in cfg.db_profiles:
+        error(f"Unknown DB profile: {profile!r}.")
+        return
+
+    schema_name = args["schema"] or ask("Schema name")
+    if not schema_name:
+        info("Cancelled.")
+        return
+    table_name = args["table"] or ask("Table name")
+    if not table_name:
+        info("Cancelled.")
+        return
+
+    column_name: str | None
+    if args["column"] is not None:
+        # An explicit empty --column flag means "table-level".
+        column_name = args["column"].strip() or None
+    else:
+        column_input = ask("Column name (leave blank for table-level)").strip()
+        column_name = column_input or None
+
+    description = args["description"] or ask("Description text")
+    if not description:
+        info("Cancelled.")
+        return
+
+    target_label = (
+        f"{profile}.{schema_name}.{table_name}"
+        + (f".{column_name}" if column_name else " (table-level)")
+    )
+    if args["description"] is None and not confirm(
+        f"Save local description for {target_label}?",
+        default=True,
+    ):
+        info("Cancelled.")
+        return
+
+    catalog = SearchCatalog.from_history_store()
+    if catalog is None:
+        error(
+            "History store isn't initialised yet — activate a DB "
+            "profile first so the local catalog can open."
+        )
+        return
+
+    db_cfg = cfg.db_profiles[profile]
+    db_backend = str(getattr(db_cfg, "backend", "") or "")
+    database_name = profile_default_container(db_cfg) or ""
+    entity_kind = "column" if column_name else "table"
+
+    result = catalog.record_user_local_description(
+        db_profile=profile,
+        db_backend=db_backend,
+        database_name=database_name,
+        schema_name=schema_name,
+        table_name=table_name,
+        column_name=column_name,
+        entity_kind=entity_kind,
+        asset_kind="table",
+        description=description,
+    )
+    success(
+        f"Saved local description for {target_label} "
+        f"(entity_id={result['entity_id']}, "
+        f"description_id={result['description_id']}). "
+        "No COMMENT statement was sent to the source database."
+    )
