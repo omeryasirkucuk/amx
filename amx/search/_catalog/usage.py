@@ -260,6 +260,63 @@ class UsageMixin:
             self._resolve_effective_description(conn, entity_id)
             self._index_entity(conn, entity_id)
 
+    def record_user_local_description(
+        self,
+        *,
+        db_profile: str,
+        db_backend: str,
+        database_name: str,
+        schema_name: str,
+        table_name: str,
+        column_name: str | None,
+        entity_kind: str,
+        asset_kind: str,
+        description: str,
+    ) -> dict[str, int]:
+        """Record a local-only description override.
+
+        Mirror of :meth:`record_manual_description` with two
+        deliberate differences:
+
+        * ``source_kind="user_local"`` (priority 5 in
+          ``SOURCE_PRIORITY``) so the override wins the precedence
+          race against every other source — generated suggestions,
+          the imported live-DB comment, even a prior ``manual``
+          row that wrote back to the DB.
+        * The row is never picked up by the writeback path
+          (``applied_to_db`` stays 0). Promoting a local override to
+          a DB write is a separate, user-initiated action.
+
+        Returns a small dict with the freshly created
+        ``entity_id`` + ``description_id`` so HTTP / CLI callers can
+        echo them back to the user (and the Studio SPA can refetch
+        the asset card without guessing).
+        """
+        with self._connect() as conn:
+            entity_id = self._upsert_entity(
+                conn,
+                db_profile=db_profile,
+                db_backend=db_backend,
+                database_name=database_name,
+                schema_name=schema_name,
+                table_name=table_name,
+                column_name=column_name,
+                entity_kind=entity_kind,
+                asset_kind=asset_kind,
+            )
+            description_id = self._insert_description(
+                conn,
+                entity_id=entity_id,
+                description_text=description,
+                source_kind="user_local",
+                source_agent="user_local.create",
+                confidence="high",
+                chosen=True,
+            )
+            self._resolve_effective_description(conn, entity_id)
+            self._index_entity(conn, entity_id)
+        return {"entity_id": int(entity_id), "description_id": int(description_id)}
+
     def record_dedup_decision(
         self,
         *,

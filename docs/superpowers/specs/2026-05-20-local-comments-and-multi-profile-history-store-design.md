@@ -62,13 +62,16 @@ path requires a careful integration with the existing
 flow in `EntityCrudMixin`, and a single PR mixing both would muddy
 the review.
 
-* **PR-1 (this PR):** Multi-profile history-store inclusion — config
-  field, `PATCH /api/history/profiles`, `/history-store profiles`
+* **PR-1 (landed as PR #538):** Multi-profile history-store inclusion —
+  config field, `PATCH /api/history/profiles`, `/history-store profiles`
   REPL wizard, tests.
-* **PR-2 (follow-up):** Local-only comment override — `source_kind =
-  "user_local"` write path, `POST /api/comments/local`,
-  `/db comment-local` wizard, reconciliation with the existing
-  description precedence, FTS re-index, tests.
+* **PR-2 (this PR):** Local-only comment override — new
+  `source_kind="user_local"` (priority 5 above `manual=4`),
+  `record_user_local_description` helper on `SearchCatalog`,
+  `POST /api/comments/local` endpoint, `/db comment-local` wizard.
+  No new tables, no schema migration: the existing
+  `_resolve_effective_description` precedence machinery + FTS
+  reindex carry the change automatically.
 
 ## Out of scope
 
