@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, CircleStop, FileText, Send, Settings as SettingsIcon, Sparkles, Wrench } from "lucide-react";
+import { CircleStop, Send, Settings as SettingsIcon, Sparkles, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -13,6 +13,7 @@ import { cn } from "../lib/cn";
 import { InfoHint, useToast } from "./ui";
 import AskScopeDropdown from "./AskScopeDropdown";
 import ProfilePicker from "./topbar/ProfilePicker";
+import { AskSourcesPicker } from "./AskSourcesPicker";
 
 interface AskContextResponse {
   scope_db_profiles: string[];
@@ -28,6 +29,17 @@ interface AskContextResponse {
     path: string;
     indexed_snippets: number;
   }>;
+  /** PR (task 8): lineage canvases auto-linked to the active DB scope.
+   *  Surfaces alongside docs / code in the source picker so the user
+   *  can see how much extra context /ask will pick up. */
+  lineage_artifacts?: Array<{
+    name: string;
+    linked_db_profiles?: string[];
+  }>;
+  /** PR (task 8): count of doc-Pages anchored to entities in the
+   *  active DB scope. Pages are entity-anchored so there is no
+   *  multi-select list — only the gate. */
+  anchored_pages?: { count: number };
 }
 
 /** PR E: structured citation pulled from a ``search_docs`` tool call.
@@ -206,6 +218,14 @@ export default function AskChat({
   // saved profile, so opting in is one click away.
   const [docProfilesOverride, setDocProfilesOverride] = useState<string[] | null>([]);
   const [codeProfilesOverride, setCodeProfilesOverride] = useState<string[] | null>([]);
+  // Task 9 — lineage canvases and anchored doc-Pages join docs/code as
+  // optional retrieval sources. ``null`` = Auto (backend picks based on
+  // the DB scope link map), ``[]`` / ``false`` = explicit Off, list or
+  // ``true`` = explicit pick. Per-question, not sticky.
+  const [lineageProfilesOverride, setLineageProfilesOverride] = useState<
+    string[] | null
+  >(null);
+  const [pagesEnabled, setPagesEnabled] = useState<boolean | null>(null);
 
   // "Live refresh" toggle — default OFF means Ask serves cached
   // catalog metadata only and never hits the live DB. Flipping it
@@ -243,6 +263,29 @@ export default function AskChat({
   });
   const activeLlmProfile = ctxForLlm.data?.active_llm_profile ?? null;
   const activeLlmModel = ctxForLlm.data?.llm_model ?? null;
+
+  // Task 9 — single source picker for docs / code / lineage / pages.
+  // Fetches /api/ask/context (scoped to the active DB scope) so the
+  // four panels can display Auto counts and only the entities that
+  // the current scope is actually linked to.
+  const askContextQuery = useQuery({
+    queryKey: [
+      "ask",
+      "context",
+      "for-sources-picker",
+      scopeForSession ?? "_session_default_",
+    ],
+    queryFn: () => {
+      const qs =
+        scopeForSession && scopeForSession.length > 0
+          ? `?scope_profiles=${scopeForSession.map(encodeURIComponent).join(",")}`
+          : "";
+      return apiFetch<AskContextResponse>(`/api/ask/context${qs}`);
+    },
+    retry: false,
+    staleTime: 10_000,
+  });
+  const contextPayload = askContextQuery.data ?? null;
 
   // Drive an interval timer while a job is running so the live
   // "elapsed seconds" tick in the response bubble re-renders every
@@ -677,6 +720,15 @@ export default function AskChat({
       if (codeProfilesOverride !== null) {
         body.code_profiles = codeProfilesOverride;
       }
+      // Lineage / Pages knobs (Task 9). Same Auto-is-omitted contract
+      // as docs/code: ``null`` means leave the backend in Auto mode,
+      // while ``[]`` / ``false`` forward an explicit Off.
+      if (lineageProfilesOverride !== null) {
+        body.lineage_profiles = lineageProfilesOverride;
+      }
+      if (pagesEnabled !== null) {
+        body.pages_enabled = pagesEnabled;
+      }
       // Cache-only by default; only opt in to live-DB reads when the
       // user has flipped the toggle below the composer for this turn.
       body.allow_live_refresh = allowLiveRefresh;
@@ -954,12 +1006,27 @@ export default function AskChat({
 
       <Card className="p-3">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <AskDocCodePicker
-            scope={scopeForSession}
+          <AskSourcesPicker
+            docProfiles={(contextPayload?.doc_profiles ?? []).map((d) => ({
+              name: d.name,
+              indexedChunks: d.indexed_chunks,
+            }))}
+            codeProfiles={(contextPayload?.code_profiles ?? []).map((c) => ({
+              name: c.name,
+              indexedSnippets: c.indexed_snippets,
+            }))}
+            lineageArtifacts={(contextPayload?.lineage_artifacts ?? []).map(
+              (a) => ({ name: a.name }),
+            )}
+            anchoredPagesCount={contextPayload?.anchored_pages?.count ?? 0}
             docOverride={docProfilesOverride}
             codeOverride={codeProfilesOverride}
+            lineageOverride={lineageProfilesOverride}
+            pagesEnabled={pagesEnabled}
             onDocChange={setDocProfilesOverride}
             onCodeChange={setCodeProfilesOverride}
+            onLineageChange={setLineageProfilesOverride}
+            onPagesChange={setPagesEnabled}
             disabled={!!activeJob}
           />
           <div className="ml-auto flex items-center gap-2">
@@ -1670,302 +1737,6 @@ function CitationsList({ citations }: { citations: Citation[] }) {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-interface AskDocCodePickerProps {
-  scope: string[] | null;
-  docOverride: string[] | null;
-  codeOverride: string[] | null;
-  onDocChange: (next: string[] | null) => void;
-  onCodeChange: (next: string[] | null) => void;
-  disabled?: boolean;
-}
-
-interface ProfileListItem {
-  name: string;
-  /** Auto-derived count from the API context (chunks for docs, snippets for code). */
-  count: number;
-  linked: string[];
-}
-
-/**
- * Lets the user override which doc/code profiles /ask uses for THIS
- * question, decoupled from the DB scope. Three modes per surface:
- *
- *   - **Auto** (default, ``null``): backend derives from the link map.
- *   - **None** (``[]``): skip retrieval entirely.
- *   - **Explicit pick** (``string[]``): exactly these profiles.
- *
- * Picks reset per session change in the parent. The trigger pill shows
- * the active mode at a glance; the popover splits docs and code into
- * two sections so the user picks each side independently.
- */
-function AskDocCodePicker({
-  scope,
-  docOverride,
-  codeOverride,
-  onDocChange,
-  onCodeChange,
-  disabled,
-}: AskDocCodePickerProps) {
-  const [open, setOpen] = useState(false);
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onClick(e: MouseEvent) {
-      if (!wrapperRef.current) return;
-      if (!wrapperRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  // Fetch the full configured doc / code profile inventory — independent
-  // of the DB scope so the user can pick a profile that the link map
-  // wouldn't have auto-included.
-  const docProfiles = useQuery({
-    queryKey: ["doc-profiles", "list-for-ask-picker"],
-    queryFn: () =>
-      apiFetch<{ profiles: { name: string; linked_db_profiles?: string[] }[] }>(
-        "/api/profiles/docs",
-      ),
-    staleTime: 30_000,
-  });
-  const codeProfiles = useQuery({
-    queryKey: ["code-profiles", "list-for-ask-picker"],
-    queryFn: () =>
-      apiFetch<{ profiles: { name: string; linked_db_profiles?: string[] }[] }>(
-        "/api/profiles/code",
-      ),
-    staleTime: 30_000,
-  });
-
-  // Reuse /api/ask/context purely to fetch the auto-derived counts so
-  // the chip can still display "📄 2 docs (12 chunks)" when the user
-  // is in Auto mode. The endpoint already supports a scope filter.
-  const ctxQuery = useQuery({
-    queryKey: ["ask", "context", "for-picker", scope ?? "_session_default_"],
-    queryFn: () => {
-      const qs =
-        scope && scope.length > 0
-          ? `?scope_profiles=${scope.map(encodeURIComponent).join(",")}`
-          : "";
-      return apiFetch<AskContextResponse>(`/api/ask/context${qs}`);
-    },
-    retry: false,
-    staleTime: 10_000,
-  });
-
-  const docInventory: ProfileListItem[] = (docProfiles.data?.profiles ?? []).map(
-    (p) => ({
-      name: p.name,
-      count:
-        ctxQuery.data?.doc_profiles?.find((d) => d.name === p.name)?.indexed_chunks ??
-        0,
-      linked: p.linked_db_profiles ?? [],
-    }),
-  );
-  const codeInventory: ProfileListItem[] = (codeProfiles.data?.profiles ?? []).map(
-    (p) => ({
-      name: p.name,
-      count:
-        ctxQuery.data?.code_profiles?.find((c) => c.name === p.name)?.indexed_snippets ??
-        0,
-      linked: p.linked_db_profiles ?? [],
-    }),
-  );
-
-  function describe(
-    mode: string[] | null,
-    autoCount: number,
-    label: string,
-  ): string {
-    if (mode === null) return `${label}: auto (${autoCount})`;
-    if (mode.length === 0) return `${label}: off`;
-    return `${label}: ${mode.length}`;
-  }
-  const autoDocCount = ctxQuery.data?.doc_profiles?.length ?? 0;
-  const autoCodeCount = ctxQuery.data?.code_profiles?.length ?? 0;
-  const triggerLabel = `${describe(docOverride, autoDocCount, "Docs")} · ${describe(
-    codeOverride,
-    autoCodeCount,
-    "Code",
-  )}`;
-  const isCustom = docOverride !== null || codeOverride !== null;
-
-  function toggle(
-    current: string[] | null,
-    name: string,
-    setter: (next: string[] | null) => void,
-  ) {
-    // From Auto → first explicit toggle starts a fresh single-pick list.
-    if (current === null) {
-      setter([name]);
-      return;
-    }
-    if (current.includes(name)) {
-      const next = current.filter((p) => p !== name);
-      setter(next);
-      return;
-    }
-    setter([...current, name]);
-  }
-
-  return (
-    <div className="relative" ref={wrapperRef}>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
-        title="Pick which doc / code profiles answer this question"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        className={cn(
-          "flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors duration-fast",
-          disabled
-            ? "cursor-default border-surface-border bg-transparent text-ink-dim"
-            : isCustom
-              ? "border-accent/30 bg-accent-soft text-accent-ink hover:bg-accent-soft/80"
-              : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-ink",
-        )}
-      >
-        <FileText size={12} className="opacity-70" />
-        <span className="max-w-[16rem] truncate">{triggerLabel}</span>
-        <ChevronDown size={12} className="opacity-70" />
-      </button>
-      {open && (
-        // Anchored to the bottom of the trigger so the menu grows
-        // UPWARDS — the composer sits at the bottom of the viewport
-        // and a downward menu used to be clipped off-screen.
-        <div className="absolute bottom-full left-0 z-30 mb-1 w-80 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
-          <DocCodeSection
-            heading="Doc profiles"
-            emptyHint="No doc profiles configured."
-            inventory={docInventory}
-            mode={docOverride}
-            autoCount={autoDocCount}
-            onToggle={(name) => toggle(docOverride, name, onDocChange)}
-            onAuto={() => onDocChange(null)}
-            onNone={() => onDocChange([])}
-          />
-          <div className="border-t border-border" />
-          <DocCodeSection
-            heading="Code profiles"
-            emptyHint="No code profiles configured."
-            inventory={codeInventory}
-            mode={codeOverride}
-            autoCount={autoCodeCount}
-            onToggle={(name) => toggle(codeOverride, name, onCodeChange)}
-            onAuto={() => onCodeChange(null)}
-            onNone={() => onCodeChange([])}
-          />
-          <div className="border-t border-border bg-surface-subtle/40 px-3 py-1.5 text-[10.5px] text-ink-dim">
-            <Link to="/settings?tab=docs" className="hover:text-ink-muted">
-              Manage profiles in Settings →
-            </Link>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DocCodeSection({
-  heading,
-  emptyHint,
-  inventory,
-  mode,
-  autoCount,
-  onToggle,
-  onAuto,
-  onNone,
-}: {
-  heading: string;
-  emptyHint: string;
-  inventory: ProfileListItem[];
-  mode: string[] | null;
-  autoCount: number;
-  onToggle: (name: string) => void;
-  onAuto: () => void;
-  onNone: () => void;
-}) {
-  return (
-    <div className="px-3 py-2">
-      <div className="mb-1.5 flex items-center justify-between">
-        <span className="text-[10.5px] font-medium uppercase tracking-wider text-ink-dim">
-          {heading}
-        </span>
-        <div className="flex gap-1 text-[10.5px]">
-          <button
-            type="button"
-            onClick={onAuto}
-            className={cn(
-              "rounded px-1.5 py-0.5",
-              mode === null
-                ? "bg-accent-soft/60 text-accent-ink"
-                : "text-ink-dim hover:bg-surface-subtle hover:text-ink",
-            )}
-          >
-            Auto ({autoCount})
-          </button>
-          <button
-            type="button"
-            onClick={onNone}
-            className={cn(
-              "rounded px-1.5 py-0.5",
-              mode !== null && mode.length === 0
-                ? "bg-warning-soft text-warning"
-                : "text-ink-dim hover:bg-surface-subtle hover:text-ink",
-            )}
-          >
-            None
-          </button>
-        </div>
-      </div>
-      {inventory.length === 0 ? (
-        <p className="text-[10.5px] text-ink-dim">{emptyHint}</p>
-      ) : (
-        <ul role="listbox" aria-multiselectable className="space-y-0.5">
-          {inventory.map((p) => {
-            const selected = mode !== null && mode.includes(p.name);
-            return (
-              <li key={p.name}>
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  onClick={() => onToggle(p.name)}
-                  className={cn(
-                    "flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs hover:bg-surface-subtle",
-                    selected && "bg-accent-soft/40",
-                  )}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-mono text-ink">
-                      {p.name}
-                    </span>
-                    <span className="block truncate text-[10px] text-ink-dim">
-                      {p.linked.length ? `linked: ${p.linked.join(", ")}` : "global"}
-                      {p.count > 0 && ` · ${p.count}`}
-                    </span>
-                  </span>
-                  {selected && <Check size={12} className="text-accent" />}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
     </div>
   );
 }
