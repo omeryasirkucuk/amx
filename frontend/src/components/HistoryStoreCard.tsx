@@ -39,10 +39,45 @@ export default function HistoryStoreCard() {
 
   const [draftProfile, setDraftProfile] = useState("");
   const [draftSchema, setDraftSchema] = useState("AMX");
+  const [draftDatabase, setDraftDatabase] = useState("");
+  const [createMissing, setCreateMissing] = useState(true);
+
+  // Lookup the chosen profile's backend so we can label the
+  // catalog/database field correctly and hide it on backends that
+  // don't need it (PG / MySQL — schema is the namespace).
+  const profileMeta = (dbProfiles.data?.profiles ?? []).find(
+    (p) => p.name === draftProfile,
+  ) as { name: string; backend?: string } | undefined;
+  const backend = (profileMeta?.backend || "").toLowerCase();
+  const needsDatabase =
+    backend === "databricks" ||
+    backend === "bigquery" ||
+    backend === "snowflake" ||
+    backend === "mssql";
+  const databaseLabel =
+    backend === "databricks"
+      ? "Catalog"
+      : backend === "bigquery"
+        ? "Project"
+        : backend === "snowflake"
+          ? "Database"
+          : backend === "mssql"
+            ? "Database"
+            : "Database";
 
   const enable = useMutation({
-    mutationFn: (vars: { profile: string; schema: string }) =>
-      api.enableHistoryStore({ profile: vars.profile, schema: vars.schema }),
+    mutationFn: (vars: {
+      profile: string;
+      schema: string;
+      database: string;
+      create_missing: boolean;
+    }) =>
+      api.enableHistoryStore({
+        profile: vars.profile,
+        schema: vars.schema,
+        database: vars.database,
+        create_missing: vars.create_missing,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["history-store-status"] });
       toast.push({
@@ -162,42 +197,95 @@ export default function HistoryStoreCard() {
               </div>
             </dl>
             {!status.data.enabled ? (
-              <div className="space-y-2 rounded-md border border-border bg-surface-subtle/30 px-3 py-2.5 text-xs text-ink-muted">
+              <div className="space-y-3 rounded-md border border-border bg-surface-subtle/30 px-3 py-2.5 text-xs text-ink-muted">
                 <p className="font-medium text-ink">Enable team history store</p>
                 <p className="text-[11px] text-ink-dim">
-                  Pick a DB profile to dual-write into. The schema is
-                  bootstrapped lazily on the next run if it doesn&apos;t
-                  exist yet.
+                  Pick a DB profile to dual-write into. For Databricks /
+                  BigQuery / Snowflake / MSSQL also pick the target
+                  catalog or database so tables don&apos;t land in the
+                  workspace default.
                 </p>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[2fr_1fr_auto]">
-                  <select
-                    value={draftProfile}
-                    onChange={(e) => setDraftProfile(e.target.value)}
-                    className="h-8 rounded-md border border-border bg-surface-raised px-2 text-xs text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
-                  >
-                    <option value="">Select target profile…</option>
-                    {(dbProfiles.data?.profiles ?? []).map((p) => (
-                      <option key={p.name} value={p.name}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    type="text"
-                    value={draftSchema}
-                    onChange={(e) => setDraftSchema(e.target.value)}
-                    placeholder="Schema name"
-                    className="h-8 rounded-md border border-border bg-surface-raised px-2 font-mono text-xs text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
-                  />
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <label className="space-y-1">
+                    <span className="text-[10px] uppercase tracking-wider text-ink-dim">
+                      DB profile
+                    </span>
+                    <select
+                      value={draftProfile}
+                      onChange={(e) => setDraftProfile(e.target.value)}
+                      className="h-8 w-full rounded-md border border-border bg-surface-raised px-2 text-xs text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+                    >
+                      <option value="">Select target profile…</option>
+                      {(dbProfiles.data?.profiles ?? []).map((p) => (
+                        <option key={p.name} value={p.name}>
+                          {p.name}
+                          {(p as { backend?: string }).backend
+                            ? ` (${(p as { backend?: string }).backend})`
+                            : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {needsDatabase && (
+                    <label className="space-y-1">
+                      <span className="text-[10px] uppercase tracking-wider text-ink-dim">
+                        {databaseLabel}
+                      </span>
+                      <input
+                        type="text"
+                        value={draftDatabase}
+                        onChange={(e) => setDraftDatabase(e.target.value)}
+                        placeholder={`${databaseLabel.toLowerCase()} name`}
+                        className="h-8 w-full rounded-md border border-border bg-surface-raised px-2 font-mono text-xs text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+                      />
+                    </label>
+                  )}
+                  <label className="space-y-1">
+                    <span className="text-[10px] uppercase tracking-wider text-ink-dim">
+                      Schema
+                    </span>
+                    <input
+                      type="text"
+                      value={draftSchema}
+                      onChange={(e) => setDraftSchema(e.target.value)}
+                      placeholder="Schema name"
+                      className="h-8 w-full rounded-md border border-border bg-surface-raised px-2 font-mono text-xs text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+                    />
+                  </label>
+                </div>
+                {needsDatabase && (
+                  <label className="flex items-center gap-2 text-[11px] text-ink-muted">
+                    <input
+                      type="checkbox"
+                      checked={createMissing}
+                      onChange={(e) => setCreateMissing(e.target.checked)}
+                      className="h-3 w-3 rounded border-border accent-accent"
+                    />
+                    Create {databaseLabel.toLowerCase()} if it doesn&apos;t exist yet
+                    {backend === "databricks" && (
+                      <span className="ml-1 text-ink-dim">
+                        (requires Unity Catalog metastore-admin)
+                      </span>
+                    )}
+                  </label>
+                )}
+                <div className="flex justify-end">
                   <Button
                     variant="primary"
                     size="sm"
                     loading={enable.isPending}
-                    disabled={!draftProfile || !draftSchema || enable.isPending}
+                    disabled={
+                      !draftProfile ||
+                      !draftSchema ||
+                      (needsDatabase && !draftDatabase) ||
+                      enable.isPending
+                    }
                     onClick={() =>
                       enable.mutate({
                         profile: draftProfile,
                         schema: draftSchema,
+                        database: needsDatabase ? draftDatabase : "",
+                        create_missing: needsDatabase && createMissing,
                       })
                     }
                   >

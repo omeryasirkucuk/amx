@@ -79,6 +79,18 @@ class MSSQLAdapter(DatabaseAdapter):
             f"EXEC('CREATE SCHEMA {self.quote_identifier(schema_name)}');"
         )
 
+    def create_history_database(self, engine: Engine, name: str) -> None:
+        """Create the SQL Server database hosting the AMX schema."""
+        sanitized = (name or "").strip()
+        if not sanitized:
+            return
+        check = (
+            "IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = :db_name) "
+            f"EXEC('CREATE DATABASE {self.quote_identifier(sanitized)}')"
+        )
+        with engine.begin() as conn:
+            conn.execute(text(check), {"db_name": sanitized})
+
     def create_engine(self) -> Engine:
         return create_engine(self.cfg.url, pool_pre_ping=True)
 

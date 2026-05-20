@@ -661,6 +661,23 @@ class DatabaseAdapter(ABC):
         """
         return f"CREATE SCHEMA IF NOT EXISTS {self.quote_identifier(schema_name)}"
 
+    def create_history_database(self, engine: Engine, name: str) -> None:
+        """Create the parent catalog / database for the AMX schema.
+
+        Backends that namespace tables under a catalog (Databricks Unity
+        Catalog) or a project (BigQuery) or a database (Snowflake /
+        MSSQL) override this to issue ``CREATE CATALOG / DATABASE``
+        DDL. Default implementation is a no-op for backends where the
+        schema is the only namespace (PostgreSQL, MySQL, Oracle).
+
+        Idempotent: implementations use ``IF NOT EXISTS`` so calling
+        on an existing catalog/database is harmless. A permission
+        failure (e.g. Databricks without metastore-admin) propagates
+        so the Studio UI can surface a clear remediation hint.
+        """
+        del engine, name  # no-op on schema-only backends
+        return None
+
     def history_schema_comment_ddl(self, schema_name: str) -> str | None:
         """Return ``COMMENT ON SCHEMA`` DDL for the AMX schema, or None.
 

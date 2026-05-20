@@ -161,13 +161,21 @@ def catalog_status(
 class EnableHistoryStoreRequest(BaseModel):
     """Body for ``POST /api/admin/history-store/enable`` — minimal
     enable flow: pick the DB profile to dual-write to, name the
-    target schema, flip the config flag. Bootstrap of the schema
-    tables happens lazily on the next /run when the dual-write
-    store first opens its connection."""
+    target schema, optionally pin the parent catalog/database, flip
+    the config flag. Bootstrap of the schema tables happens
+    immediately so the admin API surfaces the workspace right away."""
 
     profile: str = Field(..., min_length=1)
     schema_: str = Field(default="AMX", alias="schema")
     database: str = Field(default="")
+    create_missing: bool = Field(
+        default=False,
+        description=(
+            "When true, attempt to CREATE the parent catalog/database "
+            "if it does not exist (Databricks Unity Catalog, Snowflake, "
+            "MSSQL). Ignored on schema-only backends (PostgreSQL, MySQL)."
+        ),
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -177,17 +185,67 @@ def enable_history_store(
     body: EnableHistoryStoreRequest,
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """Toggle dual-write history-store mode on."""
+    """Toggle dual-write history-store mode on.
+
+    Persists the config change AND reinitialises the in-process
+    ``history_store()`` global so subsequent writes / admin API calls
+    pick up the shared backend immediately — without this rebuild the
+    Studio process would keep using the cached local-only store and
+    show "Active" in the UI while the actual writes stayed local.
+    """
     cfg.history_store_enabled = True
     cfg.history_store_profile = body.profile
     cfg.history_store_schema = body.schema_ or "AMX"
     cfg.history_store_database = body.database or ""
     cfg.save()
+
+    # Mirror what the CLI's ``/history-store enable`` does:
+    # 1. Pre-create the shared schema explicitly (CREATE SCHEMA IF NOT EXISTS)
+    #    so ``MetaData.create_all`` does not fail later with "schema does
+    #    not exist". This is the step the Studio enable endpoint was
+    #    previously skipping — the dual-write store would silently fall
+    #    back to local-only on every startup because the schema was never
+    #    created.
+    # 2. Reinitialise the in-process ``history_store()`` global so the new
+    #    shared backend is reachable from ``/api/admin/*`` and the
+    #    dual-write code path immediately, without a Studio restart.
+    schema_warning: str | None = None
+    try:
+        from amx.db.adapters import get_adapter
+        from amx.storage.factory import (
+            apply_history_db_override,
+            init_history_store,
+        )
+
+        db_cfg = cfg.db_profiles[body.profile]
+        target_cfg = apply_history_db_override(db_cfg, body.database) if body.database else db_cfg
+        adapter = get_adapter(target_cfg)
+        engine = adapter.create_engine()
+        try:
+            # When the user asked us to create the parent catalog /
+            # database (Databricks UC catalog, Snowflake DB, MSSQL DB),
+            # do it BEFORE the schema CREATE — without the parent the
+            # CREATE SCHEMA either lands in the workspace default or
+            # fails outright. No-op on Postgres / MySQL / Oracle.
+            if body.create_missing and body.database:
+                adapter.create_history_database(engine, body.database)
+            adapter.create_history_schema(engine, cfg.history_store_schema)
+        finally:
+            engine.dispose()
+
+        init_history_store(cfg)
+    except Exception as exc:
+        # Surface the issue to the caller so the UI can show a clear
+        # error instead of silently returning "enabled" while the
+        # bootstrap actually fails.
+        schema_warning = f"{type(exc).__name__}: {exc}"
+
     return {
         "enabled": True,
         "profile": cfg.history_store_profile,
         "schema": cfg.history_store_schema,
         "database": cfg.history_store_database,
+        "schema_bootstrap_warning": schema_warning,
     }
 
 
@@ -199,6 +257,15 @@ def disable_history_store(
     local-only writes immediately."""
     cfg.history_store_enabled = False
     cfg.save()
+
+    # Rebuild the in-process history store back to local-only.
+    try:
+        from amx.storage.factory import init_history_store
+
+        init_history_store(cfg)
+    except Exception:
+        pass
+
     return {"enabled": False}
 
 

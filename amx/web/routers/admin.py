@@ -54,7 +54,15 @@ def _caller_identity(request: Request) -> tuple[str, str]:
 
 
 def _get_shared_store():
-    """Return the active SQLAlchemyHistoryStore or raise 503."""
+    """Return the active SQLAlchemyHistoryStore or raise 503.
+
+    The factory typically returns a ``_LazyDualWriteStore`` wrapper that
+    proxies the local SQLite store eagerly and the shared SQLAlchemy
+    store lazily. The admin API needs the SHARED side specifically — we
+    unwrap via ``store.shared`` (which triggers the lazy bootstrap) and
+    only fall through to a 503 when shared mode is genuinely not
+    configured.
+    """
     try:
         from amx.storage.factory import history_store
 
@@ -73,14 +81,22 @@ def _get_shared_store():
                 "Run /history-store enable from the AMX CLI first."
             ),
         )
-    if not hasattr(store, "engine") or not hasattr(store, "_md"):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Admin API requires shared mode. Run /history-store enable from the AMX CLI first."
-            ),
-        )
-    return store
+
+    # Unwrap LazyDualWrite / DualWrite to reach the real SQLAlchemyHistoryStore.
+    shared = getattr(store, "shared", None)
+    if shared is not None and hasattr(shared, "engine") and hasattr(shared, "_md"):
+        return shared
+
+    # Direct SQLAlchemyHistoryStore (rare — tests sometimes return one).
+    if hasattr(store, "engine") and hasattr(store, "_md"):
+        return store
+
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            "Admin API requires shared mode. Run /history-store enable from the AMX CLI first."
+        ),
+    )
 
 
 # ── Permission dependency ─────────────────────────────────────────────────────
@@ -124,18 +140,35 @@ class UserTargetIn(BaseModel):
 def get_me(request: Request) -> dict[str, Any]:
     """Return the current caller's identity and role in the workspace.
 
-    Used by the Studio frontend to decide whether to show the Workspace
-    Admin panel — only admin-role users see it in the sidebar.
+    Side-effect: idempotently registers the caller in ``_amx_users`` if
+    they have not been seen yet. This guarantees Studio-only users —
+    who never trigger a CLI bootstrap path — still get an admin row on
+    first connect (matching the auto-bootstrap intent of PR-4). If the
+    table is empty when ``get_me`` runs, the caller becomes admin; if a
+    teammate already registered, the caller joins as viewer.
 
     Falls back gracefully when no shared store is available, returning
     ``role: "viewer"`` so the frontend never crashes.
     """
+    from amx import __version__ as _amx_version
     from amx.storage import admin as _admin
 
     username, hostname = _caller_identity(request)
     try:
         shared = _get_shared_store()
-        role = _admin.current_role(shared, username=username, hostname=hostname)
+        try:
+            record = _admin.register_session(
+                shared,
+                username=username,
+                hostname=hostname,
+                client_version=_amx_version,
+                db_profiles_seen=[],
+            )
+            role = record.role
+        except Exception:
+            # If register_session fails (e.g. concurrent insert race),
+            # fall back to a read-only role query.
+            role = _admin.current_role(shared, username=username, hostname=hostname) or "viewer"
     except HTTPException:
         # No shared store configured — everyone is a viewer by default.
         role = "viewer"
@@ -313,6 +346,38 @@ def unrevoke_member(
         target_user_id=target.id,
     )
     return {"ok": True, "username": body.username, "revoked": False}
+
+
+@router.post("/claim", status_code=status.HTTP_200_OK)
+def claim_admin(request: Request) -> dict[str, Any]:
+    """Promote the calling user to admin when the workspace has zero active admins.
+
+    Escape hatch for the case where the auto-bootstrap admin entry was
+    consumed by a transient identity (e.g. a test fixture writing into
+    the same warehouse) so the only real user ended up as viewer with
+    no one able to manage the workspace.
+
+    NOT admin-gated (by design) — the safety invariant lives in
+    :func:`amx.storage.admin.claim_admin_if_unmanned` which refuses to
+    promote when any active admin exists.
+    """
+    from amx.storage import admin as _admin
+
+    shared = _get_shared_store()
+    username, hostname = _caller_identity(request)
+    try:
+        record = _admin.claim_admin_if_unmanned(shared, username=username, hostname=hostname)
+    except _admin.AdminInvariantError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return {
+        "ok": True,
+        "username": record.username,
+        "hostname": record.hostname,
+        "role": record.role,
+    }
 
 
 @router.get("/audit")

@@ -551,7 +551,16 @@ def ensure_column_exists(
 
     dialect_name = engine.dialect.name.lower()
 
-    fq_table = f"{schema}.{table}" if schema else table
+    # Quote the schema and table identifiers so mixed-case names like
+    # ``AMX`` survive Postgres / Oracle identifier folding (they would
+    # otherwise be lowercased and the ALTER would target a non-existent
+    # ``amx`` schema). The preparer follows each backend's quoting rules.
+    preparer = engine.dialect.identifier_preparer
+    quoted_table = preparer.quote(table)
+    if schema:
+        fq_table = f"{preparer.quote(schema)}.{quoted_table}"
+    else:
+        fq_table = quoted_table
 
     if dialect_name == "sqlite":
         # SQLite: suppress "duplicate column name" OperationalError.
