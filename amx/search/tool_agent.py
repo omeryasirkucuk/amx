@@ -230,6 +230,8 @@ def run_tool_agent(
     doc_profiles: list[str] | None = None,
     code_profiles: list[str] | None = None,
     allow_live_refresh: bool = False,
+    lineage_profiles: list[str] | None = None,
+    pages_enabled: bool | None = None,
 ) -> ToolAgentResult:
     """Run the tool-calling loop and return the final synthesised answer.
 
@@ -276,7 +278,26 @@ def run_tool_agent(
     fresh data from the live DB. The Ask UI exposes a "Live refresh"
     toggle that flips this bit; CLI ``/ask`` keeps the legacy
     cache-only-default contract.
+
+    ``lineage_profiles`` and ``pages_enabled`` are accepted here so the
+    Studio HTTP layer (``amx/web/routers/ask.py``) can forward the
+    request body through ``_ask_worker`` without breaking the call.
+    They mirror the keyword-only parameters added to
+    :meth:`amx.search.agent.SearchAgent.ask` and are reserved for the
+    follow-up wiring that lights them up inside the tool-calling loop.
+    Default ``None`` keeps every existing caller (CLI, batch scripts)
+    working without changes.
     """
+    # ``lineage_profiles`` / ``pages_enabled`` are not consumed inside
+    # the tool loop yet — the loop's tools surface catalog rows only,
+    # and the lineage / pages enrichment runs on the legacy
+    # ``SearchAgent.ask`` retrieval path. Accepting them at this
+    # boundary preserves the additive contract documented in Task 7
+    # so future work can thread them into ``_run_tool_loop`` (or a
+    # post-loop enrichment step) without revisiting the HTTP layer.
+    _ = lineage_profiles
+    _ = pages_enabled
+
     # Use ``with`` so the live DB connector (SQLAlchemy engine + connection
     # pool) is disposed at the end of every question. Without this, each
     # ``/ask`` turn leaks a few file descriptors; after enough turns the

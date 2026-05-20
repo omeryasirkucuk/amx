@@ -84,6 +84,23 @@ class AskRequest(BaseModel):
             "Explicit code-profile selection for THIS question. Same semantics as ``doc_profiles``."
         ),
     )
+    lineage_profiles: list[str] | None = Field(
+        default=None,
+        description=(
+            "Explicit lineage-artifact selection for THIS question. ``None`` "
+            "(default) uses every artifact anchored to one of the resolved "
+            "entities. An explicit list narrows to those canvas names; ``[]`` "
+            "disables lineage retrieval entirely."
+        ),
+    )
+    pages_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Toggle for published-page retrieval. ``None`` (default) means Auto "
+            "(read pages when anchored to a resolved entity); ``True``/``False`` "
+            "force the behaviour explicitly."
+        ),
+    )
     allow_live_refresh: bool = Field(
         default=False,
         description=(
@@ -250,6 +267,8 @@ def submit_ask(
             body.doc_profiles,
             body.code_profiles,
             body.allow_live_refresh,
+            body.lineage_profiles,
+            body.pages_enabled,
         ),
         name=f"amx-studio-ask-{job.id}",
         daemon=True,
@@ -735,6 +754,8 @@ def _ask_worker(
     doc_profiles_override: list[str] | None = None,
     code_profiles_override: list[str] | None = None,
     allow_live_refresh: bool = False,
+    lineage_profiles: list[str] | None = None,
+    pages_enabled: bool | None = None,
 ) -> None:
     """Run the tool-calling agent and guarantee a terminal SSE event.
 
@@ -758,6 +779,8 @@ def _ask_worker(
             doc_profiles_override,
             code_profiles_override,
             allow_live_refresh,
+            lineage_profiles,
+            pages_enabled,
         )
     except Exception:
         # Last-resort safety net. The two real paths
@@ -811,6 +834,8 @@ def _ask_worker_impl(
     doc_profiles_override: list[str] | None = None,
     code_profiles_override: list[str] | None = None,
     allow_live_refresh: bool = False,
+    lineage_profiles: list[str] | None = None,
+    pages_enabled: bool | None = None,
 ) -> None:
     """Run the tool-calling agent + stream every reasoning chunk and
     tool result back to the SSE consumer. Persists the assistant
@@ -1087,6 +1112,8 @@ def _ask_worker_impl(
             doc_profiles=doc_profiles_override,
             code_profiles=code_profiles_override,
             allow_live_refresh=allow_live_refresh,
+            lineage_profiles=lineage_profiles,
+            pages_enabled=pages_enabled,
         )
     except RunCancelled:
         job.status = "cancelled"
