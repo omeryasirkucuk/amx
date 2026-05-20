@@ -255,7 +255,150 @@ def test_table_snapshot_passes_through_connector_payload(client, auth_headers, m
         headers=auth_headers,
     )
     assert response.status_code == 200
-    assert response.json() == snapshot
+    body = response.json()
+    # Live snapshot fields pass through verbatim …
+    assert body["schema"] == "sales"
+    assert body["table"] == "customers"
+    assert body["table_comment"] == "Customer master"
+    assert body["columns"] == snapshot["columns"]
+    # … and the pending merge contract is honoured with clean defaults
+    # when no pending file exists for this asset.
+    assert body["pending_description"] is None
+    assert body["pending_column_descriptions"] == {}
+    assert body["pending_run_id"] is None
+
+
+def test_table_snapshot_merges_pending_descriptions(
+    client, auth_headers, monkeypatch, tmp_path
+) -> None:
+    """A pending entry for the same ``(schema, table)`` surfaces on the
+    snapshot response so a Browse → AI Generate result survives a
+    page refresh instead of vanishing into the pending file alone.
+    """
+    # Re-point the on-disk pending queue at a temp file we control.
+    import json as _json
+
+    pending_file = tmp_path / "pending.json"
+    pending_file.write_text(
+        _json.dumps(
+            [
+                {
+                    "schema": "sales",
+                    "table": "orders",
+                    "column": None,
+                    "result_id": 7,
+                    "final_description": "Sales orders awaiting review.",
+                    "confidence": "high",
+                    "source": "generate.singleshot",
+                    "asset_kind": "table",
+                },
+                {
+                    "schema": "sales",
+                    "table": "orders",
+                    "column": "order_id",
+                    "result_id": 8,
+                    "final_description": "Order identifier (pending).",
+                    "confidence": "medium",
+                    "source": "generate.singleshot",
+                    "asset_kind": "column",
+                },
+                {
+                    # Entry for a different table — must not leak.
+                    "schema": "sales",
+                    "table": "customers",
+                    "column": None,
+                    "result_id": 9,
+                    "final_description": "Other table entry.",
+                    "confidence": "low",
+                    "source": "generate.singleshot",
+                    "asset_kind": "table",
+                },
+            ]
+        )
+    )
+    monkeypatch.setattr("amx.pending_review.PENDING_FILE", pending_file)
+
+    snapshot = {
+        "schema": "sales",
+        "table": "orders",
+        "table_comment": "",  # live DB has no description yet
+        "columns": [
+            {"name": "order_id", "dtype": "BIGINT", "nullable": False, "comment": ""},
+            {"name": "total", "dtype": "DECIMAL", "nullable": True, "comment": ""},
+        ],
+    }
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(
+            supports_catalogs=MagicMock(return_value=False),
+            get_table_metadata_snapshot=MagicMock(return_value=snapshot),
+        ),
+    )
+    response = client.get(
+        f"/api/live/schemas/sales/tables/orders/snapshot{_q('database=appdb')}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    # Table-level pending surfaces; live ``table_comment`` is NOT mutated.
+    assert body["pending_description"] == "Sales orders awaiting review."
+    assert body["table_comment"] == ""
+    # Column-level pending only carries entries for THIS table.
+    assert body["pending_column_descriptions"] == {"order_id": "Order identifier (pending)."}
+
+
+def test_table_snapshot_pending_merge_does_not_overwrite_applied_comment(
+    client, auth_headers, monkeypatch, tmp_path
+) -> None:
+    """When the live DB already has a description applied, the snapshot
+    still surfaces the pending entry alongside it — the frontend renders
+    both, the user can see the new candidate vs the current state. The
+    applied ``table_comment`` is never overwritten on the wire.
+    """
+    import json as _json
+
+    pending_file = tmp_path / "pending.json"
+    pending_file.write_text(
+        _json.dumps(
+            [
+                {
+                    "schema": "sales",
+                    "table": "orders",
+                    "column": None,
+                    "result_id": 12,
+                    "final_description": "New candidate description.",
+                    "confidence": "high",
+                    "source": "generate.singleshot",
+                    "asset_kind": "table",
+                },
+            ]
+        )
+    )
+    monkeypatch.setattr("amx.pending_review.PENDING_FILE", pending_file)
+
+    snapshot = {
+        "schema": "sales",
+        "table": "orders",
+        "table_comment": "Existing applied description.",
+        "columns": [
+            {"name": "order_id", "dtype": "BIGINT", "nullable": False, "comment": ""},
+        ],
+    }
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(
+            supports_catalogs=MagicMock(return_value=False),
+            get_table_metadata_snapshot=MagicMock(return_value=snapshot),
+        ),
+    )
+    response = client.get(
+        f"/api/live/schemas/sales/tables/orders/snapshot{_q('database=appdb')}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["table_comment"] == "Existing applied description."  # untouched
+    assert body["pending_description"] == "New candidate description."
 
 
 def test_connector_errors_surface_as_500_with_actionable_detail(
