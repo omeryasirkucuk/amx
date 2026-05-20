@@ -286,6 +286,53 @@ def test_snapshot_endpoint_salvages_on_connector_exception(
     assert {c["name"] for c in payload["columns"]} == {"order_id"}
 
 
+def test_cache_fallback_scope_agnostic_when_url_omits_database(
+    client, auth_headers, monkeypatch, history
+) -> None:
+    """When the SPA sends ``database=`` (empty) but the cache has a row
+    stamped with a real ``database_name`` (e.g. ``SAP``), the
+    scope-agnostic third-chance lookup still surfaces the columns.
+
+    Regression guard for SAP-style profiles where the browse URL
+    pattern ``/cat/<profile>/<database>/<schema>/<table>`` is mapped
+    to an API call without the database query parameter — observed
+    in the wild against ``sap_s6p.adrt`` / ``sap_s6p.bseg``.
+    """
+    save_column_comments_cache(
+        history,
+        db_profile=PROFILE,
+        database="SAP",
+        schema="sap_s6p",
+        entries={
+            "adrt": {
+                "table_comment": "Technical address-change tracking table.",
+                "columns": {
+                    "client": None,
+                    "addrnumber": None,
+                    "date_from": None,
+                },
+                "kind": "TABLE",
+            }
+        },
+    )
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(list_column_profiles=MagicMock(return_value=[])),
+    )
+    response = client.get(
+        f"/api/live/schemas/sap_s6p/tables/adrt/columns{_q('force_live=true')}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "cache-fallback"
+    assert {c["name"] for c in payload["columns"]} == {
+        "client",
+        "addrnumber",
+        "date_from",
+    }
+
+
 def test_snapshot_endpoint_500s_when_no_cache_and_live_raises(
     client, auth_headers, monkeypatch, history
 ) -> None:
