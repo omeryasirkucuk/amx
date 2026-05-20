@@ -934,6 +934,27 @@ def list_columns(
     }
 
 
+def _merge_pending(snapshot: dict[str, Any], schema: str, table: str) -> dict[str, Any]:
+    """Layer pending-review entries onto a snapshot dict.
+
+    Generated descriptions live in ``~/.amx/pending_metadata.json``
+    until the user explicitly approves them. The Table page should
+    surface them with a "Pending review" pill so a generate result
+    survives page refresh; this helper merges them in without ever
+    overwriting the applied ``table_comment`` or column ``comment``.
+    """
+    try:
+        from amx.pending_review import read_pending_for_table
+
+        pending = read_pending_for_table(schema, table)
+    except Exception:
+        return snapshot
+    snapshot["pending_description"] = pending.get("description")
+    snapshot["pending_column_descriptions"] = pending.get("columns") or {}
+    snapshot["pending_run_id"] = pending.get("run_id")
+    return snapshot
+
+
 @router.get("/schemas/{schema}/tables/{table}/snapshot")
 def table_snapshot(
     schema: str,
@@ -952,6 +973,12 @@ def table_snapshot(
     schema, or the connector swallowed a ``NoSuchTableError``), we
     fall back to the cached column list so the Studio Table page
     still renders something useful instead of an empty card.
+
+    Pending-review entries for the asset (Browse → AI Generate output
+    that has not been approved yet) are merged onto the response under
+    ``pending_description`` / ``pending_column_descriptions`` /
+    ``pending_run_id`` so the Table page can surface them with a pill
+    instead of losing them on refresh.
     """
     name = _require_profile(profile)
     cache_scope = database or catalog
@@ -971,32 +998,11 @@ def table_snapshot(
                     f"failed: {exc.__class__.__name__}: {exc}"
                 ),
             ) from exc
-        return {
-            "schema": schema,
-            "table": table,
-            "table_comment": "",
-            "columns": [
-                {
-                    "name": c["name"],
-                    "dtype": c["dtype"],
-                    "nullable": c["nullable"],
-                    "comment": c["comment"],
-                }
-                for c in salvage
-            ],
-            "source": "cache-fallback",
-        }
-    columns = snapshot.get("columns") or []
-    if not columns:
-        # Live introspector returned zero columns but didn't raise —
-        # ``list_column_profiles`` quietly returns ``[]`` on
-        # ``NoSuchTableError``. Try the same fallback path the
-        # ``/columns`` endpoint uses so the Studio page surfaces names
-        # + comments instead of an empty list.
-        salvage = _columns_from_cache(name, schema, table, database_scope=cache_scope)
-        if salvage:
-            return {
-                **snapshot,
+        return _merge_pending(
+            {
+                "schema": schema,
+                "table": table,
+                "table_comment": "",
                 "columns": [
                     {
                         "name": c["name"],
@@ -1007,5 +1013,34 @@ def table_snapshot(
                     for c in salvage
                 ],
                 "source": "cache-fallback",
-            }
-    return snapshot
+            },
+            schema,
+            table,
+        )
+    columns = snapshot.get("columns") or []
+    if not columns:
+        # Live introspector returned zero columns but didn't raise —
+        # ``list_column_profiles`` quietly returns ``[]`` on
+        # ``NoSuchTableError``. Try the same fallback path the
+        # ``/columns`` endpoint uses so the Studio page surfaces names
+        # + comments instead of an empty list.
+        salvage = _columns_from_cache(name, schema, table, database_scope=cache_scope)
+        if salvage:
+            return _merge_pending(
+                {
+                    **snapshot,
+                    "columns": [
+                        {
+                            "name": c["name"],
+                            "dtype": c["dtype"],
+                            "nullable": c["nullable"],
+                            "comment": c["comment"],
+                        }
+                        for c in salvage
+                    ],
+                    "source": "cache-fallback",
+                },
+                schema,
+                table,
+            )
+    return _merge_pending(snapshot, schema, table)
