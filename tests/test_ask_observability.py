@@ -96,15 +96,16 @@ def test_compute_focus_profile_single_scope_returns_none() -> None:
     assert focus is None
 
 
-def test_system_prompt_schema_hint_truncates_at_50() -> None:
+def test_system_prompt_schema_hint_truncates_at_twenty() -> None:
     cfg = AMXConfig()
     long_schemas = [f"schema_{i}" for i in range(120)]
     prompt = _agent_system_prompt(cfg, long_schemas)
-    # The full list isn't dumped — we cap at 50 with a "more" hint.
+    # The full list isn't dumped — we cap at 20 with a "call list_schemas" hint.
     assert "schema_0," in prompt
-    assert "schema_49," in prompt
+    assert "schema_19," in prompt
+    assert "schema_20" not in prompt
     assert "schema_119" not in prompt
-    assert "70 more" in prompt
+    assert "+100; call list_schemas" in prompt
 
 
 def test_system_prompt_schema_hint_full_when_short() -> None:
@@ -114,7 +115,9 @@ def test_system_prompt_schema_hint_full_when_short() -> None:
     # All 10 included, no truncation hint.
     for name in short_schemas:
         assert name in prompt
-    assert "more — call list_schemas" not in prompt
+    # The truncation-specific hint ("+N; call list_schemas") should not appear
+    # — the standalone routing rule that mentions list_schemas always does.
+    assert "; call list_schemas)" not in prompt
 
 
 def test_system_prompt_multi_profile_block_present() -> None:
