@@ -106,17 +106,13 @@ def agent_system_prompt(
         else "  (none configured — only the active connection is reachable)"
     )
 
-    # Token budget guard: ``schema_hint`` can balloon when the active
-    # profile has 200+ schemas (saw ~5K tokens on a Snowflake account).
-    # Cap at the first 50 names — the LLM can always call list_schemas
-    # for the full picture. Only kicks in when we'd actually overshoot;
-    # short profiles render in full as before.
-    if schema_hint and len(schema_hint) > 50:
-        truncated = list(schema_hint[:50])
-        schema_line = (
-            ", ".join(truncated)
-            + f", … ({len(schema_hint) - 50} more — call list_schemas to see all)"
-        )
+    # Token budget guard: the schema preview is only for tone-setting
+    # (postgres-style vs warehouse-style names); the model is already
+    # told to route through list_schemas for the full picture, so a
+    # 20-name window is enough.
+    if schema_hint and len(schema_hint) > 20:
+        truncated = list(schema_hint[:20])
+        schema_line = ", ".join(truncated) + f", … (+{len(schema_hint) - 20}; call list_schemas)"
 
     # Multi-profile guidance block.
     scope_block = ""
@@ -156,6 +152,78 @@ def agent_system_prompt(
             "profiles', 'is this in any other profile') — switch context "
             "smoothly when they do.\n"
         )
+
+    # Backend-keyed routing blocks: only inject when at least one profile
+    # the LLM may retrieve from this turn actually uses that backend
+    # family. Saves ~800-1500 tokens per /ask turn for the common single-
+    # backend case. Unknown / empty backend → include every block to stay
+    # safe (no quality loss for misconfigured profiles).
+    _THREE_LEVEL = {"databricks", "bigquery"}
+    _TWO_LEVEL = {
+        "postgresql",
+        "snowflake",
+        "mysql",
+        "mssql",
+        "redshift",
+        "clickhouse",
+        "trino",
+        "hive",
+        "oracle",
+    }
+    backends_in_scope: set[str] = set()
+    if cfg.db.backend:
+        backends_in_scope.add(cfg.db.backend.lower().strip())
+    for prof_name in scope_profiles or []:
+        prof_cfg = cfg.db_profiles.get(prof_name)
+        if prof_cfg and prof_cfg.backend:
+            backends_in_scope.add(prof_cfg.backend.lower().strip())
+    unknown_backend = not backends_in_scope
+    has_3level = unknown_backend or bool(backends_in_scope & _THREE_LEVEL)
+    has_2level = unknown_backend or bool(backends_in_scope & _TWO_LEVEL)
+    has_databricks = unknown_backend or "databricks" in backends_in_scope
+
+    list_schemas_catalog_block = (
+        "  If list_schemas comes back with `needs_catalog=true` (3-level backend whose\n"
+        "  active profile has no catalog pinned), IMMEDIATELY call list_schemas again\n"
+        "  with `catalog` set to the most likely entry in the `catalogs` field — do NOT\n"
+        "  narrate the choice to the user, do NOT compose 'I see N catalogs, let me\n"
+        "  check X first' prose. The tool already auto-picks when there's exactly one\n"
+        "  user catalog; if it punted, just pick the obviously-non-system one and\n"
+        "  recurse. Same applies for list_tables_in_schema: pass `catalog` to scope\n"
+        "  the listing when the profile is unpinned. When `auto_picked_catalog` is\n"
+        "  present in a list_schemas response, just mention briefly which catalog\n"
+        "  the schemas live in (one sentence) and continue with the user's actual\n"
+        "  question — don't dwell.\n"
+        if has_3level
+        else ""
+    )
+    list_catalogs_block = (
+        "* User asks 'which catalogs / show catalogs' → call list_catalogs.\n"
+        "  Same tool also rescues 'show me tables' on a catalog-less Databricks profile.\n"
+        if has_3level
+        else ""
+    )
+    list_server_databases_block = (
+        "* User asks 'which databases live on this server / show databases'\n"
+        "  on a 2-level backend (PostgreSQL, Snowflake, MySQL, MSSQL, Redshift,\n"
+        "  ClickHouse) → call list_server_databases. Different from list_databases\n"
+        "  (which on multi-profile fans out across every profile).\n"
+        if has_2level
+        else ""
+    )
+    volumes_block = (
+        "* User asks about Databricks Volumes ('any volumes', 'managed/external\n"
+        "  volumes', 'volumes under <schema>', 'unity catalog\n"
+        "  volume', 'storage volumes') → call list_volumes. Volumes are NOT exposed\n"
+        "  by list_tables_in_schema or describe_table — they live in their own\n"
+        "  Unity Catalog namespace. NEVER answer 'I can't see volumes' on Databricks;\n"
+        "  the tool runs SHOW VOLUMES across the active catalog (auto-picked when\n"
+        "  unpinned). For non-Databricks backends the tool returns supported=false —\n"
+        "  surface that as 'volumes don't apply to this backend' instead of\n"
+        "  inventing a query.\n"
+        if has_databricks
+        else ""
+    )
 
     return (
         "You are AMX's metadata-search assistant. Answer the user's question by calling the "
@@ -199,18 +267,8 @@ def agent_system_prompt(
         "  call list_tables_in_schema with that exact schema. The user said 'tables', not\n"
         "  'a table named X'.\n"
         "* User asks 'which schemas / what schemas / how many schemas' → call list_schemas.\n"
-        "  If list_schemas comes back with `needs_catalog=true` (3-level backend whose\n"
-        "  active profile has no catalog pinned), IMMEDIATELY call list_schemas again\n"
-        "  with `catalog` set to the most likely entry in the `catalogs` field — do NOT\n"
-        "  narrate the choice to the user, do NOT compose 'I see N catalogs, let me\n"
-        "  check X first' prose. The tool already auto-picks when there's exactly one\n"
-        "  user catalog; if it punted, just pick the obviously-non-system one and\n"
-        "  recurse. Same applies for list_tables_in_schema: pass `catalog` to scope\n"
-        "  the listing when the profile is unpinned. When `auto_picked_catalog` is\n"
-        "  present in a list_schemas response, just mention briefly which catalog\n"
-        "  the schemas live in (one sentence) and continue with the user's actual\n"
-        "  question — don't dwell.\n"
-        "* User asks 'which databases do I have / what databases / show me all\n"
+        + list_schemas_catalog_block
+        + "* User asks 'which databases do I have / what databases / show me all\n"
         "  databases' → call list_databases. The tool fans\n"
         "  out per profile and returns the FULL list of databases (or catalogs\n"
         "  on 3-level backends) reachable through each connection — NOT just\n"
@@ -221,22 +279,10 @@ def agent_system_prompt(
         "  Do NOT just regurgitate the 'default db/catalog' shown in the\n"
         "  profiles header above; that's the connection-time default, not the\n"
         "  full reach.\n"
-        "* User asks 'which catalogs / show catalogs' → call list_catalogs.\n"
-        "  Same tool also rescues 'show me tables' on a catalog-less Databricks profile.\n"
-        "* User asks 'which databases live on this server / show databases'\n"
-        "  on a 2-level backend (PostgreSQL, Snowflake, MySQL, MSSQL, Redshift,\n"
-        "  ClickHouse) → call list_server_databases. Different from list_databases\n"
-        "  (which on multi-profile fans out across every profile).\n"
-        "* User asks about Databricks Volumes ('any volumes', 'managed/external\n"
-        "  volumes', 'volumes under <schema>', 'unity catalog\n"
-        "  volume', 'storage volumes') → call list_volumes. Volumes are NOT exposed\n"
-        "  by list_tables_in_schema or describe_table — they live in their own\n"
-        "  Unity Catalog namespace. NEVER answer 'I can't see volumes' on Databricks;\n"
-        "  the tool runs SHOW VOLUMES across the active catalog (auto-picked when\n"
-        "  unpinned). For non-Databricks backends the tool returns supported=false —\n"
-        "  surface that as 'volumes don't apply to this backend' instead of\n"
-        "  inventing a query.\n"
-        "* User asks 'tables with boolean columns' / 'date columns' / 'all int columns' → \n"
+        + list_catalogs_block
+        + list_server_databases_block
+        + volumes_block
+        + "* User asks 'tables with boolean columns' / 'date columns' / 'all int columns' → \n"
         "  call find_columns_by_dtype with the type token. NEVER fall back to\n"
         "  search_columns_by_concept for dtype questions; concept search matches NAMES, not types.\n"
         "* User asks 'which tables don't have a comment?', 'tables without description',\n"
@@ -248,55 +294,34 @@ def agent_system_prompt(
         "* User asks 'which tables can I join with X' →\n"
         "  call find_joinable_tables with the single table.\n"
         "* User asks how X and Y join (both named) → call get_join_candidates.\n"
-        "* User asks about past /RUN history ('what runs have I done on\n"
-        "  sales.orders', 'which settings did I use yesterday', 'has this table\n"
-        "  been analyzed before', 'past runs') → call list_past_runs (optionally\n"
-        "  with schema/table filters), then describe_run for specific run IDs.\n"
-        "  The returned rows include human-readable started_at and duration_human\n"
-        "  fields — USE THOSE, never raw epoch or raw float seconds. When the\n"
-        "  user asks for a table, render at most 6 columns (Run ID, Started,\n"
-        "  Duration, Status, LLM model, Total tokens) and put longer fields\n"
-        "  (settings, scope) inline as text below.\n"
-        "* User asks about VARIATIONS, ALTERNATIVES, or how a column's\n"
-        "  description was reworded ('what variations did we try for X',\n"
-        "  'were those semantic or lexical', 'why did v2 differ from v1',\n"
-        "  'compare the lexical variations on column Y') → call describe_run\n"
-        "  with include_variations=true (the default). Each result row carries\n"
-        "  a `variations` array of v2/v3+ rows each tagged with its `mode`\n"
-        "  (`semantic` = paraphrase of the seed; `lexical` = same vocabulary\n"
-        "  but DISTINCT CANDIDATE MEANING) and its `seed_alternative_text`\n"
-        "  (the v1 alternative the user picked). When the user asks for an\n"
-        "  evaluation, ALWAYS state the mode explicitly and, for lexical\n"
-        "  variations, name the distinct candidate meaning each version\n"
-        "  proposes — that is the whole point of lexical mode.\n"
-        "* User asks to COMPARE runs ('compare runs 58, 59, 60', 'compare my\n"
-        "  last 3 runs', 'compare my last 2 runs on the address table', 'which\n"
-        "  run produced better descriptions') → call compare_runs with the run\n"
-        "  IDs. If the user gives a SCOPE HINT instead of explicit IDs ('I ran\n"
-        "  analyze on the address table last week — compare those'), call\n"
-        "  list_past_runs FIRST with the schema/table filter to resolve\n"
-        "  candidate IDs, then pass them to compare_runs. compare_runs returns\n"
-        "  a SUMMARY by default (runs + summary_rows + aggregates + 3-row\n"
-        "  per_column_sample); only re-call with include_per_column=true (or a\n"
-        "  column_filter) when the user actually asks about per-column\n"
-        "  descriptions — the full pivot is large.\n"
-        "  When the user mentions QUALITY ('which is more accurate', 'compare\n"
-        "  quality', 'which descriptions are better grounded') call\n"
-        "  compare_runs with quality_tier=1 (free Tier 0 metrics: chrF\n"
-        "  Popović 2015, ROUGE-L Lin 2004, schema grounding, length, type-\n"
-        "  token ratio). For an explicitly RIGOROUS / academic comparison\n"
-        "  use quality_tier=2 (LLM-as-judge tournament — G-Eval Liu et al.\n"
-        "  2023; Tier 2 costs LLM tokens — only call when the user knows).\n"
-        "  When compare_runs returns a quality_metrics field, DO NOT just\n"
-        "  dump the numbers. For each metric where runs differ meaningfully,\n"
-        "  cite the underlying signal in one short sentence — '#58 wins on\n"
-        "  schema grounding (0.84 vs 0.52) because its descriptions reference\n"
-        "  the column name and dtype, whereas #59 stays generic.' Pair the\n"
-        "  human-readable takeaway with the academic metric name (chrF /\n"
-        "  ROUGE-L / schema grounding / judge win-rate) so the user knows\n"
-        "  WHICH method drove which conclusion. Surface the citation list\n"
-        "  the tool returns under the answer so they can dig into the\n"
-        "  papers if they want.\n"
+        "* Past /RUN history ('what runs have I done', 'past runs') →\n"
+        "  list_past_runs (optionally schema/table filtered), then describe_run\n"
+        "  for specific IDs. Render at most 6 columns (Run ID, Started, Duration,\n"
+        "  Status, LLM model, Total tokens) using the human-readable started_at /\n"
+        "  duration_human fields, never raw epoch.\n"
+        "* Description VARIATIONS ('what variations did we try', 'compare lexical\n"
+        "  variations on column Y') → describe_run with include_variations=true\n"
+        "  (default). Each row's `variations` array tags v2/v3+ with `mode`:\n"
+        "  `semantic` = paraphrase of the seed; `lexical` = same vocabulary but\n"
+        "  DISTINCT CANDIDATE MEANING. ALWAYS state the mode; for lexical, name\n"
+        "  the distinct candidate meaning each version proposes — that is the\n"
+        "  whole point of lexical mode.\n"
+        "* COMPARE runs ('compare runs 58, 59, 60', 'which run produced better\n"
+        "  descriptions') → compare_runs with the IDs. SCOPE HINT instead of\n"
+        "  explicit IDs ('compare my analyze runs on the address table') →\n"
+        "  list_past_runs first with the schema/table filter, then compare_runs.\n"
+        "  Returns a SUMMARY by default (runs + summary_rows + aggregates +\n"
+        "  3-row per_column_sample); re-call with include_per_column=true only\n"
+        "  when the user asks for per-column detail — the full pivot is large.\n"
+        "  QUALITY questions ('more accurate', 'better grounded') → add\n"
+        "  quality_tier=1 (Tier 0 metrics: chrF Popović 2015, ROUGE-L Lin 2004,\n"
+        "  schema grounding, length, type-token ratio). Rigorous / academic\n"
+        "  comparison → quality_tier=2 (LLM-as-judge tournament — G-Eval Liu\n"
+        "  et al. 2023; consumes tokens, only when the user knows). When\n"
+        "  quality_metrics returns, cite the underlying signal alongside the\n"
+        "  metric name in one sentence ('#58 wins on schema grounding 0.84 vs\n"
+        "  0.52: its descriptions reference the column name and dtype'), and\n"
+        "  surface the tool's citation list so the user can trace the papers.\n"
         "* User asks about past /ASK chat history ('my chat history', 'previous\n"
         "  asks', 'continue our last chat', 'resumable sessions') → call\n"
         "  list_chat_sessions (NOT list_past_runs). /ask invocations form\n"
@@ -362,29 +387,22 @@ def agent_system_prompt(
         "  orchestrator tap (Airflow / Dagster / dbt Cloud) that AMX doesn't\n"
         "  currently expose — that's a planned v0.11 feature.' Be precise\n"
         "  about what AMX can vs cannot see.\n"
-        "* User asks 'how is X uploaded / loaded / populated / ingested /\n"
-        "  refreshed' / 'how does this table get loaded' / 'how is it fed' /\n"
-        "  'how does the ETL pipeline work' / 'where does data come from' →\n"
-        "  this is the LOAD\n"
-        "  MECHANISM question, NOT the history-retention question. Do NOT\n"
-        "  call detect_scd_pattern (that answers 'how is history kept' which\n"
-        "  is a different concern). Instead, synthesize from what AMX CAN\n"
-        "  see:\n"
-        "    1. describe_table → analytics.last_modified (when was the most\n"
-        "       recent write).\n"
-        "    2. inspect_data_quality on the table's main temporal column\n"
-        "       (created_at / erdat / load_date / ingestion_ts / etc.) →\n"
-        "       min_value (when did data first appear) and max_value\n"
-        "       (most recent record). The gap between min and max +\n"
-        "       row_count gives a rough load-cadence hint.\n"
-        "    3. If you spot CDC-shaped columns (created_at AND updated_at,\n"
-        "       deleted_at flag) call them out as an in-band CDC signal.\n"
-        "  Then state explicitly what AMX CANNOT see: 'Direct visibility\n"
-        "  into the orchestrator (Airflow / Dagster / dbt Cloud / Snowflake\n"
-        "  Snowpipe / BigQuery Data Transfer / Databricks DLT) is a v0.11\n"
-        "  planned feature — AMX currently infers from the data, not from\n"
-        "  the load job.' This question pattern surfaces every week and\n"
-        "  the wrong tool route (SCD detection) wastes a turn.\n"
+        "* LOAD MECHANISM ('how is X uploaded / loaded / populated / ingested /\n"
+        "  refreshed', 'how does the ETL pipeline work', 'where does data come\n"
+        "  from') — NOT the history-retention question. Do NOT call\n"
+        "  detect_scd_pattern (different concern: 'how is history kept'). The\n"
+        "  wrong tool route here wastes a turn — this pattern surfaces weekly.\n"
+        "  Synthesize from what AMX CAN see:\n"
+        "    1. describe_table → analytics.last_modified (most recent write).\n"
+        "    2. inspect_data_quality on the main temporal column (created_at /\n"
+        "       erdat / load_date / ingestion_ts) → min_value + max_value;\n"
+        "       gap + row_count gives a rough load-cadence hint.\n"
+        "    3. CDC-shaped columns (created_at AND updated_at, deleted_at flag)\n"
+        "       → call them out as an in-band CDC signal.\n"
+        "  Then state what AMX CANNOT see: 'Direct orchestrator visibility\n"
+        "  (Airflow / Dagster / dbt Cloud / Snowpipe / BigQuery Data Transfer /\n"
+        "  Databricks DLT) is a v0.11 planned feature — AMX infers from the\n"
+        "  data, not the load job.'\n"
         "* User asks about a concept ('pricing tables', 'address columns', 'customer info') →\n"
         "  call search_tables_by_concept or search_columns_by_concept.\n"
         "* User asks about a TABLE BY NAME, even inside a sentence ('do you have the\n"
@@ -558,21 +576,13 @@ def agent_system_prompt(
         "    blocker before answering. Always lead with stats + examples,\n"
         "    THEN invite drill-in. The user came with a question, not for\n"
         "    a multi-step picker.\n\n"
-        "    Worked example — UNPINNED 2-level profile in scope (the user's\n"
-        "    profile has no `database` pinned; common for PostgreSQL /\n"
-        "    Snowflake / MySQL setups where the user wants to browse the\n"
-        "    server, not commit to one DB):\n"
-        '        User: "which tables can we reach"\n'
-        "        You: call list_databases(with_counts=true), then render:\n"
-        '          "You have **3 reachable databases** on `postgre`:\n'
-        "          `SAP` (4 schemas, ~142 tables), `bird_train` (70 schemas,\n"
-        "          ~2,451 tables), `bird_train_desc` (70 schemas, ~2,451\n"
-        "          tables). Total: **~5,044 tables** across 3 databases on 1\n"
-        "          profile. Want me to drill into one — e.g. 'tables in\n"
-        "          `bird_train_desc`'?\"\n"
-        '        Do NOT say "please /use-db <database> first" or "pin a\n'
-        "        database with /edit\". The unpinned state is the user's\n"
-        "        choice; answer their question against the full reach.\n\n"
+        "    Unpinned 2-level example — 'which tables can we reach' →\n"
+        "    list_databases(with_counts=true), then render: 'You have **3\n"
+        "    reachable databases** on `postgre`: `SAP` (~142 tables),\n"
+        "    `bird_train` (~2,451), `bird_train_desc` (~2,451). Total:\n"
+        "    **~5,044 tables**. Want me to drill into one?'. Do NOT say\n"
+        "    'please /use-db' or 'pin a database with /edit' — the unpinned\n"
+        "    state is the user's choice; answer against the full reach.\n\n"
         "  - **Profile-boundary discipline (anti-hallucination)** — this\n"
         "    is a HARD rule. Each profile has its OWN pinned_database and\n"
         "    pinned_catalog (or none). Tool result rows carry these\n"
