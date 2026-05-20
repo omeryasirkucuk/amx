@@ -47,9 +47,7 @@ def _insert_entity(
         )
 
 
-def _insert_relationship(
-    store: SQLiteHistoryStore, *, from_id: int, to_id: int
-) -> None:
+def _insert_relationship(store: SQLiteHistoryStore, *, from_id: int, to_id: int) -> None:
     with store._connect() as conn:  # noqa: SLF001
         conn.execute(
             """
@@ -129,9 +127,7 @@ def _seed_minimal(store: SQLiteHistoryStore) -> int:
         model_used=None,
         db_profile=None,
     )
-    store.attach_documentation_page_asset(
-        "p1", asset_kind="db_table", asset_ref="p1:s:customers"
-    )
+    store.attach_documentation_page_asset("p1", asset_kind="db_table", asset_ref="p1:s:customers")
     return 10
 
 
@@ -255,9 +251,7 @@ def test_retrieval_skips_lineage_when_no_artifacts(tmp_path: Path) -> None:
         model_used=None,
         db_profile=None,
     )
-    store.attach_documentation_page_asset(
-        "p1", asset_kind="db_table", asset_ref="p1:s:customers"
-    )
+    store.attach_documentation_page_asset("p1", asset_kind="db_table", asset_ref="p1:s:customers")
 
     enriched = enrich_retrieval_details_with_lineage_and_pages(
         store=store,

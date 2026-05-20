@@ -32,9 +32,7 @@ def _insert_entity(hs: SQLiteHistoryStore, *, entity_id: int, table: str) -> Non
         )
 
 
-def _insert_relationship(
-    hs: SQLiteHistoryStore, *, from_id: int, to_id: int
-) -> None:
+def _insert_relationship(hs: SQLiteHistoryStore, *, from_id: int, to_id: int) -> None:
     with hs._connect() as conn:
         conn.execute(
             """

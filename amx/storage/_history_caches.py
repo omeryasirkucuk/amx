@@ -653,8 +653,7 @@ def purge_out_of_scope(
         return counts
     with hs._lock, hs._connect() as conn:
         cur = conn.execute(
-            "DELETE FROM catalog_entities "
-            "WHERE db_profile = ? AND IFNULL(database_name, '') != ?",
+            "DELETE FROM catalog_entities WHERE db_profile = ? AND IFNULL(database_name, '') != ?",
             (db_profile, container),
         )
         counts["catalog_entities"] = int(cur.rowcount or 0)

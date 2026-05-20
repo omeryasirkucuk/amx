@@ -257,11 +257,7 @@ def _collect_catalog_refs_from_tool_results(
 
     def _walk(value: Any) -> None:
         if isinstance(value, dict):
-            prof = (
-                value.get("db_profile")
-                or value.get("profile")
-                or value.get("database_profile")
-            )
+            prof = value.get("db_profile") or value.get("profile") or value.get("database_profile")
             schema = value.get("schema") or value.get("schema_name")
             table = value.get("table") or value.get("table_name")
             column = value.get("column") or value.get("column_name") or ""
@@ -298,9 +294,7 @@ def _collect_catalog_refs_from_tool_results(
     return refs
 
 
-def _resolve_entity_ids_from_refs(
-    store: Any, refs: list[tuple[str, str, str, str]]
-) -> list[int]:
+def _resolve_entity_ids_from_refs(store: Any, refs: list[tuple[str, str, str, str]]) -> list[int]:
     """Resolve ``(profile, schema, table, column)`` tuples to
     ``catalog_entities.id`` values via a single SELECT.
 
@@ -378,9 +372,7 @@ def _format_lineage_pages_appendix(
         if upstream_ids:
             lines.append(f"  Upstream entity ids: {', '.join(str(i) for i in upstream_ids)}")
         if downstream_ids:
-            lines.append(
-                f"  Downstream entity ids: {', '.join(str(i) for i in downstream_ids)}"
-            )
+            lines.append(f"  Downstream entity ids: {', '.join(str(i) for i in downstream_ids)}")
         if external:
             lines.append(f"  External systems: {', '.join(str(n) for n in external)}")
         comments = lineage.get("comments") or []
@@ -985,9 +977,7 @@ def _run_tool_loop(
                         lineage_block = enrich_details.get("lineage")
                         pages_block = enrich_details.get("pages")
                         if lineage_block or pages_block:
-                            appendix = _format_lineage_pages_appendix(
-                                lineage_block, pages_block
-                            )
+                            appendix = _format_lineage_pages_appendix(lineage_block, pages_block)
                             if appendix:
                                 messages.append(
                                     {
@@ -997,8 +987,7 @@ def _run_tool_loop(
                                             "lineage and documentation-page "
                                             "evidence anchored to the tables "
                                             "the tool results above mention. "
-                                            "Use it to ground the answer.\n\n"
-                                            + appendix
+                                            "Use it to ground the answer.\n\n" + appendix
                                         ),
                                     }
                                 )

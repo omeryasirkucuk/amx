@@ -128,9 +128,7 @@ def test_run_tool_agent_invokes_enrichment_with_forwarded_kwargs(
     store = SQLiteHistoryStore(tmp_path / "history.db")
     store.init()
     _seed_anchor_entity(store)
-    monkeypatch.setattr(
-        "amx.storage.sqlite_store.history_store", lambda: store
-    )
+    monkeypatch.setattr("amx.storage.sqlite_store.history_store", lambda: store)
 
     captured: dict[str, Any] = {}
 
@@ -225,9 +223,7 @@ def test_run_tool_agent_invokes_enrichment_with_forwarded_kwargs(
     #    second LLM round's messages list contains a user-role
     #    system note with both the lineage and pages blocks.
     assert len(chat_calls) == 2
-    second_round_text = "\n".join(
-        str(m.get("content") or "") for m in chat_calls[1]
-    )
+    second_round_text = "\n".join(str(m.get("content") or "") for m in chat_calls[1])
     assert "Lineage evidence" in second_round_text
     assert "customers-canvas" in second_round_text
     assert "Documentation pages anchored" in second_round_text
@@ -254,9 +250,7 @@ def test_run_tool_agent_skips_enrichment_when_no_catalog_refs(
 
     store = SQLiteHistoryStore(tmp_path / "history.db")
     store.init()
-    monkeypatch.setattr(
-        "amx.storage.sqlite_store.history_store", lambda: store
-    )
+    monkeypatch.setattr("amx.storage.sqlite_store.history_store", lambda: store)
 
     called = {"count": 0}
 
@@ -307,9 +301,7 @@ def test_run_tool_agent_swallows_enricher_exceptions(
     store = SQLiteHistoryStore(tmp_path / "history.db")
     store.init()
     _seed_anchor_entity(store)
-    monkeypatch.setattr(
-        "amx.storage.sqlite_store.history_store", lambda: store
-    )
+    monkeypatch.setattr("amx.storage.sqlite_store.history_store", lambda: store)
 
     def _boom(**kwargs: Any) -> None:
         raise RuntimeError("simulated enrichment failure")

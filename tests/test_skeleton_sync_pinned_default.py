@@ -38,9 +38,7 @@ def test_pinned_catalog_short_circuits_enumeration(fake_connector) -> None:
 
     cfg = SimpleNamespace(
         db_profiles={
-            "prof": SimpleNamespace(
-                backend="databricks", catalog="prod", database="", dataset=""
-            ),
+            "prof": SimpleNamespace(backend="databricks", catalog="prod", database="", dataset=""),
         }
     )
     catalog = _make_catalog()
@@ -58,9 +56,7 @@ def test_pinned_database_short_circuits_enumeration(fake_connector) -> None:
 
     cfg = SimpleNamespace(
         db_profiles={
-            "prof": SimpleNamespace(
-                backend="postgres", catalog="", database="app", dataset=""
-            ),
+            "prof": SimpleNamespace(backend="postgres", catalog="", database="app", dataset=""),
         }
     )
     catalog = _make_catalog()
@@ -77,9 +73,7 @@ def test_unpinned_profile_falls_back_to_enumeration(fake_connector) -> None:
 
     cfg = SimpleNamespace(
         db_profiles={
-            "prof": SimpleNamespace(
-                backend="databricks", catalog="", database="", dataset=""
-            ),
+            "prof": SimpleNamespace(backend="databricks", catalog="", database="", dataset=""),
         }
     )
     catalog = _make_catalog()

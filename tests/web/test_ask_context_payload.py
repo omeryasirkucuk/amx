@@ -14,9 +14,7 @@ panel without conditional plumbing.
 from __future__ import annotations
 
 
-def test_ask_context_payload_includes_lineage_and_pages_blocks(
-    client, auth_headers
-) -> None:
+def test_ask_context_payload_includes_lineage_and_pages_blocks(client, auth_headers) -> None:
     resp = client.get("/api/ask/context", headers=auth_headers)
     assert resp.status_code == 200, resp.text
     payload = resp.json()

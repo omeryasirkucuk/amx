@@ -96,7 +96,11 @@ def test_build_pages_evidence_disabled_returns_empty(tmp_path: Path) -> None:
     store = SQLiteHistoryStore(tmp_path / "history.db")
     store.init()
     _seed_published_page(
-        store, page_id="p1", title="X", body="anything", asset_ref="p1:s:t",
+        store,
+        page_id="p1",
+        title="X",
+        body="anything",
+        asset_ref="p1:s:t",
     )
     out = build_pages_evidence(
         store=store,

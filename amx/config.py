@@ -2206,9 +2206,7 @@ class AMXConfig:
             extra_profiles_raw = data.get("history_store_profiles")
             if isinstance(extra_profiles_raw, list):
                 cfg.history_store_profiles = [
-                    str(p).strip()
-                    for p in extra_profiles_raw
-                    if isinstance(p, str) and p.strip()
+                    str(p).strip() for p in extra_profiles_raw if isinstance(p, str) and p.strip()
                 ]
             else:
                 cfg.history_store_profiles = []

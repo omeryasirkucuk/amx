@@ -43,11 +43,7 @@ class LineageEvidence:
 
     @property
     def is_empty(self) -> bool:
-        return (
-            not self.upstream_entity_ids
-            and not self.downstream_entity_ids
-            and not self.comments
-        )
+        return not self.upstream_entity_ids and not self.downstream_entity_ids and not self.comments
 
 
 def build_lineage_evidence(
@@ -101,9 +97,7 @@ def build_lineage_evidence(
         artifact_dict = lookup_lineage_artifact(store, name_or_id=str(aid))
         edges: list[dict[str, Any]] = []
         if artifact_dict is not None:
-            payload = list_artifact_edges(
-                store, artifact=artifact_dict, limit=_EDGE_LOAD_LIMIT
-            )
+            payload = list_artifact_edges(store, artifact=artifact_dict, limit=_EDGE_LOAD_LIMIT)
             edges = list(payload.get("edges") or [])
 
         if not edges:

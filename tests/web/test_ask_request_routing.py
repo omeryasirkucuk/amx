@@ -13,9 +13,7 @@ from unittest.mock import MagicMock
 from amx.web.routers import ask as ask_router
 
 
-def test_ask_request_accepts_lineage_and_pages_overrides(
-    client, auth_headers, monkeypatch
-) -> None:
+def test_ask_request_accepts_lineage_and_pages_overrides(client, auth_headers, monkeypatch) -> None:
     """POST /api/ask accepts the new lineage_profiles + pages_enabled
     fields and the worker forwards them by keyword to ``run_tool_agent``.
     """
