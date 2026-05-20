@@ -282,6 +282,56 @@ def _columns_from_cache(
                         "comment": str(comment or ""),
                     }
                 )
+        if rows:
+            return rows
+
+    # Third-chance fallback: scope-agnostic lookup against
+    # ``column_comments_cache``. The SPA's URL pattern
+    # ``/cat/<profile>/<database>/<schema>/<table>`` *should* pass the
+    # database query parameter, but builds out in the wild have been
+    # observed sending ``database=`` (empty) on cold catalog navigation
+    # — and our second-chance lookup needs an exact ``(db_profile,
+    # database, schema, table)`` match. When the user is clearly
+    # asking about a specific ``(profile, schema, table)`` and there
+    # is exactly one fresh cache row for it (any database), it is
+    # almost always the right one. Return that row so the Studio Table
+    # page stops rendering empty just because the URL didn't carry the
+    # database scope.
+    if hs is not None:
+        import json as _json
+        import time as _time
+
+        try:
+            with hs._connect() as conn:  # noqa: SLF001 — same access as helpers
+                cache_rows = conn.execute(
+                    """
+                    SELECT database_name, columns_json
+                    FROM column_comments_cache
+                    WHERE db_profile = ? AND schema_name = ? AND table_name = ?
+                      AND expires_at >= ?
+                    ORDER BY fetched_at DESC
+                    LIMIT 1
+                    """,
+                    (profile, schema, table, _time.time()),
+                ).fetchall()
+        except Exception:
+            cache_rows = []
+        if cache_rows:
+            try:
+                columns_map = _json.loads(cache_rows[0]["columns_json"]) or {}
+            except Exception:
+                columns_map = {}
+            for col_name, comment in columns_map.items():
+                if not col_name:
+                    continue
+                rows.append(
+                    {
+                        "name": str(col_name),
+                        "dtype": "",
+                        "nullable": True,
+                        "comment": str(comment or ""),
+                    }
+                )
     return rows
 
 
