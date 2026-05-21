@@ -1166,6 +1166,17 @@ export const api = {
       `/api/assets/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`,
     ),
 
+  /** Delete a single asset. Cascade-removes job children + lineage edges. */
+  deleteRemoteAsset: (kind: RemoteAssetKind, id: string) =>
+    apiFetch<{
+      deleted: boolean;
+      kind: string;
+      asset_id: number;
+      counts: { primary: number; children: number; lineage_edges: number };
+    }>(`/api/assets/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
   /** Kick off a background ingestion job. Returns the job id. */
   startIngestAssets: (body: RemoteAssetIngestPayload) =>
     apiFetch<{ job_id: string }>("/api/assets/ingest", {

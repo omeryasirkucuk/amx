@@ -304,6 +304,100 @@ def test_get_pipeline_decodes_libraries(tmp_path):
     }
 
 
+def test_delete_notebook_removes_row_and_lineage(tmp_path):
+    client, db_path = _make_client(tmp_path)
+    nb_id = _seed_notebook(db_path)
+    # Seed a catalog_entities row + lineage edge so cascade can be observed.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO catalog_entities
+                (db_profile, db_backend, database_name, schema_name, table_name,
+                 entity_kind, asset_kind, updated_at)
+            VALUES ('prod', 'snowflake', 'raw', 'public', 'orders',
+                    'table', 'table', 0.0)
+            """,
+        )
+        ent_id = conn.execute(
+            "SELECT id FROM catalog_entities WHERE table_name='orders'"
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO catalog_relationships
+                (from_entity_id, to_entity_id, relationship_type,
+                 score, source, details_json, last_seen,
+                 from_entity_kind, to_entity_kind)
+            VALUES (?, ?, 'asset_references_table',
+                    1.0, 'test', '{}', 0.0,
+                    'notebook', 'table')
+            """,
+            (nb_id, ent_id),
+        )
+        conn.commit()
+
+    resp = client.delete(f"/api/assets/notebook/{nb_id}", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deleted"] is True
+    assert body["counts"]["primary"] == 1
+    assert body["counts"]["lineage_edges"] == 1
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM remote_notebooks").fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM catalog_relationships "
+                "WHERE relationship_type = 'asset_references_table' "
+                "AND from_entity_kind = 'notebook'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_delete_job_cascades_tasks_and_runs(tmp_path):
+    client, db_path = _make_client(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO remote_jobs (profile_name, job_id, name, ingested_at) "
+            "VALUES ('prod', 42, 'j', '2026-05-21T00:00:00')"
+        )
+        job_pk = conn.execute("SELECT id FROM remote_jobs").fetchone()[0]
+        conn.execute(
+            "INSERT INTO remote_job_tasks (job_id_fk, task_key, task_type, "
+            "raw_definition_json) VALUES (?, 't1', 'notebook_task', '{}')",
+            (job_pk,),
+        )
+        conn.execute(
+            "INSERT INTO remote_job_runs (job_id_fk, run_id, state_result, start_time) "
+            "VALUES (?, 1, 'SUCCESS', '2026-05-21T00:00:00')",
+            (job_pk,),
+        )
+        conn.commit()
+
+    resp = client.delete(f"/api/assets/job/{job_pk}", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["counts"]["children"] == 2  # one task + one run
+    assert body["counts"]["primary"] == 1
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM remote_jobs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM remote_job_tasks").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM remote_job_runs").fetchone()[0] == 0
+
+
+def test_delete_missing_asset_404(tmp_path):
+    client, _db = _make_client(tmp_path)
+    resp = client.delete("/api/assets/notebook/99999", headers=_AUTH)
+    assert resp.status_code == 404
+
+
+def test_delete_unknown_kind_400(tmp_path):
+    client, _db = _make_client(tmp_path)
+    resp = client.delete("/api/assets/banana/1", headers=_AUTH)
+    assert resp.status_code == 400
+
+
 def test_get_streamlit_surfaces_launch_info(tmp_path):
     client, db_path = _make_client(tmp_path)
     with sqlite3.connect(db_path) as conn:

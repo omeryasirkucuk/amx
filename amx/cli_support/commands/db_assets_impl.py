@@ -589,3 +589,124 @@ def run_prune(cfg, *, older_than, profile, skip_confirm):
     total = sum(dropped.values())
     summary = ", ".join(f"{k}={v}" for k, v in dropped.items() if v)
     click.echo(f"Dropped {total} rows: {summary or '(nothing matched)'}")
+
+
+_KIND_TO_PRIMARY_TABLE = {
+    "notebooks": ("remote_notebooks", "notebook"),
+    "jobs": ("remote_jobs", "job"),
+    "pipelines": ("remote_pipelines", "pipeline"),
+    "streamlit_apps": ("remote_streamlit_apps", "streamlit"),
+    "streams": ("remote_streams", "stream"),
+    "queries": ("remote_queries", "query"),
+}
+
+
+def run_delete(cfg, *, identifier, asset_type, profile, skip_confirm):
+    """Delete a single remote asset by id or by name within an asset type."""
+    profile_name = _resolve_profile(cfg, profile)
+    db_path = _history_db_path(cfg)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row, kind_table, kind_singular = _resolve_asset_for_delete(
+            conn, identifier=identifier, asset_type=asset_type, profile=profile_name
+        )
+        asset_id = row["id"]
+        row_keys = row.keys()
+        if "name" in row_keys and row["name"]:
+            display = row["name"]
+        elif "qualified_name" in row_keys:
+            display = row["qualified_name"]
+        else:
+            display = f"#{asset_id}"
+
+        if not skip_confirm:
+            if not click.confirm(
+                f"Delete {kind_singular} '{display}' (id={asset_id}) from profile '{profile_name}'?"
+            ):
+                click.echo("Cancelled.")
+                return
+
+        children = 0
+        if kind_singular == "job":
+            cur = conn.execute("DELETE FROM remote_job_tasks WHERE job_id_fk = ?", (asset_id,))
+            children += cur.rowcount or 0
+            cur = conn.execute("DELETE FROM remote_job_runs WHERE job_id_fk = ?", (asset_id,))
+            children += cur.rowcount or 0
+
+        edges = (
+            conn.execute(
+                "DELETE FROM catalog_relationships "
+                "WHERE relationship_type = 'asset_references_table' "
+                "AND from_entity_kind = ? AND from_entity_id = ?",
+                (kind_singular, asset_id),
+            ).rowcount
+            or 0
+        )
+
+        primary = conn.execute(f"DELETE FROM {kind_table} WHERE id = ?", (asset_id,)).rowcount or 0
+        conn.commit()
+
+    click.echo(
+        f"Deleted {kind_singular} #{asset_id} '{display}': "
+        f"primary={primary}, children={children}, lineage_edges={edges}"
+    )
+
+
+def _resolve_asset_for_delete(conn, *, identifier, asset_type, profile):
+    """Resolve identifier+asset_type to (row, table_name, kind_singular).
+
+    Supports numeric ids (without --type by searching every kind) OR
+    name lookups (require --type to disambiguate).
+    """
+    by_id = identifier.isdigit()
+    if by_id:
+        target_id = int(identifier)
+        if asset_type:
+            table, singular = _KIND_TO_PRIMARY_TABLE[asset_type]
+            row = conn.execute(
+                f"SELECT * FROM {table} WHERE id = ? AND profile_name = ?",
+                (target_id, profile),
+            ).fetchone()
+            if row is None:
+                raise click.ClickException(
+                    f"No {asset_type} asset with id={target_id} in profile '{profile}'."
+                )
+            return row, table, singular
+        # No --type: search every kind for the id.
+        hits: list[tuple[sqlite3.Row, str, str]] = []
+        for _kind, (table, singular) in _KIND_TO_PRIMARY_TABLE.items():
+            row = conn.execute(
+                f"SELECT * FROM {table} WHERE id = ? AND profile_name = ?",
+                (target_id, profile),
+            ).fetchone()
+            if row is not None:
+                hits.append((row, table, singular))
+        if not hits:
+            raise click.ClickException(
+                f"No asset with id={target_id} in profile '{profile}'. "
+                f"(Numeric ids are per-table; pass --type to scope.)"
+            )
+        if len(hits) > 1:
+            kinds = ", ".join(h[2] for h in hits)
+            raise click.ClickException(
+                f"id={target_id} matches multiple asset kinds: {kinds}. "
+                f"Pass --type to disambiguate."
+            )
+        return hits[0]
+    # Identifier is a name: --type is required.
+    if not asset_type:
+        raise click.ClickException(
+            "Identifier is a name; pass --type so AMX knows which table to scan."
+        )
+    table, singular = _KIND_TO_PRIMARY_TABLE[asset_type]
+    name_col = "qualified_name" if asset_type in {"streamlit_apps", "streams"} else "name"
+    row = conn.execute(
+        f"SELECT * FROM {table} WHERE {name_col} = ? AND profile_name = ?",
+        (identifier, profile),
+    ).fetchone()
+    if row is None:
+        raise click.ClickException(
+            f"No {asset_type} asset named {identifier!r} in profile '{profile}'."
+        )
+    return row, table, singular

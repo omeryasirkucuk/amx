@@ -210,6 +210,46 @@ def _decode_json_array(raw: Any) -> list[Any]:
     return decoded if isinstance(decoded, list) else []
 
 
+@router.delete("/{kind}/{asset_id}", status_code=200)
+def delete_asset(
+    kind: str,
+    asset_id: int,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Delete a single asset and its dependent rows.
+
+    Returns a counts dict so the caller can confirm what was removed.
+    404 when the asset doesn't exist in the active history DB.
+    """
+    if kind not in ASSET_KINDS:
+        raise HTTPException(400, f"Unknown asset kind: {kind!r}. Valid: {', '.join(ASSET_KINDS)}")
+    table, _ = ASSET_KINDS[kind]
+    deleted = {"primary": 0, "children": 0, "lineage_edges": 0}
+    with sqlite3.connect(_history_db_path(cfg)) as conn:
+        existing = conn.execute(f"SELECT id FROM {table} WHERE id = ?", (asset_id,)).fetchone()
+        if existing is None:
+            raise HTTPException(404, "Asset not found")
+        # Cascade child rows for jobs; other kinds have no children.
+        if kind == "job":
+            cur = conn.execute("DELETE FROM remote_job_tasks WHERE job_id_fk = ?", (asset_id,))
+            deleted["children"] += cur.rowcount or 0
+            cur = conn.execute("DELETE FROM remote_job_runs WHERE job_id_fk = ?", (asset_id,))
+            deleted["children"] += cur.rowcount or 0
+        # Clear lineage edges where this asset is the FROM side.
+        cur = conn.execute(
+            "DELETE FROM catalog_relationships "
+            "WHERE relationship_type = 'asset_references_table' "
+            "AND from_entity_kind = ? AND from_entity_id = ?",
+            (kind, asset_id),
+        )
+        deleted["lineage_edges"] = cur.rowcount or 0
+        # Finally the primary row.
+        cur = conn.execute(f"DELETE FROM {table} WHERE id = ?", (asset_id,))
+        deleted["primary"] = cur.rowcount or 0
+        conn.commit()
+    return {"deleted": True, "kind": kind, "asset_id": asset_id, "counts": deleted}
+
+
 class IngestBody(BaseModel):
     profile: str
     types: list[str]

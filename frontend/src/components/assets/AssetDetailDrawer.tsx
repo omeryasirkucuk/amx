@@ -10,8 +10,8 @@
  */
 
 import { useEffect, useState } from "react";
-import { Check, Copy, X } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { Check, Copy, Loader2, Trash2, X } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -456,6 +456,35 @@ export default function AssetDetailDrawer({
     staleTime: 60_000,
   });
 
+  const queryClient = useQueryClient();
+  const deleteMutation = useMutation({
+    mutationFn: () => api.deleteRemoteAsset(kind, assetId),
+    onSuccess: () => {
+      // Drop the list + this row from cache so the table refetches without
+      // the deleted row and the drawer can close cleanly.
+      queryClient.invalidateQueries({ queryKey: ["remote-assets", kind] });
+      queryClient.removeQueries({ queryKey: ["remote-asset", kind, assetId] });
+      onClose();
+    },
+  });
+
+  function handleDelete() {
+    const name =
+      (data && (data["name"] as string | undefined)) ||
+      (data && (data["qualified_name"] as string | undefined)) ||
+      `${kind} #${assetId}`;
+    if (
+      !window.confirm(
+        `Delete ${kind} "${name}"? This removes the row from AMX's catalog ` +
+          `(the source ${kind} on the platform is untouched). Lineage edges ` +
+          `referencing it are also removed.`,
+      )
+    ) {
+      return;
+    }
+    deleteMutation.mutate();
+  }
+
   if (!open) return null;
 
   // Keys to omit from the generic definition list (shown in header or
@@ -544,15 +573,40 @@ export default function AssetDetailDrawer({
               )}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close detail panel"
-            className="shrink-0 rounded-md p-1.5 text-ink-dim hover:bg-surface-subtle hover:text-ink"
-          >
-            <X size={16} />
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={deleteMutation.isPending || !data}
+              aria-label="Delete asset"
+              title="Delete asset"
+              className={cn(
+                "rounded-md p-1.5",
+                "text-critical hover:bg-critical/10",
+                "disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
+              )}
+            >
+              {deleteMutation.isPending ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Trash2 size={16} />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close detail panel"
+              className="rounded-md p-1.5 text-ink-dim hover:bg-surface-subtle hover:text-ink"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
+        {deleteMutation.error && (
+          <div className="mx-5 mb-2 rounded-md bg-critical/10 px-3 py-2 text-xs text-critical">
+            Failed to delete: {(deleteMutation.error as Error).message}
+          </div>
+        )}
 
         {/* Body */}
         <div className="flex-1 px-5 py-4">
