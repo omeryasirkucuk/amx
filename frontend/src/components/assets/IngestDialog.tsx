@@ -47,6 +47,9 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
   const [finalCounts, setFinalCounts] = useState<Record<string, number> | null>(
     null,
   );
+  const [finalFailures, setFinalFailures] = useState<Record<string, string> | null>(
+    null,
+  );
   const [done, setDone] = useState(false);
   const esRef = useRef<EventSource | null>(null);
 
@@ -63,6 +66,7 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
     setError(null);
     setTypeStatuses({});
     setFinalCounts(null);
+    setFinalFailures(null);
     setDone(false);
     esRef.current?.close();
     esRef.current = null;
@@ -91,6 +95,7 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
     setSubmitting(true);
     setTypeStatuses({});
     setFinalCounts(null);
+    setFinalFailures(null);
     setDone(false);
 
     const days = parseInt(historyDays, 10);
@@ -110,6 +115,7 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
 
           if (data.state === "completed") {
             setFinalCounts(data.counts ?? {});
+            setFinalFailures(data.failures ?? {});
             setDone(true);
             setSubmitting(false);
             es.close();
@@ -200,7 +206,12 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
                           {status.count != null ? `${status.count}` : "done"}
                         </span>
                       ) : status.state === "failed" ? (
-                        <span className="text-[11px] text-critical">fail</span>
+                        <span
+                          className="text-[11px] text-critical"
+                          title={status.message ?? ""}
+                        >
+                          fail
+                        </span>
                       ) : null}
                     </span>
                   )}
@@ -230,22 +241,58 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
           </p>
         )}
 
-        {/* Final summary */}
-        {done && finalCounts && (
-          <div className="rounded-md border border-positive/30 bg-positive/5 px-3 py-2">
-            <p className="mb-1.5 text-sm font-medium text-positive">
-              Ingestion completed
-            </p>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-ink-muted sm:grid-cols-3">
-              {Object.entries(finalCounts).map(([k, v]) => (
-                <div key={k} className="flex gap-1">
-                  <dt className="text-ink-dim">{k}:</dt>
-                  <dd className="font-mono">{v}</dd>
+        {/* Final summary — colored by outcome */}
+        {done && finalCounts && (() => {
+          const failureCount = finalFailures ? Object.keys(finalFailures).length : 0;
+          const totalRequested = Array.from(selectedTypes).length;
+          const allFailed = failureCount > 0 && failureCount >= totalRequested;
+          const partialFailure = failureCount > 0 && !allFailed;
+          const wrapper = allFailed
+            ? "rounded-md border border-critical/30 bg-critical/5 px-3 py-2"
+            : partialFailure
+              ? "rounded-md border border-warning/40 bg-warning/5 px-3 py-2"
+              : "rounded-md border border-positive/30 bg-positive/5 px-3 py-2";
+          const headlineColor = allFailed
+            ? "text-critical"
+            : partialFailure
+              ? "text-warning"
+              : "text-positive";
+          const headline = allFailed
+            ? "Ingestion failed for every selected asset type"
+            : partialFailure
+              ? `Ingestion completed with ${failureCount} failure${failureCount === 1 ? "" : "s"}`
+              : "Ingestion completed";
+          return (
+            <div className={wrapper}>
+              <p className={`mb-1.5 text-sm font-medium ${headlineColor}`}>{headline}</p>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-ink-muted sm:grid-cols-3">
+                {Object.entries(finalCounts).map(([k, v]) => (
+                  <div key={k} className="flex gap-1">
+                    <dt className="text-ink-dim">{k}:</dt>
+                    <dd className="font-mono">{v}</dd>
+                  </div>
+                ))}
+              </dl>
+              {finalFailures && Object.keys(finalFailures).length > 0 && (
+                <div className="mt-2 border-t border-border/50 pt-2">
+                  <p className="mb-1 text-xs font-medium text-critical">
+                    Failures (open the matching profile in /db-profiles to fix
+                    credentials):
+                  </p>
+                  <ul className="space-y-1 text-[11px] text-ink-muted">
+                    {Object.entries(finalFailures).map(([type, msg]) => (
+                      <li key={type}>
+                        <span className="font-mono text-critical">{type}</span>
+                        {": "}
+                        <span className="break-words">{msg}</span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-              ))}
-            </dl>
-          </div>
-        )}
+              )}
+            </div>
+          );
+        })()}
       </div>
     </Dialog>
   );
