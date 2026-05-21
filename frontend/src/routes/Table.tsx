@@ -501,19 +501,28 @@ export default function Table() {
         singleOption={{
           label: "Just this table",
           description: "Writes only the table's COMMENT. One LLM call, columns untouched.",
-          loading: generateTableOnly.isPending,
+          // Fire-and-forget: close the dialog immediately and let the
+          // mutation finish in the background. The pending pill on the
+          // Table page surfaces the result the moment the LLM call
+          // returns, so trapping the user in a "...running" modal until
+          // settle was pure friction.
           onClick: () => {
-            generateTableOnly.mutate(undefined, {
-              onSettled: () => setConfirmGenerate(false),
-            });
+            setConfirmGenerate(false);
+            generateTableOnly.mutate();
           },
         }}
         bulkOption={{
           label: "Whole table — every column too (bulk run)",
           description:
             "Spawns analyze.run for the full table; each column gets its own generated description, recorded in history.",
-          loading: generate.isPending,
-          onClick: () => generate.mutate(),
+          // Bulk path also closes the dialog upfront. ``generate`` runs
+          // pre-flight first; if blocked tables are found, the
+          // reachability modal below opens — independent of whether the
+          // GenerateScopeDialog is still on screen.
+          onClick: () => {
+            setConfirmGenerate(false);
+            generate.mutate();
+          },
         }}
       />
       <Modal
