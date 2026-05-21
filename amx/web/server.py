@@ -23,6 +23,7 @@ from amx.web.jobs import JobRegistry
 from amx.web.routers import (
     admin,
     ask,
+    assets as assets_router,
     capabilities,
     catalog,
     code_ops,
@@ -120,6 +121,7 @@ def create_app(
     app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(admin.router)
+    app.include_router(assets_router.router)
     app.include_router(system.router)
     app.include_router(live_db.router)
     app.include_router(catalog.router)
