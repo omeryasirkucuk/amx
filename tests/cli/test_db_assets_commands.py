@@ -227,3 +227,54 @@ def test_db_assets_search_finds_term_in_notebook_source(monkeypatch, tmp_path):
 
 import re as _re
 
+
+def test_db_assets_prune_drops_old_rows(monkeypatch, tmp_path):
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+    import sqlite3
+    db_path = tmp_path / "amx.db"
+    SQLiteHistoryStore(db_path).init()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO remote_notebooks
+                   (profile_name, platform, external_id, name, workspace_path,
+                    qualified_name, language, source_text, source_hash,
+                    last_modified_at, last_modified_by, owner, cell_count, ingested_at)
+               VALUES ('prod', 'databricks', 'ext-old', 'old_nb', '/old', NULL,
+                       'python', '{}', 'h', NULL, NULL, NULL, 1,
+                       '2020-01-01T00:00:00')"""
+        )
+        conn.execute(
+            """INSERT INTO remote_notebooks
+                   (profile_name, platform, external_id, name, workspace_path,
+                    qualified_name, language, source_text, source_hash,
+                    last_modified_at, last_modified_by, owner, cell_count, ingested_at)
+               VALUES ('prod', 'databricks', 'ext-new', 'new_nb', '/new', NULL,
+                       'python', '{}', 'h', NULL, NULL, NULL, 1, ?)""",
+            (__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),),
+        )
+        conn.commit()
+
+    import amx.cli_support.commands.db_assets_impl as impl
+    monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
+    monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
+
+    result = _invoke(["db", "assets", "prune", "--older-than", "30d", "--profile", "prod", "-y"])
+    assert result.exit_code == 0, result.output
+    with sqlite3.connect(db_path) as conn:
+        names = [r[0] for r in conn.execute("SELECT name FROM remote_notebooks").fetchall()]
+    assert names == ["new_nb"]
+
+
+def test_db_assets_prune_validates_window():
+    result = _invoke(["db", "assets", "prune", "--older-than", "garbage", "--profile", "prod", "-y"])
+    assert result.exit_code != 0
+
+
+def test_db_assets_refresh_confirmation_no(monkeypatch, tmp_path):
+    """User declines the confirmation — nothing happens, no exception."""
+    import amx.cli_support.commands.db_assets_impl as impl
+    monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
+    monkeypatch.setattr(click, "confirm", lambda *a, **kw: False)
+    result = _invoke(["db", "assets", "refresh", "--profile", "prod"])
+    assert result.exit_code == 0
+    assert "Cancelled" in result.output or "cancelled" in result.output.lower()

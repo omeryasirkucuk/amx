@@ -322,6 +322,7 @@ def run_list(cfg, *, profile, asset_type):
     console = Console()
     console.print(table)
 
+
 # ── run_show ─────────────────────────────────────────────────────────────────
 
 
@@ -472,9 +473,75 @@ def run_search(cfg, *, query, profile, limit):
         click.echo(f"  {h['tag']} {h['kind']} #{h['id']}: {h['name']} ({h['context']})")
 
 
+# ── run_refresh ──────────────────────────────────────────────────────────────
+
+
 def run_refresh(cfg, *, profile, skip_confirm):
-    raise click.ClickException("/db assets refresh is not implemented yet.")
+    """Drop and re-ingest all assets for a profile."""
+    if not skip_confirm:
+        if not click.confirm(
+            "Drop all remote assets for this profile and re-ingest? "
+            "(Re-ingest consumes tokens on the active LLM for some warehouses.)"
+        ):
+            click.echo("Cancelled.")
+            return
+    profile_name = _resolve_profile(cfg, profile)
+    db_path = _history_db_path(cfg)
+    with sqlite3.connect(db_path) as conn:
+        for tbl in (
+            "remote_notebooks", "remote_jobs", "remote_pipelines",
+            "remote_streamlit_apps", "remote_streams", "remote_queries",
+            "remote_task_dependencies",
+        ):
+            conn.execute(f"DELETE FROM {tbl} WHERE profile_name = ?", (profile_name,))
+        conn.commit()
+    click.echo(f"Cleared assets for profile '{profile_name}'. Re-ingesting all types...")
+    run_ingest_wizard(
+        cfg,
+        profile=profile_name,
+        types_csv=",".join(ASSET_TYPES),
+        history_days=7,
+        runs_per_job=20,
+        query_history_limit=1000,
+    )
+
+
+# ── run_prune ────────────────────────────────────────────────────────────────
 
 
 def run_prune(cfg, *, older_than, profile, skip_confirm):
-    raise click.ClickException("/db assets prune is not implemented yet.")
+    """Drop assets that haven't been re-ingested within the given time window."""
+    m = _WINDOW_RX.match(older_than.strip())
+    if not m:
+        raise click.ClickException(
+            "--older-than must look like '30d', '7d', or '12h'."
+        )
+    n, unit = int(m.group(1)), m.group(2)
+    seconds = {"d": 86400, "h": 3600, "m": 60}[unit] * n
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+    profile_name = _resolve_profile(cfg, profile)
+    if not skip_confirm:
+        if not click.confirm(
+            f"Drop remote assets last ingested before {cutoff} "
+            f"for profile '{profile_name}'?"
+        ):
+            click.echo("Cancelled.")
+            return
+
+    db_path = _history_db_path(cfg)
+    dropped = {}
+    with sqlite3.connect(db_path) as conn:
+        for tbl in (
+            "remote_notebooks", "remote_jobs", "remote_pipelines",
+            "remote_streamlit_apps", "remote_streams", "remote_queries",
+        ):
+            cur = conn.execute(
+                f"DELETE FROM {tbl} WHERE profile_name = ? AND ingested_at < ?",
+                (profile_name, cutoff),
+            )
+            dropped[tbl] = cur.rowcount
+        conn.commit()
+    total = sum(dropped.values())
+    summary = ", ".join(f"{k}={v}" for k, v in dropped.items() if v)
+    click.echo(f"Dropped {total} rows: {summary or '(nothing matched)'}")
