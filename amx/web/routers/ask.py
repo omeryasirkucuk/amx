@@ -415,6 +415,7 @@ def ask_context(
     ]
 
     anchored_pages_count = 0
+    ingested_assets_count = 0
     if _store is not None and scope_dbs:
         with _store._connect() as conn:  # noqa: SLF001
             for profile in scope_dbs:
@@ -427,6 +428,22 @@ def ask_context(
                     (f"{profile}:%",),
                 ).fetchone()
                 anchored_pages_count += int(n or 0)
+            for table_name in (
+                "remote_notebooks",
+                "remote_queries",
+                "remote_streams",
+                "remote_pipelines",
+            ):
+                try:
+                    placeholders = ",".join("?" for _ in scope_dbs)
+                    (n,) = conn.execute(
+                        f"SELECT COUNT(*) FROM {table_name} "
+                        f"WHERE profile_name IN ({placeholders})",
+                        tuple(scope_dbs),
+                    ).fetchone()
+                    ingested_assets_count += int(n or 0)
+                except Exception:  # noqa: BLE001
+                    continue
 
     return {
         "scope_db_profiles": scope_dbs,
@@ -434,6 +451,7 @@ def ask_context(
         "code_profiles": code_payload,
         "lineage_artifacts": lineage_payload,
         "anchored_pages": {"count": anchored_pages_count},
+        "ingested_assets": {"count": ingested_assets_count},
     }
 
 
