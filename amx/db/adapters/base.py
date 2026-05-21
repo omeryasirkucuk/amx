@@ -47,6 +47,17 @@ class BackendCapabilities:
     volumes: bool = False
     datashares: bool = False
     external_tables: bool = False
+    # Remote executable asset ingestion (Snowflake/Databricks notebooks,
+    # jobs, pipelines, etc.). Each flag gates a corresponding
+    # ``list_remote_<kind>()`` call. Adapters opt in by flipping the flag
+    # once they implement the matching method.
+    remote_notebooks: bool = False
+    remote_jobs: bool = False
+    remote_pipelines: bool = False
+    remote_streamlit_apps: bool = False
+    remote_streams: bool = False
+    remote_task_dependencies: bool = False
+    remote_queries: bool = False
     comment_asset_keywords: frozenset[str] = field(
         default_factory=lambda: frozenset({"TABLE", "VIEW"})
     )
