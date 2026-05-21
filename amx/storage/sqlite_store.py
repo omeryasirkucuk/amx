@@ -743,6 +743,13 @@ class SQLiteHistoryStore:
                 "ALTER TABLE catalog_relationships ADD COLUMN style_color TEXT",
                 "ALTER TABLE catalog_relationships ADD COLUMN style_dashed INTEGER",
                 "ALTER TABLE catalog_relationships ADD COLUMN cardinality TEXT",
+                # v6 — polymorphic-FK support for remote-asset lineage.
+                # 'table' is the backward-compatible default; new rows
+                # for notebook/job/pipeline/streamlit/stream/query edges
+                # set the matching kind so callers know which remote_*
+                # table the id belongs to.
+                "ALTER TABLE catalog_relationships ADD COLUMN from_entity_kind TEXT NOT NULL DEFAULT 'table'",
+                "ALTER TABLE catalog_relationships ADD COLUMN to_entity_kind TEXT NOT NULL DEFAULT 'table'",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(_ddl)

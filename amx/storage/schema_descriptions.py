@@ -972,6 +972,14 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "'1:N', 'N:M', or NULL (no marker). Pure presentation "
             "metadata — does not change which rows match the edge."
         ),
+        "from_entity_kind": (
+            "Entity kind for from_entity_id: 'table' (default) | 'notebook' | 'job' | "
+            "'pipeline' | 'query' | 'streamlit' | 'stream'. Existing rows default to "
+            "'table' for backward compatibility."
+        ),
+        "to_entity_kind": (
+            "Entity kind for to_entity_id (same value set as from_entity_kind)."
+        ),
     },
     # ── lineage_artifacts ─────────────────────────────────────────────────
     "lineage_artifacts": {
