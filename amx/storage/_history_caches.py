@@ -384,6 +384,7 @@ def invalidate_column_comments_cache(
     database: str = "",
     schema: str | None = None,
     table: str | None = None,
+    match_any_database: bool = False,
 ) -> int:
     """Drop cached rows at one of three granularities.
 
@@ -391,17 +392,36 @@ def invalidate_column_comments_cache(
     * ``schema`` set, ``table`` ``None`` → whole schema (schema comment write).
     * Both ``None`` → whole profile (database comment write, profile reset).
 
+    ``match_any_database`` widens the ``schema``-level and table-level
+    filters to ignore ``database_name``. Used by the apply path: a
+    pending entry doesn't carry the originating ``db_profile`` /
+    ``database`` / ``catalog`` triple (the file just stores schema +
+    table + column + final_description), so the apply worker falls
+    back to ``cfg.active_db_profile`` + the profile's pinned database.
+    When the Studio snapshot endpoint was opened with a different
+    ``?database=`` query (the user navigated to a non-pinned DB), the
+    apply's targeted invalidate wipes a different cache row than the
+    snapshot reads on its next refresh, and the stale entry survives.
+    Wiping across every ``database_name`` for the same
+    ``(db_profile, schema, table)`` triple removes that gap.
+
     Returns rowcount. Always safe — a no-op on a cold cache returns 0.
     """
     params: list[Any] = [str(db_profile or "")]
     sql = "DELETE FROM column_comments_cache WHERE db_profile = ?"
     # ``database_name`` is empty string when the profile is single-db;
     # we filter on it whenever a schema is named so a multi-db profile
-    # only wipes the affected database.
+    # only wipes the affected database — unless ``match_any_database``
+    # is True, in which case the apply-path belt-and-braces drops every
+    # ``database_name`` row for the same ``(profile, schema, table)``.
     if schema is not None:
-        sql += " AND database_name = ? AND schema_name = ?"
-        params.append(str(database or ""))
-        params.append(str(schema or ""))
+        if match_any_database:
+            sql += " AND schema_name = ?"
+            params.append(str(schema or ""))
+        else:
+            sql += " AND database_name = ? AND schema_name = ?"
+            params.append(str(database or ""))
+            params.append(str(schema or ""))
     if table is not None:
         sql += " AND table_name = ?"
         params.append(str(table or ""))

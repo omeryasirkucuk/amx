@@ -729,6 +729,8 @@ class DatabaseConnector:
         self,
         schema: str | None = None,
         table: str | None = None,
+        *,
+        match_any_database: bool = False,
     ) -> None:
         """Drop cached comment rows for this connector.
 
@@ -739,6 +741,13 @@ class DatabaseConnector:
         Schema-level invalidations also wipe the matching
         ``schemas_cache`` row so a re-read of ``get_schema_comment``
         sees the fresh value, not the pre-write copy.
+
+        ``match_any_database=True`` widens the cache delete to ignore
+        ``database_name``. Used by the apply path because pending
+        entries don't carry the originating ``database`` / ``catalog``
+        scope: the apply worker falls back to active-profile defaults
+        whose cache key can differ from the one Studio's snapshot
+        endpoint populated when the user navigated to a non-pinned DB.
         """
         try:
             from amx.storage.sqlite_store import history_store
@@ -753,6 +762,7 @@ class DatabaseConnector:
                 database=self._cache_database_key(),
                 schema=schema,
                 table=table,
+                match_any_database=match_any_database,
             )
         except Exception as exc:
             log.debug("column-comments cache invalidate failed: %s", exc)
