@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from amx.config import AMXConfig
@@ -179,3 +180,151 @@ def test_refresh_endpoint_clears_and_returns_job_id(monkeypatch, tmp_path):
             "SELECT COUNT(*) FROM remote_notebooks WHERE profile_name = 'prod'"
         ).fetchone()[0]
     assert count == 0
+
+
+# ── Job/Pipeline/Streamlit detail enrichment ────────────────────────────────
+
+
+def test_get_job_includes_tasks_and_runs(tmp_path):
+    """Job detail surfaces the task DAG + recent run timeline.
+
+    The route used to return only the top-level remote_jobs row, which
+    rendered as a generic key/value dump in Studio. This test seeds the
+    three sibling tables and asserts the response includes structured
+    ``tasks`` + ``recent_runs`` arrays with decoded JSON fields.
+    """
+    client, db_path = _make_client(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        # Seed a notebook so notebook_id_fk → notebook_name resolves.
+        conn.execute(
+            """
+            INSERT INTO remote_notebooks
+                (profile_name, platform, external_id, name, workspace_path,
+                 qualified_name, language, source_text, source_hash,
+                 last_modified_at, last_modified_by, owner, cell_count, ingested_at)
+            VALUES ('prod', 'databricks', 'ext-extract', 'extract_nb',
+                    '/Users/alice/extract', NULL, 'python', '{}', 'h',
+                    NULL, NULL, NULL, 1, '2026-05-21T00:00:00')
+            """,
+        )
+        nb_id = conn.execute("SELECT id FROM remote_notebooks").fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO remote_jobs
+                (profile_name, job_id, name, schedule_cron, schedule_pause_status,
+                 success_rate_30d, ingested_at)
+            VALUES ('prod', 42, 'nightly_etl', '0 2 * * *', 'UNPAUSED', 0.95,
+                    '2026-05-21T00:00:00')
+            """,
+        )
+        job_pk = conn.execute("SELECT id FROM remote_jobs").fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO remote_job_tasks
+                (job_id_fk, task_key, task_type, notebook_path, notebook_id_fk,
+                 depends_on_json, raw_definition_json)
+            VALUES (?, 'extract', 'notebook_task', '/Users/alice/extract', ?,
+                    '[]', '{}')
+            """,
+            (job_pk, nb_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO remote_job_tasks
+                (job_id_fk, task_key, task_type, notebook_path, depends_on_json,
+                 raw_definition_json)
+            VALUES (?, 'load', 'notebook_task', '/Users/alice/load',
+                    '["extract"]', '{}')
+            """,
+            (job_pk,),
+        )
+        for run_id, start, state in (
+            (1, "2026-05-21T08:00:00", "SUCCESS"),
+            (2, "2026-05-20T08:00:00", "FAILED"),
+            (3, "2026-05-19T08:00:00", "SUCCESS"),
+        ):
+            conn.execute(
+                """
+                INSERT INTO remote_job_runs
+                    (job_id_fk, run_id, state_result, start_time, end_time,
+                     setup_duration_ms, execution_duration_ms)
+                VALUES (?, ?, ?, ?, ?, 100, 9000)
+                """,
+                (job_pk, run_id, state, start, start),
+            )
+        conn.commit()
+
+    resp = client.get(f"/api/assets/job/{job_pk}", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["name"] == "nightly_etl"
+    assert body["success_rate_30d"] == 0.95
+    # Tasks are ordered by task_key and carry decoded depends_on + notebook_name.
+    tasks = body["tasks"]
+    assert [t["task_key"] for t in tasks] == ["extract", "load"]
+    assert tasks[0]["notebook_name"] == "extract_nb"
+    assert tasks[0]["depends_on"] == []
+    assert tasks[1]["depends_on"] == ["extract"]
+    # Recent runs are most-recent first with summed duration_ms.
+    runs = body["recent_runs"]
+    assert [r["run_id"] for r in runs] == [1, 2, 3]
+    assert runs[0]["state_result"] == "SUCCESS"
+    assert runs[0]["duration_ms"] == 9100
+
+
+def test_get_pipeline_decodes_libraries(tmp_path):
+    client, db_path = _make_client(tmp_path)
+    libraries = [
+        {"notebook": {"path": "/Users/alice/dlt_main"}},
+        {"file": {"path": "/Volumes/util.py"}},
+    ]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO remote_pipelines
+                (profile_name, pipeline_id, name, target_schema, edition,
+                 continuous, photon, libraries_json, latest_update_state,
+                 latest_update_creation_time, ingested_at)
+            VALUES ('prod', 'p-1', 'kpi_pipeline', 'analytics', 'ADVANCED',
+                    0, 1, ?, 'COMPLETED', '2026-05-21T08:00:00',
+                    '2026-05-21T09:00:00')
+            """,
+            (json.dumps(libraries),),
+        )
+        pl_id = conn.execute("SELECT id FROM remote_pipelines").fetchone()[0]
+        conn.commit()
+
+    resp = client.get(f"/api/assets/pipeline/{pl_id}", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["libraries"] == libraries
+    assert body["latest_update"] == {
+        "state": "COMPLETED",
+        "created_at": "2026-05-21T08:00:00",
+    }
+
+
+def test_get_streamlit_surfaces_launch_info(tmp_path):
+    client, db_path = _make_client(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO remote_streamlit_apps
+                (profile_name, qualified_name, main_file, query_warehouse,
+                 root_location, owner, last_altered_at, ingested_at)
+            VALUES ('prod', 'ANALYTICS.APPS.DASH_KPIS', 'streamlit_app.py',
+                    'WH_S', '@APPS.DASH_STAGE/dash_kpis', 'DATA_ENG',
+                    '2026-05-01T00:00:00', '2026-05-21T00:00:00')
+            """,
+        )
+        app_id = conn.execute("SELECT id FROM remote_streamlit_apps").fetchone()[0]
+        conn.commit()
+
+    resp = client.get(f"/api/assets/streamlit/{app_id}", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["launch_info"] == {
+        "main_file": "streamlit_app.py",
+        "root_location": "@APPS.DASH_STAGE/dash_kpis",
+        "query_warehouse": "WH_S",
+    }
