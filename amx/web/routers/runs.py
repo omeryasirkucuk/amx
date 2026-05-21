@@ -33,6 +33,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.exc import NoSuchTableError
 from sse_starlette.sse import EventSourceResponse
 
 from amx.agents.orchestrator import (
@@ -246,6 +247,43 @@ class RunRequest(BaseModel):
             "disk. The saved config is never mutated."
         ),
     )
+    cache_override_assets: list[str] | None = Field(
+        default=None,
+        description=(
+            "Bulk run only: ``schema.table`` identifiers the Studio "
+            "reachability pre-flight (POST /api/runs/preflight) flagged "
+            "as unreadable on the live database, and the user explicitly "
+            "chose to substitute with the catalog cache from the last "
+            "/search sync. The bulk worker skips ``profile_table`` for "
+            "these assets and synthesizes a metadata-only profile "
+            "(columns + dtypes + existing comments only — no samples, "
+            "no PK/FK, no usage stats). Pass ``None`` (or omit) to "
+            "force every asset through the live-profiling path."
+        ),
+    )
+
+
+class PreflightRequest(BaseModel):
+    """Body for ``POST /api/runs/preflight`` — reachability gate.
+
+    Probes every ``(schema, table)`` in ``scope`` via the cheap
+    metadata-only :meth:`DatabaseConnector.list_column_profiles`
+    (which already swallows ``NoSuchTableError`` and returns ``[]``).
+    The response splits the scope into two lists so the SPA can ask
+    the user whether to substitute the catalog cache for any
+    unreachable asset before submitting the actual bulk run.
+
+    Same multi-profile scope fields as :class:`RunRequest`; pre-flight
+    runs against the same connector the run will use.
+    """
+
+    scope: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Schema → tables map. Empty {} means nothing to probe.",
+    )
+    db_profile: str | None = Field(default=None)
+    database: str | None = Field(default=None)
+    catalog: str | None = Field(default=None)
 
 
 def _apply_llm_overrides(
@@ -337,6 +375,84 @@ def _scoped_connector(
         cfg.active_db_profile,
         cfg.db.backend if cfg.db else None,
     )
+
+
+@router.post("/runs/preflight")
+def preflight_run(
+    body: PreflightRequest,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Reachability gate for the bulk-run path.
+
+    Probes every ``(schema, table)`` in ``body.scope`` against the live
+    DB via the cheap metadata-only :meth:`list_column_profiles` —
+    which already swallows ``NoSuchTableError`` and returns ``[]`` —
+    so the Studio caller can ask the user whether to substitute the
+    catalog cache before submitting the actual run. No LLM work
+    happens here.
+
+    Response shape::
+
+        {
+            "blocked_assets":   [{"schema": ..., "table": ..., "reason": ...}],
+            "reachable_assets": [{"schema": ..., "table": ...}],
+        }
+
+    The SPA renders a reachability dialog when ``blocked_assets`` is
+    non-empty and includes the user's choice on the subsequent
+    ``POST /api/runs`` call as ``cache_override_assets``.
+    """
+    from amx.web.routers.live_db import _connector_for_scope
+
+    db_profile_name = (body.db_profile or cfg.active_db_profile or "").strip()
+    if not db_profile_name:
+        # Mirror the fallback the run worker uses so a CLI-driven
+        # session without an explicit profile still pre-flights.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="db_profile is required for pre-flight.",
+        )
+
+    try:
+        db = _connector_for_scope(
+            cfg, db_profile_name, database=body.database, catalog=body.catalog
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not open connector for pre-flight: {exc.__class__.__name__}: {exc}",
+        ) from exc
+
+    blocked: list[dict[str, str]] = []
+    reachable: list[dict[str, str]] = []
+    for schema, tables in (body.scope or {}).items():
+        for table in tables or []:
+            try:
+                cols = db.list_column_profiles(schema, table)
+            except Exception as exc:  # pragma: no cover — defensive
+                log.warning(
+                    "preflight: unexpected error probing %s.%s: %s",
+                    schema,
+                    table,
+                    exc,
+                )
+                cols = []
+            if cols:
+                reachable.append({"schema": schema, "table": table})
+            else:
+                blocked.append(
+                    {
+                        "schema": schema,
+                        "table": table,
+                        "reason": "not_in_live_db",
+                    }
+                )
+    return {
+        "blocked_assets": blocked,
+        "reachable_assets": reachable,
+    }
 
 
 @router.post("/runs")
@@ -997,6 +1113,9 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
 
     _cancel_token_sentinel = _active_cancel_token.set(job.cancel)
 
+    cache_override_set: set[str] = {
+        str(s).strip() for s in (body.cache_override_assets or []) if str(s).strip()
+    }
     try:
         if use_batch:
             _process_scope_batch(
@@ -1008,6 +1127,7 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                 total_assets=total_assets,
                 processed_assets=processed_assets,
                 failed_assets=failed_assets,
+                cache_override_assets=cache_override_set,
             )
         else:
             idx_global = 0
@@ -1345,6 +1465,7 @@ def _process_scope_batch(
     total_assets: int,
     processed_assets: list[str],
     failed_assets: list[tuple[str, str]],
+    cache_override_assets: set[str] | None = None,
 ) -> None:
     """Run the scope through the provider's Batch API, one schema at a time.
 
@@ -1355,6 +1476,12 @@ def _process_scope_batch(
     Within a schema there's no per-table progress because the batch
     completes as a unit — we emit one ``activity.added`` per schema
     plus one ``activity.complete`` when its results return.
+
+    ``cache_override_assets`` is the set of ``"schema.table"`` strings
+    the Studio reachability pre-flight flagged as unreadable on the
+    live DB — the user chose "Use cached schema" in the dialog. For
+    those assets the orchestrator substitutes a catalog-cached
+    metadata profile instead of calling ``profile_table``.
     """
     asset_kinds_cache: dict[tuple[str, str], Any] = {}
     idx_global = 0
@@ -1388,9 +1515,35 @@ def _process_scope_batch(
                 list(tables),
                 asset_kinds=asset_kinds,
                 cancel_token=job.cancel,
+                cache_override_assets=cache_override_assets,
             )
         except RunCancelled:
             raise
+        except NoSuchTableError as exc:
+            # Live DB can't reflect the table even though the catalog
+            # has it. Surface an actionable message instead of the raw
+            # SQLAlchemy class name. Studio's pre-flight should have
+            # caught this (and let the user pick the cache override);
+            # this branch covers CLI / direct API callers and any race
+            # where the table got dropped between pre-flight and run.
+            remediation = (
+                f"Live database can't read this table — was it dropped after the "
+                f"last catalog sync? Re-run /search sync to refresh the catalog, "
+                f"or re-submit the run from Studio to opt into the cached-schema "
+                f"override. (raw: {exc.__class__.__name__})"
+            )
+            for table in tables:
+                failed_assets.append((f"{schema}.{table}", remediation))
+            log.warning(
+                "Batch run for schema %s hit NoSuchTableError; surfaced remediation message",
+                schema,
+            )
+            emit(
+                job.queue,
+                "activity.fail",
+                {"idx": idx_global, "detail": remediation},
+            )
+            continue
         except Exception as exc:
             for table in tables:
                 failed_assets.append((f"{schema}.{table}", str(exc)))
@@ -1457,8 +1610,93 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
         emit_terminal(job.queue, "job.done", {"summary": job.summary})
         return
 
+    # Pending entries don't carry the originating ``db_profile`` /
+    # ``database`` / ``catalog`` triple (the on-disk pending file just
+    # stores schema/table/column + description). The Studio Pending
+    # page submits an empty body, so without a fallback the worker
+    # would open a connector against ``cfg.active_db_profile`` + the
+    # profile's PINNED database — which for a profile with no pinned
+    # database lands the connection on postgres' default ``postgres``
+    # database, and every ``COMMENT ON TABLE`` then fails with
+    # ``InvalidSchemaName`` because the user's schema lives in a
+    # different database. Derive scope from the first result with a
+    # known run so single-run Pending apply lands on the right
+    # connection. Multi-run Pending queues still take the first
+    # scope; the run scope override on the body still wins when set.
+    derived_profile = body.db_profile
+    derived_database = body.database
+    derived_catalog = body.catalog
+    if (
+        not (derived_profile or "").strip()
+        and not (derived_database or "").strip()
+        and not (derived_catalog or "").strip()
+    ):
+        try:
+            from amx.storage.sqlite_store import history_store as _hs_for_scope
+
+            _hs = _hs_for_scope()
+        except Exception:
+            _hs = None
+        if _hs is not None:
+            from amx.storage._history_results import get_run_result
+
+            for r in results:
+                if r.result_id is None:
+                    continue
+                try:
+                    rr = get_run_result(_hs, int(r.result_id))
+                except Exception:
+                    continue
+                if not rr:
+                    continue
+                run_id = rr.get("run_id")
+                if run_id is None:
+                    continue
+                try:
+                    run_row = _hs.get_run(int(run_id))
+                except Exception:
+                    continue
+                if not run_row:
+                    continue
+                # ``settings_json`` carries the studio.generate.singleshot
+                # trigger payload (``database`` + ``catalog`` set at
+                # generate time). Older analyze.run rows persist the same
+                # fields via the bulk pipeline. Either way, the keys are
+                # the same names we feed back into ``_scoped_connector``.
+                import json as _json
+
+                raw_settings = run_row.get("settings_json") or "{}"
+                try:
+                    settings = (
+                        _json.loads(raw_settings) if isinstance(raw_settings, str) else raw_settings
+                    )
+                except Exception:
+                    settings = {}
+                derived_profile = run_row.get("db_profile") or derived_profile
+                derived_database = settings.get("database") or derived_database
+                derived_catalog = settings.get("catalog") or derived_catalog
+                if derived_profile or derived_database or derived_catalog:
+                    log.info(
+                        "apply: derived scope from result_id=%s run_id=%s "
+                        "(profile=%r database=%r catalog=%r)",
+                        r.result_id,
+                        run_id,
+                        derived_profile,
+                        derived_database,
+                        derived_catalog,
+                    )
+                    # Mirror the derived scope back onto ``body`` so the
+                    # downstream catalog / audit hooks (which still read
+                    # ``body.db_profile`` / ``body.database`` /
+                    # ``body.catalog``) see the same scope we open the
+                    # connector under.
+                    body.db_profile = derived_profile
+                    body.database = derived_database
+                    body.catalog = derived_catalog
+                    break
+
     try:
-        db, _, _ = _scoped_connector(cfg, body.db_profile, body.database, body.catalog)
+        db, _, _ = _scoped_connector(cfg, derived_profile, derived_database, derived_catalog)
     except HTTPException as exc:
         job.status = "failed"
         job.error = str(exc.detail)

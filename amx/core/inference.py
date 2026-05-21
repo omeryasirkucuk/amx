@@ -30,7 +30,15 @@ def _format_rag_unavailable_reason(exc: BaseException) -> str:
     library entrypoint produce identical wording (the two used to drift
     because each formatted its own message inside an
     ``except: pass``-style block).
+
+    The recorded string ends with ``at <basename>:<lineno> in <symbol>``
+    when the exception carries a traceback — without it a vague
+    ``TypeError: 'str' object is not callable`` gives no clue which
+    init step failed.
     """
+    import os
+    import traceback
+
     # Tag the embedding-mismatch case structurally so downstream
     # tooling (history readers, /doctor) can tell user-config-changed
     # apart from a genuine init crash. See ``EmbeddingProviderMismatch``
@@ -41,7 +49,18 @@ def _format_rag_unavailable_reason(exc: BaseException) -> str:
         EmbeddingProviderMismatch = ()  # type: ignore[assignment, misc]
     if isinstance(exc, EmbeddingProviderMismatch):
         return f"embedding_mismatch: {exc}"
-    return f"{exc.__class__.__name__}: {exc}"
+
+    location = ""
+    tb = exc.__traceback__
+    if tb is not None:
+        try:
+            frames = traceback.extract_tb(tb)
+            if frames:
+                last = frames[-1]
+                location = f" at {os.path.basename(last.filename)}:{last.lineno} in {last.name}"
+        except Exception:
+            location = ""
+    return f"{exc.__class__.__name__}: {exc}{location}"
 
 
 @dataclass(frozen=True)

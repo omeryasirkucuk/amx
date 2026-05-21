@@ -241,6 +241,158 @@ def test_cancel_unknown_job_returns_404(client, auth_headers) -> None:
     assert response.status_code == 404
 
 
+def test_apply_with_empty_body_derives_scope_from_result_run(
+    client, auth_headers, monkeypatch
+) -> None:
+    """The Studio Pending page submits ``POST /api/pending/apply`` with
+    an empty body. Pending entries don't carry ``db_profile`` /
+    ``database`` / ``catalog`` (the on-disk pending file only stores
+    schema/table/column + description), so without scope derivation the
+    worker would open a connector under the active profile's pinned
+    database and every ``COMMENT ON TABLE`` would fail with
+    ``InvalidSchemaName`` when the user navigated to a non-pinned
+    database before generating.
+
+    The worker now looks up the first result's originating run via
+    ``result_id → run_results.run_id → analysis_runs.settings_json``
+    and uses the recorded ``db_profile`` + ``database`` + ``catalog``.
+    """
+    from amx.agents.base import Confidence
+    from amx.agents.orchestrator import ReviewResult
+
+    fake_result = ReviewResult(
+        schema="beer_factory",
+        table="rootbeer",
+        column=None,
+        final_description="A root beer product table.",
+        confidence=Confidence.HIGH,
+        source="generate.singleshot",
+        applied=True,
+        asset_kind="table",
+        result_id=415,
+    )
+    monkeypatch.setattr(runs_router, "load_pending", lambda: [fake_result])
+
+    # Fake history-store lookup chain: ``get_run`` returns the
+    # settings_json + db_profile; ``get_run_result`` (patched as a
+    # module-level helper) returns the run_id for the given result_id.
+    class _FakeHS:
+        def get_run(self, rid: int):
+            assert rid == 153
+            return {
+                "id": 153,
+                "db_profile": "local-postgre",
+                "settings_json": (
+                    '{"trigger": "studio.generate.singleshot", '
+                    '"database": null, "catalog": "bird_train", '
+                    '"source_path": "lite"}'
+                ),
+            }
+
+        def record_applied(self, *_a, **_kw) -> None:
+            pass
+
+        def record_db_apply_failure(self, *_a, **_kw) -> None:
+            pass
+
+        def get_run_result(self, rid: int):
+            return {"id": 415, "run_id": 153}
+
+    import amx.storage.sqlite_store as _sqlite_store
+
+    fake_hs = _FakeHS()
+    monkeypatch.setattr(_sqlite_store, "history_store", lambda: fake_hs)
+
+    # ``get_run_result`` is a module-level helper, not a method; the
+    # scope-derivation code imports it as a free function. Patch it
+    # to return the same row the fake history store would.
+    import amx.storage._history_results as _history_results
+
+    monkeypatch.setattr(
+        _history_results,
+        "get_run_result",
+        lambda _hs, rid: {"id": rid, "run_id": 153},
+    )
+
+    # Capture the scope ``_scoped_connector`` is asked to open under.
+    captured: dict[str, Any] = {}
+
+    def fake_scoped(cfg, db_profile, database, catalog):
+        captured["db_profile"] = db_profile
+        captured["database"] = database
+        captured["catalog"] = catalog
+        return MagicMock(close=lambda: None), db_profile, "postgresql"
+
+    monkeypatch.setattr(runs_router, "_scoped_connector", fake_scoped)
+    monkeypatch.setattr(runs_router, "apply_review_results_to_db", lambda *a, **kw: 1)
+
+    response = client.post("/api/apply", headers=auth_headers, json={})
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+    _wait_for_status(client, job_id, "done")
+
+    # The Pending body was empty, but the worker derived scope from
+    # run #153's settings_json so the COMMENT lands on the right
+    # database.
+    assert captured["db_profile"] == "local-postgre"
+    # settings_json had ``database: null, catalog: bird_train`` — the
+    # derivation preserves the original keys so 3-level adapters
+    # (Databricks, BigQuery) still get a catalog while 2-level
+    # adapters (PostgreSQL, MySQL) get a database when one is set.
+    assert captured["catalog"] == "bird_train"
+
+
+def test_apply_explicit_body_scope_bypasses_derivation(client, auth_headers, monkeypatch) -> None:
+    """When the body carries explicit ``db_profile`` / ``database`` /
+    ``catalog``, the worker uses them verbatim and skips the per-result
+    derivation. CLI callers and re-run paths set the body explicitly."""
+    from amx.agents.base import Confidence
+    from amx.agents.orchestrator import ReviewResult
+
+    fake_result = ReviewResult(
+        schema="public",
+        table="orders",
+        column=None,
+        final_description="Orders.",
+        confidence=Confidence.HIGH,
+        source="manual",
+        applied=True,
+        asset_kind="table",
+        result_id=100,
+    )
+    monkeypatch.setattr(runs_router, "load_pending", lambda: [fake_result])
+
+    captured: dict[str, Any] = {}
+
+    def fake_scoped(cfg, db_profile, database, catalog):
+        captured["db_profile"] = db_profile
+        captured["database"] = database
+        captured["catalog"] = catalog
+        return MagicMock(close=lambda: None), db_profile, "postgresql"
+
+    # The settings_json lookup must NOT run when scope is explicit.
+    import amx.storage._history_results as _history_results
+
+    def fail_lookup(*_a, **_kw):
+        raise AssertionError("Lookup must be skipped when body scope is set")
+
+    monkeypatch.setattr(_history_results, "get_run_result", fail_lookup)
+
+    monkeypatch.setattr(runs_router, "_scoped_connector", fake_scoped)
+    monkeypatch.setattr(runs_router, "apply_review_results_to_db", lambda *a, **kw: 1)
+
+    response = client.post(
+        "/api/apply",
+        headers=auth_headers,
+        json={"db_profile": "explicit", "database": "explicit_db"},
+    )
+    assert response.status_code == 200
+    _wait_for_status(client, response.json()["job_id"], "done")
+
+    assert captured["db_profile"] == "explicit"
+    assert captured["database"] == "explicit_db"
+
+
 def _drain_sse(client, path: str, auth_headers, timeout: float = 3.0) -> list[dict[str, Any]]:
     """Read SSE frames until ``job.*`` arrives. Uses Starlette
     TestClient's streaming context manager."""
