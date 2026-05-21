@@ -156,3 +156,32 @@ def test_unknown_ingest_job_id_404(tmp_path):
     client, _ = _make_client(tmp_path)
     resp = client.get("/api/assets/ingest/does-not-exist/events", headers=_AUTH)
     assert resp.status_code == 404
+
+
+def test_refresh_endpoint_clears_and_returns_job_id(monkeypatch, tmp_path):
+    """POST /api/assets/refresh deletes existing rows and returns a job_id."""
+    import amx.web.routers.assets as a_mod
+
+    client, db_path = _make_client(tmp_path)
+    _seed_notebook(db_path)
+
+    async def fake_runner(*, job_id, body, cfg, queue):
+        await queue.put(
+            {"state": "completed", "counts": {"notebooks": 0}, "failures": {}}
+        )
+        await queue.put({"_eof": True})
+
+    monkeypatch.setattr(a_mod, "_run_ingest_job", fake_runner)
+    resp = client.post(
+        "/api/assets/refresh",
+        json={"profile": "prod", "types": ["notebooks"], "history_days": 7, "runs_per_job": 20},
+        headers=_AUTH,
+    )
+    assert resp.status_code == 202, resp.text
+    assert "job_id" in resp.json()
+    # The notebook row should have been deleted before the ingest kicked off.
+    with sqlite3.connect(db_path) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM remote_notebooks WHERE profile_name = 'prod'"
+        ).fetchone()[0]
+    assert count == 0
