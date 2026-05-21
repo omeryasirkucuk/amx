@@ -117,3 +117,25 @@ def test_list_remote_pipelines_maps_libraries_and_target():
 def test_capability_remote_pipelines_flag_on():
     from amx.db.adapters.databricks import DatabricksAdapter
     assert DatabricksAdapter.capabilities.remote_pipelines is True
+
+
+def test_list_remote_queries_combines_saved_and_history():
+    a = _adapter_with_mock_client()
+    a._workspace_client_override.list_saved_queries.return_value = iter([
+        {"id": "sq-1", "name": "daily_kpis", "query": "select 1", "data_source_id": "wh-x", "user": {"email": "alice@example.com"}},
+    ])
+    a._workspace_client_override.list_query_history.return_value = iter([
+        {"query_id": "qh-1", "query_text": "select 2", "warehouse_id": "wh-y", "user_name": "bob@example.com",
+         "query_start_time_ms": 1714000000000, "duration": 1500, "status": "FINISHED"},
+    ])
+    qs = list(a.list_remote_queries(history_days=7, limit=100))
+    assert {q.kind for q in qs} == {"saved", "history"}
+    saved = next(q for q in qs if q.kind == "saved")
+    assert saved.name == "daily_kpis" and saved.executed_at is None
+    history = next(q for q in qs if q.kind == "history")
+    assert history.duration_ms == 1500
+
+
+def test_capability_remote_queries_flag_on():
+    from amx.db.adapters.databricks import DatabricksAdapter
+    assert DatabricksAdapter.capabilities.remote_queries is True

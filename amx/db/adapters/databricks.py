@@ -65,6 +65,7 @@ class DatabricksAdapter(DatabaseAdapter):
         remote_notebooks=True,
         remote_jobs=True,
         remote_pipelines=True,
+        remote_queries=True,
     )
 
     def create_history_schema_ddl(self, schema_name: str) -> str:
@@ -1063,3 +1064,39 @@ class DatabricksAdapter(DatabaseAdapter):
             setup_duration_ms=r.get("setup_duration"),
             execution_duration_ms=r.get("execution_duration"),
         )
+
+    def list_remote_queries(self, *, history_days: int = 7, limit: int = 1000):
+        for sq in self._workspace_client.list_saved_queries():
+            text = sq.get("query") or ""
+            yield RemoteQuery(
+                platform="databricks",
+                kind="saved",
+                external_id=sq["id"],
+                name=sq.get("name"),
+                sql_text=text,
+                sql_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                warehouse=sq.get("data_source_id"),
+                user_name=(sq.get("user") or {}).get("email"),
+                executed_at=None,
+                duration_ms=None,
+            )
+        for h in self._workspace_client.list_query_history(
+            history_days=history_days, limit=limit
+        ):
+            text = h.get("query_text") or ""
+            start_ms = h.get("query_start_time_ms")
+            executed = (
+                datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc) if start_ms else None
+            )
+            yield RemoteQuery(
+                platform="databricks",
+                kind="history",
+                external_id=h["query_id"],
+                name=None,
+                sql_text=text,
+                sql_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                warehouse=h.get("warehouse_id"),
+                user_name=h.get("user_name"),
+                executed_at=executed,
+                duration_ms=h.get("duration"),
+            )
