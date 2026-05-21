@@ -1173,7 +1173,8 @@ class ProfilingGuardrailTests(unittest.TestCase):
         # users who already know their catalog name don't pay the round-
         # trip cost.
         ask_values = iter(["databricks", "new-host", "/sql/new", "-", "newcat", "-"])
-        secret_values = iter(["new-token"])
+        # Secret prompts in order: access_token, then workspace_token.
+        secret_values = iter(["new-token", "new-ws-tok"])
         # Order: tls_no_verify=yes, probe_catalogs=no.
         choice_values = iter(["yes", "no"])
 
@@ -1200,6 +1201,7 @@ class ProfilingGuardrailTests(unittest.TestCase):
         self.assertEqual(updated.host, "new-host")
         self.assertEqual(updated.http_path, "/sql/new")
         self.assertEqual(updated.access_token, "new-token")
+        self.assertEqual(updated.workspace_token, "new-ws-tok")
         self.assertEqual(updated.catalog, "newcat")
         self.assertEqual(updated.database, "")
         self.assertEqual(updated.tls_trusted_ca_file, "")
@@ -1221,7 +1223,9 @@ class ProfilingGuardrailTests(unittest.TestCase):
         # Order matches the new wizard: host → http_path → tls_ca →
         # catalog (free-form because probe_catalogs=no) → database.
         ask_values = iter(["databricks", "", "", "", "", ""])
-        secret_values = iter([""])
+        # Two blank secret answers: access_token and workspace_token both keep
+        # their existing values (empty for workspace_token since defaults has none).
+        secret_values = iter(["", ""])
         # Order: tls_no_verify=no (toggle off), probe_catalogs=no.
         choice_values = iter(["no", "no"])
 

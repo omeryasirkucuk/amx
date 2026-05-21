@@ -290,7 +290,7 @@ def has_legacy_database_default(db: DBConfig) -> bool:
 
 # Secret-bearing fields per scope. These are externalised to the OS keyring
 # on save and resolved back to plaintext on load via amx.storage.secrets.
-_DB_SECRET_FIELDS = ("password", "access_token", "jwt_token")
+_DB_SECRET_FIELDS = ("password", "access_token", "jwt_token", "workspace_token")
 _LLM_SECRET_FIELDS = ("api_key",)
 _EMBEDDING_SECRET_FIELDS = ("api_key",)
 
@@ -703,6 +703,11 @@ class DBConfig(_ObservableConfig):
     # Databricks
     http_path: str = ""
     access_token: str = ""
+    # Workspace API token override. Empty -> reuse access_token for
+    # Workspace/Jobs/Pipelines REST calls (the common case; PATs are
+    # workspace-scoped). Set explicitly when the org issues a separate
+    # token for the Workspace API path.
+    workspace_token: str = ""
     catalog: str = ""
     tls_no_verify: bool = False
     tls_trusted_ca_file: str = ""
@@ -1283,6 +1288,7 @@ def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
         role=str(m.get("role", "")),
         http_path=str(m.get("http_path", "")),
         access_token=str(m.get("access_token", "")),
+        workspace_token=str(m.get("workspace_token", "")),
         catalog=str(m.get("catalog", "")),
         tls_no_verify=bool(m.get("tls_no_verify", False)),
         tls_trusted_ca_file=str(m.get("tls_trusted_ca_file", "")),
@@ -1355,6 +1361,7 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
                 "host": db.host,
                 "http_path": db.http_path,
                 "access_token": db.access_token,
+                "workspace_token": db.workspace_token,
                 "catalog": db.catalog,
                 "database": db.database,
                 "tls_no_verify": db.tls_no_verify,

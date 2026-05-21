@@ -1366,6 +1366,32 @@ class DatabaseConnector:
     def set_database_comment(self, comment: str) -> None:
         self.apply_comment(schema="", comment=comment, asset_kind=AssetKind.DATABASE)
 
+    # ── Remote executable assets ──────────────────────────────────────────
+
+    def list_remote_notebooks(self):
+        return self._adapter.list_remote_notebooks()
+
+    def fetch_remote_notebook_source(self, external_id: str) -> str:
+        return self._adapter.fetch_remote_notebook_source(external_id)
+
+    def list_remote_jobs(self):
+        return self._adapter.list_remote_jobs()
+
+    def list_remote_pipelines(self):
+        return self._adapter.list_remote_pipelines()
+
+    def list_remote_streamlit_apps(self):
+        return self._adapter.list_remote_streamlit_apps()
+
+    def list_remote_streams(self):
+        return self._adapter.list_remote_streams()
+
+    def list_remote_task_dependencies(self):
+        return self._adapter.list_remote_task_dependencies()
+
+    def list_remote_queries(self, *, history_days: int = 7, limit: int = 1000):
+        return self._adapter.list_remote_queries(history_days=history_days, limit=limit)
+
     # ── Adapter metadata ──────────────────────────────────────────────────
 
     @property

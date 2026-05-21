@@ -46,6 +46,9 @@ from amx.web.routers import (
     system_ops,
     variations,
 )
+from amx.web.routers import (
+    assets as assets_router,
+)
 from amx.web.security_headers import SecurityHeadersMiddleware
 
 # Module-level holder for the bootstrap TickReport (Phase 5a).
@@ -120,6 +123,7 @@ def create_app(
     app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(admin.router)
+    app.include_router(assets_router.router)
     app.include_router(system.router)
     app.include_router(live_db.router)
     app.include_router(catalog.router)

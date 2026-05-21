@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   BarChart3,
+  Box,
   ChevronRight,
   FileText,
   PanelLeft,
@@ -50,6 +51,7 @@ const BASE_NAV_ITEMS = [
     match: ["/lineage"],
   },
   { to: "/pages", label: "Pages", icon: FileText, match: ["/pages"] },
+  { to: "/assets", label: "Assets", icon: Box, match: ["/assets"] },
   { to: "/settings", label: "Settings", icon: SettingsIcon, match: ["/settings"] },
   { to: "/system", label: "System", icon: Activity, match: ["/system"] },
 ];

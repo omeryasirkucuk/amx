@@ -47,6 +47,17 @@ class BackendCapabilities:
     volumes: bool = False
     datashares: bool = False
     external_tables: bool = False
+    # Remote executable asset ingestion (Snowflake/Databricks notebooks,
+    # jobs, pipelines, etc.). Each flag gates a corresponding
+    # ``list_remote_<kind>()`` call. Adapters opt in by flipping the flag
+    # once they implement the matching method.
+    remote_notebooks: bool = False
+    remote_jobs: bool = False
+    remote_pipelines: bool = False
+    remote_streamlit_apps: bool = False
+    remote_streams: bool = False
+    remote_task_dependencies: bool = False
+    remote_queries: bool = False
     comment_asset_keywords: frozenset[str] = field(
         default_factory=lambda: frozenset({"TABLE", "VIEW"})
     )
@@ -721,3 +732,68 @@ class DatabaseAdapter(ABC):
         engine = create_mock_engine(f"{self.name}://", _dump)
         md.create_all(engine, checkfirst=False)
         return buf.getvalue().rstrip() + "\n"
+
+    # ------------------------------------------------------------------
+    # Remote executable assets (notebooks, jobs, pipelines, streamlits,
+    # streams, query history). Default implementations raise
+    # UnsupportedDatabaseOperation so non-supporting adapters cleanly
+    # reject these calls. Implementing adapters override AND flip the
+    # matching ``BackendCapabilities`` flag to True.
+    # ------------------------------------------------------------------
+
+    def list_remote_notebooks(self):
+        """Yield :class:`RemoteNotebook` rows for every notebook on the platform."""
+        raise UnsupportedDatabaseOperation(
+            f"{type(self).__name__} does not support remote notebook ingestion"
+        )
+
+    def fetch_remote_notebook_source(self, external_id: str) -> str:
+        """Return the normalized ``.ipynb`` JSON for the given notebook.
+
+        Implementations are responsible for converting any platform-native
+        wire format (Databricks ``# COMMAND ----------`` source, Snowflake
+        stage-stored cells) into ``.ipynb``.
+        """
+        raise UnsupportedDatabaseOperation(
+            f"{type(self).__name__} does not support remote notebook source fetch"
+        )
+
+    def list_remote_jobs(self):
+        """Yield :class:`RemoteJob` rows including task graph and recent runs."""
+        raise UnsupportedDatabaseOperation(
+            f"{type(self).__name__} does not support remote job ingestion"
+        )
+
+    def list_remote_pipelines(self):
+        """Yield :class:`RemotePipeline` rows (e.g. Delta Live Tables)."""
+        raise UnsupportedDatabaseOperation(
+            f"{type(self).__name__} does not support remote pipeline ingestion"
+        )
+
+    def list_remote_streamlit_apps(self):
+        """Yield :class:`RemoteStreamlitApp` rows."""
+        raise UnsupportedDatabaseOperation(
+            f"{type(self).__name__} does not support remote Streamlit app ingestion"
+        )
+
+    def list_remote_streams(self):
+        """Yield :class:`RemoteStream` rows (CDC streams)."""
+        raise UnsupportedDatabaseOperation(
+            f"{type(self).__name__} does not support remote stream ingestion"
+        )
+
+    def list_remote_task_dependencies(self):
+        """Yield ``(parent_task_fqn, child_task_fqn)`` tuples for the task DAG."""
+        raise UnsupportedDatabaseOperation(
+            f"{type(self).__name__} does not support task-dependency ingestion"
+        )
+
+    def list_remote_queries(self, *, history_days: int = 7, limit: int = 1000):
+        """Yield :class:`RemoteQuery` rows (saved queries + recent history).
+
+        ``history_days`` and ``limit`` cap the query-history portion only;
+        saved queries are returned in full.
+        """
+        raise UnsupportedDatabaseOperation(
+            f"{type(self).__name__} does not support remote query ingestion"
+        )

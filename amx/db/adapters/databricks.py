@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +13,17 @@ import urllib3
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from amx.codebase.notebook_normalize import normalize_source
+from amx.db.adapters._databricks_workspace import DatabricksWorkspaceClient
 from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
+from amx.db.adapters.remote_asset_types import (
+    RemoteJob,
+    RemoteJobRun,
+    RemoteJobTask,
+    RemoteNotebook,
+    RemotePipeline,
+    RemoteQuery,
+)
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +62,10 @@ class DatabricksAdapter(DatabaseAdapter):
         # still ship through inline ``CREATE TABLE … COMMENT`` clauses.
         schema_comments=False,
         comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
+        remote_notebooks=True,
+        remote_jobs=True,
+        remote_pipelines=True,
+        remote_queries=True,
     )
 
     def create_history_schema_ddl(self, schema_name: str) -> str:
@@ -149,6 +165,19 @@ class DatabricksAdapter(DatabaseAdapter):
             pool_recycle=1800,
             connect_args=connect_args,
         )
+
+    @property
+    def _workspace_client(self) -> DatabricksWorkspaceClient:
+        """Lazy Workspace API client built from the active profile.
+
+        Tests can override by setting ``self._workspace_client_override`` to
+        a mock before calling list_remote_*; if present, that takes precedence.
+        """
+        override = getattr(self, "_workspace_client_override", None)
+        if override is not None:
+            return override
+        token = getattr(self.cfg, "workspace_token", None) or self.cfg.access_token
+        return DatabricksWorkspaceClient(host=self.cfg.host, token=token)
 
     def test_connection(self, engine: Engine | None = None) -> None:
         try:
@@ -881,3 +910,188 @@ class DatabricksAdapter(DatabaseAdapter):
                 "Database/catalog comment write-back without a Databricks catalog"
             )
         return f"COMMENT ON CATALOG `{catalog}` IS :cmt"
+
+    # ------------------------------------------------------------------
+    # Remote executable assets
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _databricks_lang_to_amx(raw: str | None) -> str:
+        if not raw:
+            return "python"
+        return raw.lower()  # PYTHON|SQL|SCALA|R -> python|sql|scala|r
+
+    @staticmethod
+    def _count_cells(ipynb_json: str) -> int | None:
+        import json
+
+        try:
+            return len(json.loads(ipynb_json).get("cells", []))
+        except (json.JSONDecodeError, AttributeError):
+            return None
+
+    def list_remote_notebooks(self):
+        client = self._workspace_client
+        for obj in client.list_workspace_objects(path="/"):
+            if obj.get("object_type") != "NOTEBOOK":
+                continue
+            try:
+                raw_source = client.export_notebook_source(workspace_path=obj["path"])
+            except Exception as exc:  # noqa: BLE001 — skip one bad notebook, keep going
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Failed to export Databricks notebook %s: %s", obj["path"], exc
+                )
+                continue
+            language = self._databricks_lang_to_amx(obj.get("language"))
+            normalized = normalize_source(
+                raw_source, hint="databricks_source", default_language=language
+            )
+            modified_ms = obj.get("modified_at")
+            last_modified = (
+                datetime.fromtimestamp(modified_ms / 1000, tz=timezone.utc) if modified_ms else None
+            )
+            yield RemoteNotebook(
+                external_id=str(obj["object_id"]),
+                name=obj["path"].rsplit("/", 1)[-1],
+                platform="databricks",
+                language=language,
+                workspace_path=obj["path"],
+                qualified_name=None,
+                source_text=normalized,
+                source_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+                last_modified_at=last_modified,
+                last_modified_by=obj.get("modified_by"),
+                owner=obj.get("creator_user_name"),
+                cell_count=self._count_cells(normalized),
+            )
+
+    def fetch_remote_notebook_source(self, external_id: str) -> str:
+        client = self._workspace_client
+        path = (
+            external_id if external_id.startswith("/") else client.path_for_object_id(external_id)
+        )
+        raw = client.export_notebook_source(workspace_path=path)
+        return normalize_source(raw, hint="databricks_source", default_language="python")
+
+    def list_remote_jobs(self, *, runs_per_job: int = 20):
+        for raw in self._workspace_client.list_jobs_full(runs_per_job=runs_per_job):
+            s = raw.get("settings", {})
+            schedule = s.get("schedule") or {}
+            tasks = tuple(self._map_remote_task(t) for t in s.get("tasks", []))
+            runs = tuple(self._map_remote_run(r) for r in raw.get("recent_runs", []))
+            yield RemoteJob(
+                job_id=raw["job_id"],
+                name=s.get("name", f"job_{raw['job_id']}"),
+                creator_user_name=raw.get("creator_user_name"),
+                schedule_cron=schedule.get("quartz_cron_expression"),
+                schedule_timezone=schedule.get("timezone_id"),
+                schedule_pause_status=schedule.get("pause_status"),
+                max_concurrent_runs=s.get("max_concurrent_runs"),
+                email_notifications=s.get("email_notifications") or {},
+                tags=s.get("tags") or {},
+                tasks=tasks,
+                recent_runs=runs,
+            )
+
+    @staticmethod
+    def _map_remote_task(t: dict) -> RemoteJobTask:
+        type_keys = {
+            "notebook_task": "notebook_task",
+            "python_wheel_task": "python_wheel_task",
+            "sql_task": "sql_task",
+            "dbt_task": "dbt_task",
+            "pipeline_task": "pipeline_task",
+            "spark_jar_task": "spark_jar_task",
+            "spark_python_task": "spark_python_task",
+            "spark_submit_task": "spark_submit_task",
+            "run_job_task": "run_job_task",
+        }
+        task_type = next((v for k, v in type_keys.items() if k in t), "unknown")
+        notebook_path = (t.get("notebook_task") or {}).get("notebook_path")
+        sql = t.get("sql_task") or {}
+        sql_query_id = (sql.get("query") or {}).get("query_id")
+        sql_warehouse_id = sql.get("warehouse_id")
+        pipeline = t.get("pipeline_task") or {}
+        pipeline_id = pipeline.get("pipeline_id")
+        depends_on = tuple(d["task_key"] for d in t.get("depends_on", []))
+        return RemoteJobTask(
+            task_key=t["task_key"],
+            task_type=task_type,
+            notebook_path=notebook_path,
+            sql_query_id=sql_query_id,
+            sql_warehouse_id=sql_warehouse_id,
+            pipeline_id=pipeline_id,
+            depends_on=depends_on,
+            raw_definition=t,
+        )
+
+    def list_remote_pipelines(self):
+        for raw in self._workspace_client.list_pipelines():
+            spec = raw.get("spec") or {}
+            latest_list = raw.get("latest_updates") or []
+            latest = latest_list[0] if latest_list else {}
+            creation_ms = latest.get("creation_time")
+            creation = (
+                datetime.fromtimestamp(creation_ms / 1000, tz=timezone.utc) if creation_ms else None
+            )
+            yield RemotePipeline(
+                pipeline_id=raw["pipeline_id"],
+                name=raw.get("name", raw["pipeline_id"]),
+                target_schema=spec.get("target"),
+                edition=spec.get("edition"),
+                continuous=bool(spec.get("continuous", False)),
+                photon=bool(spec.get("photon", False)),
+                libraries=spec.get("libraries") or [],
+                latest_update_state=latest.get("state"),
+                latest_update_creation_time=creation,
+            )
+
+    @staticmethod
+    def _map_remote_run(r: dict) -> RemoteJobRun:
+        def _ms_to_dt(ms):
+            return datetime.fromtimestamp(ms / 1000, tz=timezone.utc) if ms else None
+
+        return RemoteJobRun(
+            run_id=r["run_id"],
+            state_result=(r.get("state") or {}).get("result_state") or "UNKNOWN",
+            start_time=_ms_to_dt(r.get("start_time")) or datetime.now(timezone.utc),
+            end_time=_ms_to_dt(r.get("end_time")),
+            setup_duration_ms=r.get("setup_duration"),
+            execution_duration_ms=r.get("execution_duration"),
+        )
+
+    def list_remote_queries(self, *, history_days: int = 7, limit: int = 1000):
+        for sq in self._workspace_client.list_saved_queries():
+            text = sq.get("query") or ""
+            yield RemoteQuery(
+                platform="databricks",
+                kind="saved",
+                external_id=sq["id"],
+                name=sq.get("name"),
+                sql_text=text,
+                sql_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                warehouse=sq.get("data_source_id"),
+                user_name=(sq.get("user") or {}).get("email"),
+                executed_at=None,
+                duration_ms=None,
+            )
+        for h in self._workspace_client.list_query_history(history_days=history_days, limit=limit):
+            text = h.get("query_text") or ""
+            start_ms = h.get("query_start_time_ms")
+            executed = (
+                datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc) if start_ms else None
+            )
+            yield RemoteQuery(
+                platform="databricks",
+                kind="history",
+                external_id=h["query_id"],
+                name=None,
+                sql_text=text,
+                sql_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                warehouse=h.get("warehouse_id"),
+                user_name=h.get("user_name"),
+                executed_at=executed,
+                duration_ms=h.get("duration"),
+            )

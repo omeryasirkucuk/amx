@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from amx.codebase.notebook_normalize import normalize_source
 from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
+from amx.db.adapters.remote_asset_types import (
+    RemoteNotebook,
+    RemoteQuery,
+    RemoteStream,
+    RemoteStreamlitApp,
+)
+
+log = logging.getLogger(__name__)
 
 
 class SnowflakeAdapter(DatabaseAdapter):
@@ -26,6 +39,11 @@ class SnowflakeAdapter(DatabaseAdapter):
         datashares=True,
         external_tables=True,
         supports_shared_history=True,
+        remote_notebooks=True,
+        remote_streamlit_apps=True,
+        remote_streams=True,
+        remote_task_dependencies=True,
+        remote_queries=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
 
@@ -504,10 +522,47 @@ class SnowflakeAdapter(DatabaseAdapter):
     def list_events(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         # Snowflake "tasks" are scheduled SQL statements — the closest
         # analogue to MySQL events / SQL Server Agent jobs.
+        #
+        # SHOW TASKS' ``definition`` column truncates long task bodies. We
+        # follow up with GET_DDL('TASK', fqn) to capture the full statement,
+        # which the lineage pass uses to extract table references. Each row
+        # is enriched with a ``definition_sql`` key carrying the DDL string
+        # (or None when the GET_DDL call is blocked by privilege).
         sql = f"SHOW TASKS IN SCHEMA {self.quote_identifier(schema)}"
-        return self._show_to_dicts(
-            engine, sql, "task", extra_keys=("schedule", "state", "warehouse", "definition")
-        )
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql)).mappings().all()
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                name = row.get("name") or row.get("NAME")
+                if name is None:
+                    continue
+                extras: dict[str, Any] = {}
+                for k in ("schedule", "state", "warehouse", "definition"):
+                    v = row.get(k)
+                    if v is None:
+                        v = row.get(k.upper())
+                    if v is not None:
+                        extras[k] = v if isinstance(v, (str, int, float, bool)) else str(v)
+                comment = row.get("comment") or row.get("COMMENT")
+                task_row: dict[str, Any] = {
+                    "name": str(name),
+                    "type": "task",
+                    "definition": None,
+                    "comment": str(comment) if comment else None,
+                    "metadata": extras,
+                }
+                # Enrich with full task DDL — captures the complete body that
+                # SHOW TASKS truncates. Used by the lineage pass to extract
+                # table refs from the task body.
+                fqn = f"{schema}.{name}" if "." not in str(name) else str(name)
+                try:
+                    ddl = conn.execute(text(f"SELECT GET_DDL('TASK', '{fqn}')")).scalar()
+                    task_row["definition_sql"] = ddl
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("GET_DDL for task %s failed: %s", fqn, exc)
+                    task_row["definition_sql"] = None
+                out.append(task_row)
+        return out
 
     def list_volumes(self, engine: Engine, catalog: str, schema: str) -> list[dict[str, Any]]:
         # Snowflake stages — internal or external file-storage. ``catalog``
@@ -657,3 +712,214 @@ class SnowflakeAdapter(DatabaseAdapter):
 
     def set_database_comment_sql(self) -> str:
         return f"COMMENT ON DATABASE {self.quote_identifier(self.cfg.database)} IS :cmt"
+
+    # ── Remote executable assets ──────────────────────────────────────────
+
+    def list_remote_notebooks(self, engine):
+        """Yield :class:`RemoteNotebook` for every Snowflake Notebook visible
+        to the active role.
+
+        Each notebook's source is read from the associated stage file using a
+        ``SELECT $1 FROM @<stage_ref>`` query with JSON file format. The raw
+        JSON is normalized to a minimal ``.ipynb`` shell via
+        :func:`normalize_source` before hashing.
+        """
+        with engine.connect() as conn:
+            rows = conn.execute(text("SHOW NOTEBOOKS IN ACCOUNT")).mappings().all()
+            for r in rows:
+                fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                try:
+                    desc = conn.execute(text(f"DESC NOTEBOOK {fqn}")).mappings().all()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("DESC NOTEBOOK %s failed: %s", fqn, exc)
+                    continue
+                props = {row["property"]: row["value"] for row in desc}
+                root = props.get("ROOT_LOCATION", "")
+                main_file = props.get("MAIN_FILE", "notebook_app.ipynb")
+                stage_ref = root.lstrip("@") + "/" + main_file
+                try:
+                    src_rows = (
+                        conn.execute(
+                            text(
+                                f"SELECT $1 FROM @{stage_ref} "
+                                f"(FILE_FORMAT => (TYPE = JSON, COMPRESSION = NONE))"
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "Failed to read stage %s for notebook %s: %s",
+                        stage_ref,
+                        fqn,
+                        exc,
+                    )
+                    continue
+                raw = src_rows[0]["$1"] if src_rows else "{}"
+                raw_text = raw if isinstance(raw, str) else json.dumps(raw)
+                normalized = normalize_source(raw_text, hint="ipynb")
+                last_altered = r.get("last_altered")
+                if isinstance(last_altered, str):
+                    try:
+                        last_altered = datetime.fromisoformat(last_altered)
+                    except ValueError:
+                        last_altered = None
+                try:
+                    cell_count = len(json.loads(normalized).get("cells", []))
+                except (json.JSONDecodeError, AttributeError):
+                    cell_count = None
+                yield RemoteNotebook(
+                    external_id=fqn,
+                    name=r["name"],
+                    platform="snowflake",
+                    language=(r.get("language") or "python").lower(),
+                    workspace_path=None,
+                    qualified_name=fqn,
+                    source_text=normalized,
+                    source_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+                    last_modified_at=last_altered,
+                    last_modified_by=None,
+                    owner=r.get("owner"),
+                    cell_count=cell_count,
+                )
+
+    def fetch_remote_notebook_source(self, engine, external_id: str) -> str:
+        """Return normalized ``.ipynb`` JSON for the Snowflake Notebook
+        identified by ``external_id`` (fully-qualified name).
+        """
+        with engine.connect() as conn:
+            desc = conn.execute(text(f"DESC NOTEBOOK {external_id}")).mappings().all()
+            props = {row["property"]: row["value"] for row in desc}
+            root = props.get("ROOT_LOCATION", "")
+            main_file = props.get("MAIN_FILE", "notebook_app.ipynb")
+            stage_ref = root.lstrip("@") + "/" + main_file
+            src_rows = (
+                conn.execute(
+                    text(
+                        f"SELECT $1 FROM @{stage_ref} "
+                        f"(FILE_FORMAT => (TYPE = JSON, COMPRESSION = NONE))"
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            raw = src_rows[0]["$1"] if src_rows else "{}"
+            raw_text = raw if isinstance(raw, str) else json.dumps(raw)
+            return normalize_source(raw_text, hint="ipynb")
+
+    def list_remote_streamlit_apps(self, engine):
+        """Yield :class:`RemoteStreamlitApp` for every Snowflake Streamlit app
+        visible to the active role.
+        """
+        with engine.connect() as conn:
+            rows = conn.execute(text("SHOW STREAMLITS IN ACCOUNT")).mappings().all()
+            for r in rows:
+                fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                desc = conn.execute(text(f"DESC STREAMLIT {fqn}")).mappings().all()
+                props = {row["property"]: row["value"] for row in desc}
+                last = r.get("last_altered")
+                if isinstance(last, str):
+                    try:
+                        last = datetime.fromisoformat(last)
+                    except ValueError:
+                        last = None
+                yield RemoteStreamlitApp(
+                    qualified_name=fqn,
+                    main_file=props.get("MAIN_FILE", "streamlit_app.py"),
+                    query_warehouse=r.get("query_warehouse"),
+                    root_location=props.get("ROOT_LOCATION", ""),
+                    owner=r.get("owner"),
+                    last_altered_at=last,
+                )
+
+    def list_remote_streams(self, engine):
+        """Yield :class:`RemoteStream` for every Snowflake stream visible to
+        the active role.
+        """
+        with engine.connect() as conn:
+            rows = conn.execute(text("SHOW STREAMS IN ACCOUNT")).mappings().all()
+            for r in rows:
+                fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                stale = r.get("stale_after")
+                if isinstance(stale, str):
+                    try:
+                        stale = datetime.fromisoformat(stale)
+                    except ValueError:
+                        stale = None
+                yield RemoteStream(
+                    qualified_name=fqn,
+                    source_table_fqn=r.get("table_name") or "",
+                    mode=r.get("mode") or "DEFAULT",
+                    stale_after=stale,
+                    owner=r.get("owner"),
+                )
+
+    def list_remote_task_dependencies(self, engine):
+        """Yield ``(predecessor_fqn, task_fqn)`` tuples from
+        ``INFORMATION_SCHEMA.TASK_DEPENDENTS``.
+
+        Requires the ACCOUNTADMIN role or the MONITOR EXECUTION privilege on
+        all tasks in scope. When the query fails (e.g. missing privilege) the
+        generator exits cleanly after logging a warning.
+        """
+        sql = (
+            "SELECT name_predecessor, name "
+            "FROM TABLE(INFORMATION_SCHEMA.TASK_DEPENDENTS(RECURSIVE => TRUE))"
+        )
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(text(sql)).mappings().all()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("TASK_DEPENDENTS query failed (likely missing privilege): %s", exc)
+                return
+            for r in rows:
+                if r.get("name_predecessor") and r.get("name"):
+                    yield (r["name_predecessor"], r["name"])
+
+    def list_remote_queries(self, engine, *, history_days: int = 7, limit: int = 1000):
+        """Yield :class:`RemoteQuery` rows from
+        ``SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY``.
+
+        Requires the ACCOUNTADMIN role or the MONITOR USAGE privilege on the
+        account. When the view is inaccessible the generator exits cleanly
+        after logging a warning so callers receive an empty sequence rather
+        than an exception.
+        """
+        sql = (
+            f"SELECT query_id, query_text, warehouse_name, user_name, "
+            f"start_time, execution_time "
+            f"FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY "
+            f"WHERE start_time >= DATEADD(day, -{history_days}, CURRENT_TIMESTAMP()) "
+            f"ORDER BY start_time DESC LIMIT {limit}"
+        )
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(text(sql)).mappings().all()
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "Could not read SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY "
+                    "(role lacks ACCOUNT_USAGE privilege?): %s",
+                    exc,
+                )
+                return
+            for r in rows:
+                qtext = r.get("query_text") or ""
+                start = r.get("start_time")
+                if isinstance(start, str):
+                    try:
+                        start = datetime.fromisoformat(start)
+                    except ValueError:
+                        start = None
+                yield RemoteQuery(
+                    platform="snowflake",
+                    kind="history",
+                    external_id=r["query_id"],
+                    name=None,
+                    sql_text=qtext,
+                    sql_hash=hashlib.sha256(qtext.encode("utf-8")).hexdigest(),
+                    warehouse=r.get("warehouse_name"),
+                    user_name=r.get("user_name"),
+                    executed_at=start,
+                    duration_ms=r.get("execution_time"),
+                )
