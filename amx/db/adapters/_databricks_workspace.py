@@ -29,7 +29,15 @@ class DatabricksApiError(RuntimeError):
 
 class DatabricksWorkspaceClient:
     def __init__(self, *, host: str, token: str, timeout: int = DEFAULT_TIMEOUT) -> None:
-        self.host = host.rstrip("/")
+        # AMX stores the Databricks host bare (no scheme) so the
+        # databricks-sql-connector can consume it directly. The Workspace
+        # REST API needs an https:// prefix or ``requests`` raises
+        # ``MissingSchema``. Prepend the scheme defensively here so the
+        # adapter doesn't need to coordinate with how the profile is stored.
+        stripped = host.strip().rstrip("/")
+        if not stripped.startswith(("http://", "https://")):
+            stripped = f"https://{stripped}"
+        self.host = stripped
         self._headers = {"Authorization": f"Bearer {token}"}
         self._timeout = timeout
 

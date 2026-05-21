@@ -7,6 +7,30 @@ def _client(token="tok-1"):
     return DatabricksWorkspaceClient(host="https://example.cloud.databricks.com", token=token)
 
 
+def test_client_prepends_https_when_host_has_no_scheme():
+    """AMX stores Databricks hosts bare (no scheme) so the SQL connector
+    can consume them; the REST client must add ``https://`` itself.
+    """
+    from amx.db.adapters._databricks_workspace import DatabricksWorkspaceClient
+
+    client = DatabricksWorkspaceClient(host="dbc-1234.cloud.databricks.com", token="x")
+    assert client.host == "https://dbc-1234.cloud.databricks.com"
+
+
+def test_client_preserves_explicit_scheme():
+    from amx.db.adapters._databricks_workspace import DatabricksWorkspaceClient
+
+    client = DatabricksWorkspaceClient(host="https://dbc-1234.cloud.databricks.com/", token="x")
+    assert client.host == "https://dbc-1234.cloud.databricks.com"
+
+
+def test_client_preserves_http_scheme_for_localhost_dev():
+    from amx.db.adapters._databricks_workspace import DatabricksWorkspaceClient
+
+    client = DatabricksWorkspaceClient(host="http://localhost:8080", token="x")
+    assert client.host == "http://localhost:8080"
+
+
 def test_list_workspace_objects_paginates():
     pages = [
         {
