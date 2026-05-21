@@ -27,6 +27,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from amx.agents.base import MetadataSuggestion
@@ -710,6 +711,381 @@ class SyncMixin:
                 (db_profile,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # ── Task 26: sync_remote_assets ──────────────────────────────────────────
+
+    def sync_remote_assets(
+        self,
+        *,
+        profile_name: str,
+        notebooks: list | None = None,
+        jobs: list | None = None,
+        pipelines: list | None = None,
+        streamlit_apps: list | None = None,
+        streams: list | None = None,
+        queries: list | None = None,
+        task_dependencies: list[tuple[str, str]] | None = None,
+    ) -> dict[str, int]:
+        """Upsert remote-ingested assets into the ``remote_*`` tables.
+
+        Returns a per-asset-type count of rows newly inserted or content-updated.
+        Rows whose source hashes already match the stored row are touched only
+        on ``ingested_at`` and not counted (the catalog stays accurate without
+        re-embedding work upstream).
+        """
+        counts: dict[str, int] = {}
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            if notebooks:
+                counts["notebooks"] = self._upsert_remote_notebooks(
+                    conn, profile_name, notebooks, now_iso
+                )
+            if jobs:
+                counts["jobs"] = self._upsert_remote_jobs(
+                    conn, profile_name, jobs, now_iso
+                )
+            if pipelines:
+                counts["pipelines"] = self._upsert_remote_pipelines(
+                    conn, profile_name, pipelines, now_iso
+                )
+            if streamlit_apps:
+                counts["streamlit_apps"] = self._upsert_remote_streamlit_apps(
+                    conn, profile_name, streamlit_apps, now_iso
+                )
+            if streams:
+                counts["streams"] = self._upsert_remote_streams(
+                    conn, profile_name, streams, now_iso
+                )
+            if queries:
+                counts["queries"] = self._upsert_remote_queries(
+                    conn, profile_name, queries, now_iso
+                )
+            if task_dependencies:
+                counts["task_dependencies"] = self._upsert_remote_task_dependencies(
+                    conn, profile_name, task_dependencies
+                )
+            # After every notebook+job pass, opportunistically resolve task→notebook FKs.
+            if (notebooks is not None) or (jobs is not None):
+                self._resolve_job_task_notebook_fks(conn, profile_name)
+            conn.commit()
+        return counts
+
+    def _upsert_remote_notebooks(self, conn, profile, items, now_iso):
+        n = 0
+        for nb in items:
+            existing = conn.execute(
+                "SELECT id, source_hash FROM remote_notebooks "
+                "WHERE profile_name = ? AND platform = ? AND external_id = ?",
+                (profile, nb.platform, nb.external_id),
+            ).fetchone()
+            if existing and existing[1] == nb.source_hash:
+                conn.execute(
+                    "UPDATE remote_notebooks SET ingested_at = ? WHERE id = ?",
+                    (now_iso, existing[0]),
+                )
+                continue
+            if existing:
+                conn.execute(
+                    """UPDATE remote_notebooks SET
+                           name = ?, workspace_path = ?, qualified_name = ?,
+                           language = ?, source_text = ?, source_hash = ?,
+                           last_modified_at = ?, last_modified_by = ?, owner = ?,
+                           cell_count = ?, ingested_at = ?
+                       WHERE id = ?""",
+                    (
+                        nb.name, nb.workspace_path, nb.qualified_name,
+                        nb.language, nb.source_text, nb.source_hash,
+                        nb.last_modified_at.isoformat() if nb.last_modified_at else None,
+                        nb.last_modified_by, nb.owner, nb.cell_count, now_iso,
+                        existing[0],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO remote_notebooks
+                           (profile_name, platform, external_id, name,
+                            workspace_path, qualified_name, language,
+                            source_text, source_hash, last_modified_at,
+                            last_modified_by, owner, cell_count, ingested_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        profile, nb.platform, nb.external_id, nb.name,
+                        nb.workspace_path, nb.qualified_name, nb.language,
+                        nb.source_text, nb.source_hash,
+                        nb.last_modified_at.isoformat() if nb.last_modified_at else None,
+                        nb.last_modified_by, nb.owner, nb.cell_count, now_iso,
+                    ),
+                )
+            n += 1
+        return n
+
+    def _upsert_remote_jobs(self, conn, profile, items, now_iso):
+        n = 0
+        for j in items:
+            last_run = j.recent_runs[0] if j.recent_runs else None
+            cur = conn.execute(
+                "SELECT id FROM remote_jobs WHERE profile_name = ? AND job_id = ?",
+                (profile, j.job_id),
+            ).fetchone()
+            if cur:
+                row_id = cur[0]
+                conn.execute(
+                    """UPDATE remote_jobs SET
+                           name = ?, creator_user_name = ?, schedule_cron = ?,
+                           schedule_timezone = ?, schedule_pause_status = ?,
+                           max_concurrent_runs = ?, email_notifications_json = ?,
+                           tags_json = ?, last_run_status = ?, last_run_started_at = ?,
+                           success_rate_30d = ?, ingested_at = ?
+                       WHERE id = ?""",
+                    (
+                        j.name, j.creator_user_name, j.schedule_cron,
+                        j.schedule_timezone, j.schedule_pause_status,
+                        j.max_concurrent_runs,
+                        json.dumps(j.email_notifications),
+                        json.dumps(j.tags),
+                        last_run.state_result if last_run else None,
+                        last_run.start_time.isoformat() if last_run else None,
+                        j.success_rate(window_days=30), now_iso,
+                        row_id,
+                    ),
+                )
+            else:
+                cur2 = conn.execute(
+                    """INSERT INTO remote_jobs
+                           (profile_name, job_id, name, creator_user_name,
+                            schedule_cron, schedule_timezone, schedule_pause_status,
+                            max_concurrent_runs, email_notifications_json, tags_json,
+                            last_run_status, last_run_started_at, success_rate_30d,
+                            ingested_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        profile, j.job_id, j.name, j.creator_user_name,
+                        j.schedule_cron, j.schedule_timezone, j.schedule_pause_status,
+                        j.max_concurrent_runs,
+                        json.dumps(j.email_notifications),
+                        json.dumps(j.tags),
+                        last_run.state_result if last_run else None,
+                        last_run.start_time.isoformat() if last_run else None,
+                        j.success_rate(window_days=30), now_iso,
+                    ),
+                )
+                row_id = cur2.lastrowid
+            # Replace child rows for this job — simplest correct semantics.
+            conn.execute("DELETE FROM remote_job_tasks WHERE job_id_fk = ?", (row_id,))
+            for t in j.tasks:
+                conn.execute(
+                    """INSERT INTO remote_job_tasks
+                           (job_id_fk, task_key, task_type, notebook_path,
+                            sql_query_id, sql_warehouse_id, pipeline_id_fk,
+                            depends_on_json, raw_definition_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        row_id, t.task_key, t.task_type, t.notebook_path,
+                        t.sql_query_id, t.sql_warehouse_id, None,  # pipeline_id_fk resolved later
+                        json.dumps(list(t.depends_on)),
+                        json.dumps(t.raw_definition),
+                    ),
+                )
+            conn.execute("DELETE FROM remote_job_runs WHERE job_id_fk = ?", (row_id,))
+            for r in j.recent_runs:
+                conn.execute(
+                    """INSERT INTO remote_job_runs
+                           (job_id_fk, run_id, state_result, start_time, end_time,
+                            setup_duration_ms, execution_duration_ms)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        row_id, r.run_id, r.state_result,
+                        r.start_time.isoformat(),
+                        r.end_time.isoformat() if r.end_time else None,
+                        r.setup_duration_ms, r.execution_duration_ms,
+                    ),
+                )
+            n += 1
+        return n
+
+    def _upsert_remote_pipelines(self, conn, profile, items, now_iso):
+        n = 0
+        for p in items:
+            cur = conn.execute(
+                "SELECT id FROM remote_pipelines WHERE profile_name = ? AND pipeline_id = ?",
+                (profile, p.pipeline_id),
+            ).fetchone()
+            if cur:
+                conn.execute(
+                    """UPDATE remote_pipelines SET
+                           name = ?, target_schema = ?, edition = ?, continuous = ?,
+                           photon = ?, libraries_json = ?, latest_update_state = ?,
+                           latest_update_creation_time = ?, ingested_at = ?
+                       WHERE id = ?""",
+                    (
+                        p.name, p.target_schema, p.edition, int(p.continuous),
+                        int(p.photon), json.dumps(p.libraries), p.latest_update_state,
+                        p.latest_update_creation_time.isoformat()
+                        if p.latest_update_creation_time else None,
+                        now_iso, cur[0],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO remote_pipelines
+                           (profile_name, pipeline_id, name, target_schema, edition,
+                            continuous, photon, libraries_json, latest_update_state,
+                            latest_update_creation_time, ingested_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        profile, p.pipeline_id, p.name, p.target_schema, p.edition,
+                        int(p.continuous), int(p.photon),
+                        json.dumps(p.libraries), p.latest_update_state,
+                        p.latest_update_creation_time.isoformat()
+                        if p.latest_update_creation_time else None,
+                        now_iso,
+                    ),
+                )
+            n += 1
+        return n
+
+    def _upsert_remote_streamlit_apps(self, conn, profile, items, now_iso):
+        n = 0
+        for s in items:
+            cur = conn.execute(
+                "SELECT id FROM remote_streamlit_apps "
+                "WHERE profile_name = ? AND qualified_name = ?",
+                (profile, s.qualified_name),
+            ).fetchone()
+            if cur:
+                conn.execute(
+                    """UPDATE remote_streamlit_apps SET
+                           main_file = ?, query_warehouse = ?, root_location = ?,
+                           owner = ?, last_altered_at = ?, ingested_at = ?
+                       WHERE id = ?""",
+                    (
+                        s.main_file, s.query_warehouse, s.root_location, s.owner,
+                        s.last_altered_at.isoformat() if s.last_altered_at else None,
+                        now_iso, cur[0],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO remote_streamlit_apps
+                           (profile_name, qualified_name, main_file, query_warehouse,
+                            root_location, owner, last_altered_at, ingested_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        profile, s.qualified_name, s.main_file, s.query_warehouse,
+                        s.root_location, s.owner,
+                        s.last_altered_at.isoformat() if s.last_altered_at else None,
+                        now_iso,
+                    ),
+                )
+            n += 1
+        return n
+
+    def _upsert_remote_streams(self, conn, profile, items, now_iso):
+        n = 0
+        for s in items:
+            cur = conn.execute(
+                "SELECT id FROM remote_streams "
+                "WHERE profile_name = ? AND qualified_name = ?",
+                (profile, s.qualified_name),
+            ).fetchone()
+            if cur:
+                conn.execute(
+                    """UPDATE remote_streams SET
+                           source_table_fqn = ?, mode = ?, stale_after = ?,
+                           owner = ?, ingested_at = ?
+                       WHERE id = ?""",
+                    (
+                        s.source_table_fqn, s.mode,
+                        s.stale_after.isoformat() if s.stale_after else None,
+                        s.owner, now_iso, cur[0],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO remote_streams
+                           (profile_name, qualified_name, source_table_fqn,
+                            source_entity_id, mode, stale_after, owner, ingested_at)
+                       VALUES (?, ?, ?, NULL, ?, ?, ?, ?)""",
+                    (
+                        profile, s.qualified_name, s.source_table_fqn,
+                        s.mode,
+                        s.stale_after.isoformat() if s.stale_after else None,
+                        s.owner, now_iso,
+                    ),
+                )
+            n += 1
+        return n
+
+    def _upsert_remote_queries(self, conn, profile, items, now_iso):
+        n = 0
+        for q in items:
+            cur = conn.execute(
+                "SELECT id FROM remote_queries "
+                "WHERE profile_name = ? AND platform = ? AND kind = ? AND external_id = ?",
+                (profile, q.platform, q.kind, q.external_id),
+            ).fetchone()
+            if cur:
+                conn.execute(
+                    """UPDATE remote_queries SET
+                           name = ?, sql_text = ?, sql_hash = ?, warehouse = ?,
+                           user_name = ?, executed_at = ?, duration_ms = ?,
+                           ingested_at = ?
+                       WHERE id = ?""",
+                    (
+                        q.name, q.sql_text, q.sql_hash, q.warehouse, q.user_name,
+                        q.executed_at.isoformat() if q.executed_at else None,
+                        q.duration_ms, now_iso, cur[0],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO remote_queries
+                           (profile_name, platform, kind, external_id, name,
+                            sql_text, sql_hash, warehouse, user_name,
+                            executed_at, duration_ms, ingested_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        profile, q.platform, q.kind, q.external_id, q.name,
+                        q.sql_text, q.sql_hash, q.warehouse, q.user_name,
+                        q.executed_at.isoformat() if q.executed_at else None,
+                        q.duration_ms, now_iso,
+                    ),
+                )
+            n += 1
+        return n
+
+    def _upsert_remote_task_dependencies(self, conn, profile, edges):
+        conn.execute(
+            "DELETE FROM remote_task_dependencies WHERE profile_name = ?", (profile,)
+        )
+        n = 0
+        for parent, child in edges:
+            conn.execute(
+                """INSERT OR IGNORE INTO remote_task_dependencies
+                       (profile_name, parent_task_fqn, child_task_fqn)
+                   VALUES (?, ?, ?)""",
+                (profile, parent, child),
+            )
+            n += 1
+        return n
+
+    def _resolve_job_task_notebook_fks(self, conn, profile):
+        """Fill remote_job_tasks.notebook_id_fk by matching notebook_path to remote_notebooks.workspace_path."""
+        conn.execute(
+            """
+            UPDATE remote_job_tasks
+            SET notebook_id_fk = (
+                SELECT id FROM remote_notebooks
+                WHERE remote_notebooks.profile_name = ?
+                  AND remote_notebooks.workspace_path = remote_job_tasks.notebook_path
+                LIMIT 1
+            )
+            WHERE notebook_path IS NOT NULL
+              AND notebook_id_fk IS NULL
+              AND job_id_fk IN (SELECT id FROM remote_jobs WHERE profile_name = ?)
+            """,
+            (profile, profile),
+        )
 
 
 __all__ = ["SyncMixin"]
