@@ -1625,13 +1625,20 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "id": "Surrogate key for asset row identity.",
         "page_id": "Parent page reference.",
         "asset_kind": (
-            "Discriminator - one of db_profile, db_database, db_schema, "
-            "db_table, db_column, doc_profile, lineage_artifact."
+            "Discriminator. DB catalog kinds: db_profile, db_database, "
+            "db_schema, db_table, db_column. Documentation: doc_profile. "
+            "Lineage: lineage_artifact. Ingested remote assets: "
+            "asset_notebook, asset_job, asset_pipeline, asset_query, "
+            "asset_stream, asset_streamlit (sourced from the remote_* "
+            "tables populated by /db ingest-assets)."
         ),
         "asset_ref": (
-            "Fully-qualified reference (e.g. pg_prod/sales/public/orders, "
-            "doc:design_docs, lineage:<artifact_id>); resolves to the live "
-            "object at generation time."
+            "Fully-qualified reference. DB catalog: "
+            "pg_prod/sales/public/orders. Doc profile: doc:design_docs. "
+            "Lineage: lineage:<artifact_id>. Ingested remote assets: "
+            "<profile_name>:<asset_id> where asset_id is the row id in "
+            "the matching remote_* table. Resolves to the live object "
+            "at generation time."
         ),
         "included": (
             "1/0 flag - whether the asset is active for re-generation; "

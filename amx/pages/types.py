@@ -13,6 +13,12 @@ AssetKind = Literal[
     "db_column",
     "doc_profile",
     "lineage_artifact",
+    "asset_notebook",
+    "asset_job",
+    "asset_pipeline",
+    "asset_query",
+    "asset_stream",
+    "asset_streamlit",
 ]
 SourceKind = Literal["upload", "email", "excel"]
 PageStatus = Literal["draft", "published", "deleted"]
@@ -49,6 +55,7 @@ class PageContext:
     db_blocks: list[str] = field(default_factory=list)
     doc_blocks: list[str] = field(default_factory=list)
     lineage_blocks: list[str] = field(default_factory=list)
+    asset_blocks: list[str] = field(default_factory=list)
     source_blocks: list[str] = field(default_factory=list)
 
     def serialise(self) -> str:
@@ -59,6 +66,8 @@ class PageContext:
             sections.append("# DOC SNIPPETS\n\n" + "\n\n".join(self.doc_blocks))
         if self.lineage_blocks:
             sections.append("# LINEAGE\n\n" + "\n\n".join(self.lineage_blocks))
+        if self.asset_blocks:
+            sections.append("# INGESTED ASSETS\n\n" + "\n\n".join(self.asset_blocks))
         if self.source_blocks:
             sections.append("# SOURCES\n\n" + "\n\n".join(self.source_blocks))
         return "\n\n".join(sections)
