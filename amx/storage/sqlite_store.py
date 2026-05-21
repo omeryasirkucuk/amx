@@ -1305,6 +1305,111 @@ class SQLiteHistoryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_remote_job_runs_job ON remote_job_runs(job_id_fk)"
             )
+
+            # ── remote_pipelines: Databricks DLT pipeline definitions ────────
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS remote_pipelines (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_name TEXT NOT NULL,
+                    pipeline_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    target_schema TEXT,
+                    edition TEXT,
+                    continuous INTEGER NOT NULL,
+                    photon INTEGER NOT NULL,
+                    libraries_json TEXT NOT NULL,
+                    latest_update_state TEXT,
+                    latest_update_creation_time TIMESTAMP,
+                    ingested_at TIMESTAMP NOT NULL,
+                    UNIQUE(profile_name, pipeline_id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_remote_pipelines_profile ON remote_pipelines(profile_name)"
+            )
+
+            # ── remote_streamlit_apps: Snowflake STREAMLIT objects ────────────
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS remote_streamlit_apps (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_name TEXT NOT NULL,
+                    qualified_name TEXT NOT NULL,
+                    main_file TEXT NOT NULL,
+                    query_warehouse TEXT,
+                    root_location TEXT NOT NULL,
+                    owner TEXT,
+                    last_altered_at TIMESTAMP,
+                    ingested_at TIMESTAMP NOT NULL,
+                    UNIQUE(profile_name, qualified_name)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_remote_streamlit_apps_profile ON remote_streamlit_apps(profile_name)"
+            )
+
+            # ── remote_streams: Snowflake CDC streams ────────────────────────
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS remote_streams (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_name TEXT NOT NULL,
+                    qualified_name TEXT NOT NULL,
+                    source_table_fqn TEXT NOT NULL,
+                    source_entity_id INTEGER,
+                    mode TEXT NOT NULL,
+                    stale_after TIMESTAMP,
+                    owner TEXT,
+                    ingested_at TIMESTAMP NOT NULL,
+                    UNIQUE(profile_name, qualified_name),
+                    FOREIGN KEY (source_entity_id) REFERENCES catalog_entities(id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_remote_streams_profile ON remote_streams(profile_name)"
+            )
+
+            # ── remote_task_dependencies: Snowflake task DAG edges ───────────
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS remote_task_dependencies (
+                    profile_name TEXT NOT NULL,
+                    parent_task_fqn TEXT NOT NULL,
+                    child_task_fqn TEXT NOT NULL,
+                    PRIMARY KEY(profile_name, parent_task_fqn, child_task_fqn)
+                )
+                """
+            )
+
+            # ── remote_queries: saved queries and execution history ───────────
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS remote_queries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_name TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    external_id TEXT NOT NULL,
+                    name TEXT,
+                    sql_text TEXT NOT NULL,
+                    sql_hash TEXT NOT NULL,
+                    warehouse TEXT,
+                    user_name TEXT,
+                    executed_at TIMESTAMP,
+                    duration_ms INTEGER,
+                    ingested_at TIMESTAMP NOT NULL,
+                    UNIQUE(profile_name, platform, kind, external_id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_remote_queries_profile_platform ON remote_queries(profile_name, platform)"
+            )
+
             # Seed the bundled default logos into ``lineage_logos`` if
             # they aren't there yet. Idempotent via the UNIQUE(key,
             # source) index — re-runs on every init are no-ops after
