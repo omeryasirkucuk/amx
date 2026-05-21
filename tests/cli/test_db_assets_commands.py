@@ -98,3 +98,60 @@ def test_ingest_assets_rejects_unknown_type():
     ])
     assert result.exit_code != 0
     assert "Unknown asset type" in result.output or "definitely_not_real" in result.output
+
+
+# ── Task 33: run_list ─────────────────────────────────────────────────────────
+
+def test_db_assets_list_notebooks_renders_rows(monkeypatch, tmp_path):
+    """Seed a remote_notebooks row, invoke /db assets list --type notebooks,
+    confirm the row appears in the output."""
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+    import sqlite3
+    db_path = tmp_path / "amx.db"
+    store = SQLiteHistoryStore(db_path)
+    store.init()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO remote_notebooks
+                   (profile_name, platform, external_id, name, workspace_path,
+                    qualified_name, language, source_text, source_hash,
+                    last_modified_at, last_modified_by, owner, cell_count, ingested_at)
+               VALUES ('prod', 'databricks', 'ext-1', 'my_notebook',
+                       '/Users/alice/my_notebook', NULL, 'python', '{}', 'h1',
+                       NULL, NULL, NULL, 5, '2026-05-21T00:00:00')"""
+        )
+        conn.commit()
+
+    import amx.cli_support.commands.db_assets_impl as impl
+    monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
+    monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
+
+    result = _invoke(["db", "assets", "list", "--profile", "prod", "--type", "notebooks"])
+    assert result.exit_code == 0, result.output
+    assert "my_notebook" in result.output
+
+
+def test_db_assets_list_jobs_renders_rows(monkeypatch, tmp_path):
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+    import sqlite3
+    db_path = tmp_path / "amx.db"
+    SQLiteHistoryStore(db_path).init()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO remote_jobs
+                   (profile_name, job_id, name, schedule_cron, schedule_pause_status,
+                    success_rate_30d, ingested_at)
+               VALUES ('prod', 42, 'nightly_etl', '0 2 * * *', 'UNPAUSED', 0.95,
+                       '2026-05-21T00:00:00')"""
+        )
+        conn.commit()
+
+    import amx.cli_support.commands.db_assets_impl as impl
+    monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
+    monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
+
+    result = _invoke(["db", "assets", "list", "--profile", "prod", "--type", "jobs"])
+    assert result.exit_code == 0, result.output
+    assert "nightly_etl" in result.output
+
+

@@ -6,6 +6,11 @@ logic here testable in isolation.
 
 from __future__ import annotations
 
+import re
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
 import click
 
 from amx.config import AMXConfig
@@ -19,6 +24,8 @@ ASSET_TYPES = [
     "notebooks", "jobs", "pipelines", "streamlit_apps",
     "streams", "task_dependencies", "queries",
 ]
+
+_WINDOW_RX = re.compile(r"^(\d+)([dhm])$")
 
 
 def run_ingest_wizard(
@@ -145,22 +152,188 @@ def _open_catalog(cfg: AMXConfig):
     return catalog
 
 
-# Stub functions for /db assets list/show/search/refresh/prune — filled by Tasks 33-36.
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+
+def _history_db_path(cfg: AMXConfig) -> Path:
+    """Resolve the local history DB path from an AMXConfig."""
+    config_dir = getattr(cfg, "CONFIG_DIR", None) or str(Path.home() / ".amx")
+    return Path(config_dir) / "history.db"
+
+
+def _ask_choice(label: str, options: list[str]) -> str:
+    click.echo(f"{label}:")
+    for i, opt in enumerate(options, 1):
+        click.echo(f"  [{i}] {opt}")
+    idx = click.prompt("Choice", type=int, default=1)
+    if not 1 <= idx <= len(options):
+        raise click.ClickException("Choice out of range")
+    return options[idx - 1]
+
+
+def _singular(asset_type: str) -> str:
+    return {
+        "notebooks": "notebook",
+        "jobs": "job",
+        "pipelines": "pipeline",
+        "streamlit_apps": "streamlit",
+        "streams": "stream",
+        "queries": "query",
+        "task_dependencies": "task_dependency",
+    }.get(asset_type, asset_type)
+
+
+# ── run_list ────────────────────────────────────────────────────────────────
+
+
 def run_list(cfg, *, profile, asset_type):
-    raise click.ClickException("/db assets list is not implemented yet (Phase E Task 33).")
+    """List remote-ingested assets in a tabular view."""
+    from rich.console import Console
+    from rich.table import Table as RichTable
+
+    profile_name = _resolve_profile(cfg, profile)
+    if not asset_type:
+        asset_type = _ask_choice("Asset type", ASSET_TYPES)
+    db_path = _history_db_path(cfg)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        if asset_type == "notebooks":
+            rows = conn.execute(
+                "SELECT id, name, platform, language, cell_count, "
+                "last_modified_at, owner "
+                "FROM remote_notebooks WHERE profile_name = ? "
+                "ORDER BY name",
+                (profile_name,),
+            ).fetchall()
+            table = RichTable(title=f"Remote Notebooks ({profile_name})")
+            table.add_column("ID")
+            table.add_column("Name")
+            table.add_column("Platform")
+            table.add_column("Lang")
+            table.add_column("Cells")
+            table.add_column("Last modified")
+            table.add_column("Owner")
+            for r in rows:
+                table.add_row(
+                    str(r["id"]), r["name"] or "-", r["platform"] or "-",
+                    r["language"] or "-", str(r["cell_count"] or "-"),
+                    str(r["last_modified_at"] or "-"), r["owner"] or "-",
+                )
+        elif asset_type == "jobs":
+            rows = conn.execute(
+                "SELECT id, job_id, name, schedule_cron, schedule_pause_status, "
+                "last_run_status, success_rate_30d "
+                "FROM remote_jobs WHERE profile_name = ? ORDER BY name",
+                (profile_name,),
+            ).fetchall()
+            table = RichTable(title=f"Remote Jobs ({profile_name})")
+            for col in ("ID", "Job ID", "Name", "Schedule", "Pause", "Last run", "Success 30d"):
+                table.add_column(col)
+            for r in rows:
+                rate = r["success_rate_30d"]
+                rate_str = f"{rate:.0%}" if rate is not None else "-"
+                table.add_row(
+                    str(r["id"]), str(r["job_id"]), r["name"] or "-",
+                    r["schedule_cron"] or "-", r["schedule_pause_status"] or "-",
+                    r["last_run_status"] or "-", rate_str,
+                )
+        elif asset_type == "pipelines":
+            rows = conn.execute(
+                "SELECT id, pipeline_id, name, target_schema, edition, continuous, "
+                "photon, latest_update_state "
+                "FROM remote_pipelines WHERE profile_name = ? ORDER BY name",
+                (profile_name,),
+            ).fetchall()
+            table = RichTable(title=f"Remote Pipelines ({profile_name})")
+            for col in ("ID", "Pipeline", "Name", "Target", "Edition", "Cont.", "Photon", "Latest"):
+                table.add_column(col)
+            for r in rows:
+                table.add_row(
+                    str(r["id"]), r["pipeline_id"] or "-", r["name"] or "-",
+                    r["target_schema"] or "-", r["edition"] or "-",
+                    "yes" if r["continuous"] else "no",
+                    "yes" if r["photon"] else "no",
+                    r["latest_update_state"] or "-",
+                )
+        elif asset_type == "streamlit_apps":
+            rows = conn.execute(
+                "SELECT id, qualified_name, main_file, query_warehouse, owner, "
+                "last_altered_at FROM remote_streamlit_apps "
+                "WHERE profile_name = ? ORDER BY qualified_name",
+                (profile_name,),
+            ).fetchall()
+            table = RichTable(title=f"Streamlit Apps ({profile_name})")
+            for col in ("ID", "Qualified name", "Main file", "Warehouse", "Owner", "Last altered"):
+                table.add_column(col)
+            for r in rows:
+                table.add_row(
+                    str(r["id"]), r["qualified_name"] or "-",
+                    r["main_file"] or "-", r["query_warehouse"] or "-",
+                    r["owner"] or "-", str(r["last_altered_at"] or "-"),
+                )
+        elif asset_type == "streams":
+            rows = conn.execute(
+                "SELECT id, qualified_name, source_table_fqn, mode, stale_after, owner "
+                "FROM remote_streams WHERE profile_name = ? "
+                "ORDER BY qualified_name",
+                (profile_name,),
+            ).fetchall()
+            table = RichTable(title=f"Streams ({profile_name})")
+            for col in ("ID", "Stream", "Source table", "Mode", "Stale after", "Owner"):
+                table.add_column(col)
+            for r in rows:
+                table.add_row(
+                    str(r["id"]), r["qualified_name"] or "-",
+                    r["source_table_fqn"] or "-", r["mode"] or "-",
+                    str(r["stale_after"] or "-"), r["owner"] or "-",
+                )
+        elif asset_type == "task_dependencies":
+            rows = conn.execute(
+                "SELECT parent_task_fqn, child_task_fqn "
+                "FROM remote_task_dependencies WHERE profile_name = ? "
+                "ORDER BY parent_task_fqn, child_task_fqn",
+                (profile_name,),
+            ).fetchall()
+            table = RichTable(title=f"Task dependencies ({profile_name})")
+            table.add_column("Parent")
+            table.add_column("Child")
+            for r in rows:
+                table.add_row(r["parent_task_fqn"], r["child_task_fqn"])
+        elif asset_type == "queries":
+            rows = conn.execute(
+                "SELECT id, platform, kind, name, warehouse, user_name, "
+                "executed_at, duration_ms "
+                "FROM remote_queries WHERE profile_name = ? "
+                "ORDER BY COALESCE(executed_at, '0000') DESC",
+                (profile_name,),
+            ).fetchall()
+            table = RichTable(title=f"Queries ({profile_name})")
+            for col in ("ID", "Platform", "Kind", "Name/Id", "Warehouse", "User", "Executed", "Dur ms"):
+                table.add_column(col)
+            for r in rows:
+                table.add_row(
+                    str(r["id"]), r["platform"] or "-", r["kind"] or "-",
+                    r["name"] or "-", r["warehouse"] or "-",
+                    r["user_name"] or "-", str(r["executed_at"] or "-"),
+                    str(r["duration_ms"] or "-"),
+                )
+        else:
+            raise click.ClickException(f"Unknown asset type: {asset_type}")
+    console = Console()
+    console.print(table)
 
 
 def run_show(cfg, *, identifier, profile, asset_type):
-    raise click.ClickException("/db assets show is not implemented yet (Phase E Task 34).")
+    raise click.ClickException("/db assets show is not implemented yet.")
 
 
 def run_search(cfg, *, query, profile, limit):
-    raise click.ClickException("/db assets search is not implemented yet (Phase E Task 35).")
+    raise click.ClickException("/db assets search is not implemented yet.")
 
 
 def run_refresh(cfg, *, profile, skip_confirm):
-    raise click.ClickException("/db assets refresh is not implemented yet (Phase E Task 36).")
+    raise click.ClickException("/db assets refresh is not implemented yet.")
 
 
 def run_prune(cfg, *, older_than, profile, skip_confirm):
-    raise click.ClickException("/db assets prune is not implemented yet (Phase E Task 36).")
+    raise click.ClickException("/db assets prune is not implemented yet.")
