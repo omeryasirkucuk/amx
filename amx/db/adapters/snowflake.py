@@ -40,6 +40,7 @@ class SnowflakeAdapter(DatabaseAdapter):
         external_tables=True,
         supports_shared_history=True,
         remote_notebooks=True,
+        remote_streamlit_apps=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
 
@@ -752,3 +753,28 @@ class SnowflakeAdapter(DatabaseAdapter):
             raw = src_rows[0]["$1"] if src_rows else "{}"
             raw_text = raw if isinstance(raw, str) else json.dumps(raw)
             return normalize_source(raw_text, hint="ipynb")
+
+    def list_remote_streamlit_apps(self, engine):
+        """Yield :class:`RemoteStreamlitApp` for every Snowflake Streamlit app
+        visible to the active role.
+        """
+        with engine.connect() as conn:
+            rows = conn.execute(text("SHOW STREAMLITS IN ACCOUNT")).mappings().all()
+            for r in rows:
+                fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                desc = conn.execute(text(f"DESC STREAMLIT {fqn}")).mappings().all()
+                props = {row["property"]: row["value"] for row in desc}
+                last = r.get("last_altered")
+                if isinstance(last, str):
+                    try:
+                        last = datetime.fromisoformat(last)
+                    except ValueError:
+                        last = None
+                yield RemoteStreamlitApp(
+                    qualified_name=fqn,
+                    main_file=props.get("MAIN_FILE", "streamlit_app.py"),
+                    query_warehouse=r.get("query_warehouse"),
+                    root_location=props.get("ROOT_LOCATION", ""),
+                    owner=r.get("owner"),
+                    last_altered_at=last,
+                )

@@ -53,3 +53,32 @@ def test_list_remote_notebooks_yields_normalized_ipynb():
 def test_capability_remote_notebooks_true_for_snowflake():
     from amx.db.adapters.snowflake import SnowflakeAdapter
     assert SnowflakeAdapter.capabilities.remote_notebooks is True
+
+
+def test_list_remote_streamlit_apps():
+    a = _adapter()
+    show_rows = [{
+        "name": "DASH_KPIS", "database_name": "ANALYTICS", "schema_name": "APPS",
+        "owner": "DATA_ENG", "query_warehouse": "WH_S",
+        "last_altered": "2026-05-01T00:00:00",
+    }]
+    desc_rows = [
+        {"property": "ROOT_LOCATION", "value": "@APPS.DASH_STAGE/dash_kpis"},
+        {"property": "MAIN_FILE", "value": "streamlit_app.py"},
+    ]
+    def fake_execute(stmt, *args, **kwargs):
+        s = str(stmt).upper()
+        if "SHOW STREAMLITS" in s:
+            return MagicMock(mappings=lambda: MagicMock(all=lambda: show_rows))
+        if "DESC STREAMLIT" in s:
+            return MagicMock(mappings=lambda: MagicMock(all=lambda: desc_rows))
+        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+    apps = list(a.list_remote_streamlit_apps(_engine_with_fake(fake_execute)))
+    assert apps[0].qualified_name == "ANALYTICS.APPS.DASH_KPIS"
+    assert apps[0].main_file == "streamlit_app.py"
+    assert apps[0].query_warehouse == "WH_S"
+
+
+def test_capability_remote_streamlit_apps_flag_on():
+    from amx.db.adapters.snowflake import SnowflakeAdapter
+    assert SnowflakeAdapter.capabilities.remote_streamlit_apps is True
