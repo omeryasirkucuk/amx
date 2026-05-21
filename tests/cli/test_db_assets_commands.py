@@ -155,3 +155,44 @@ def test_db_assets_list_jobs_renders_rows(monkeypatch, tmp_path):
     assert "nightly_etl" in result.output
 
 
+# ── Task 34: run_show ─────────────────────────────────────────────────────────
+
+def test_db_assets_show_notebook(monkeypatch, tmp_path):
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+    import sqlite3
+    import json
+    db_path = tmp_path / "amx.db"
+    SQLiteHistoryStore(db_path).init()
+    nb_src = json.dumps({
+        "cells": [
+            {"cell_type": "code", "source": ["print(1)"], "metadata": {"language": "python"},
+             "outputs": [], "execution_count": None}
+        ],
+        "nbformat": 4, "nbformat_minor": 5, "metadata": {},
+    })
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO remote_notebooks
+                   (profile_name, platform, external_id, name, workspace_path,
+                    qualified_name, language, source_text, source_hash,
+                    last_modified_at, last_modified_by, owner, cell_count, ingested_at)
+               VALUES ('prod', 'databricks', 'ext-1', 'mynb',
+                       '/n', NULL, 'python', ?, 'h', NULL, NULL, NULL, 1,
+                       '2026-05-21')""",
+            (nb_src,),
+        )
+        conn.commit()
+        nb_id = conn.execute("SELECT id FROM remote_notebooks").fetchone()[0]
+
+    import amx.cli_support.commands.db_assets_impl as impl
+    monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
+    monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
+
+    result = _invoke(["db", "assets", "show", str(nb_id), "--profile", "prod", "--type", "notebooks"])
+    assert result.exit_code == 0, result.output
+    assert "mynb" in result.output
+    assert "print(1)" in result.output
+
+
+# ── Task 35: run_search ───────────────────────────────────────────────────────
+

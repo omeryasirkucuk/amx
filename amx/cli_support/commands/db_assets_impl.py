@@ -322,9 +322,106 @@ def run_list(cfg, *, profile, asset_type):
     console = Console()
     console.print(table)
 
+# ── run_show ─────────────────────────────────────────────────────────────────
+
+
+def _fetch_asset_by_identifier(conn, asset_type, profile_name, identifier):
+    """Look up a single asset row by id (numeric) or name/qualified_name."""
+    by_id = identifier.isdigit()
+    table_map = {
+        "notebooks": "remote_notebooks",
+        "jobs": "remote_jobs",
+        "pipelines": "remote_pipelines",
+        "streamlit_apps": "remote_streamlit_apps",
+        "streams": "remote_streams",
+        "queries": "remote_queries",
+    }
+    if asset_type not in table_map:
+        return None, []
+    tbl = table_map[asset_type]
+    if by_id:
+        cur = conn.execute(
+            f"SELECT * FROM {tbl} WHERE profile_name = ? AND id = ?",
+            (profile_name, int(identifier)),
+        )
+    else:
+        name_col = "qualified_name" if asset_type in {"streamlit_apps", "streams"} else "name"
+        cur = conn.execute(
+            f"SELECT * FROM {tbl} WHERE profile_name = ? AND {name_col} = ?",
+            (profile_name, identifier),
+        )
+    row = cur.fetchone()
+    cols = [d[0] for d in cur.description] if cur.description else []
+    return (dict(row) if row else None), cols
+
+
+def _list_downstream_tables(conn, *, asset_kind, asset_id):
+    """Resolve catalog_entities rows that this asset references."""
+    rows = conn.execute(
+        """
+        SELECT ce.database_name, ce.schema_name, ce.table_name
+        FROM catalog_relationships cr
+        JOIN catalog_entities ce ON ce.id = cr.to_entity_id
+        WHERE cr.relationship_type = 'asset_references_table'
+          AND cr.from_entity_kind = ?
+          AND cr.from_entity_id = ?
+        ORDER BY ce.database_name, ce.schema_name, ce.table_name
+        """,
+        (asset_kind, asset_id),
+    ).fetchall()
+    return [
+        ".".join(filter(None, (r["database_name"], r["schema_name"], r["table_name"])))
+        for r in rows
+    ]
+
 
 def run_show(cfg, *, identifier, profile, asset_type):
-    raise click.ClickException("/db assets show is not implemented yet.")
+    """Show full detail (source, lineage, owner, ...) for one asset."""
+    profile_name = _resolve_profile(cfg, profile)
+    if not asset_type:
+        asset_type = _ask_choice("Asset type", ASSET_TYPES)
+    db_path = _history_db_path(cfg)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row, _columns = _fetch_asset_by_identifier(conn, asset_type, profile_name, identifier)
+        if row is None:
+            raise click.ClickException(
+                f"No {asset_type} asset matches '{identifier}' in profile '{profile_name}'."
+            )
+        click.echo("=" * 70)
+        click.echo(
+            f"{asset_type.upper()} — {row.get('name') or row.get('qualified_name') or identifier}"
+        )
+        click.echo("=" * 70)
+        for k, v in row.items():
+            if k in {"source_text", "sql_text", "raw_definition_json"}:
+                continue
+            click.echo(f"  {k}: {v}")
+        # Source / SQL body where applicable.
+        if asset_type == "notebooks":
+            click.echo("\n--- Source (normalized .ipynb) ---")
+            try:
+                import json as _json
+                cells = _json.loads(row["source_text"]).get("cells", [])
+                for i, cell in enumerate(cells, 1):
+                    lang = cell.get("metadata", {}).get("language") or cell.get("cell_type", "")
+                    body = "".join(cell.get("source", []))
+                    click.echo(f"\n[cell {i} · {cell.get('cell_type', '?')} · {lang}]")
+                    click.echo(body)
+            except (_json.JSONDecodeError, AttributeError, TypeError):
+                click.echo(row["source_text"])
+        elif asset_type == "queries":
+            click.echo("\n--- SQL ---")
+            click.echo(row["sql_text"])
+        downstream = _list_downstream_tables(
+            conn, asset_kind=_singular(asset_type), asset_id=row["id"]
+        )
+        click.echo("\n--- Downstream tables ---")
+        if not downstream:
+            click.echo("  (none resolved)")
+        else:
+            for fqn in downstream:
+                click.echo(f"  · {fqn}")
 
 
 def run_search(cfg, *, query, profile, limit):
