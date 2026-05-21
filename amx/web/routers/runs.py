@@ -1610,8 +1610,93 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
         emit_terminal(job.queue, "job.done", {"summary": job.summary})
         return
 
+    # Pending entries don't carry the originating ``db_profile`` /
+    # ``database`` / ``catalog`` triple (the on-disk pending file just
+    # stores schema/table/column + description). The Studio Pending
+    # page submits an empty body, so without a fallback the worker
+    # would open a connector against ``cfg.active_db_profile`` + the
+    # profile's PINNED database — which for a profile with no pinned
+    # database lands the connection on postgres' default ``postgres``
+    # database, and every ``COMMENT ON TABLE`` then fails with
+    # ``InvalidSchemaName`` because the user's schema lives in a
+    # different database. Derive scope from the first result with a
+    # known run so single-run Pending apply lands on the right
+    # connection. Multi-run Pending queues still take the first
+    # scope; the run scope override on the body still wins when set.
+    derived_profile = body.db_profile
+    derived_database = body.database
+    derived_catalog = body.catalog
+    if (
+        not (derived_profile or "").strip()
+        and not (derived_database or "").strip()
+        and not (derived_catalog or "").strip()
+    ):
+        try:
+            from amx.storage.sqlite_store import history_store as _hs_for_scope
+
+            _hs = _hs_for_scope()
+        except Exception:
+            _hs = None
+        if _hs is not None:
+            from amx.storage._history_results import get_run_result
+
+            for r in results:
+                if r.result_id is None:
+                    continue
+                try:
+                    rr = get_run_result(_hs, int(r.result_id))
+                except Exception:
+                    continue
+                if not rr:
+                    continue
+                run_id = rr.get("run_id")
+                if run_id is None:
+                    continue
+                try:
+                    run_row = _hs.get_run(int(run_id))
+                except Exception:
+                    continue
+                if not run_row:
+                    continue
+                # ``settings_json`` carries the studio.generate.singleshot
+                # trigger payload (``database`` + ``catalog`` set at
+                # generate time). Older analyze.run rows persist the same
+                # fields via the bulk pipeline. Either way, the keys are
+                # the same names we feed back into ``_scoped_connector``.
+                import json as _json
+
+                raw_settings = run_row.get("settings_json") or "{}"
+                try:
+                    settings = (
+                        _json.loads(raw_settings) if isinstance(raw_settings, str) else raw_settings
+                    )
+                except Exception:
+                    settings = {}
+                derived_profile = run_row.get("db_profile") or derived_profile
+                derived_database = settings.get("database") or derived_database
+                derived_catalog = settings.get("catalog") or derived_catalog
+                if derived_profile or derived_database or derived_catalog:
+                    log.info(
+                        "apply: derived scope from result_id=%s run_id=%s "
+                        "(profile=%r database=%r catalog=%r)",
+                        r.result_id,
+                        run_id,
+                        derived_profile,
+                        derived_database,
+                        derived_catalog,
+                    )
+                    # Mirror the derived scope back onto ``body`` so the
+                    # downstream catalog / audit hooks (which still read
+                    # ``body.db_profile`` / ``body.database`` /
+                    # ``body.catalog``) see the same scope we open the
+                    # connector under.
+                    body.db_profile = derived_profile
+                    body.database = derived_database
+                    body.catalog = derived_catalog
+                    break
+
     try:
-        db, _, _ = _scoped_connector(cfg, body.db_profile, body.database, body.catalog)
+        db, _, _ = _scoped_connector(cfg, derived_profile, derived_database, derived_catalog)
     except HTTPException as exc:
         job.status = "failed"
         job.error = str(exc.detail)
