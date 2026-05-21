@@ -20,6 +20,7 @@ from dataclasses import fields as dc_fields
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import NoSuchTableError
 
 from amx.core.errors import actionable_error_message
 from amx.db._connector_types import (
@@ -185,6 +186,19 @@ def profile_table(
 
     try:
         raw_cols = insp.get_columns(table, schema=schema)
+    except NoSuchTableError:
+        # Re-raise as itself instead of wrapping in ``ProfilingError``.
+        # The bulk worker narrow-catches this exact class to surface a
+        # user-actionable "table not reachable in live DB" remediation
+        # message (and, when the Studio caller supplied a cache
+        # override for this asset, to substitute a metadata-only
+        # profile from the catalog cache).
+        log.warning(
+            "NoSuchTableError on %s.%s -- propagating to caller for cache fallback",
+            schema,
+            table,
+        )
+        raise
     except Exception as exc:
         actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
             exc, backend=_db.backend

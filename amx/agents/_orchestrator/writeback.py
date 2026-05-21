@@ -466,10 +466,20 @@ def apply_review_results_to_db(
                                 # cache for this table so the very next
                                 # sidebar / CLI inspect sees the freshly
                                 # written COMMENT and never the prior
-                                # placeholder.
+                                # placeholder. ``match_any_database`` is
+                                # belt-and-braces: the pending file
+                                # doesn't carry the originating database
+                                # scope, so the apply connector's cache
+                                # key can differ from the Studio
+                                # snapshot's cache key on multi-database
+                                # profiles. Wiping every database_name
+                                # row for the same (profile, schema,
+                                # table) closes that gap.
                                 try:
                                     db.invalidate_column_comments_cache(
-                                        schema=item.schema, table=item.table or ""
+                                        schema=item.schema,
+                                        table=item.table or "",
+                                        match_any_database=True,
                                     )
                                 except Exception as cache_exc:
                                     log.debug(
@@ -547,9 +557,17 @@ def apply_review_results_to_db(
                         )
                 # Same belt-and-braces invalidation for the column-
                 # comments cache as the batch branch above. Keeps
-                # post-apply reads guaranteed-fresh.
+                # post-apply reads guaranteed-fresh. ``match_any_database``
+                # is True so Studio's snapshot endpoint sees the wipe
+                # even when its cache row was populated under a
+                # different ``database`` scope than the apply worker's
+                # fallback active-profile default.
                 try:
-                    db.invalidate_column_comments_cache(schema=r.schema, table=r.table or "")
+                    db.invalidate_column_comments_cache(
+                        schema=r.schema,
+                        table=r.table or "",
+                        match_any_database=True,
+                    )
                 except Exception as cache_exc:
                     log.debug(
                         "invalidate_column_comments_cache failed for %s.%s: %s",

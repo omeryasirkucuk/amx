@@ -178,6 +178,99 @@ def test_invalidate_profile_drops_every_schema(store: SQLiteHistoryStore) -> Non
     )
 
 
+def test_invalidate_match_any_database_wipes_every_db(store: SQLiteHistoryStore) -> None:
+    """Apply path safety net: when the pending file doesn't carry the
+    originating database scope, the apply worker can't tell which
+    ``database_name`` row Studio's snapshot endpoint populated. The
+    ``match_any_database`` flag widens the delete to every ``database_name``
+    row for the same ``(profile, schema, table)`` so the cache is always
+    fresh after a COMMENT write.
+    """
+    # Same (profile, schema, table) tuple, different ``database_name``
+    # — the case Studio hits when the user navigates between
+    # databases on a single profile.
+    store.save_column_comments_cache(
+        db_profile="prod",
+        database="SAP",
+        schema="sap_s6p",
+        entries={"adrt": _entry("o-sap", {})},
+    )
+    store.save_column_comments_cache(
+        db_profile="prod",
+        database="bird_train",
+        schema="sap_s6p",
+        entries={"adrt": _entry("o-bird", {})},
+    )
+    # A sibling table that must survive the wipe.
+    store.save_column_comments_cache(
+        db_profile="prod",
+        database="SAP",
+        schema="sap_s6p",
+        entries={"adrc": _entry("c", {})},
+    )
+
+    dropped = store.invalidate_column_comments_cache(
+        db_profile="prod",
+        database="",  # ignored when match_any_database=True
+        schema="sap_s6p",
+        table="adrt",
+        match_any_database=True,
+    )
+    assert dropped == 2
+    # Both ``database_name`` rows for ``adrt`` are gone.
+    assert (
+        store.lookup_column_comments_cache(
+            db_profile="prod", database="SAP", schema="sap_s6p", table="adrt"
+        )
+        is None
+    )
+    assert (
+        store.lookup_column_comments_cache(
+            db_profile="prod", database="bird_train", schema="sap_s6p", table="adrt"
+        )
+        is None
+    )
+    # Sibling untouched.
+    assert (
+        store.lookup_column_comments_cache(
+            db_profile="prod", database="SAP", schema="sap_s6p", table="adrc"
+        )
+        is not None
+    )
+
+
+def test_invalidate_targeted_default_still_filters_by_database(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Default behaviour (``match_any_database=False``) must keep
+    filtering on ``database_name`` so a targeted comment write under
+    one database doesn't accidentally wipe sibling rows on the same
+    profile's other databases."""
+    store.save_column_comments_cache(
+        db_profile="prod",
+        database="SAP",
+        schema="sap_s6p",
+        entries={"adrt": _entry("o-sap", {})},
+    )
+    store.save_column_comments_cache(
+        db_profile="prod",
+        database="bird_train",
+        schema="sap_s6p",
+        entries={"adrt": _entry("o-bird", {})},
+    )
+    dropped = store.invalidate_column_comments_cache(
+        db_profile="prod", database="SAP", schema="sap_s6p", table="adrt"
+    )
+    assert dropped == 1
+    # The other database's row survives the targeted invalidate.
+    assert (
+        store.lookup_column_comments_cache(
+            db_profile="prod", database="bird_train", schema="sap_s6p", table="adrt"
+        )
+        is not None
+    )
+
+
 def test_gc_sweeps_expired_rows(store: SQLiteHistoryStore) -> None:
     store.save_column_comments_cache(
         db_profile="prod",

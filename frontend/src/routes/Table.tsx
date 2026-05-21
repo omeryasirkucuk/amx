@@ -34,6 +34,14 @@ export default function Table() {
   const [runDocProfiles, setRunDocProfiles] = useState<string[] | null>(null);
   // PR δ: parallel code-profile override forwarded to api.submitRun.
   const [runCodeProfiles, setRunCodeProfiles] = useState<string[] | null>(null);
+  // Reachability pre-flight: when /api/runs/preflight reports tables the
+  // live DB can't read, surface a dialog so the user explicitly opts into
+  // the catalog-cache substitution instead of the bulk worker crashing on
+  // ``NoSuchTableError`` (the user-confirmed "ask, don't silently fall
+  // back" contract).
+  const [reachabilityBlocked, setReachabilityBlocked] = useState<
+    Array<{ schema: string; table: string; reason: string }> | null
+  >(null);
 
   useEffect(() => {
     if (scope && schema && table) {
@@ -155,9 +163,25 @@ export default function Table() {
       }),
   });
 
+  // Two-phase bulk submit: pre-flight first to detect any tables the
+  // live DB can't reflect, then either submit directly (everything
+  // reachable) or open the reachability dialog so the user picks
+  // "Use cached schema" / "Cancel". Returning ``null`` from
+  // ``mutationFn`` signals "dialog opened, navigation deferred" so
+  // ``onSuccess`` doesn't fire the toast prematurely.
   const generate = useMutation({
-    mutationFn: () =>
-      api.submitRun({
+    mutationFn: async (): Promise<{ job_id: string; status: string } | null> => {
+      const pre = await api.preflightRun({
+        scope: { [schema]: [table] },
+        db_profile: scope?.profile,
+        database: scope?.database,
+        catalog: scope?.catalog,
+      });
+      if (pre.blocked_assets.length > 0) {
+        setReachabilityBlocked(pre.blocked_assets);
+        return null;
+      }
+      return api.submitRun({
         scope: { [schema]: [table] },
         apply: false,
         missing_only: false,
@@ -166,8 +190,10 @@ export default function Table() {
         catalog: scope?.catalog,
         doc_profiles: runDocProfiles ?? undefined,
         code_profiles: runCodeProfiles ?? undefined,
-      }),
+      });
+    },
     onSuccess: (result) => {
+      if (result === null) return; // dialog open, wait for user
       setConfirmGenerate(false);
       toast.push({
         title: "Bulk run queued for review",
@@ -178,6 +204,44 @@ export default function Table() {
       navigate(`/runs/new-${result.job_id}`);
     },
     onError: (e: Error) => {
+      setConfirmGenerate(false);
+      toast.push({
+        title: "Could not start generation",
+        description: e.message,
+        tone: "error",
+      });
+    },
+  });
+
+  // Second-phase submit after the user accepts the reachability prompt.
+  // ``cache_override_assets`` is the list of ``"schema.table"`` keys we
+  // ask the bulk worker to substitute the catalog cache for.
+  const generateWithOverride = useMutation({
+    mutationFn: (overrides: string[]) =>
+      api.submitRun({
+        scope: { [schema]: [table] },
+        apply: false,
+        missing_only: false,
+        db_profile: scope?.profile,
+        database: scope?.database,
+        catalog: scope?.catalog,
+        doc_profiles: runDocProfiles ?? undefined,
+        code_profiles: runCodeProfiles ?? undefined,
+        cache_override_assets: overrides,
+      }),
+    onSuccess: (result) => {
+      setReachabilityBlocked(null);
+      setConfirmGenerate(false);
+      toast.push({
+        title: "Bulk run queued for review",
+        description: `Streaming every column of ${schema}.${table} using cached schema; results land on the Pending page.`,
+        tone: "info",
+        duration: 2800,
+      });
+      navigate(`/runs/new-${result.job_id}`);
+    },
+    onError: (e: Error) => {
+      setReachabilityBlocked(null);
       setConfirmGenerate(false);
       toast.push({
         title: "Could not start generation",
@@ -437,21 +501,87 @@ export default function Table() {
         singleOption={{
           label: "Just this table",
           description: "Writes only the table's COMMENT. One LLM call, columns untouched.",
-          loading: generateTableOnly.isPending,
+          // Fire-and-forget: close the dialog immediately and let the
+          // mutation finish in the background. The pending pill on the
+          // Table page surfaces the result the moment the LLM call
+          // returns, so trapping the user in a "...running" modal until
+          // settle was pure friction.
           onClick: () => {
-            generateTableOnly.mutate(undefined, {
-              onSettled: () => setConfirmGenerate(false),
-            });
+            setConfirmGenerate(false);
+            generateTableOnly.mutate();
           },
         }}
         bulkOption={{
           label: "Whole table — every column too (bulk run)",
           description:
             "Spawns analyze.run for the full table; each column gets its own generated description, recorded in history.",
-          loading: generate.isPending,
-          onClick: () => generate.mutate(),
+          // Bulk path also closes the dialog upfront. ``generate`` runs
+          // pre-flight first; if blocked tables are found, the
+          // reachability modal below opens — independent of whether the
+          // GenerateScopeDialog is still on screen.
+          onClick: () => {
+            setConfirmGenerate(false);
+            generate.mutate();
+          },
         }}
       />
+      <Modal
+        open={reachabilityBlocked !== null}
+        onClose={() => setReachabilityBlocked(null)}
+        size="md"
+        title={<span>Live database can't read this table</span>}
+        description={
+          reachabilityBlocked && reachabilityBlocked.length === 1
+            ? `AMX couldn't reach ${reachabilityBlocked[0].schema}.${reachabilityBlocked[0].table} on the live database. The catalog still has its column list from the last /search sync — use that instead?`
+            : `AMX couldn't reach ${reachabilityBlocked?.length ?? 0} table(s) on the live database. The catalog still has their column lists from the last /search sync — use that instead?`
+        }
+      >
+        <div className="space-y-3 text-[13px] text-ink">
+          {reachabilityBlocked && reachabilityBlocked.length > 1 ? (
+            <ul className="max-h-[180px] divide-y divide-surface-border overflow-y-auto rounded-md border border-surface-border text-[12px] font-mono">
+              {reachabilityBlocked.slice(0, 8).map((b) => (
+                <li key={`${b.schema}.${b.table}`} className="px-3 py-1.5 text-ink-muted">
+                  {b.schema}.{b.table}
+                </li>
+              ))}
+              {reachabilityBlocked.length > 8 ? (
+                <li className="px-3 py-1.5 text-[11px] italic text-ink-dim">
+                  +{reachabilityBlocked.length - 8} more
+                </li>
+              ) : null}
+            </ul>
+          ) : null}
+          <p className="text-[12px] text-ink-muted">
+            Cached schema gives the LLM column names, dtypes, and existing
+            comments — no live samples, PK/FK, or row counts. Approve the
+            descriptions from the Pending page as usual.
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="ghost"
+              size="md"
+              onClick={() => setReachabilityBlocked(null)}
+              disabled={generateWithOverride.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              loading={generateWithOverride.isPending}
+              onClick={() => {
+                if (!reachabilityBlocked) return;
+                const overrides = reachabilityBlocked.map(
+                  (b) => `${b.schema}.${b.table}`,
+                );
+                generateWithOverride.mutate(overrides);
+              }}
+            >
+              Use cached schema
+            </Button>
+          </div>
+        </div>
+      </Modal>
       <Modal
         open={pickerArtifacts !== null}
         onClose={() => setPickerArtifacts(null)}

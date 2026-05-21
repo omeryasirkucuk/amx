@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import sys
 import time
+import traceback
 from collections.abc import Callable
 from typing import Any
 
@@ -642,6 +644,13 @@ def _record_rag_unavailable_reason(
     it and tell the user "No RAG context used (reason: ...)". The
     counterpart in :mod:`amx.core.inference` uses the same formatting
     so the two call sites can never drift.
+
+    The recorded string ends with ``at <basename>:<lineno> in <symbol>``
+    when the exception carries a traceback so a vague class+message
+    (e.g. ``TypeError: 'str' object is not callable``) still points
+    at the offending file and line. Use ``os.path.basename`` (not
+    ``str.rsplit`` on ``/``) so Windows paths render the same way as
+    POSIX paths.
     """
     # When the user changed embedding providers between runs the
     # collection is technically intact but unusable with the active
@@ -652,8 +661,19 @@ def _record_rag_unavailable_reason(
 
     if isinstance(exc, EmbeddingProviderMismatch):
         extra_metrics["rag_unavailable_reason"] = f"embedding_mismatch: {exc}"
-    else:
-        extra_metrics["rag_unavailable_reason"] = f"{exc.__class__.__name__}: {exc}"
+        return
+
+    location = ""
+    tb = exc.__traceback__
+    if tb is not None:
+        try:
+            frames = traceback.extract_tb(tb)
+            if frames:
+                last = frames[-1]
+                location = f" at {os.path.basename(last.filename)}:{last.lineno} in {last.name}"
+        except Exception:
+            location = ""
+    extra_metrics["rag_unavailable_reason"] = f"{exc.__class__.__name__}: {exc}{location}"
 
 
 def _finalize_history_run(
