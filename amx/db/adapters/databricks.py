@@ -16,7 +16,14 @@ from sqlalchemy.engine import Engine
 from amx.codebase.notebook_normalize import normalize_source
 from amx.db.adapters._databricks_workspace import DatabricksWorkspaceClient
 from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
-from amx.db.adapters.remote_asset_types import RemoteNotebook
+from amx.db.adapters.remote_asset_types import (
+    RemoteJob,
+    RemoteJobRun,
+    RemoteJobTask,
+    RemoteNotebook,
+    RemotePipeline,
+    RemoteQuery,
+)
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +63,7 @@ class DatabricksAdapter(DatabaseAdapter):
         schema_comments=False,
         comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
         remote_notebooks=True,
+        remote_jobs=True,
     )
 
     def create_history_schema_ddl(self, schema_name: str) -> str:
@@ -966,3 +974,68 @@ class DatabricksAdapter(DatabaseAdapter):
         )
         raw = client.export_notebook_source(workspace_path=path)
         return normalize_source(raw, hint="databricks_source", default_language="python")
+
+    def list_remote_jobs(self, *, runs_per_job: int = 20):
+        for raw in self._workspace_client.list_jobs_full(runs_per_job=runs_per_job):
+            s = raw.get("settings", {})
+            schedule = s.get("schedule") or {}
+            tasks = tuple(self._map_remote_task(t) for t in s.get("tasks", []))
+            runs = tuple(self._map_remote_run(r) for r in raw.get("recent_runs", []))
+            yield RemoteJob(
+                job_id=raw["job_id"],
+                name=s.get("name", f"job_{raw['job_id']}"),
+                creator_user_name=raw.get("creator_user_name"),
+                schedule_cron=schedule.get("quartz_cron_expression"),
+                schedule_timezone=schedule.get("timezone_id"),
+                schedule_pause_status=schedule.get("pause_status"),
+                max_concurrent_runs=s.get("max_concurrent_runs"),
+                email_notifications=s.get("email_notifications") or {},
+                tags=s.get("tags") or {},
+                tasks=tasks,
+                recent_runs=runs,
+            )
+
+    @staticmethod
+    def _map_remote_task(t: dict) -> "RemoteJobTask":
+        type_keys = {
+            "notebook_task": "notebook_task",
+            "python_wheel_task": "python_wheel_task",
+            "sql_task": "sql_task",
+            "dbt_task": "dbt_task",
+            "pipeline_task": "pipeline_task",
+            "spark_jar_task": "spark_jar_task",
+            "spark_python_task": "spark_python_task",
+            "spark_submit_task": "spark_submit_task",
+            "run_job_task": "run_job_task",
+        }
+        task_type = next((v for k, v in type_keys.items() if k in t), "unknown")
+        notebook_path = (t.get("notebook_task") or {}).get("notebook_path")
+        sql = t.get("sql_task") or {}
+        sql_query_id = (sql.get("query") or {}).get("query_id")
+        sql_warehouse_id = sql.get("warehouse_id")
+        pipeline = t.get("pipeline_task") or {}
+        pipeline_id = pipeline.get("pipeline_id")
+        depends_on = tuple(d["task_key"] for d in t.get("depends_on", []))
+        return RemoteJobTask(
+            task_key=t["task_key"],
+            task_type=task_type,
+            notebook_path=notebook_path,
+            sql_query_id=sql_query_id,
+            sql_warehouse_id=sql_warehouse_id,
+            pipeline_id=pipeline_id,
+            depends_on=depends_on,
+            raw_definition=t,
+        )
+
+    @staticmethod
+    def _map_remote_run(r: dict) -> "RemoteJobRun":
+        def _ms_to_dt(ms):
+            return datetime.fromtimestamp(ms / 1000, tz=timezone.utc) if ms else None
+        return RemoteJobRun(
+            run_id=r["run_id"],
+            state_result=(r.get("state") or {}).get("result_state") or "UNKNOWN",
+            start_time=_ms_to_dt(r.get("start_time")) or datetime.now(timezone.utc),
+            end_time=_ms_to_dt(r.get("end_time")),
+            setup_duration_ms=r.get("setup_duration"),
+            execution_duration_ms=r.get("execution_duration"),
+        )

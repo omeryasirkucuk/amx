@@ -49,3 +49,42 @@ def test_fetch_remote_notebook_source_resolves_object_id():
 def test_capability_remote_notebooks_flag_on():
     from amx.db.adapters.databricks import DatabricksAdapter
     assert DatabricksAdapter.capabilities.remote_notebooks is True
+
+
+def test_list_remote_jobs_maps_settings_and_runs():
+    a = _adapter_with_mock_client()
+    a._workspace_client_override.list_jobs_full.return_value = iter([
+        {
+            "job_id": 42,
+            "creator_user_name": "alice",
+            "settings": {
+                "name": "nightly_etl",
+                "schedule": {"quartz_cron_expression": "0 2 * * *", "timezone_id": "UTC", "pause_status": "UNPAUSED"},
+                "max_concurrent_runs": 1,
+                "email_notifications": {"on_failure": ["ops@example.com"]},
+                "tags": {"team": "data"},
+                "tasks": [
+                    {"task_key": "extract", "notebook_task": {"notebook_path": "/Users/alice/extract"}, "depends_on": []},
+                    {"task_key": "load", "notebook_task": {"notebook_path": "/Users/alice/load"}, "depends_on": [{"task_key": "extract"}]},
+                ],
+            },
+            "recent_runs": [
+                {"run_id": 1, "state": {"result_state": "SUCCESS"}, "start_time": 1714521600000, "end_time": 1714521610000, "setup_duration": 100, "execution_duration": 9900},
+                {"run_id": 2, "state": {"result_state": "FAILED"}, "start_time": 1714608000000, "end_time": 1714608010000, "setup_duration": 100, "execution_duration": 9900},
+            ],
+        }
+    ])
+    jobs = list(a.list_remote_jobs())
+    assert len(jobs) == 1
+    j = jobs[0]
+    assert j.job_id == 42
+    assert j.schedule_cron == "0 2 * * *"
+    assert j.schedule_pause_status == "UNPAUSED"
+    assert len(j.tasks) == 2
+    assert j.tasks[1].depends_on == ("extract",)
+    assert len(j.recent_runs) == 2
+
+
+def test_capability_remote_jobs_flag_on():
+    from amx.db.adapters.databricks import DatabricksAdapter
+    assert DatabricksAdapter.capabilities.remote_jobs is True
