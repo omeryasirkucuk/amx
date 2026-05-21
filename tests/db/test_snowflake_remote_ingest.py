@@ -104,3 +104,22 @@ def test_list_remote_streams():
 def test_capability_remote_streams_flag_on():
     from amx.db.adapters.snowflake import SnowflakeAdapter
     assert SnowflakeAdapter.capabilities.remote_streams is True
+
+
+def test_list_remote_task_dependencies():
+    a = _adapter()
+    rows = [
+        {"name_predecessor": "RAW.PUBLIC.LOAD_TASK", "name": "MARTS.GOLD.AGG_TASK"},
+        {"name_predecessor": "MARTS.GOLD.AGG_TASK", "name": "MARTS.GOLD.NOTIFY_TASK"},
+    ]
+    def fake_execute(stmt, *args, **kwargs):
+        if "TASK_DEPENDENTS" in str(stmt).upper():
+            return MagicMock(mappings=lambda: MagicMock(all=lambda: rows))
+        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+    edges = list(a.list_remote_task_dependencies(_engine_with_fake(fake_execute)))
+    assert ("RAW.PUBLIC.LOAD_TASK", "MARTS.GOLD.AGG_TASK") in edges
+
+
+def test_capability_remote_task_dependencies_flag_on():
+    from amx.db.adapters.snowflake import SnowflakeAdapter
+    assert SnowflakeAdapter.capabilities.remote_task_dependencies is True

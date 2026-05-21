@@ -42,6 +42,7 @@ class SnowflakeAdapter(DatabaseAdapter):
         remote_notebooks=True,
         remote_streamlit_apps=True,
         remote_streams=True,
+        remote_task_dependencies=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
 
@@ -801,3 +802,27 @@ class SnowflakeAdapter(DatabaseAdapter):
                     stale_after=stale,
                     owner=r.get("owner"),
                 )
+
+    def list_remote_task_dependencies(self, engine):
+        """Yield ``(predecessor_fqn, task_fqn)`` tuples from
+        ``INFORMATION_SCHEMA.TASK_DEPENDENTS``.
+
+        Requires the ACCOUNTADMIN role or the MONITOR EXECUTION privilege on
+        all tasks in scope. When the query fails (e.g. missing privilege) the
+        generator exits cleanly after logging a warning.
+        """
+        sql = (
+            "SELECT name_predecessor, name "
+            "FROM TABLE(INFORMATION_SCHEMA.TASK_DEPENDENTS(RECURSIVE => TRUE))"
+        )
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(text(sql)).mappings().all()
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "TASK_DEPENDENTS query failed (likely missing privilege): %s", exc
+                )
+                return
+            for r in rows:
+                if r.get("name_predecessor") and r.get("name"):
+                    yield (r["name_predecessor"], r["name"])
