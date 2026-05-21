@@ -196,3 +196,34 @@ def test_db_assets_show_notebook(monkeypatch, tmp_path):
 
 # ── Task 35: run_search ───────────────────────────────────────────────────────
 
+def test_db_assets_search_finds_term_in_notebook_source(monkeypatch, tmp_path):
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+    import sqlite3
+    db_path = tmp_path / "amx.db"
+    SQLiteHistoryStore(db_path).init()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO remote_notebooks
+                   (profile_name, platform, external_id, name, workspace_path,
+                    qualified_name, language, source_text, source_hash,
+                    last_modified_at, last_modified_by, owner, cell_count, ingested_at)
+               VALUES ('prod', 'databricks', 'ext-1', 'kpi_nb',
+                       '/kpi', NULL, 'sql',
+                       'SELECT * FROM monthly_revenue WHERE active', 'h',
+                       NULL, NULL, NULL, 1, '2026-05-21')"""
+        )
+        conn.commit()
+
+    import amx.cli_support.commands.db_assets_impl as impl
+    monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
+    monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
+
+    result = _invoke(["db", "assets", "search", "monthly_revenue", "--profile", "prod"])
+    assert result.exit_code == 0, result.output
+    assert "kpi_nb" in result.output
+
+
+# ── Task 36: run_prune + run_refresh ─────────────────────────────────────────
+
+import re as _re
+

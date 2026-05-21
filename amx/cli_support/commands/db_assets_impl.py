@@ -424,8 +424,52 @@ def run_show(cfg, *, identifier, profile, asset_type):
                 click.echo(f"  · {fqn}")
 
 
+# ── run_search ───────────────────────────────────────────────────────────────
+
+
 def run_search(cfg, *, query, profile, limit):
-    raise click.ClickException("/db assets search is not implemented yet.")
+    """Substring search across remote-ingested notebook source and saved/history SQL.
+
+    Note: ships with naive LIKE-based matching. A future PR will add
+    semantic / embedding-based search via the shared amx_code collection
+    (the same one driving /code search).
+    """
+    profile_name = _resolve_profile(cfg, profile)
+    db_path = _history_db_path(cfg)
+    pattern = f"%{query}%"
+    hits = []
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute(
+            "SELECT id, name, platform, language FROM remote_notebooks "
+            "WHERE profile_name = ? AND source_text LIKE ? LIMIT ?",
+            (profile_name, pattern, limit),
+        ).fetchall():
+            hits.append({
+                "kind": "notebook",
+                "id": row["id"],
+                "name": row["name"],
+                "tag": f"[remote:{row['platform']}]",
+                "context": row["language"],
+            })
+        for row in conn.execute(
+            "SELECT id, platform, kind, name, external_id FROM remote_queries "
+            "WHERE profile_name = ? AND sql_text LIKE ? LIMIT ?",
+            (profile_name, pattern, limit),
+        ).fetchall():
+            display_name = row["name"] or row["external_id"]
+            hits.append({
+                "kind": "query",
+                "id": row["id"],
+                "name": display_name,
+                "tag": f"[remote:{row['platform']}]",
+                "context": row["kind"],
+            })
+    if not hits:
+        click.echo(f"No remote assets matched '{query}' in profile '{profile_name}'.")
+        return
+    for h in hits[:limit]:
+        click.echo(f"  {h['tag']} {h['kind']} #{h['id']}: {h['name']} ({h['context']})")
 
 
 def run_refresh(cfg, *, profile, skip_confirm):
