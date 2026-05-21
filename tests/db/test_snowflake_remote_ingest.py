@@ -82,3 +82,25 @@ def test_list_remote_streamlit_apps():
 def test_capability_remote_streamlit_apps_flag_on():
     from amx.db.adapters.snowflake import SnowflakeAdapter
     assert SnowflakeAdapter.capabilities.remote_streamlit_apps is True
+
+
+def test_list_remote_streams():
+    a = _adapter()
+    rows = [{
+        "name": "ORDERS_STREAM", "database_name": "RAW", "schema_name": "PUBLIC",
+        "table_name": "RAW.PUBLIC.ORDERS", "mode": "APPEND_ONLY",
+        "stale_after": "2026-06-01T00:00:00", "owner": "DATA_ENG",
+    }]
+    def fake_execute(stmt, *args, **kwargs):
+        if "SHOW STREAMS" in str(stmt).upper():
+            return MagicMock(mappings=lambda: MagicMock(all=lambda: rows))
+        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+    streams = list(a.list_remote_streams(_engine_with_fake(fake_execute)))
+    assert streams[0].qualified_name == "RAW.PUBLIC.ORDERS_STREAM"
+    assert streams[0].source_table_fqn == "RAW.PUBLIC.ORDERS"
+    assert streams[0].mode == "APPEND_ONLY"
+
+
+def test_capability_remote_streams_flag_on():
+    from amx.db.adapters.snowflake import SnowflakeAdapter
+    assert SnowflakeAdapter.capabilities.remote_streams is True

@@ -41,6 +41,7 @@ class SnowflakeAdapter(DatabaseAdapter):
         supports_shared_history=True,
         remote_notebooks=True,
         remote_streamlit_apps=True,
+        remote_streams=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
 
@@ -777,4 +778,26 @@ class SnowflakeAdapter(DatabaseAdapter):
                     root_location=props.get("ROOT_LOCATION", ""),
                     owner=r.get("owner"),
                     last_altered_at=last,
+                )
+
+    def list_remote_streams(self, engine):
+        """Yield :class:`RemoteStream` for every Snowflake stream visible to
+        the active role.
+        """
+        with engine.connect() as conn:
+            rows = conn.execute(text("SHOW STREAMS IN ACCOUNT")).mappings().all()
+            for r in rows:
+                fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                stale = r.get("stale_after")
+                if isinstance(stale, str):
+                    try:
+                        stale = datetime.fromisoformat(stale)
+                    except ValueError:
+                        stale = None
+                yield RemoteStream(
+                    qualified_name=fqn,
+                    source_table_fqn=r.get("table_name") or "",
+                    mode=r.get("mode") or "DEFAULT",
+                    stale_after=stale,
+                    owner=r.get("owner"),
                 )
