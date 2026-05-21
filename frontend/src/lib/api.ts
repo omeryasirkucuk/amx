@@ -1824,7 +1824,7 @@ export interface RemoteAssetIngestPayload {
 
 /** One SSE event from GET /api/assets/ingest/{job_id}/events */
 export interface RemoteAssetIngestEvent {
-  state: "started" | "completed" | "failed" | "running";
+  state: "started" | "completed" | "failed" | "running" | "skipped" | "error";
   asset_type?: string | null;
   count?: number | null;
   message?: string | null;

@@ -113,10 +113,32 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
         try {
           const data = JSON.parse(evt.data) as RemoteAssetIngestEvent;
 
-          if (data.state === "completed") {
+          // The orchestrator emits ``state: "completed"`` once per asset
+          // type (with ``asset_type`` set and a single-integer ``count``)
+          // AND again per intermediate stage (``asset_type: "storage"``,
+          // ``asset_type: "lineage"``). The router then sends the FINAL
+          // completion event with no ``asset_type`` but a full ``counts``
+          // dict + ``failures`` dict. Only that final event closes the
+          // stream and renders the banner.
+          const isFinalCompletion =
+            data.state === "completed" &&
+            !data.asset_type &&
+            data.counts !== undefined;
+
+          if (isFinalCompletion) {
             setFinalCounts(data.counts ?? {});
             setFinalFailures(data.failures ?? {});
             setDone(true);
+            setSubmitting(false);
+            es.close();
+            esRef.current = null;
+            return;
+          }
+
+          // Terminal error from the router's outer try/except (the service
+          // itself crashed before producing any per-type results).
+          if (data.state === "error") {
+            setError(data.message ?? "Ingestion failed.");
             setSubmitting(false);
             es.close();
             esRef.current = null;
