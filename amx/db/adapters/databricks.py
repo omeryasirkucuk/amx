@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +13,10 @@ import urllib3
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from amx.codebase.notebook_normalize import normalize_source
+from amx.db.adapters._databricks_workspace import DatabricksWorkspaceClient
 from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
+from amx.db.adapters.remote_asset_types import RemoteNotebook
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +55,7 @@ class DatabricksAdapter(DatabaseAdapter):
         # still ship through inline ``CREATE TABLE … COMMENT`` clauses.
         schema_comments=False,
         comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
+        remote_notebooks=True,
     )
 
     def create_history_schema_ddl(self, schema_name: str) -> str:
@@ -149,6 +155,19 @@ class DatabricksAdapter(DatabaseAdapter):
             pool_recycle=1800,
             connect_args=connect_args,
         )
+
+    @property
+    def _workspace_client(self) -> DatabricksWorkspaceClient:
+        """Lazy Workspace API client built from the active profile.
+
+        Tests can override by setting ``self._workspace_client_override`` to
+        a mock before calling list_remote_*; if present, that takes precedence.
+        """
+        override = getattr(self, "_workspace_client_override", None)
+        if override is not None:
+            return override
+        token = getattr(self.cfg, "workspace_token", None) or self.cfg.access_token
+        return DatabricksWorkspaceClient(host=self.cfg.host, token=token)
 
     def test_connection(self, engine: Engine | None = None) -> None:
         try:
@@ -881,3 +900,69 @@ class DatabricksAdapter(DatabaseAdapter):
                 "Database/catalog comment write-back without a Databricks catalog"
             )
         return f"COMMENT ON CATALOG `{catalog}` IS :cmt"
+
+    # ------------------------------------------------------------------
+    # Remote executable assets
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _databricks_lang_to_amx(raw: str | None) -> str:
+        if not raw:
+            return "python"
+        return raw.lower()  # PYTHON|SQL|SCALA|R -> python|sql|scala|r
+
+    @staticmethod
+    def _count_cells(ipynb_json: str) -> int | None:
+        import json
+        try:
+            return len(json.loads(ipynb_json).get("cells", []))
+        except (json.JSONDecodeError, AttributeError):
+            return None
+
+    def list_remote_notebooks(self):
+        client = self._workspace_client
+        for obj in client.list_workspace_objects(path="/"):
+            if obj.get("object_type") != "NOTEBOOK":
+                continue
+            try:
+                raw_source = client.export_notebook_source(workspace_path=obj["path"])
+            except Exception as exc:  # noqa: BLE001 — skip one bad notebook, keep going
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Failed to export Databricks notebook %s: %s", obj["path"], exc
+                )
+                continue
+            language = self._databricks_lang_to_amx(obj.get("language"))
+            normalized = normalize_source(
+                raw_source, hint="databricks_source", default_language=language
+            )
+            modified_ms = obj.get("modified_at")
+            last_modified = (
+                datetime.fromtimestamp(modified_ms / 1000, tz=timezone.utc)
+                if modified_ms
+                else None
+            )
+            yield RemoteNotebook(
+                external_id=str(obj["object_id"]),
+                name=obj["path"].rsplit("/", 1)[-1],
+                platform="databricks",
+                language=language,
+                workspace_path=obj["path"],
+                qualified_name=None,
+                source_text=normalized,
+                source_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+                last_modified_at=last_modified,
+                last_modified_by=obj.get("modified_by"),
+                owner=obj.get("creator_user_name"),
+                cell_count=self._count_cells(normalized),
+            )
+
+    def fetch_remote_notebook_source(self, external_id: str) -> str:
+        client = self._workspace_client
+        path = (
+            external_id
+            if external_id.startswith("/")
+            else client.path_for_object_id(external_id)
+        )
+        raw = client.export_notebook_source(workspace_path=path)
+        return normalize_source(raw, hint="databricks_source", default_language="python")
