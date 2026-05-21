@@ -64,6 +64,7 @@ class DatabricksAdapter(DatabaseAdapter):
         comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
         remote_notebooks=True,
         remote_jobs=True,
+        remote_pipelines=True,
     )
 
     def create_history_schema_ddl(self, schema_name: str) -> str:
@@ -1026,6 +1027,29 @@ class DatabricksAdapter(DatabaseAdapter):
             depends_on=depends_on,
             raw_definition=t,
         )
+
+    def list_remote_pipelines(self):
+        for raw in self._workspace_client.list_pipelines():
+            spec = raw.get("spec") or {}
+            latest_list = raw.get("latest_updates") or []
+            latest = latest_list[0] if latest_list else {}
+            creation_ms = latest.get("creation_time")
+            creation = (
+                datetime.fromtimestamp(creation_ms / 1000, tz=timezone.utc)
+                if creation_ms
+                else None
+            )
+            yield RemotePipeline(
+                pipeline_id=raw["pipeline_id"],
+                name=raw.get("name", raw["pipeline_id"]),
+                target_schema=spec.get("target"),
+                edition=spec.get("edition"),
+                continuous=bool(spec.get("continuous", False)),
+                photon=bool(spec.get("photon", False)),
+                libraries=spec.get("libraries") or [],
+                latest_update_state=latest.get("state"),
+                latest_update_creation_time=creation,
+            )
 
     @staticmethod
     def _map_remote_run(r: dict) -> "RemoteJobRun":

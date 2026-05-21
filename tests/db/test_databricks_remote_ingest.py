@@ -88,3 +88,32 @@ def test_list_remote_jobs_maps_settings_and_runs():
 def test_capability_remote_jobs_flag_on():
     from amx.db.adapters.databricks import DatabricksAdapter
     assert DatabricksAdapter.capabilities.remote_jobs is True
+
+
+def test_list_remote_pipelines_maps_libraries_and_target():
+    a = _adapter_with_mock_client()
+    a._workspace_client_override.list_pipelines.return_value = iter([
+        {
+            "pipeline_id": "p-1",
+            "name": "kpis_pipeline",
+            "spec": {
+                "target": "analytics",
+                "edition": "ADVANCED",
+                "continuous": False,
+                "photon": True,
+                "libraries": [{"notebook": {"path": "/Users/alice/pipeline_nb"}}],
+            },
+            "latest_updates": [{"state": "COMPLETED", "creation_time": 1714000000000}],
+        }
+    ])
+    pls = list(a.list_remote_pipelines())
+    assert pls[0].pipeline_id == "p-1"
+    assert pls[0].target_schema == "analytics"
+    assert pls[0].edition == "ADVANCED"
+    assert pls[0].photon is True
+    assert pls[0].libraries[0]["notebook"]["path"] == "/Users/alice/pipeline_nb"
+
+
+def test_capability_remote_pipelines_flag_on():
+    from amx.db.adapters.databricks import DatabricksAdapter
+    assert DatabricksAdapter.capabilities.remote_pipelines is True
