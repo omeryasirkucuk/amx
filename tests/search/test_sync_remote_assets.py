@@ -179,3 +179,35 @@ def test_rebuild_remote_asset_lineage_for_stream_resolves_source_table(tmp_path)
             "WHERE relationship_type='asset_references_table'"
         ).fetchall()
     assert ("stream", ent) in edges
+
+
+def test_notebook_id_fk_resolved_after_job_ingest(tmp_path):
+    from amx.db.adapters.remote_asset_types import RemoteJob, RemoteJobTask
+    store, catalog = _store_and_catalog(tmp_path)
+    # Ingest the notebook first.
+    catalog.sync_remote_assets(
+        profile_name="prod",
+        notebooks=[_nb(workspace_path="/Users/alice/extract", external_id="ext-extract")],
+    )
+    # Then ingest a job whose task points at that notebook path.
+    task = RemoteJobTask(
+        task_key="extract", task_type="notebook_task",
+        notebook_path="/Users/alice/extract",
+        sql_query_id=None, sql_warehouse_id=None, pipeline_id=None,
+        depends_on=(), raw_definition={},
+    )
+    job = RemoteJob(
+        job_id=100, name="j", creator_user_name=None,
+        schedule_cron=None, schedule_timezone=None, schedule_pause_status=None,
+        max_concurrent_runs=None, email_notifications={}, tags={},
+        tasks=(task,), recent_runs=(),
+    )
+    catalog.sync_remote_assets(profile_name="prod", jobs=[job])
+    with sqlite3.connect(store.db_path) as c:
+        nb_id = c.execute(
+            "SELECT id FROM remote_notebooks WHERE workspace_path='/Users/alice/extract'"
+        ).fetchone()[0]
+        task_fk = c.execute(
+            "SELECT notebook_id_fk FROM remote_job_tasks WHERE task_key='extract'"
+        ).fetchone()[0]
+    assert task_fk == nb_id
