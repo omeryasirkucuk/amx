@@ -522,10 +522,49 @@ class SnowflakeAdapter(DatabaseAdapter):
     def list_events(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         # Snowflake "tasks" are scheduled SQL statements — the closest
         # analogue to MySQL events / SQL Server Agent jobs.
+        #
+        # SHOW TASKS' ``definition`` column truncates long task bodies. We
+        # follow up with GET_DDL('TASK', fqn) to capture the full statement,
+        # which the lineage pass uses to extract table references. Each row
+        # is enriched with a ``definition_sql`` key carrying the DDL string
+        # (or None when the GET_DDL call is blocked by privilege).
         sql = f"SHOW TASKS IN SCHEMA {self.quote_identifier(schema)}"
-        return self._show_to_dicts(
-            engine, sql, "task", extra_keys=("schedule", "state", "warehouse", "definition")
-        )
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql)).mappings().all()
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                name = row.get("name") or row.get("NAME")
+                if name is None:
+                    continue
+                extras: dict[str, Any] = {}
+                for k in ("schedule", "state", "warehouse", "definition"):
+                    v = row.get(k)
+                    if v is None:
+                        v = row.get(k.upper())
+                    if v is not None:
+                        extras[k] = v if isinstance(v, (str, int, float, bool)) else str(v)
+                comment = row.get("comment") or row.get("COMMENT")
+                task_row: dict[str, Any] = {
+                    "name": str(name),
+                    "type": "task",
+                    "definition": None,
+                    "comment": str(comment) if comment else None,
+                    "metadata": extras,
+                }
+                # Enrich with full task DDL — captures the complete body that
+                # SHOW TASKS truncates. Used by the lineage pass to extract
+                # table refs from the task body.
+                fqn = f"{schema}.{name}" if "." not in str(name) else str(name)
+                try:
+                    ddl = conn.execute(
+                        text(f"SELECT GET_DDL('TASK', '{fqn}')")
+                    ).scalar()
+                    task_row["definition_sql"] = ddl
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("GET_DDL for task %s failed: %s", fqn, exc)
+                    task_row["definition_sql"] = None
+                out.append(task_row)
+        return out
 
     def list_volumes(self, engine: Engine, catalog: str, schema: str) -> list[dict[str, Any]]:
         # Snowflake stages — internal or external file-storage. ``catalog``

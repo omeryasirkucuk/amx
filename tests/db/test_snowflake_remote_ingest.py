@@ -155,3 +155,23 @@ def test_list_remote_queries_degrades_when_privilege_missing(caplog):
 def test_capability_remote_queries_flag_on_for_snowflake():
     from amx.db.adapters.snowflake import SnowflakeAdapter
     assert SnowflakeAdapter.capabilities.remote_queries is True
+
+
+def test_list_events_includes_task_definition_sql():
+    a = _adapter()
+    show_rows = [{
+        "name": "LOAD_TASK", "database_name": "RAW", "schema_name": "PUBLIC",
+        "schedule": "USING CRON 0 0 * * * UTC", "state": "started",
+        "warehouse": "WH_S", "definition": "INSERT INTO target SELECT * FROM source",
+    }]
+    def fake_execute(stmt, *args, **kwargs):
+        s = str(stmt).upper()
+        if s.startswith("SHOW TASKS"):
+            return MagicMock(mappings=lambda: MagicMock(all=lambda: show_rows))
+        if "GET_DDL" in s:
+            return MagicMock(scalar=lambda: "CREATE TASK LOAD_TASK ...")
+        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+    events = a.list_events(_engine_with_fake(fake_execute), "PUBLIC")
+    assert events, "expected at least one event row"
+    assert "definition_sql" in events[0]
+    assert events[0]["definition_sql"].startswith("CREATE TASK")
