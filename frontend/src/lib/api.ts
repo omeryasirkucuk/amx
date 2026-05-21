@@ -1149,6 +1149,42 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+
+  // ── Remote asset ingestion (Phase F) ──────────────────────────────────
+
+  /** List remote assets for a profile + kind combination. */
+  listRemoteAssets: (profile: string, kind: RemoteAssetKind) => {
+    const params = new URLSearchParams({ profile, type: kind });
+    return apiFetch<RemoteAssetListResponse>(
+      `/api/assets?${params.toString()}`,
+    );
+  },
+
+  /** Fetch full detail row for one remote asset. */
+  getRemoteAsset: (kind: RemoteAssetKind, id: string) =>
+    apiFetch<RemoteAssetDetail>(
+      `/api/assets/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`,
+    ),
+
+  /** Kick off a background ingestion job. Returns the job id. */
+  startIngestAssets: (body: RemoteAssetIngestPayload) =>
+    apiFetch<{ job_id: string }>("/api/assets/ingest", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** Same as startIngestAssets but clears existing rows first. */
+  refreshAssets: (body: RemoteAssetIngestPayload) =>
+    apiFetch<{ job_id: string }>("/api/assets/refresh", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** List all configured DB profiles (used by the profile picker). */
+  listDbProfiles: () =>
+    apiFetch<{ profiles: Array<{ name: string; backend?: string }> }>(
+      "/api/profiles/db",
+    ),
 };
 
 export interface CatalogScopeRefreshPayload {
@@ -1731,4 +1767,67 @@ export async function lineageAudit(
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
   const qs = params.toString();
   return apiFetch<LineageAuditResponse>(`/api/lineage/audit${qs ? `?${qs}` : ""}`);
+}
+
+// ── Remote asset ingestion types (Phase F) ────────────────────────────────
+
+/** The six remote asset kinds the ingestion pipeline understands. */
+export type RemoteAssetKind =
+  | "notebook"
+  | "job"
+  | "pipeline"
+  | "streamlit"
+  | "stream"
+  | "query";
+
+/** One row returned by GET /api/assets */
+export interface RemoteAssetRow {
+  id: string;
+  name: string;
+  platform?: string | null;
+  owner?: string | null;
+  last_modified_at?: string | null;
+  /** Backend-specific extra fields — present but shape varies by kind. */
+  [key: string]: unknown;
+}
+
+/** List response from GET /api/assets */
+export interface RemoteAssetListResponse {
+  items: RemoteAssetRow[];
+  count: number;
+}
+
+/** One downstream table reference on a detail row. */
+export interface RemoteAssetDownstreamTable {
+  fqn: string;
+  entity_id?: number | null;
+}
+
+/** Full detail row from GET /api/assets/{kind}/{id} */
+export interface RemoteAssetDetail extends RemoteAssetRow {
+  /** For notebooks: raw .ipynb JSON text (parse client-side). */
+  source_text?: string | null;
+  /** For queries: the SQL text. */
+  sql_text?: string | null;
+  /** Tables that this asset references. */
+  downstream_tables?: RemoteAssetDownstreamTable[];
+}
+
+/** Body for POST /api/assets/ingest and POST /api/assets/refresh */
+export interface RemoteAssetIngestPayload {
+  profile: string;
+  types?: string[];
+  history_days?: number;
+  runs_per_job?: number;
+  query_history_limit?: number;
+}
+
+/** One SSE event from GET /api/assets/ingest/{job_id}/events */
+export interface RemoteAssetIngestEvent {
+  state: "started" | "completed" | "failed" | "running";
+  asset_type?: string | null;
+  count?: number | null;
+  message?: string | null;
+  counts?: Record<string, number>;
+  failures?: Record<string, string>;
 }
