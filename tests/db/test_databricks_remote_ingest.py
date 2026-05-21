@@ -2,8 +2,10 @@ from unittest.mock import MagicMock
 
 
 def _adapter_with_mock_client():
-    from amx.db.adapters.databricks import DatabricksAdapter
     from types import SimpleNamespace
+
+    from amx.db.adapters.databricks import DatabricksAdapter
+
     a = DatabricksAdapter.__new__(DatabricksAdapter)
     a.cfg = SimpleNamespace(host="https://example", access_token="t", workspace_token=None)  # type: ignore[attr-defined]
     a._workspace_client_override = MagicMock()  # type: ignore[attr-defined]
@@ -12,11 +14,25 @@ def _adapter_with_mock_client():
 
 def test_list_remote_notebooks_yields_one_per_notebook_object():
     a = _adapter_with_mock_client()
-    a._workspace_client_override.list_workspace_objects.return_value = iter([
-        {"object_id": 1, "object_type": "NOTEBOOK", "path": "/Users/alice/n1", "language": "PYTHON", "modified_at": 1700000000000},
-        {"object_id": 2, "object_type": "DIRECTORY", "path": "/Users/alice/sub"},
-        {"object_id": 3, "object_type": "NOTEBOOK", "path": "/Users/alice/sub/n2", "language": "SQL", "modified_at": 1700000000000},
-    ])
+    a._workspace_client_override.list_workspace_objects.return_value = iter(
+        [
+            {
+                "object_id": 1,
+                "object_type": "NOTEBOOK",
+                "path": "/Users/alice/n1",
+                "language": "PYTHON",
+                "modified_at": 1700000000000,
+            },
+            {"object_id": 2, "object_type": "DIRECTORY", "path": "/Users/alice/sub"},
+            {
+                "object_id": 3,
+                "object_type": "NOTEBOOK",
+                "path": "/Users/alice/sub/n2",
+                "language": "SQL",
+                "modified_at": 1700000000000,
+            },
+        ]
+    )
     a._workspace_client_override.export_notebook_source.side_effect = [
         "# Databricks notebook source\n# COMMAND ----------\nprint(1)\n",
         "# Databricks notebook source\n# COMMAND ----------\nSELECT 1\n",
@@ -31,9 +47,12 @@ def test_list_remote_notebooks_yields_one_per_notebook_object():
 
 def test_fetch_remote_notebook_source_normalizes_path():
     a = _adapter_with_mock_client()
-    a._workspace_client_override.export_notebook_source.return_value = "# Databricks notebook source\n# COMMAND ----------\nprint('x')\n"
+    a._workspace_client_override.export_notebook_source.return_value = (
+        "# Databricks notebook source\n# COMMAND ----------\nprint('x')\n"
+    )
     out = a.fetch_remote_notebook_source(external_id="/Users/alice/n1")
     import json
+
     parsed = json.loads(out)
     assert parsed["cells"][0]["cell_type"] == "code"
 
@@ -41,39 +60,70 @@ def test_fetch_remote_notebook_source_normalizes_path():
 def test_fetch_remote_notebook_source_resolves_object_id():
     a = _adapter_with_mock_client()
     a._workspace_client_override.path_for_object_id.return_value = "/Users/alice/by_id"
-    a._workspace_client_override.export_notebook_source.return_value = "# Databricks notebook source\n# COMMAND ----------\nprint('y')\n"
+    a._workspace_client_override.export_notebook_source.return_value = (
+        "# Databricks notebook source\n# COMMAND ----------\nprint('y')\n"
+    )
     a.fetch_remote_notebook_source(external_id="42")
     a._workspace_client_override.path_for_object_id.assert_called_once_with("42")
 
 
 def test_capability_remote_notebooks_flag_on():
     from amx.db.adapters.databricks import DatabricksAdapter
+
     assert DatabricksAdapter.capabilities.remote_notebooks is True
 
 
 def test_list_remote_jobs_maps_settings_and_runs():
     a = _adapter_with_mock_client()
-    a._workspace_client_override.list_jobs_full.return_value = iter([
-        {
-            "job_id": 42,
-            "creator_user_name": "alice",
-            "settings": {
-                "name": "nightly_etl",
-                "schedule": {"quartz_cron_expression": "0 2 * * *", "timezone_id": "UTC", "pause_status": "UNPAUSED"},
-                "max_concurrent_runs": 1,
-                "email_notifications": {"on_failure": ["ops@example.com"]},
-                "tags": {"team": "data"},
-                "tasks": [
-                    {"task_key": "extract", "notebook_task": {"notebook_path": "/Users/alice/extract"}, "depends_on": []},
-                    {"task_key": "load", "notebook_task": {"notebook_path": "/Users/alice/load"}, "depends_on": [{"task_key": "extract"}]},
+    a._workspace_client_override.list_jobs_full.return_value = iter(
+        [
+            {
+                "job_id": 42,
+                "creator_user_name": "alice",
+                "settings": {
+                    "name": "nightly_etl",
+                    "schedule": {
+                        "quartz_cron_expression": "0 2 * * *",
+                        "timezone_id": "UTC",
+                        "pause_status": "UNPAUSED",
+                    },
+                    "max_concurrent_runs": 1,
+                    "email_notifications": {"on_failure": ["ops@example.com"]},
+                    "tags": {"team": "data"},
+                    "tasks": [
+                        {
+                            "task_key": "extract",
+                            "notebook_task": {"notebook_path": "/Users/alice/extract"},
+                            "depends_on": [],
+                        },
+                        {
+                            "task_key": "load",
+                            "notebook_task": {"notebook_path": "/Users/alice/load"},
+                            "depends_on": [{"task_key": "extract"}],
+                        },
+                    ],
+                },
+                "recent_runs": [
+                    {
+                        "run_id": 1,
+                        "state": {"result_state": "SUCCESS"},
+                        "start_time": 1714521600000,
+                        "end_time": 1714521610000,
+                        "setup_duration": 100,
+                        "execution_duration": 9900,
+                    },
+                    {
+                        "run_id": 2,
+                        "state": {"result_state": "FAILED"},
+                        "start_time": 1714608000000,
+                        "end_time": 1714608010000,
+                        "setup_duration": 100,
+                        "execution_duration": 9900,
+                    },
                 ],
-            },
-            "recent_runs": [
-                {"run_id": 1, "state": {"result_state": "SUCCESS"}, "start_time": 1714521600000, "end_time": 1714521610000, "setup_duration": 100, "execution_duration": 9900},
-                {"run_id": 2, "state": {"result_state": "FAILED"}, "start_time": 1714608000000, "end_time": 1714608010000, "setup_duration": 100, "execution_duration": 9900},
-            ],
-        }
-    ])
+            }
+        ]
+    )
     jobs = list(a.list_remote_jobs())
     assert len(jobs) == 1
     j = jobs[0]
@@ -87,25 +137,28 @@ def test_list_remote_jobs_maps_settings_and_runs():
 
 def test_capability_remote_jobs_flag_on():
     from amx.db.adapters.databricks import DatabricksAdapter
+
     assert DatabricksAdapter.capabilities.remote_jobs is True
 
 
 def test_list_remote_pipelines_maps_libraries_and_target():
     a = _adapter_with_mock_client()
-    a._workspace_client_override.list_pipelines.return_value = iter([
-        {
-            "pipeline_id": "p-1",
-            "name": "kpis_pipeline",
-            "spec": {
-                "target": "analytics",
-                "edition": "ADVANCED",
-                "continuous": False,
-                "photon": True,
-                "libraries": [{"notebook": {"path": "/Users/alice/pipeline_nb"}}],
-            },
-            "latest_updates": [{"state": "COMPLETED", "creation_time": 1714000000000}],
-        }
-    ])
+    a._workspace_client_override.list_pipelines.return_value = iter(
+        [
+            {
+                "pipeline_id": "p-1",
+                "name": "kpis_pipeline",
+                "spec": {
+                    "target": "analytics",
+                    "edition": "ADVANCED",
+                    "continuous": False,
+                    "photon": True,
+                    "libraries": [{"notebook": {"path": "/Users/alice/pipeline_nb"}}],
+                },
+                "latest_updates": [{"state": "COMPLETED", "creation_time": 1714000000000}],
+            }
+        ]
+    )
     pls = list(a.list_remote_pipelines())
     assert pls[0].pipeline_id == "p-1"
     assert pls[0].target_schema == "analytics"
@@ -116,18 +169,36 @@ def test_list_remote_pipelines_maps_libraries_and_target():
 
 def test_capability_remote_pipelines_flag_on():
     from amx.db.adapters.databricks import DatabricksAdapter
+
     assert DatabricksAdapter.capabilities.remote_pipelines is True
 
 
 def test_list_remote_queries_combines_saved_and_history():
     a = _adapter_with_mock_client()
-    a._workspace_client_override.list_saved_queries.return_value = iter([
-        {"id": "sq-1", "name": "daily_kpis", "query": "select 1", "data_source_id": "wh-x", "user": {"email": "alice@example.com"}},
-    ])
-    a._workspace_client_override.list_query_history.return_value = iter([
-        {"query_id": "qh-1", "query_text": "select 2", "warehouse_id": "wh-y", "user_name": "bob@example.com",
-         "query_start_time_ms": 1714000000000, "duration": 1500, "status": "FINISHED"},
-    ])
+    a._workspace_client_override.list_saved_queries.return_value = iter(
+        [
+            {
+                "id": "sq-1",
+                "name": "daily_kpis",
+                "query": "select 1",
+                "data_source_id": "wh-x",
+                "user": {"email": "alice@example.com"},
+            },
+        ]
+    )
+    a._workspace_client_override.list_query_history.return_value = iter(
+        [
+            {
+                "query_id": "qh-1",
+                "query_text": "select 2",
+                "warehouse_id": "wh-y",
+                "user_name": "bob@example.com",
+                "query_start_time_ms": 1714000000000,
+                "duration": 1500,
+                "status": "FINISHED",
+            },
+        ]
+    )
     qs = list(a.list_remote_queries(history_days=7, limit=100))
     assert {q.kind for q in qs} == {"saved", "history"}
     saved = next(q for q in qs if q.kind == "saved")
@@ -138,4 +209,5 @@ def test_list_remote_queries_combines_saved_and_history():
 
 def test_capability_remote_queries_flag_on():
     from amx.db.adapters.databricks import DatabricksAdapter
+
     assert DatabricksAdapter.capabilities.remote_queries is True

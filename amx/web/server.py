@@ -23,7 +23,6 @@ from amx.web.jobs import JobRegistry
 from amx.web.routers import (
     admin,
     ask,
-    assets as assets_router,
     capabilities,
     catalog,
     code_ops,
@@ -46,6 +45,9 @@ from amx.web.routers import (
     system,
     system_ops,
     variations,
+)
+from amx.web.routers import (
+    assets as assets_router,
 )
 from amx.web.security_headers import SecurityHeadersMiddleware
 

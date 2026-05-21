@@ -5,6 +5,7 @@ import pytest
 
 def test_remote_notebook_roundtrip():
     from amx.db.adapters.remote_asset_types import RemoteNotebook
+
     nb = RemoteNotebook(
         external_id="123",
         name="weekly_etl",
@@ -26,7 +27,8 @@ def test_remote_notebook_roundtrip():
 
 
 def test_remote_job_with_tasks_and_runs():
-    from amx.db.adapters.remote_asset_types import RemoteJob, RemoteJobTask, RemoteJobRun
+    from amx.db.adapters.remote_asset_types import RemoteJob, RemoteJobRun, RemoteJobTask
+
     task = RemoteJobTask(
         task_key="extract",
         task_type="notebook_task",
@@ -63,14 +65,29 @@ def test_remote_job_with_tasks_and_runs():
 
 def test_remote_query_kinds():
     from amx.db.adapters.remote_asset_types import RemoteQuery
+
     saved = RemoteQuery(
-        platform="databricks", kind="saved", external_id="abc",
-        name="daily_kpis", sql_text="select 1", sql_hash="x", warehouse="wh1",
-        user_name="alice", executed_at=None, duration_ms=None,
+        platform="databricks",
+        kind="saved",
+        external_id="abc",
+        name="daily_kpis",
+        sql_text="select 1",
+        sql_hash="x",
+        warehouse="wh1",
+        user_name="alice",
+        executed_at=None,
+        duration_ms=None,
     )
     history = RemoteQuery(
-        platform="snowflake", kind="history", external_id="01abc",
-        name=None, sql_text="select 2", sql_hash="y", warehouse=None,
-        user_name="bob", executed_at=datetime(2026, 5, 1), duration_ms=2400,
+        platform="snowflake",
+        kind="history",
+        external_id="01abc",
+        name=None,
+        sql_text="select 2",
+        sql_hash="y",
+        warehouse=None,
+        user_name="bob",
+        executed_at=datetime(2026, 5, 1),
+        duration_ms=2400,
     )
     assert saved.kind == "saved" and history.kind == "history"

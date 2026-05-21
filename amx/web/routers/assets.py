@@ -110,9 +110,7 @@ def get_asset(
         ).fetchall()
     detail["downstream_tables"] = [
         {
-            "fqn": ".".join(
-                filter(None, (r["database_name"], r["schema_name"], r["table_name"]))
-            ),
+            "fqn": ".".join(filter(None, (r["database_name"], r["schema_name"], r["table_name"]))),
             "entity_id": r["id"],
         }
         for r in downstream_rows
@@ -142,7 +140,9 @@ async def start_ingest(
     return {"job_id": job_id}
 
 
-async def _run_ingest_job(*, job_id: str, body: IngestBody, cfg: AMXConfig, queue: asyncio.Queue) -> None:
+async def _run_ingest_job(
+    *, job_id: str, body: IngestBody, cfg: AMXConfig, queue: asyncio.Queue
+) -> None:
     """Run IngestAssetsService in a thread-executor and forward progress to the queue."""
     from amx.cli_support.commands.db_assets_impl import _open_catalog, _open_connector
     from amx.services.ingest_assets import IngestAssetsService, IngestRequest

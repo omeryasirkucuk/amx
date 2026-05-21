@@ -54,12 +54,14 @@ def normalize_databricks_source(source: str, *, default_language: str = "python"
         cell = _classify_cell(raw, default_language=default_language)
         if cell is not None:
             cells.append(cell)
-    return json.dumps({
-        "cells": cells,
-        "metadata": {"language_info": {"name": default_language}},
-        "nbformat": 4,
-        "nbformat_minor": 5,
-    })
+    return json.dumps(
+        {
+            "cells": cells,
+            "metadata": {"language_info": {"name": default_language}},
+            "nbformat": 4,
+            "nbformat_minor": 5,
+        }
+    )
 
 
 def _classify_cell(raw: str, *, default_language: str) -> dict[str, Any] | None:
@@ -132,13 +134,17 @@ def _ensure_ipynb_shell(source: str) -> str:
             return json.dumps(parsed)
     except (json.JSONDecodeError, ValueError):
         log.debug("Falling back to raw-cell wrapper for non-ipynb source")
-    return json.dumps({
-        "cells": [{
-            "cell_type": "raw",
+    return json.dumps(
+        {
+            "cells": [
+                {
+                    "cell_type": "raw",
+                    "metadata": {},
+                    "source": _split_source(source),
+                }
+            ],
             "metadata": {},
-            "source": _split_source(source),
-        }],
-        "metadata": {},
-        "nbformat": 4,
-        "nbformat_minor": 5,
-    })
+            "nbformat": 4,
+            "nbformat_minor": 5,
+        }
+    )

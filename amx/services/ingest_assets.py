@@ -8,13 +8,18 @@ surfaces can show per-type completion to the user.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Literal
-
+from typing import Literal
 
 AssetType = Literal[
-    "notebooks", "jobs", "pipelines", "streamlit_apps",
-    "streams", "task_dependencies", "queries",
+    "notebooks",
+    "jobs",
+    "pipelines",
+    "streamlit_apps",
+    "streams",
+    "task_dependencies",
+    "queries",
 ]
 
 
@@ -62,16 +67,23 @@ class IngestAssetsService:
             emit(IngestProgressEvent(asset_type=asset_type, state="started"))
             try:
                 collected[asset_type] = list(self._pull(asset_type, request))
-                emit(IngestProgressEvent(
-                    asset_type=asset_type, state="completed",
-                    count=len(collected[asset_type]),
-                ))
+                emit(
+                    IngestProgressEvent(
+                        asset_type=asset_type,
+                        state="completed",
+                        count=len(collected[asset_type]),
+                    )
+                )
             except Exception as exc:  # noqa: BLE001 — surface per-type, keep going
                 failures[asset_type] = str(exc)
                 collected[asset_type] = []
-                emit(IngestProgressEvent(
-                    asset_type=asset_type, state="failed", message=str(exc),
-                ))
+                emit(
+                    IngestProgressEvent(
+                        asset_type=asset_type,
+                        state="failed",
+                        message=str(exc),
+                    )
+                )
 
         counts = self._catalog.sync_remote_assets(
             profile_name=request.profile_name,
@@ -83,18 +95,23 @@ class IngestAssetsService:
             task_dependencies=collected.get("task_dependencies"),
             queries=collected.get("queries"),
         )
-        emit(IngestProgressEvent(
-            asset_type="storage", state="completed",
-            count=sum(v for v in counts.values() if isinstance(v, int)),
-        ))
-
-        lineage = self._catalog.rebuild_remote_asset_lineage(
-            profile_name=request.profile_name
+        emit(
+            IngestProgressEvent(
+                asset_type="storage",
+                state="completed",
+                count=sum(v for v in counts.values() if isinstance(v, int)),
+            )
         )
+
+        lineage = self._catalog.rebuild_remote_asset_lineage(profile_name=request.profile_name)
         lineage_total = sum(v for v in lineage.values() if isinstance(v, int))
-        emit(IngestProgressEvent(
-            asset_type="lineage", state="completed", count=lineage_total,
-        ))
+        emit(
+            IngestProgressEvent(
+                asset_type="lineage",
+                state="completed",
+                count=lineage_total,
+            )
+        )
 
         counts["lineage"] = lineage_total
         return IngestResult(counts=counts, failures=failures)
@@ -115,7 +132,8 @@ class IngestAssetsService:
             return c.list_remote_task_dependencies()
         if asset_type == "queries":
             return c.list_remote_queries(
-                history_days=req.history_days, limit=req.query_history_limit,
+                history_days=req.history_days,
+                limit=req.query_history_limit,
             )
         raise ValueError(f"Unknown asset_type: {asset_type}")
 

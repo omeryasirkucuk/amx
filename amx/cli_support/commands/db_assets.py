@@ -13,8 +13,13 @@ import click
 from amx.config import AMXConfig
 
 ASSET_TYPES = [
-    "notebooks", "jobs", "pipelines", "streamlit_apps",
-    "streams", "task_dependencies", "queries",
+    "notebooks",
+    "jobs",
+    "pipelines",
+    "streamlit_apps",
+    "streams",
+    "task_dependencies",
+    "queries",
 ]
 
 
@@ -73,6 +78,7 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
     ) -> None:
         """Ingest remote executable assets (notebooks, jobs, pipelines, ...) for a profile."""
         from amx.cli_support.commands.db_assets_impl import run_ingest_wizard
+
         run_ingest_wizard(
             cfg,
             profile=profile,
@@ -89,7 +95,8 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
     @assets.command("list")
     @click.option("--profile", default=None, help="DB profile (default: active).")
     @click.option(
-        "--type", "asset_type",
+        "--type",
+        "asset_type",
         default=None,
         type=click.Choice(ASSET_TYPES),
         help="Asset type to list. Omit to be prompted.",
@@ -98,22 +105,28 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
     def assets_list_cmd(cfg: AMXConfig, profile: str | None, asset_type: str | None) -> None:
         """List remote-ingested assets in a tabular view."""
         from amx.cli_support.commands.db_assets_impl import run_list
+
         run_list(cfg, profile=profile, asset_type=asset_type)
 
     @assets.command("show")
     @click.argument("identifier")
     @click.option("--profile", default=None)
     @click.option(
-        "--type", "asset_type",
-        default=None, type=click.Choice(ASSET_TYPES),
+        "--type",
+        "asset_type",
+        default=None,
+        type=click.Choice(ASSET_TYPES),
     )
     @pass_config
     def assets_show_cmd(
-        cfg: AMXConfig, identifier: str,
-        profile: str | None, asset_type: str | None,
+        cfg: AMXConfig,
+        identifier: str,
+        profile: str | None,
+        asset_type: str | None,
     ) -> None:
         """Show full detail (source, lineage, owner, ...) for one asset."""
         from amx.cli_support.commands.db_assets_impl import run_show
+
         run_show(cfg, identifier=identifier, profile=profile, asset_type=asset_type)
 
     @assets.command("search")
@@ -122,11 +135,14 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
     @click.option("--limit", default=10, show_default=True, type=int)
     @pass_config
     def assets_search_cmd(
-        cfg: AMXConfig, query: str,
-        profile: str | None, limit: int,
+        cfg: AMXConfig,
+        query: str,
+        profile: str | None,
+        limit: int,
     ) -> None:
         """Embedding search across remote-ingested asset sources."""
         from amx.cli_support.commands.db_assets_impl import run_search
+
         run_search(cfg, query=query, profile=profile, limit=limit)
 
     @assets.command("refresh")
@@ -136,6 +152,7 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
     def assets_refresh_cmd(cfg: AMXConfig, profile: str | None, yes: bool) -> None:
         """Drop and re-ingest all assets for a profile."""
         from amx.cli_support.commands.db_assets_impl import run_refresh
+
         run_refresh(cfg, profile=profile, skip_confirm=yes)
 
     @assets.command("prune")
@@ -149,8 +166,12 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
     @click.option("-y", "--yes", is_flag=True)
     @pass_config
     def assets_prune_cmd(
-        cfg: AMXConfig, older_than: str, profile: str | None, yes: bool,
+        cfg: AMXConfig,
+        older_than: str,
+        profile: str | None,
+        yes: bool,
     ) -> None:
         """Drop assets that haven't been re-ingested in N days."""
         from amx.cli_support.commands.db_assets_impl import run_prune
+
         run_prune(cfg, older_than=older_than, profile=profile, skip_confirm=yes)

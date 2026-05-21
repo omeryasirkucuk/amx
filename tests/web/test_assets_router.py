@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import sqlite3
 
-import pytest
-
 from amx.config import AMXConfig
 from amx.storage.sqlite_store import SQLiteHistoryStore
 from amx.web.server import create_app
@@ -132,9 +130,7 @@ def test_ingest_sse_stream_emits_completion_event(monkeypatch, tmp_path):
     client, _ = _make_client(tmp_path)
 
     async def fake_runner(*, job_id, body, cfg, queue):
-        await queue.put(
-            {"state": "completed", "counts": {"notebooks": 1}, "failures": {}}
-        )
+        await queue.put({"state": "completed", "counts": {"notebooks": 1}, "failures": {}})
         await queue.put({"_eof": True})
 
     monkeypatch.setattr(a_mod, "_run_ingest_job", fake_runner)
@@ -166,9 +162,7 @@ def test_refresh_endpoint_clears_and_returns_job_id(monkeypatch, tmp_path):
     _seed_notebook(db_path)
 
     async def fake_runner(*, job_id, body, cfg, queue):
-        await queue.put(
-            {"state": "completed", "counts": {"notebooks": 0}, "failures": {}}
-        )
+        await queue.put({"state": "completed", "counts": {"notebooks": 0}, "failures": {}})
         await queue.put({"_eof": True})
 
     monkeypatch.setattr(a_mod, "_run_ingest_job", fake_runner)

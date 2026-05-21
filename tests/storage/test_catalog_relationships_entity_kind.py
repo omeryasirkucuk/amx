@@ -3,6 +3,7 @@ import sqlite3
 
 def _new_store(tmp_path):
     from amx.storage.sqlite_store import SQLiteHistoryStore
+
     store = SQLiteHistoryStore(tmp_path / "amx.db")
     store.init()
     return store

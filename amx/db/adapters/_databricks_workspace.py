@@ -88,10 +88,14 @@ class DatabricksWorkspaceClient:
             for thin in page:
                 job_id = thin["job_id"]
                 full = self._get("/api/2.2/jobs/get", params={"job_id": job_id}).json()
-                runs = self._get(
-                    "/api/2.2/jobs/runs/list",
-                    params={"job_id": job_id, "limit": runs_per_job, "expand_tasks": False},
-                ).json().get("runs", [])
+                runs = (
+                    self._get(
+                        "/api/2.2/jobs/runs/list",
+                        params={"job_id": job_id, "limit": runs_per_job, "expand_tasks": False},
+                    )
+                    .json()
+                    .get("runs", [])
+                )
                 full["recent_runs"] = runs
                 yield full
 
@@ -124,6 +128,7 @@ class DatabricksWorkspaceClient:
     def list_query_history(self, *, history_days: int, limit: int) -> Iterator[dict[str, Any]]:
         """Use /api/2.0/sql/history/queries with a start_time_ms filter."""
         import time
+
         start_ms = int((time.time() - history_days * 86400) * 1000)
         body = {
             "filter_by": {"query_start_time_range": {"start_time_ms": start_ms}},
@@ -152,7 +157,9 @@ class DatabricksWorkspaceClient:
     # ---- internals ---------------------------------------------------
 
     def _get(self, path: str, *, params: dict[str, Any] | None = None) -> requests.Response:
-        resp = requests.get(f"{self.host}{path}", headers=self._headers, params=params, timeout=self._timeout)
+        resp = requests.get(
+            f"{self.host}{path}", headers=self._headers, params=params, timeout=self._timeout
+        )
         self._raise_if_error(resp)
         return resp
 

@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 def _connector_with_mock_adapter():
     from amx.db.connector import DatabaseConnector
+
     conn = DatabaseConnector.__new__(DatabaseConnector)
     conn._adapter = MagicMock()  # type: ignore[attr-defined]
     return conn

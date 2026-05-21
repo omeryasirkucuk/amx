@@ -1,5 +1,4 @@
 import click
-import pytest
 from click.testing import CliRunner
 
 
@@ -20,6 +19,7 @@ def _make_root():
         if ctx.obj is None:
             # Inject a minimal AMXConfig-like object so pass_config works.
             from amx.config import AMXConfig
+
             ctx.obj = AMXConfig()
 
     @root.group()
@@ -70,19 +70,24 @@ def test_ingest_assets_with_flags_skips_wizard(monkeypatch, tmp_path):
         return IngestResult(counts={"notebooks": 3, "lineage": 5}, failures={})
 
     import amx.cli_support.commands.db_assets_impl as impl
+
     monkeypatch.setattr(impl, "_open_connector", fake_open_connector)
     monkeypatch.setattr(impl, "_open_catalog", fake_open_catalog)
     monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
-    monkeypatch.setattr(
-        "amx.services.ingest_assets.IngestAssetsService.run", fake_run
-    )
+    monkeypatch.setattr("amx.services.ingest_assets.IngestAssetsService.run", fake_run)
 
-    result = _invoke([
-        "db", "ingest-assets",
-        "--profile", "prod",
-        "--types", "notebooks",
-        "--history-days", "14",
-    ])
+    result = _invoke(
+        [
+            "db",
+            "ingest-assets",
+            "--profile",
+            "prod",
+            "--types",
+            "notebooks",
+            "--history-days",
+            "14",
+        ]
+    )
     assert result.exit_code == 0, result.output
     assert captured["profile"] == "prod"
     assert captured["request"].types == ["notebooks"]
@@ -91,22 +96,30 @@ def test_ingest_assets_with_flags_skips_wizard(monkeypatch, tmp_path):
 
 
 def test_ingest_assets_rejects_unknown_type():
-    result = _invoke([
-        "db", "ingest-assets",
-        "--profile", "prod",
-        "--types", "definitely_not_real,notebooks",
-    ])
+    result = _invoke(
+        [
+            "db",
+            "ingest-assets",
+            "--profile",
+            "prod",
+            "--types",
+            "definitely_not_real,notebooks",
+        ]
+    )
     assert result.exit_code != 0
     assert "Unknown asset type" in result.output or "definitely_not_real" in result.output
 
 
 # ── Task 33: run_list ─────────────────────────────────────────────────────────
 
+
 def test_db_assets_list_notebooks_renders_rows(monkeypatch, tmp_path):
     """Seed a remote_notebooks row, invoke /db assets list --type notebooks,
     confirm the row appears in the output."""
-    from amx.storage.sqlite_store import SQLiteHistoryStore
     import sqlite3
+
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
     db_path = tmp_path / "amx.db"
     store = SQLiteHistoryStore(db_path)
     store.init()
@@ -123,6 +136,7 @@ def test_db_assets_list_notebooks_renders_rows(monkeypatch, tmp_path):
         conn.commit()
 
     import amx.cli_support.commands.db_assets_impl as impl
+
     monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
     monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
 
@@ -132,8 +146,10 @@ def test_db_assets_list_notebooks_renders_rows(monkeypatch, tmp_path):
 
 
 def test_db_assets_list_jobs_renders_rows(monkeypatch, tmp_path):
-    from amx.storage.sqlite_store import SQLiteHistoryStore
     import sqlite3
+
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
     db_path = tmp_path / "amx.db"
     SQLiteHistoryStore(db_path).init()
     with sqlite3.connect(db_path) as conn:
@@ -147,6 +163,7 @@ def test_db_assets_list_jobs_renders_rows(monkeypatch, tmp_path):
         conn.commit()
 
     import amx.cli_support.commands.db_assets_impl as impl
+
     monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
     monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
 
@@ -157,19 +174,31 @@ def test_db_assets_list_jobs_renders_rows(monkeypatch, tmp_path):
 
 # ── Task 34: run_show ─────────────────────────────────────────────────────────
 
+
 def test_db_assets_show_notebook(monkeypatch, tmp_path):
-    from amx.storage.sqlite_store import SQLiteHistoryStore
-    import sqlite3
     import json
+    import sqlite3
+
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
     db_path = tmp_path / "amx.db"
     SQLiteHistoryStore(db_path).init()
-    nb_src = json.dumps({
-        "cells": [
-            {"cell_type": "code", "source": ["print(1)"], "metadata": {"language": "python"},
-             "outputs": [], "execution_count": None}
-        ],
-        "nbformat": 4, "nbformat_minor": 5, "metadata": {},
-    })
+    nb_src = json.dumps(
+        {
+            "cells": [
+                {
+                    "cell_type": "code",
+                    "source": ["print(1)"],
+                    "metadata": {"language": "python"},
+                    "outputs": [],
+                    "execution_count": None,
+                }
+            ],
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+        }
+    )
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """INSERT INTO remote_notebooks
@@ -185,10 +214,13 @@ def test_db_assets_show_notebook(monkeypatch, tmp_path):
         nb_id = conn.execute("SELECT id FROM remote_notebooks").fetchone()[0]
 
     import amx.cli_support.commands.db_assets_impl as impl
+
     monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
     monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
 
-    result = _invoke(["db", "assets", "show", str(nb_id), "--profile", "prod", "--type", "notebooks"])
+    result = _invoke(
+        ["db", "assets", "show", str(nb_id), "--profile", "prod", "--type", "notebooks"]
+    )
     assert result.exit_code == 0, result.output
     assert "mynb" in result.output
     assert "print(1)" in result.output
@@ -196,9 +228,12 @@ def test_db_assets_show_notebook(monkeypatch, tmp_path):
 
 # ── Task 35: run_search ───────────────────────────────────────────────────────
 
+
 def test_db_assets_search_finds_term_in_notebook_source(monkeypatch, tmp_path):
-    from amx.storage.sqlite_store import SQLiteHistoryStore
     import sqlite3
+
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
     db_path = tmp_path / "amx.db"
     SQLiteHistoryStore(db_path).init()
     with sqlite3.connect(db_path) as conn:
@@ -215,6 +250,7 @@ def test_db_assets_search_finds_term_in_notebook_source(monkeypatch, tmp_path):
         conn.commit()
 
     import amx.cli_support.commands.db_assets_impl as impl
+
     monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
     monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
 
@@ -225,12 +261,12 @@ def test_db_assets_search_finds_term_in_notebook_source(monkeypatch, tmp_path):
 
 # ── Task 36: run_prune + run_refresh ─────────────────────────────────────────
 
-import re as _re
-
 
 def test_db_assets_prune_drops_old_rows(monkeypatch, tmp_path):
-    from amx.storage.sqlite_store import SQLiteHistoryStore
     import sqlite3
+
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
     db_path = tmp_path / "amx.db"
     SQLiteHistoryStore(db_path).init()
     with sqlite3.connect(db_path) as conn:
@@ -255,6 +291,7 @@ def test_db_assets_prune_drops_old_rows(monkeypatch, tmp_path):
         conn.commit()
 
     import amx.cli_support.commands.db_assets_impl as impl
+
     monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
     monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
 
@@ -266,13 +303,16 @@ def test_db_assets_prune_drops_old_rows(monkeypatch, tmp_path):
 
 
 def test_db_assets_prune_validates_window():
-    result = _invoke(["db", "assets", "prune", "--older-than", "garbage", "--profile", "prod", "-y"])
+    result = _invoke(
+        ["db", "assets", "prune", "--older-than", "garbage", "--profile", "prod", "-y"]
+    )
     assert result.exit_code != 0
 
 
 def test_db_assets_refresh_confirmation_no(monkeypatch, tmp_path):
     """User declines the confirmation — nothing happens, no exception."""
     import amx.cli_support.commands.db_assets_impl as impl
+
     monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
     monkeypatch.setattr(click, "confirm", lambda *a, **kw: False)
     result = _invoke(["db", "assets", "refresh", "--profile", "prod"])

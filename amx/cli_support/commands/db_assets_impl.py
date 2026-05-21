@@ -21,8 +21,13 @@ from amx.services.ingest_assets import (
 )
 
 ASSET_TYPES = [
-    "notebooks", "jobs", "pipelines", "streamlit_apps",
-    "streams", "task_dependencies", "queries",
+    "notebooks",
+    "jobs",
+    "pipelines",
+    "streamlit_apps",
+    "streams",
+    "task_dependencies",
+    "queries",
 ]
 
 _WINDOW_RX = re.compile(r"^(\d+)([dhm])$")
@@ -44,8 +49,7 @@ def run_ingest_wizard(
         unknown = [t for t in requested if t not in ASSET_TYPES]
         if unknown:
             raise click.ClickException(
-                f"Unknown asset type(s): {', '.join(unknown)}. "
-                f"Valid: {', '.join(ASSET_TYPES)}."
+                f"Unknown asset type(s): {', '.join(unknown)}. Valid: {', '.join(ASSET_TYPES)}."
             )
         types = requested
     else:
@@ -215,9 +219,13 @@ def run_list(cfg, *, profile, asset_type):
             table.add_column("Owner")
             for r in rows:
                 table.add_row(
-                    str(r["id"]), r["name"] or "-", r["platform"] or "-",
-                    r["language"] or "-", str(r["cell_count"] or "-"),
-                    str(r["last_modified_at"] or "-"), r["owner"] or "-",
+                    str(r["id"]),
+                    r["name"] or "-",
+                    r["platform"] or "-",
+                    r["language"] or "-",
+                    str(r["cell_count"] or "-"),
+                    str(r["last_modified_at"] or "-"),
+                    r["owner"] or "-",
                 )
         elif asset_type == "jobs":
             rows = conn.execute(
@@ -233,9 +241,13 @@ def run_list(cfg, *, profile, asset_type):
                 rate = r["success_rate_30d"]
                 rate_str = f"{rate:.0%}" if rate is not None else "-"
                 table.add_row(
-                    str(r["id"]), str(r["job_id"]), r["name"] or "-",
-                    r["schedule_cron"] or "-", r["schedule_pause_status"] or "-",
-                    r["last_run_status"] or "-", rate_str,
+                    str(r["id"]),
+                    str(r["job_id"]),
+                    r["name"] or "-",
+                    r["schedule_cron"] or "-",
+                    r["schedule_pause_status"] or "-",
+                    r["last_run_status"] or "-",
+                    rate_str,
                 )
         elif asset_type == "pipelines":
             rows = conn.execute(
@@ -249,8 +261,11 @@ def run_list(cfg, *, profile, asset_type):
                 table.add_column(col)
             for r in rows:
                 table.add_row(
-                    str(r["id"]), r["pipeline_id"] or "-", r["name"] or "-",
-                    r["target_schema"] or "-", r["edition"] or "-",
+                    str(r["id"]),
+                    r["pipeline_id"] or "-",
+                    r["name"] or "-",
+                    r["target_schema"] or "-",
+                    r["edition"] or "-",
                     "yes" if r["continuous"] else "no",
                     "yes" if r["photon"] else "no",
                     r["latest_update_state"] or "-",
@@ -267,9 +282,12 @@ def run_list(cfg, *, profile, asset_type):
                 table.add_column(col)
             for r in rows:
                 table.add_row(
-                    str(r["id"]), r["qualified_name"] or "-",
-                    r["main_file"] or "-", r["query_warehouse"] or "-",
-                    r["owner"] or "-", str(r["last_altered_at"] or "-"),
+                    str(r["id"]),
+                    r["qualified_name"] or "-",
+                    r["main_file"] or "-",
+                    r["query_warehouse"] or "-",
+                    r["owner"] or "-",
+                    str(r["last_altered_at"] or "-"),
                 )
         elif asset_type == "streams":
             rows = conn.execute(
@@ -283,9 +301,12 @@ def run_list(cfg, *, profile, asset_type):
                 table.add_column(col)
             for r in rows:
                 table.add_row(
-                    str(r["id"]), r["qualified_name"] or "-",
-                    r["source_table_fqn"] or "-", r["mode"] or "-",
-                    str(r["stale_after"] or "-"), r["owner"] or "-",
+                    str(r["id"]),
+                    r["qualified_name"] or "-",
+                    r["source_table_fqn"] or "-",
+                    r["mode"] or "-",
+                    str(r["stale_after"] or "-"),
+                    r["owner"] or "-",
                 )
         elif asset_type == "task_dependencies":
             rows = conn.execute(
@@ -308,13 +329,26 @@ def run_list(cfg, *, profile, asset_type):
                 (profile_name,),
             ).fetchall()
             table = RichTable(title=f"Queries ({profile_name})")
-            for col in ("ID", "Platform", "Kind", "Name/Id", "Warehouse", "User", "Executed", "Dur ms"):
+            for col in (
+                "ID",
+                "Platform",
+                "Kind",
+                "Name/Id",
+                "Warehouse",
+                "User",
+                "Executed",
+                "Dur ms",
+            ):
                 table.add_column(col)
             for r in rows:
                 table.add_row(
-                    str(r["id"]), r["platform"] or "-", r["kind"] or "-",
-                    r["name"] or "-", r["warehouse"] or "-",
-                    r["user_name"] or "-", str(r["executed_at"] or "-"),
+                    str(r["id"]),
+                    r["platform"] or "-",
+                    r["kind"] or "-",
+                    r["name"] or "-",
+                    r["warehouse"] or "-",
+                    r["user_name"] or "-",
+                    str(r["executed_at"] or "-"),
                     str(r["duration_ms"] or "-"),
                 )
         else:
@@ -403,6 +437,7 @@ def run_show(cfg, *, identifier, profile, asset_type):
             click.echo("\n--- Source (normalized .ipynb) ---")
             try:
                 import json as _json
+
                 cells = _json.loads(row["source_text"]).get("cells", [])
                 for i, cell in enumerate(cells, 1):
                     lang = cell.get("metadata", {}).get("language") or cell.get("cell_type", "")
@@ -446,26 +481,30 @@ def run_search(cfg, *, query, profile, limit):
             "WHERE profile_name = ? AND source_text LIKE ? LIMIT ?",
             (profile_name, pattern, limit),
         ).fetchall():
-            hits.append({
-                "kind": "notebook",
-                "id": row["id"],
-                "name": row["name"],
-                "tag": f"[remote:{row['platform']}]",
-                "context": row["language"],
-            })
+            hits.append(
+                {
+                    "kind": "notebook",
+                    "id": row["id"],
+                    "name": row["name"],
+                    "tag": f"[remote:{row['platform']}]",
+                    "context": row["language"],
+                }
+            )
         for row in conn.execute(
             "SELECT id, platform, kind, name, external_id FROM remote_queries "
             "WHERE profile_name = ? AND sql_text LIKE ? LIMIT ?",
             (profile_name, pattern, limit),
         ).fetchall():
             display_name = row["name"] or row["external_id"]
-            hits.append({
-                "kind": "query",
-                "id": row["id"],
-                "name": display_name,
-                "tag": f"[remote:{row['platform']}]",
-                "context": row["kind"],
-            })
+            hits.append(
+                {
+                    "kind": "query",
+                    "id": row["id"],
+                    "name": display_name,
+                    "tag": f"[remote:{row['platform']}]",
+                    "context": row["kind"],
+                }
+            )
     if not hits:
         click.echo(f"No remote assets matched '{query}' in profile '{profile_name}'.")
         return
@@ -489,8 +528,12 @@ def run_refresh(cfg, *, profile, skip_confirm):
     db_path = _history_db_path(cfg)
     with sqlite3.connect(db_path) as conn:
         for tbl in (
-            "remote_notebooks", "remote_jobs", "remote_pipelines",
-            "remote_streamlit_apps", "remote_streams", "remote_queries",
+            "remote_notebooks",
+            "remote_jobs",
+            "remote_pipelines",
+            "remote_streamlit_apps",
+            "remote_streams",
+            "remote_queries",
             "remote_task_dependencies",
         ):
             conn.execute(f"DELETE FROM {tbl} WHERE profile_name = ?", (profile_name,))
@@ -513,9 +556,7 @@ def run_prune(cfg, *, older_than, profile, skip_confirm):
     """Drop assets that haven't been re-ingested within the given time window."""
     m = _WINDOW_RX.match(older_than.strip())
     if not m:
-        raise click.ClickException(
-            "--older-than must look like '30d', '7d', or '12h'."
-        )
+        raise click.ClickException("--older-than must look like '30d', '7d', or '12h'.")
     n, unit = int(m.group(1)), m.group(2)
     seconds = {"d": 86400, "h": 3600, "m": 60}[unit] * n
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
@@ -523,8 +564,7 @@ def run_prune(cfg, *, older_than, profile, skip_confirm):
     profile_name = _resolve_profile(cfg, profile)
     if not skip_confirm:
         if not click.confirm(
-            f"Drop remote assets last ingested before {cutoff} "
-            f"for profile '{profile_name}'?"
+            f"Drop remote assets last ingested before {cutoff} for profile '{profile_name}'?"
         ):
             click.echo("Cancelled.")
             return
@@ -533,8 +573,12 @@ def run_prune(cfg, *, older_than, profile, skip_confirm):
     dropped = {}
     with sqlite3.connect(db_path) as conn:
         for tbl in (
-            "remote_notebooks", "remote_jobs", "remote_pipelines",
-            "remote_streamlit_apps", "remote_streams", "remote_queries",
+            "remote_notebooks",
+            "remote_jobs",
+            "remote_pipelines",
+            "remote_streamlit_apps",
+            "remote_streams",
+            "remote_queries",
         ):
             cur = conn.execute(
                 f"DELETE FROM {tbl} WHERE profile_name = ? AND ingested_at < ?",

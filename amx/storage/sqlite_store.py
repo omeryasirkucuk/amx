@@ -1263,8 +1263,7 @@ class SQLiteHistoryStore:
                 """
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_remote_jobs_profile "
-                "ON remote_jobs(profile_name)"
+                "CREATE INDEX IF NOT EXISTS idx_remote_jobs_profile ON remote_jobs(profile_name)"
             )
 
             # ── remote_job_tasks: per-task definitions within a job ───────

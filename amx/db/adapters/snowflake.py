@@ -11,8 +11,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
 from amx.codebase.notebook_normalize import normalize_source
+from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
 from amx.db.adapters.remote_asset_types import (
     RemoteNotebook,
     RemoteQuery,
@@ -556,9 +556,7 @@ class SnowflakeAdapter(DatabaseAdapter):
                 # table refs from the task body.
                 fqn = f"{schema}.{name}" if "." not in str(name) else str(name)
                 try:
-                    ddl = conn.execute(
-                        text(f"SELECT GET_DDL('TASK', '{fqn}')")
-                    ).scalar()
+                    ddl = conn.execute(text(f"SELECT GET_DDL('TASK', '{fqn}')")).scalar()
                     task_row["definition_sql"] = ddl
                 except Exception as exc:  # noqa: BLE001
                     log.warning("GET_DDL for task %s failed: %s", fqn, exc)
@@ -740,14 +738,22 @@ class SnowflakeAdapter(DatabaseAdapter):
                 main_file = props.get("MAIN_FILE", "notebook_app.ipynb")
                 stage_ref = root.lstrip("@") + "/" + main_file
                 try:
-                    src_rows = conn.execute(text(
-                        f"SELECT $1 FROM @{stage_ref} "
-                        f"(FILE_FORMAT => (TYPE = JSON, COMPRESSION = NONE))"
-                    )).mappings().all()
+                    src_rows = (
+                        conn.execute(
+                            text(
+                                f"SELECT $1 FROM @{stage_ref} "
+                                f"(FILE_FORMAT => (TYPE = JSON, COMPRESSION = NONE))"
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
                 except Exception as exc:  # noqa: BLE001
                     log.warning(
                         "Failed to read stage %s for notebook %s: %s",
-                        stage_ref, fqn, exc,
+                        stage_ref,
+                        fqn,
+                        exc,
                     )
                     continue
                 raw = src_rows[0]["$1"] if src_rows else "{}"
@@ -788,10 +794,16 @@ class SnowflakeAdapter(DatabaseAdapter):
             root = props.get("ROOT_LOCATION", "")
             main_file = props.get("MAIN_FILE", "notebook_app.ipynb")
             stage_ref = root.lstrip("@") + "/" + main_file
-            src_rows = conn.execute(text(
-                f"SELECT $1 FROM @{stage_ref} "
-                f"(FILE_FORMAT => (TYPE = JSON, COMPRESSION = NONE))"
-            )).mappings().all()
+            src_rows = (
+                conn.execute(
+                    text(
+                        f"SELECT $1 FROM @{stage_ref} "
+                        f"(FILE_FORMAT => (TYPE = JSON, COMPRESSION = NONE))"
+                    )
+                )
+                .mappings()
+                .all()
+            )
             raw = src_rows[0]["$1"] if src_rows else "{}"
             raw_text = raw if isinstance(raw, str) else json.dumps(raw)
             return normalize_source(raw_text, hint="ipynb")
@@ -859,9 +871,7 @@ class SnowflakeAdapter(DatabaseAdapter):
             try:
                 rows = conn.execute(text(sql)).mappings().all()
             except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "TASK_DEPENDENTS query failed (likely missing privilege): %s", exc
-                )
+                log.warning("TASK_DEPENDENTS query failed (likely missing privilege): %s", exc)
                 return
             for r in rows:
                 if r.get("name_predecessor") and r.get("name"):

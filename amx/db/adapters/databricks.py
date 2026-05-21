@@ -924,6 +924,7 @@ class DatabricksAdapter(DatabaseAdapter):
     @staticmethod
     def _count_cells(ipynb_json: str) -> int | None:
         import json
+
         try:
             return len(json.loads(ipynb_json).get("cells", []))
         except (json.JSONDecodeError, AttributeError):
@@ -938,6 +939,7 @@ class DatabricksAdapter(DatabaseAdapter):
                 raw_source = client.export_notebook_source(workspace_path=obj["path"])
             except Exception as exc:  # noqa: BLE001 — skip one bad notebook, keep going
                 import logging
+
                 logging.getLogger(__name__).warning(
                     "Failed to export Databricks notebook %s: %s", obj["path"], exc
                 )
@@ -948,9 +950,7 @@ class DatabricksAdapter(DatabaseAdapter):
             )
             modified_ms = obj.get("modified_at")
             last_modified = (
-                datetime.fromtimestamp(modified_ms / 1000, tz=timezone.utc)
-                if modified_ms
-                else None
+                datetime.fromtimestamp(modified_ms / 1000, tz=timezone.utc) if modified_ms else None
             )
             yield RemoteNotebook(
                 external_id=str(obj["object_id"]),
@@ -970,9 +970,7 @@ class DatabricksAdapter(DatabaseAdapter):
     def fetch_remote_notebook_source(self, external_id: str) -> str:
         client = self._workspace_client
         path = (
-            external_id
-            if external_id.startswith("/")
-            else client.path_for_object_id(external_id)
+            external_id if external_id.startswith("/") else client.path_for_object_id(external_id)
         )
         raw = client.export_notebook_source(workspace_path=path)
         return normalize_source(raw, hint="databricks_source", default_language="python")
@@ -998,7 +996,7 @@ class DatabricksAdapter(DatabaseAdapter):
             )
 
     @staticmethod
-    def _map_remote_task(t: dict) -> "RemoteJobTask":
+    def _map_remote_task(t: dict) -> RemoteJobTask:
         type_keys = {
             "notebook_task": "notebook_task",
             "python_wheel_task": "python_wheel_task",
@@ -1036,9 +1034,7 @@ class DatabricksAdapter(DatabaseAdapter):
             latest = latest_list[0] if latest_list else {}
             creation_ms = latest.get("creation_time")
             creation = (
-                datetime.fromtimestamp(creation_ms / 1000, tz=timezone.utc)
-                if creation_ms
-                else None
+                datetime.fromtimestamp(creation_ms / 1000, tz=timezone.utc) if creation_ms else None
             )
             yield RemotePipeline(
                 pipeline_id=raw["pipeline_id"],
@@ -1053,9 +1049,10 @@ class DatabricksAdapter(DatabaseAdapter):
             )
 
     @staticmethod
-    def _map_remote_run(r: dict) -> "RemoteJobRun":
+    def _map_remote_run(r: dict) -> RemoteJobRun:
         def _ms_to_dt(ms):
             return datetime.fromtimestamp(ms / 1000, tz=timezone.utc) if ms else None
+
         return RemoteJobRun(
             run_id=r["run_id"],
             state_result=(r.get("state") or {}).get("result_state") or "UNKNOWN",
@@ -1080,9 +1077,7 @@ class DatabricksAdapter(DatabaseAdapter):
                 executed_at=None,
                 duration_ms=None,
             )
-        for h in self._workspace_client.list_query_history(
-            history_days=history_days, limit=limit
-        ):
+        for h in self._workspace_client.list_query_history(history_days=history_days, limit=limit):
             text = h.get("query_text") or ""
             start_ms = h.get("query_start_time_ms")
             executed = (

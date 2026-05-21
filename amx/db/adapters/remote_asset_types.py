@@ -75,8 +75,14 @@ class RemoteJob:
             return None
         cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
         in_window = [
-            r for r in self.recent_runs
-            if (r.start_time.replace(tzinfo=timezone.utc) if r.start_time.tzinfo is None else r.start_time) >= cutoff
+            r
+            for r in self.recent_runs
+            if (
+                r.start_time.replace(tzinfo=timezone.utc)
+                if r.start_time.tzinfo is None
+                else r.start_time
+            )
+            >= cutoff
         ]
         if not in_window:
             return None

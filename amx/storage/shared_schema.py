@@ -1330,7 +1330,10 @@ def build_metadata(schema: str | None = None) -> MetaData:
             comment=_desc("remote_notebooks", "ingested_at"),
         ),
         UniqueConstraint(
-            "profile_name", "platform", "external_id", name="uq_remote_notebooks_profile_platform_ext"
+            "profile_name",
+            "platform",
+            "external_id",
+            name="uq_remote_notebooks_profile_platform_ext",
         ),
         Index("idx_remote_notebooks_profile_platform", "profile_name", "platform"),
         comment=_desc("remote_notebooks"),
@@ -1614,7 +1617,9 @@ def build_metadata(schema: str | None = None) -> MetaData:
             nullable=False,
             comment=_desc("remote_pipelines", "ingested_at"),
         ),
-        UniqueConstraint("profile_name", "pipeline_id", name="uq_remote_pipelines_profile_pipeline"),
+        UniqueConstraint(
+            "profile_name", "pipeline_id", name="uq_remote_pipelines_profile_pipeline"
+        ),
         Index("idx_remote_pipelines_profile", "profile_name"),
         comment=_desc("remote_pipelines"),
     )
@@ -1675,7 +1680,9 @@ def build_metadata(schema: str | None = None) -> MetaData:
             nullable=False,
             comment=_desc("remote_streamlit_apps", "ingested_at"),
         ),
-        UniqueConstraint("profile_name", "qualified_name", name="uq_remote_streamlit_apps_profile_name"),
+        UniqueConstraint(
+            "profile_name", "qualified_name", name="uq_remote_streamlit_apps_profile_name"
+        ),
         Index("idx_remote_streamlit_apps_profile", "profile_name"),
         comment=_desc("remote_streamlit_apps"),
     )
@@ -1851,7 +1858,10 @@ def build_metadata(schema: str | None = None) -> MetaData:
             comment=_desc("remote_queries", "ingested_at"),
         ),
         UniqueConstraint(
-            "profile_name", "platform", "kind", "external_id",
+            "profile_name",
+            "platform",
+            "kind",
+            "external_id",
             name="uq_remote_queries_profile_platform_kind_id",
         ),
         Index("idx_remote_queries_profile_platform", "profile_name", "platform"),

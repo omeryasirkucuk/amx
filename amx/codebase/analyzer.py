@@ -417,16 +417,19 @@ def extract_table_refs(source: str, *, language: str) -> list[str]:
         try:
             import sqlglot
             from sqlglot import exp
+
             for stmt in sqlglot.parse(source, error_level=sqlglot.ErrorLevel.IGNORE) or []:
                 if stmt is None:
                     continue
                 for tbl in stmt.find_all(exp.Table):
                     parts = [
-                        p for p in (
+                        p
+                        for p in (
                             tbl.args.get("catalog"),
                             tbl.args.get("db"),
                             tbl.args.get("this"),
-                        ) if p is not None
+                        )
+                        if p is not None
                     ]
                     names = [p.name for p in parts if hasattr(p, "name") and p.name]
                     if len(names) >= 2:

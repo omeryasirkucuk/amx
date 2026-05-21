@@ -72,6 +72,7 @@ def test_schema_descriptions_cover_new_tables() -> None:
 
 def test_remote_pipelines_and_friends_created(tmp_path):
     import sqlite3
+
     store = _new_store(tmp_path)
     with sqlite3.connect(store.db_path) as conn:
         for tbl in (
@@ -81,18 +82,32 @@ def test_remote_pipelines_and_friends_created(tmp_path):
             "remote_task_dependencies",
             "remote_queries",
         ):
-            cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (tbl,))
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (tbl,)
+            )
             assert cur.fetchone() is not None, f"{tbl} missing"
 
 
 def test_remote_queries_unique_constraint(tmp_path):
     import sqlite3
+
     import pytest
+
     store = _new_store(tmp_path)
     with sqlite3.connect(store.db_path) as conn:
         args = (
-            "prod", "snowflake", "history", "qid", None, "select 1", "h",
-            "wh", "alice", None, None, "2026-05-01T00:00:00",
+            "prod",
+            "snowflake",
+            "history",
+            "qid",
+            None,
+            "select 1",
+            "h",
+            "wh",
+            "alice",
+            None,
+            None,
+            "2026-05-01T00:00:00",
         )
         conn.execute(
             "INSERT INTO remote_queries(profile_name,platform,kind,external_id,name,sql_text,sql_hash,warehouse,user_name,executed_at,duration_ms,ingested_at) "
@@ -109,6 +124,7 @@ def test_remote_queries_unique_constraint(tmp_path):
 
 def test_schema_descriptions_cover_phase_a_task_6_tables():
     from amx.storage.schema_descriptions import SCHEMA_DESCRIPTIONS
+
     for tbl in (
         "remote_pipelines",
         "remote_streamlit_apps",

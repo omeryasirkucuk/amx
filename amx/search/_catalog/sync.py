@@ -741,9 +741,7 @@ class SyncMixin:
                     conn, profile_name, notebooks, now_iso
                 )
             if jobs:
-                counts["jobs"] = self._upsert_remote_jobs(
-                    conn, profile_name, jobs, now_iso
-                )
+                counts["jobs"] = self._upsert_remote_jobs(conn, profile_name, jobs, now_iso)
             if pipelines:
                 counts["pipelines"] = self._upsert_remote_pipelines(
                     conn, profile_name, pipelines, now_iso
@@ -793,10 +791,17 @@ class SyncMixin:
                            cell_count = ?, ingested_at = ?
                        WHERE id = ?""",
                     (
-                        nb.name, nb.workspace_path, nb.qualified_name,
-                        nb.language, nb.source_text, nb.source_hash,
+                        nb.name,
+                        nb.workspace_path,
+                        nb.qualified_name,
+                        nb.language,
+                        nb.source_text,
+                        nb.source_hash,
                         nb.last_modified_at.isoformat() if nb.last_modified_at else None,
-                        nb.last_modified_by, nb.owner, nb.cell_count, now_iso,
+                        nb.last_modified_by,
+                        nb.owner,
+                        nb.cell_count,
+                        now_iso,
                         existing[0],
                     ),
                 )
@@ -809,11 +814,20 @@ class SyncMixin:
                             last_modified_by, owner, cell_count, ingested_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        profile, nb.platform, nb.external_id, nb.name,
-                        nb.workspace_path, nb.qualified_name, nb.language,
-                        nb.source_text, nb.source_hash,
+                        profile,
+                        nb.platform,
+                        nb.external_id,
+                        nb.name,
+                        nb.workspace_path,
+                        nb.qualified_name,
+                        nb.language,
+                        nb.source_text,
+                        nb.source_hash,
                         nb.last_modified_at.isoformat() if nb.last_modified_at else None,
-                        nb.last_modified_by, nb.owner, nb.cell_count, now_iso,
+                        nb.last_modified_by,
+                        nb.owner,
+                        nb.cell_count,
+                        now_iso,
                     ),
                 )
             n += 1
@@ -838,14 +852,18 @@ class SyncMixin:
                            success_rate_30d = ?, ingested_at = ?
                        WHERE id = ?""",
                     (
-                        j.name, j.creator_user_name, j.schedule_cron,
-                        j.schedule_timezone, j.schedule_pause_status,
+                        j.name,
+                        j.creator_user_name,
+                        j.schedule_cron,
+                        j.schedule_timezone,
+                        j.schedule_pause_status,
                         j.max_concurrent_runs,
                         json.dumps(j.email_notifications),
                         json.dumps(j.tags),
                         last_run.state_result if last_run else None,
                         last_run.start_time.isoformat() if last_run else None,
-                        j.success_rate(window_days=30), now_iso,
+                        j.success_rate(window_days=30),
+                        now_iso,
                         row_id,
                     ),
                 )
@@ -859,14 +877,20 @@ class SyncMixin:
                             ingested_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        profile, j.job_id, j.name, j.creator_user_name,
-                        j.schedule_cron, j.schedule_timezone, j.schedule_pause_status,
+                        profile,
+                        j.job_id,
+                        j.name,
+                        j.creator_user_name,
+                        j.schedule_cron,
+                        j.schedule_timezone,
+                        j.schedule_pause_status,
                         j.max_concurrent_runs,
                         json.dumps(j.email_notifications),
                         json.dumps(j.tags),
                         last_run.state_result if last_run else None,
                         last_run.start_time.isoformat() if last_run else None,
-                        j.success_rate(window_days=30), now_iso,
+                        j.success_rate(window_days=30),
+                        now_iso,
                     ),
                 )
                 row_id = cur2.lastrowid
@@ -880,8 +904,13 @@ class SyncMixin:
                             depends_on_json, raw_definition_json)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        row_id, t.task_key, t.task_type, t.notebook_path,
-                        t.sql_query_id, t.sql_warehouse_id, None,  # pipeline_id_fk resolved later
+                        row_id,
+                        t.task_key,
+                        t.task_type,
+                        t.notebook_path,
+                        t.sql_query_id,
+                        t.sql_warehouse_id,
+                        None,  # pipeline_id_fk resolved later
                         json.dumps(list(t.depends_on)),
                         json.dumps(t.raw_definition),
                     ),
@@ -894,10 +923,13 @@ class SyncMixin:
                             setup_duration_ms, execution_duration_ms)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        row_id, r.run_id, r.state_result,
+                        row_id,
+                        r.run_id,
+                        r.state_result,
                         r.start_time.isoformat(),
                         r.end_time.isoformat() if r.end_time else None,
-                        r.setup_duration_ms, r.execution_duration_ms,
+                        r.setup_duration_ms,
+                        r.execution_duration_ms,
                     ),
                 )
             n += 1
@@ -918,11 +950,18 @@ class SyncMixin:
                            latest_update_creation_time = ?, ingested_at = ?
                        WHERE id = ?""",
                     (
-                        p.name, p.target_schema, p.edition, int(p.continuous),
-                        int(p.photon), json.dumps(p.libraries), p.latest_update_state,
+                        p.name,
+                        p.target_schema,
+                        p.edition,
+                        int(p.continuous),
+                        int(p.photon),
+                        json.dumps(p.libraries),
+                        p.latest_update_state,
                         p.latest_update_creation_time.isoformat()
-                        if p.latest_update_creation_time else None,
-                        now_iso, cur[0],
+                        if p.latest_update_creation_time
+                        else None,
+                        now_iso,
+                        cur[0],
                     ),
                 )
             else:
@@ -933,11 +972,18 @@ class SyncMixin:
                             latest_update_creation_time, ingested_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        profile, p.pipeline_id, p.name, p.target_schema, p.edition,
-                        int(p.continuous), int(p.photon),
-                        json.dumps(p.libraries), p.latest_update_state,
+                        profile,
+                        p.pipeline_id,
+                        p.name,
+                        p.target_schema,
+                        p.edition,
+                        int(p.continuous),
+                        int(p.photon),
+                        json.dumps(p.libraries),
+                        p.latest_update_state,
                         p.latest_update_creation_time.isoformat()
-                        if p.latest_update_creation_time else None,
+                        if p.latest_update_creation_time
+                        else None,
                         now_iso,
                     ),
                 )
@@ -959,9 +1005,13 @@ class SyncMixin:
                            owner = ?, last_altered_at = ?, ingested_at = ?
                        WHERE id = ?""",
                     (
-                        s.main_file, s.query_warehouse, s.root_location, s.owner,
+                        s.main_file,
+                        s.query_warehouse,
+                        s.root_location,
+                        s.owner,
                         s.last_altered_at.isoformat() if s.last_altered_at else None,
-                        now_iso, cur[0],
+                        now_iso,
+                        cur[0],
                     ),
                 )
             else:
@@ -971,8 +1021,12 @@ class SyncMixin:
                             root_location, owner, last_altered_at, ingested_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        profile, s.qualified_name, s.main_file, s.query_warehouse,
-                        s.root_location, s.owner,
+                        profile,
+                        s.qualified_name,
+                        s.main_file,
+                        s.query_warehouse,
+                        s.root_location,
+                        s.owner,
                         s.last_altered_at.isoformat() if s.last_altered_at else None,
                         now_iso,
                     ),
@@ -984,8 +1038,7 @@ class SyncMixin:
         n = 0
         for s in items:
             cur = conn.execute(
-                "SELECT id FROM remote_streams "
-                "WHERE profile_name = ? AND qualified_name = ?",
+                "SELECT id FROM remote_streams WHERE profile_name = ? AND qualified_name = ?",
                 (profile, s.qualified_name),
             ).fetchone()
             if cur:
@@ -995,9 +1048,12 @@ class SyncMixin:
                            owner = ?, ingested_at = ?
                        WHERE id = ?""",
                     (
-                        s.source_table_fqn, s.mode,
+                        s.source_table_fqn,
+                        s.mode,
                         s.stale_after.isoformat() if s.stale_after else None,
-                        s.owner, now_iso, cur[0],
+                        s.owner,
+                        now_iso,
+                        cur[0],
                     ),
                 )
             else:
@@ -1007,10 +1063,13 @@ class SyncMixin:
                             source_entity_id, mode, stale_after, owner, ingested_at)
                        VALUES (?, ?, ?, NULL, ?, ?, ?, ?)""",
                     (
-                        profile, s.qualified_name, s.source_table_fqn,
+                        profile,
+                        s.qualified_name,
+                        s.source_table_fqn,
                         s.mode,
                         s.stale_after.isoformat() if s.stale_after else None,
-                        s.owner, now_iso,
+                        s.owner,
+                        now_iso,
                     ),
                 )
             n += 1
@@ -1032,9 +1091,15 @@ class SyncMixin:
                            ingested_at = ?
                        WHERE id = ?""",
                     (
-                        q.name, q.sql_text, q.sql_hash, q.warehouse, q.user_name,
+                        q.name,
+                        q.sql_text,
+                        q.sql_hash,
+                        q.warehouse,
+                        q.user_name,
                         q.executed_at.isoformat() if q.executed_at else None,
-                        q.duration_ms, now_iso, cur[0],
+                        q.duration_ms,
+                        now_iso,
+                        cur[0],
                     ),
                 )
             else:
@@ -1045,19 +1110,25 @@ class SyncMixin:
                             executed_at, duration_ms, ingested_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        profile, q.platform, q.kind, q.external_id, q.name,
-                        q.sql_text, q.sql_hash, q.warehouse, q.user_name,
+                        profile,
+                        q.platform,
+                        q.kind,
+                        q.external_id,
+                        q.name,
+                        q.sql_text,
+                        q.sql_hash,
+                        q.warehouse,
+                        q.user_name,
                         q.executed_at.isoformat() if q.executed_at else None,
-                        q.duration_ms, now_iso,
+                        q.duration_ms,
+                        now_iso,
                     ),
                 )
             n += 1
         return n
 
     def _upsert_remote_task_dependencies(self, conn, profile, edges):
-        conn.execute(
-            "DELETE FROM remote_task_dependencies WHERE profile_name = ?", (profile,)
-        )
+        conn.execute("DELETE FROM remote_task_dependencies WHERE profile_name = ?", (profile,))
         n = 0
         for parent, child in edges:
             conn.execute(
@@ -1098,6 +1169,7 @@ class SyncMixin:
         relationships (table-to-table) are left untouched.
         """
         from amx.codebase.analyzer import extract_table_refs  # noqa: F401 — used in helpers
+
         counts = {"notebooks": 0, "queries": 0, "streams": 0, "pipelines": 0}
         with self._connect() as conn:
             # Clear stale edges for this profile's remote assets.
@@ -1118,8 +1190,7 @@ class SyncMixin:
 
             # Notebooks
             for row in conn.execute(
-                "SELECT id, language, source_text FROM remote_notebooks "
-                "WHERE profile_name = ?",
+                "SELECT id, language, source_text FROM remote_notebooks WHERE profile_name = ?",
                 (profile_name,),
             ).fetchall():
                 counts["notebooks"] += self._link_asset_refs_to_tables(
@@ -1154,8 +1225,10 @@ class SyncMixin:
                 if target is not None:
                     self._insert_asset_edge(
                         conn,
-                        from_kind="stream", from_id=row[0],
-                        to_kind="table", to_id=target,
+                        from_kind="stream",
+                        from_id=row[0],
+                        to_kind="table",
+                        to_id=target,
                     )
                     counts["streams"] += 1
                     # Also update remote_streams.source_entity_id for direct join.
@@ -1203,9 +1276,17 @@ class SyncMixin:
         return counts
 
     def _link_asset_refs_to_tables(
-        self, conn, *, asset_id, asset_kind, profile_name, source, language,
+        self,
+        conn,
+        *,
+        asset_id,
+        asset_kind,
+        profile_name,
+        source,
+        language,
     ) -> int:
         from amx.codebase.analyzer import extract_table_refs
+
         refs = extract_table_refs(source, language=language)
         n = 0
         for fqn in refs:
@@ -1214,8 +1295,10 @@ class SyncMixin:
                 continue
             self._insert_asset_edge(
                 conn,
-                from_kind=asset_kind, from_id=asset_id,
-                to_kind="table", to_id=target,
+                from_kind=asset_kind,
+                from_id=asset_id,
+                to_kind="table",
+                to_id=target,
             )
             n += 1
         return n

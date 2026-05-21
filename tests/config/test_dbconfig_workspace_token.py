@@ -72,6 +72,4 @@ def test_databricks_wizard_source_collects_workspace_token():
     import amx.cli_support.commands.db as db_mod
 
     src = inspect.getsource(db_mod)
-    assert "workspace_token" in src, (
-        "Databricks profile wizard does not collect workspace_token"
-    )
+    assert "workspace_token" in src, "Databricks profile wizard does not collect workspace_token"
