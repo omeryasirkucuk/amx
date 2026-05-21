@@ -1087,5 +1087,205 @@ class SyncMixin:
             (profile, profile),
         )
 
+    # ── Task 27: rebuild_remote_asset_lineage ────────────────────────────────
+
+    def rebuild_remote_asset_lineage(self, *, profile_name: str) -> dict[str, int]:
+        """Re-derive ``asset_references_table`` edges in ``catalog_relationships``
+        from every ingested remote asset for ``profile_name``.
+
+        Idempotent: deletes pre-existing edges whose ``from_entity_kind`` is
+        a remote-asset kind before inserting the fresh batch. Other lineage
+        relationships (table-to-table) are left untouched.
+        """
+        from amx.codebase.analyzer import extract_table_refs  # noqa: F401 — used in helpers
+        counts = {"notebooks": 0, "queries": 0, "streams": 0, "pipelines": 0}
+        with self._connect() as conn:
+            # Clear stale edges for this profile's remote assets.
+            conn.execute(
+                """
+                DELETE FROM catalog_relationships
+                WHERE relationship_type = 'asset_references_table'
+                  AND from_entity_kind IN ('notebook', 'query', 'stream', 'pipeline')
+                  AND from_entity_id IN (
+                      SELECT id FROM remote_notebooks WHERE profile_name = ?
+                      UNION SELECT id FROM remote_queries WHERE profile_name = ?
+                      UNION SELECT id FROM remote_streams WHERE profile_name = ?
+                      UNION SELECT id FROM remote_pipelines WHERE profile_name = ?
+                  )
+                """,
+                (profile_name, profile_name, profile_name, profile_name),
+            )
+
+            # Notebooks
+            for row in conn.execute(
+                "SELECT id, language, source_text FROM remote_notebooks "
+                "WHERE profile_name = ?",
+                (profile_name,),
+            ).fetchall():
+                counts["notebooks"] += self._link_asset_refs_to_tables(
+                    conn,
+                    asset_id=row[0],
+                    asset_kind="notebook",
+                    profile_name=profile_name,
+                    source=row[2],
+                    language=row[1] or "python",
+                )
+
+            # Queries
+            for row in conn.execute(
+                "SELECT id, sql_text FROM remote_queries WHERE profile_name = ?",
+                (profile_name,),
+            ).fetchall():
+                counts["queries"] += self._link_asset_refs_to_tables(
+                    conn,
+                    asset_id=row[0],
+                    asset_kind="query",
+                    profile_name=profile_name,
+                    source=row[1],
+                    language="sql",
+                )
+
+            # Streams — direct source_table_fqn mapping, no parse.
+            for row in conn.execute(
+                "SELECT id, source_table_fqn FROM remote_streams WHERE profile_name = ?",
+                (profile_name,),
+            ).fetchall():
+                target = self._resolve_catalog_entity_by_fqn(conn, profile_name, row[1])
+                if target is not None:
+                    self._insert_asset_edge(
+                        conn,
+                        from_kind="stream", from_id=row[0],
+                        to_kind="table", to_id=target,
+                    )
+                    counts["streams"] += 1
+                    # Also update remote_streams.source_entity_id for direct join.
+                    conn.execute(
+                        "UPDATE remote_streams SET source_entity_id = ? WHERE id = ?",
+                        (target, row[0]),
+                    )
+
+            # Pipelines — best-effort: parse notebook sources referenced via
+            # the libraries list (Databricks DLT notebook references).
+            for row in conn.execute(
+                "SELECT id, libraries_json FROM remote_pipelines WHERE profile_name = ?",
+                (profile_name,),
+            ).fetchall():
+                try:
+                    libs = json.loads(row[1] or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    libs = []
+                source_chunks: list[str] = []
+                for lib in libs:
+                    if not isinstance(lib, dict):
+                        continue
+                    notebook = lib.get("notebook") or {}
+                    nb_path = notebook.get("path")
+                    if not nb_path:
+                        continue
+                    nb_src = conn.execute(
+                        "SELECT source_text FROM remote_notebooks "
+                        "WHERE profile_name = ? AND workspace_path = ?",
+                        (profile_name, nb_path),
+                    ).fetchone()
+                    if nb_src and nb_src[0]:
+                        source_chunks.append(nb_src[0])
+                if source_chunks:
+                    counts["pipelines"] += self._link_asset_refs_to_tables(
+                        conn,
+                        asset_id=row[0],
+                        asset_kind="pipeline",
+                        profile_name=profile_name,
+                        source="\n".join(source_chunks),
+                        language="python",
+                    )
+
+            conn.commit()
+        return counts
+
+    def _link_asset_refs_to_tables(
+        self, conn, *, asset_id, asset_kind, profile_name, source, language,
+    ) -> int:
+        from amx.codebase.analyzer import extract_table_refs
+        refs = extract_table_refs(source, language=language)
+        n = 0
+        for fqn in refs:
+            target = self._resolve_catalog_entity_by_fqn(conn, profile_name, fqn)
+            if target is None:
+                continue
+            self._insert_asset_edge(
+                conn,
+                from_kind=asset_kind, from_id=asset_id,
+                to_kind="table", to_id=target,
+            )
+            n += 1
+        return n
+
+    @staticmethod
+    def _resolve_catalog_entity_by_fqn(conn, profile_name: str, fqn: str) -> int | None:
+        """Match ``fqn`` (2- or 3-part) to a ``catalog_entities.id``.
+
+        For 3-part ``db.schema.table``, all three parts must match.
+        For 2-part ``schema.table``, db is ignored (catalog_entities rows for
+        backends without database scope have ``database_name = ''``).
+        Returns the integer entity id or ``None`` when no match exists.
+        """
+        parts = fqn.split(".")
+        if len(parts) == 3:
+            row = conn.execute(
+                """
+                SELECT id FROM catalog_entities
+                WHERE db_profile = ?
+                  AND entity_kind = 'table'
+                  AND LOWER(database_name) = LOWER(?)
+                  AND LOWER(schema_name) = LOWER(?)
+                  AND LOWER(table_name) = LOWER(?)
+                LIMIT 1
+                """,
+                (profile_name, parts[0], parts[1], parts[2]),
+            ).fetchone()
+        elif len(parts) == 2:
+            row = conn.execute(
+                """
+                SELECT id FROM catalog_entities
+                WHERE db_profile = ?
+                  AND entity_kind = 'table'
+                  AND LOWER(schema_name) = LOWER(?)
+                  AND LOWER(table_name) = LOWER(?)
+                LIMIT 1
+                """,
+                (profile_name, parts[0], parts[1]),
+            ).fetchone()
+        else:
+            row = None
+        return int(row[0]) if row else None
+
+    @staticmethod
+    def _insert_asset_edge(conn, *, from_kind, from_id, to_kind, to_id):
+        """Insert a single asset-to-table relationship row.
+
+        Uses a SELECT guard against the natural-key combination
+        (from_entity_id + to_entity_id + relationship_type) to prevent
+        duplicate rows since SQLite doesn't enforce uniqueness on those columns.
+        """
+        existing = conn.execute(
+            """SELECT 1 FROM catalog_relationships
+               WHERE from_entity_id = ? AND to_entity_id = ?
+                 AND from_entity_kind = ? AND to_entity_kind = ?
+                 AND relationship_type = 'asset_references_table'""",
+            (from_id, to_id, from_kind, to_kind),
+        ).fetchone()
+        if existing:
+            return
+        conn.execute(
+            """INSERT INTO catalog_relationships
+                   (from_entity_id, to_entity_id, relationship_type,
+                    score, source, details_json, last_seen,
+                    from_entity_kind, to_entity_kind)
+               VALUES (?, ?, 'asset_references_table',
+                       1.0, 'remote_asset_lineage', '{}', ?,
+                       ?, ?)""",
+            (from_id, to_id, time.time(), from_kind, to_kind),
+        )
+
 
 __all__ = ["SyncMixin"]

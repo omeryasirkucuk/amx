@@ -99,3 +99,83 @@ def test_sync_remote_assets_writes_task_dependencies(tmp_path):
             "WHERE profile_name='prod'"
         ).fetchall())
     assert rows == [("a.b.LOAD", "c.d.AGG"), ("c.d.AGG", "c.d.NOTIFY")]
+
+
+def test_rebuild_remote_asset_lineage_links_notebook_to_referenced_table(tmp_path):
+    store, catalog = _store_and_catalog(tmp_path)
+    # Seed a catalog_entities row for the referenced table.
+    with sqlite3.connect(store.db_path) as c:
+        c.execute(
+            """INSERT INTO catalog_entities
+                   (db_profile, db_backend, database_name, schema_name, table_name,
+                    entity_kind, asset_kind, updated_at)
+               VALUES ('prod', 'snowflake', 'raw', 'public', 'orders',
+                       'table', 'table', 0.0)"""
+        )
+        c.commit()
+        entity_id = c.execute(
+            "SELECT id FROM catalog_entities WHERE table_name='orders'"
+        ).fetchone()[0]
+    # Ingest a notebook whose code references raw.public.orders.
+    nb_src = '{"cells":[{"cell_type":"code","source":["select * from raw.public.orders"],"metadata":{"language":"sql"},"execution_count":null,"outputs":[]}],"nbformat":4,"nbformat_minor":5,"metadata":{}}'
+    catalog.sync_remote_assets(profile_name="prod", notebooks=[_nb(source_text=nb_src, source_hash="h2", language="sql")])
+    counts = catalog.rebuild_remote_asset_lineage(profile_name="prod")
+    assert counts["notebooks"] >= 1
+    with sqlite3.connect(store.db_path) as c:
+        edges = c.execute(
+            "SELECT relationship_type, from_entity_kind, to_entity_kind, to_entity_id "
+            "FROM catalog_relationships WHERE relationship_type='asset_references_table'"
+        ).fetchall()
+    assert any(e[0] == "asset_references_table" and e[3] == entity_id for e in edges)
+
+
+def test_rebuild_remote_asset_lineage_idempotent(tmp_path):
+    store, catalog = _store_and_catalog(tmp_path)
+    with sqlite3.connect(store.db_path) as c:
+        c.execute(
+            """INSERT INTO catalog_entities
+                   (db_profile, db_backend, database_name, schema_name, table_name,
+                    entity_kind, asset_kind, updated_at)
+               VALUES ('prod', 'snowflake', 'raw', 'public', 'orders',
+                       'table', 'table', 0.0)"""
+        )
+        c.commit()
+    nb_src = '{"cells":[{"cell_type":"code","source":["select * from raw.public.orders"],"metadata":{"language":"sql"},"execution_count":null,"outputs":[]}],"nbformat":4,"nbformat_minor":5,"metadata":{}}'
+    catalog.sync_remote_assets(profile_name="prod", notebooks=[_nb(source_text=nb_src, source_hash="h2", language="sql")])
+    catalog.rebuild_remote_asset_lineage(profile_name="prod")
+    catalog.rebuild_remote_asset_lineage(profile_name="prod")  # second call must not duplicate
+    with sqlite3.connect(store.db_path) as c:
+        count = c.execute(
+            "SELECT COUNT(*) FROM catalog_relationships "
+            "WHERE relationship_type='asset_references_table'"
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_rebuild_remote_asset_lineage_for_stream_resolves_source_table(tmp_path):
+    from amx.db.adapters.remote_asset_types import RemoteStream
+    store, catalog = _store_and_catalog(tmp_path)
+    with sqlite3.connect(store.db_path) as c:
+        c.execute(
+            """INSERT INTO catalog_entities
+                   (db_profile, db_backend, database_name, schema_name, table_name,
+                    entity_kind, asset_kind, updated_at)
+               VALUES ('prod', 'snowflake', 'raw', 'public', 'orders',
+                       'table', 'table', 0.0)"""
+        )
+        c.commit()
+        ent = c.execute("SELECT id FROM catalog_entities WHERE table_name='orders'").fetchone()[0]
+    stream = RemoteStream(
+        qualified_name="raw.public.orders_stream",
+        source_table_fqn="raw.public.orders",
+        mode="APPEND_ONLY", stale_after=None, owner=None,
+    )
+    catalog.sync_remote_assets(profile_name="prod", streams=[stream])
+    counts = catalog.rebuild_remote_asset_lineage(profile_name="prod")
+    assert counts["streams"] >= 1
+    with sqlite3.connect(store.db_path) as c:
+        edges = c.execute(
+            "SELECT from_entity_kind, to_entity_id FROM catalog_relationships "
+            "WHERE relationship_type='asset_references_table'"
+        ).fetchall()
+    assert ("stream", ent) in edges
