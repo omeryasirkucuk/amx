@@ -18,6 +18,7 @@ import remarkGfm from "remark-gfm";
 
 import { api, type RemoteAssetKind } from "../../lib/api";
 import { cn } from "../../lib/cn";
+import AlertDialog from "../ui/AlertDialog";
 
 interface Props {
   open: boolean;
@@ -457,33 +458,26 @@ export default function AssetDetailDrawer({
   });
 
   const queryClient = useQueryClient();
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const deleteMutation = useMutation({
     mutationFn: () => api.deleteRemoteAsset(kind, assetId),
     onSuccess: () => {
-      // Drop the list + this row from cache so the table refetches without
-      // the deleted row and the drawer can close cleanly.
-      queryClient.invalidateQueries({ queryKey: ["remote-assets", kind] });
+      // Invalidate every cached list of remote assets so the active tab
+      // refetches and drops the row immediately. Prefix-match catches all
+      // (profile, kind) combinations; a narrower key wouldn't fire because
+      // the list query is keyed (profile, kind) and the drawer doesn't
+      // always know the profile.
+      queryClient.invalidateQueries({ queryKey: ["remote-assets"] });
       queryClient.removeQueries({ queryKey: ["remote-asset", kind, assetId] });
+      setConfirmOpen(false);
       onClose();
     },
   });
 
-  function handleDelete() {
-    const name =
-      (data && (data["name"] as string | undefined)) ||
-      (data && (data["qualified_name"] as string | undefined)) ||
-      `${kind} #${assetId}`;
-    if (
-      !window.confirm(
-        `Delete ${kind} "${name}"? This removes the row from AMX's catalog ` +
-          `(the source ${kind} on the platform is untouched). Lineage edges ` +
-          `referencing it are also removed.`,
-      )
-    ) {
-      return;
-    }
-    deleteMutation.mutate();
-  }
+  const displayName =
+    (data && (data["name"] as string | undefined)) ||
+    (data && (data["qualified_name"] as string | undefined)) ||
+    `${kind} #${assetId}`;
 
   if (!open) return null;
 
@@ -576,7 +570,7 @@ export default function AssetDetailDrawer({
           <div className="flex shrink-0 items-center gap-1">
             <button
               type="button"
-              onClick={handleDelete}
+              onClick={() => setConfirmOpen(true)}
               disabled={deleteMutation.isPending || !data}
               aria-label="Delete asset"
               title="Delete asset"
@@ -607,7 +601,6 @@ export default function AssetDetailDrawer({
             Failed to delete: {(deleteMutation.error as Error).message}
           </div>
         )}
-
         {/* Body */}
         <div className="flex-1 px-5 py-4">
           {isLoading && (
@@ -741,6 +734,22 @@ export default function AssetDetailDrawer({
           )}
         </div>
       </aside>
+      <AlertDialog
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={() => deleteMutation.mutate()}
+        tone="danger"
+        loading={deleteMutation.isPending}
+        confirmLabel="Delete"
+        title={`Delete ${kind} "${displayName}"`}
+        description={
+          <span>
+            Removes the row from AMX's catalog. The source {kind} on the
+            platform is <strong>untouched</strong>. Lineage edges that
+            reference this {kind} are also removed.
+          </span>
+        }
+      />
     </>
   );
 }
