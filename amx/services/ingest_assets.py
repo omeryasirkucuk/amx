@@ -121,7 +121,7 @@ class IngestAssetsService:
         if asset_type == "notebooks":
             return c.list_remote_notebooks()
         if asset_type == "jobs":
-            return c.list_remote_jobs()
+            return c.list_remote_jobs(runs_per_job=req.runs_per_job)
         if asset_type == "pipelines":
             return c.list_remote_pipelines()
         if asset_type == "streamlit_apps":

@@ -1367,30 +1367,38 @@ class DatabaseConnector:
         self.apply_comment(schema="", comment=comment, asset_kind=AssetKind.DATABASE)
 
     # ── Remote executable assets ──────────────────────────────────────────
+    #
+    # Adapter methods take ``engine`` as the first positional argument for
+    # signature uniformity (matches ``list_tables(engine, schema, catalog)``).
+    # Snowflake's implementations issue SQL via ``engine``; Databricks' use
+    # an HTTP Workspace client and ignore it. The passthrough hands the
+    # connector's live engine to both so neither variant raises ``TypeError``.
 
     def list_remote_notebooks(self):
-        return self._adapter.list_remote_notebooks()
+        return self._adapter.list_remote_notebooks(self.engine)
 
     def fetch_remote_notebook_source(self, external_id: str) -> str:
-        return self._adapter.fetch_remote_notebook_source(external_id)
+        return self._adapter.fetch_remote_notebook_source(self.engine, external_id)
 
-    def list_remote_jobs(self):
-        return self._adapter.list_remote_jobs()
+    def list_remote_jobs(self, *, runs_per_job: int = 20):
+        return self._adapter.list_remote_jobs(self.engine, runs_per_job=runs_per_job)
 
     def list_remote_pipelines(self):
-        return self._adapter.list_remote_pipelines()
+        return self._adapter.list_remote_pipelines(self.engine)
 
     def list_remote_streamlit_apps(self):
-        return self._adapter.list_remote_streamlit_apps()
+        return self._adapter.list_remote_streamlit_apps(self.engine)
 
     def list_remote_streams(self):
-        return self._adapter.list_remote_streams()
+        return self._adapter.list_remote_streams(self.engine)
 
     def list_remote_task_dependencies(self):
-        return self._adapter.list_remote_task_dependencies()
+        return self._adapter.list_remote_task_dependencies(self.engine)
 
     def list_remote_queries(self, *, history_days: int = 7, limit: int = 1000):
-        return self._adapter.list_remote_queries(history_days=history_days, limit=limit)
+        return self._adapter.list_remote_queries(
+            self.engine, history_days=history_days, limit=limit
+        )
 
     # ── Adapter metadata ──────────────────────────────────────────────────
 

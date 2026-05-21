@@ -34,19 +34,22 @@ def test_base_adapter_default_remote_methods_raise():
 
     stub = _Stub.__new__(_Stub)  # bypass __init__ which may need an engine
 
+    # The unified ABC signature takes ``engine`` as the first positional arg
+    # (sentinel here; the default implementations raise without touching it).
+    engine = object()
     with pytest.raises(UnsupportedDatabaseOperation):
-        list(stub.list_remote_notebooks())
+        list(stub.list_remote_notebooks(engine))
     with pytest.raises(UnsupportedDatabaseOperation):
-        stub.fetch_remote_notebook_source("anything")
+        stub.fetch_remote_notebook_source(engine, "anything")
     with pytest.raises(UnsupportedDatabaseOperation):
-        list(stub.list_remote_jobs())
+        list(stub.list_remote_jobs(engine))
     with pytest.raises(UnsupportedDatabaseOperation):
-        list(stub.list_remote_pipelines())
+        list(stub.list_remote_pipelines(engine))
     with pytest.raises(UnsupportedDatabaseOperation):
-        list(stub.list_remote_streamlit_apps())
+        list(stub.list_remote_streamlit_apps(engine))
     with pytest.raises(UnsupportedDatabaseOperation):
-        list(stub.list_remote_streams())
+        list(stub.list_remote_streams(engine))
     with pytest.raises(UnsupportedDatabaseOperation):
-        list(stub.list_remote_task_dependencies())
+        list(stub.list_remote_task_dependencies(engine))
     with pytest.raises(UnsupportedDatabaseOperation):
-        list(stub.list_remote_queries())
+        list(stub.list_remote_queries(engine))
