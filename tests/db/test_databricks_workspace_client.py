@@ -32,21 +32,64 @@ def test_client_preserves_http_scheme_for_localhost_dev():
 
 
 def test_list_workspace_objects_paginates():
+    """Pagination yields all NOTEBOOK rows within a single directory."""
     pages = [
         {
             "objects": [{"object_id": 1, "object_type": "NOTEBOOK", "path": "/a"}],
             "next_page_token": "tk",
         },
         {
-            "objects": [{"object_id": 2, "object_type": "DIRECTORY", "path": "/b"}],
+            "objects": [{"object_id": 2, "object_type": "NOTEBOOK", "path": "/b"}],
             "next_page_token": "",
         },
     ]
     with patch("amx.db.adapters._databricks_workspace.requests.get") as g:
         g.side_effect = [MagicMock(status_code=200, json=lambda p=p: p) for p in pages]
-        out = list(_client().list_workspace_objects(path="/"))
+        out = list(_client().list_workspace_objects(path="/single_dir"))
     assert [o["path"] for o in out] == ["/a", "/b"]
     assert g.call_count == 2
+
+
+def test_list_workspace_objects_recurses_into_directories():
+    """Workspace API only returns immediate children. A NOTEBOOK living
+    under ``/Users/alice/`` must be reachable by recursion from ``/``."""
+    pages = {
+        "/": {
+            "objects": [
+                {"object_id": 1, "object_type": "DIRECTORY", "path": "/Users"},
+                {"object_id": 2, "object_type": "DIRECTORY", "path": "/Shared"},
+            ],
+        },
+        "/Shared": {},  # empty dir
+        "/Users": {
+            "objects": [
+                {"object_id": 3, "object_type": "DIRECTORY", "path": "/Users/alice"},
+            ],
+        },
+        "/Users/alice": {
+            "objects": [
+                {"object_id": 4, "object_type": "NOTEBOOK", "path": "/Users/alice/nb1"},
+                {"object_id": 5, "object_type": "NOTEBOOK", "path": "/Users/alice/nb2"},
+            ],
+        },
+    }
+
+    def fake_get(url, **kwargs):
+        # The client passes ``params={"path": "..."}`` so requests builds the
+        # querystring on the URL it sends. We pull the path out for routing.
+        params = kwargs.get("params") or {}
+        path = params.get("path", "/")
+        return MagicMock(status_code=200, json=lambda p=path: pages.get(p, {}))
+
+    with patch("amx.db.adapters._databricks_workspace.requests.get", side_effect=fake_get):
+        out = list(_client().list_workspace_objects(path="/"))
+
+    notebook_paths = [o["path"] for o in out if o["object_type"] == "NOTEBOOK"]
+    assert sorted(notebook_paths) == ["/Users/alice/nb1", "/Users/alice/nb2"]
+    # Make sure the walker also yielded the intermediate directories so
+    # debuggers / Studio can observe the full tree shape if they care.
+    dir_paths = [o["path"] for o in out if o["object_type"] == "DIRECTORY"]
+    assert "/Users" in dir_paths and "/Users/alice" in dir_paths
 
 
 def test_export_notebook_source_returns_decoded_text():
