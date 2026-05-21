@@ -25,6 +25,8 @@ interface Props {
   kind: RemoteAssetKind;
   assetId: string;
   profile: string;
+  /** Optional: swap the drawer to a sibling asset (e.g. job task → notebook). */
+  onOpenAsset?: (kind: RemoteAssetKind, id: string | number) => void;
 }
 
 interface NotebookCell {
@@ -142,7 +144,13 @@ function formatDuration(ms: number | null | undefined): string {
   return `${m}m ${Math.round(s % 60)}s`;
 }
 
-function JobDetail({ data }: { data: Record<string, unknown> }) {
+function JobDetail({
+  data,
+  onOpenAsset,
+}: {
+  data: Record<string, unknown>;
+  onOpenAsset?: (kind: RemoteAssetKind, id: string | number) => void;
+}) {
   const tasks = (data.tasks as JobTask[] | undefined) ?? [];
   const runs = (data.recent_runs as JobRun[] | undefined) ?? [];
   const successRate = data.success_rate_30d as number | null | undefined;
@@ -201,23 +209,39 @@ function JobDetail({ data }: { data: Record<string, unknown> }) {
                 </tr>
               </thead>
               <tbody>
-                {tasks.map((t) => (
-                  <tr key={t.task_key} className="border-b border-border last:border-0">
-                    <td className="px-2 py-1.5 font-mono text-ink">{t.task_key}</td>
-                    <td className="px-2 py-1.5 text-ink-dim">{t.task_type}</td>
-                    <td className="px-2 py-1.5 font-mono text-ink-dim">
-                      {t.notebook_name ??
-                        t.notebook_path ??
-                        t.sql_warehouse_id ??
-                        "—"}
-                    </td>
-                    <td className="px-2 py-1.5 font-mono text-ink-dim">
-                      {t.depends_on && t.depends_on.length > 0
-                        ? t.depends_on.join(", ")
-                        : "—"}
-                    </td>
-                  </tr>
-                ))}
+                {tasks.map((t) => {
+                  const targetLabel =
+                    t.notebook_name ?? t.notebook_path ?? t.sql_warehouse_id ?? "—";
+                  const targetIsClickableNotebook =
+                    t.notebook_id_fk != null && onOpenAsset != null;
+                  return (
+                    <tr key={t.task_key} className="border-b border-border last:border-0">
+                      <td className="px-2 py-1.5 font-mono text-ink">{t.task_key}</td>
+                      <td className="px-2 py-1.5 text-ink-dim">{t.task_type}</td>
+                      <td className="px-2 py-1.5 font-mono text-ink-dim">
+                        {targetIsClickableNotebook ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onOpenAsset!("notebook", t.notebook_id_fk as number)
+                            }
+                            className="text-accent hover:underline"
+                            title={t.notebook_path ?? undefined}
+                          >
+                            {targetLabel}
+                          </button>
+                        ) : (
+                          targetLabel
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5 font-mono text-ink-dim">
+                        {t.depends_on && t.depends_on.length > 0
+                          ? t.depends_on.join(", ")
+                          : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -413,6 +437,7 @@ export default function AssetDetailDrawer({
   kind,
   assetId,
   profile,
+  onOpenAsset,
 }: Props) {
   // Trap ESC to close
   useEffect(() => {
@@ -583,7 +608,7 @@ export default function AssetDetailDrawer({
               )}
 
               {/* Job detail */}
-              {kind === "job" && <JobDetail data={data} />}
+              {kind === "job" && <JobDetail data={data} onOpenAsset={onOpenAsset} />}
 
               {/* Pipeline detail */}
               {kind === "pipeline" && <PipelineDetail data={data} />}

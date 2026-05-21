@@ -244,6 +244,13 @@ export default function Assets() {
         kind={drawerKind}
         assetId={drawerAssetId}
         profile={profile}
+        onOpenAsset={(kind, id) => {
+          // Swap the drawer in place (e.g. a Job task's target opens its
+          // linked notebook). Keep the underlying tab where it is so the
+          // user can close the drawer and return to the job list.
+          setDrawerKind(kind);
+          setDrawerAssetId(String(id));
+        }}
       />
     </div>
   );
