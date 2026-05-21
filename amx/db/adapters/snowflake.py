@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
+from amx.codebase.notebook_normalize import normalize_source
+from amx.db.adapters.remote_asset_types import (
+    RemoteNotebook,
+    RemoteQuery,
+    RemoteStream,
+    RemoteStreamlitApp,
+)
+
+log = logging.getLogger(__name__)
 
 
 class SnowflakeAdapter(DatabaseAdapter):
@@ -26,6 +39,7 @@ class SnowflakeAdapter(DatabaseAdapter):
         datashares=True,
         external_tables=True,
         supports_shared_history=True,
+        remote_notebooks=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
 
@@ -657,3 +671,84 @@ class SnowflakeAdapter(DatabaseAdapter):
 
     def set_database_comment_sql(self) -> str:
         return f"COMMENT ON DATABASE {self.quote_identifier(self.cfg.database)} IS :cmt"
+
+    # ── Remote executable assets ──────────────────────────────────────────
+
+    def list_remote_notebooks(self, engine):
+        """Yield :class:`RemoteNotebook` for every Snowflake Notebook visible
+        to the active role.
+
+        Each notebook's source is read from the associated stage file using a
+        ``SELECT $1 FROM @<stage_ref>`` query with JSON file format. The raw
+        JSON is normalized to a minimal ``.ipynb`` shell via
+        :func:`normalize_source` before hashing.
+        """
+        with engine.connect() as conn:
+            rows = conn.execute(text("SHOW NOTEBOOKS IN ACCOUNT")).mappings().all()
+            for r in rows:
+                fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                try:
+                    desc = conn.execute(text(f"DESC NOTEBOOK {fqn}")).mappings().all()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("DESC NOTEBOOK %s failed: %s", fqn, exc)
+                    continue
+                props = {row["property"]: row["value"] for row in desc}
+                root = props.get("ROOT_LOCATION", "")
+                main_file = props.get("MAIN_FILE", "notebook_app.ipynb")
+                stage_ref = root.lstrip("@") + "/" + main_file
+                try:
+                    src_rows = conn.execute(text(
+                        f"SELECT $1 FROM @{stage_ref} "
+                        f"(FILE_FORMAT => (TYPE = JSON, COMPRESSION = NONE))"
+                    )).mappings().all()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "Failed to read stage %s for notebook %s: %s",
+                        stage_ref, fqn, exc,
+                    )
+                    continue
+                raw = src_rows[0]["$1"] if src_rows else "{}"
+                raw_text = raw if isinstance(raw, str) else json.dumps(raw)
+                normalized = normalize_source(raw_text, hint="ipynb")
+                last_altered = r.get("last_altered")
+                if isinstance(last_altered, str):
+                    try:
+                        last_altered = datetime.fromisoformat(last_altered)
+                    except ValueError:
+                        last_altered = None
+                try:
+                    cell_count = len(json.loads(normalized).get("cells", []))
+                except (json.JSONDecodeError, AttributeError):
+                    cell_count = None
+                yield RemoteNotebook(
+                    external_id=fqn,
+                    name=r["name"],
+                    platform="snowflake",
+                    language=(r.get("language") or "python").lower(),
+                    workspace_path=None,
+                    qualified_name=fqn,
+                    source_text=normalized,
+                    source_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+                    last_modified_at=last_altered,
+                    last_modified_by=None,
+                    owner=r.get("owner"),
+                    cell_count=cell_count,
+                )
+
+    def fetch_remote_notebook_source(self, engine, external_id: str) -> str:
+        """Return normalized ``.ipynb`` JSON for the Snowflake Notebook
+        identified by ``external_id`` (fully-qualified name).
+        """
+        with engine.connect() as conn:
+            desc = conn.execute(text(f"DESC NOTEBOOK {external_id}")).mappings().all()
+            props = {row["property"]: row["value"] for row in desc}
+            root = props.get("ROOT_LOCATION", "")
+            main_file = props.get("MAIN_FILE", "notebook_app.ipynb")
+            stage_ref = root.lstrip("@") + "/" + main_file
+            src_rows = conn.execute(text(
+                f"SELECT $1 FROM @{stage_ref} "
+                f"(FILE_FORMAT => (TYPE = JSON, COMPRESSION = NONE))"
+            )).mappings().all()
+            raw = src_rows[0]["$1"] if src_rows else "{}"
+            raw_text = raw if isinstance(raw, str) else json.dumps(raw)
+            return normalize_source(raw_text, hint="ipynb")
