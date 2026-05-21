@@ -43,7 +43,7 @@ from amx.agents.profile_agent import ProfileAgent
 from amx.agents.rag_agent import RAGAgent
 from amx.codebase.analyzer import CodebaseReport
 from amx.config import DEFAULT_ALTERNATIVES_MODE
-from amx.db.connector import AssetKind, DatabaseConnector, TableProfile
+from amx.db.connector import AssetKind, ColumnProfile, DatabaseConnector, TableProfile
 from amx.docs.rag import RAGStore
 from amx.llm.provider import LLMProvider
 from amx.storage.sqlite_store import history_store
@@ -913,6 +913,68 @@ class Orchestrator:
 
     # ── Batch mode ────────────────────────────────────────────────────────────
 
+    def _synthesize_profile_from_cache(
+        self,
+        schema: str,
+        table: str,
+        asset_kind: AssetKind | None,
+    ) -> TableProfile:
+        """Build a metadata-only TableProfile from the search catalog.
+
+        Used when the Studio caller flagged this asset on the bulk
+        run's ``cache_override_assets`` list — the live DB can't
+        reflect the table (SQLAlchemy ``NoSuchTableError`` on
+        ``get_columns``), but the catalog still has its column list
+        from the last ``/search sync``. We synthesize a minimal
+        profile so the LLM still has names, dtypes, and existing
+        comments to work with. PK/FK, samples, min/max, and usage
+        stats stay empty; the prompt builder already tolerates
+        missing optional fields.
+
+        Mirror of :func:`amx.web.routers.live_db._columns_from_cache`
+        with a different return shape — same underlying reader so the
+        Studio Browse page and the bulk worker stay in sync about
+        what "from the catalog" means.
+        """
+        profile_name = self.db.cfg.active_db_profile or "default"
+        database_name = (
+            getattr(self.db.cfg.db, "database", None)
+            or getattr(self.db.cfg.db, "catalog", None)
+            or None
+        )
+        columns: list[ColumnProfile] = []
+        try:
+            from amx.search.catalog import SearchCatalog
+
+            cat = SearchCatalog.from_history_store()
+        except Exception:
+            cat = None
+        if cat is not None:
+            try:
+                cached = cat.fetch_columns_for_table(
+                    profile_name,
+                    schema_name=schema,
+                    table_name=table,
+                    database_name=database_name,
+                )
+            except Exception:
+                cached = []
+            for c in cached or []:
+                columns.append(
+                    ColumnProfile(
+                        name=str(c.get("name", "")),
+                        dtype=str(c.get("dtype") or ""),
+                        nullable=bool(c.get("nullable", True)),
+                        existing_comment=(c.get("comment") or None),
+                    )
+                )
+        return TableProfile(
+            schema=schema,
+            name=table,
+            asset_kind=asset_kind or AssetKind.TABLE,
+            columns=columns,
+        )
+
     def process_tables_batch_mode(
         self,
         schema: str,
@@ -920,6 +982,7 @@ class Orchestrator:
         asset_kinds: dict[str, AssetKind] | None = None,
         *,
         cancel_token: threading.Event | None = None,
+        cache_override_assets: set[str] | None = None,
     ) -> list[ReviewResult]:
         """Run the full pipeline for *tables* via the provider's Batch API.
 
@@ -928,10 +991,19 @@ class Orchestrator:
         per-table fallback loop. Inside the genuine batch path the
         token is observed between batch phases so a Studio cancel
         click stops further work even mid-batch.
+
+        ``cache_override_assets`` carries the set of ``"schema.table"``
+        identifiers the caller flagged as unreachable on the live DB
+        — Studio's pre-flight check found them missing and the user
+        chose "Use cached schema" in the reachability dialog. For
+        those assets we substitute a catalog-cached metadata profile
+        instead of calling :meth:`profile_table`.
         """
         from amx.llm.batch import BatchRequest, run_batch, supported_providers
 
         asset_kinds = asset_kinds or {}
+
+        overrides = cache_override_assets or set()
 
         if not self.llm.supports_batch:
             warn(
@@ -958,8 +1030,13 @@ class Orchestrator:
         profiles: dict[str, TableProfile] = {}
         for table in tables:
             ak = asset_kinds.get(table)
-            with step_spinner(f"Profiling {schema}.{table}"):
-                profiles[table] = self.db.profile_table(schema, table, asset_kind=ak)
+            asset_path = f"{schema}.{table}"
+            if asset_path in overrides:
+                with step_spinner(f"Building cached-schema profile for {schema}.{table}"):
+                    profiles[table] = self._synthesize_profile_from_cache(schema, table, ak)
+            else:
+                with step_spinner(f"Profiling {schema}.{table}"):
+                    profiles[table] = self.db.profile_table(schema, table, asset_kind=ak)
 
         # Apply the missing-only filter in batch mode too. Tables fully
         # commented are dropped from the request set; tables with partial

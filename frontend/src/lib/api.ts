@@ -918,6 +918,12 @@ export const api = {
     llm_overrides?: LLMOverrides;
     doc_profiles?: string[];
     code_profiles?: string[];
+    /** ``"schema.table"`` identifiers the Studio reachability pre-flight
+     *  flagged as unreadable on the live DB, and the user explicitly chose
+     *  to substitute with the catalog cache from the last ``/search sync``.
+     *  Omit (or pass an empty array) to force every asset through the
+     *  live-profiling path. */
+    cache_override_assets?: string[];
   }) =>
     apiFetch<{ job_id: string; status: string }>("/api/runs", {
       method: "POST",
@@ -933,6 +939,32 @@ export const api = {
         llm_overrides: body.llm_overrides,
         doc_profiles: body.doc_profiles,
         code_profiles: body.code_profiles,
+        cache_override_assets: body.cache_override_assets,
+      }),
+    }),
+  /** Pre-flight reachability probe for the bulk-run path. Probes every
+   *  ``(schema, table)`` in ``body.scope`` against the live DB via the
+   *  cheap metadata-only ``list_column_profiles`` and splits them into
+   *  ``blocked_assets`` (no live columns visible — likely dropped or
+   *  case-mismatched) and ``reachable_assets`` so the SPA can ask the
+   *  user whether to substitute the catalog cache before submitting
+   *  the actual run. No LLM work happens here. */
+  preflightRun: (body: {
+    scope: Record<string, string[]>;
+    db_profile?: string;
+    database?: string;
+    catalog?: string;
+  }) =>
+    apiFetch<{
+      blocked_assets: Array<{ schema: string; table: string; reason: string }>;
+      reachable_assets: Array<{ schema: string; table: string }>;
+    }>("/api/runs/preflight", {
+      method: "POST",
+      body: JSON.stringify({
+        scope: body.scope,
+        db_profile: body.db_profile,
+        database: body.database,
+        catalog: body.catalog,
       }),
     }),
   cancelRun: (jobId: string) =>
