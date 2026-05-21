@@ -22,6 +22,7 @@ from amx.cli_support.commands.db import (
 from amx.cli_support.commands.db import (
     print_db_namespace_hint as _print_db_namespace_hint,
 )
+from amx.cli_support.commands.db_assets import register_db_assets_commands
 from amx.cli_support.commands.docs import register_docs_commands
 from amx.cli_support.commands.doctor import register_doctor_command
 from amx.cli_support.commands.eval_confidence import register_eval_confidence_command
@@ -450,6 +451,10 @@ register_history_store_commands(
     register_root_commands._db_group,  # type: ignore[attr-defined]
     pass_config=pass_config,
     log_event=_log_app_event,
+)
+register_db_assets_commands(
+    register_root_commands._db_group,  # type: ignore[attr-defined]
+    pass_config=pass_config,
 )
 
 

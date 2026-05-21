@@ -50,6 +50,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
@@ -1250,6 +1251,621 @@ def build_metadata(schema: str | None = None) -> MetaData:
         Index("ix_amx_session_events_event_at", "event_at"),
         Index("ix_amx_session_events_user_id", "user_id"),
         comment=_desc("_amx_session_events"),
+    )
+
+    # ── remote_notebooks: notebooks ingested from remote platforms ────────
+    Table(
+        "remote_notebooks",
+        md,
+        Column(
+            "id",
+            Integer,
+            primary_key=True,
+            autoincrement=True,
+            comment=_desc("remote_notebooks", "id"),
+        ),
+        Column(
+            "profile_name",
+            String,
+            nullable=False,
+            comment=_desc("remote_notebooks", "profile_name"),
+        ),
+        Column(
+            "platform",
+            String,
+            nullable=False,
+            comment=_desc("remote_notebooks", "platform"),
+        ),
+        Column(
+            "external_id",
+            String,
+            nullable=False,
+            comment=_desc("remote_notebooks", "external_id"),
+        ),
+        Column("name", String, nullable=False, comment=_desc("remote_notebooks", "name")),
+        Column(
+            "workspace_path",
+            String,
+            comment=_desc("remote_notebooks", "workspace_path"),
+        ),
+        Column(
+            "qualified_name",
+            String,
+            comment=_desc("remote_notebooks", "qualified_name"),
+        ),
+        Column(
+            "language",
+            String,
+            nullable=False,
+            comment=_desc("remote_notebooks", "language"),
+        ),
+        Column(
+            "source_text",
+            Text,
+            nullable=False,
+            comment=_desc("remote_notebooks", "source_text"),
+        ),
+        Column(
+            "source_hash",
+            String,
+            nullable=False,
+            comment=_desc("remote_notebooks", "source_hash"),
+        ),
+        Column(
+            "last_modified_at",
+            DateTime(timezone=True),
+            comment=_desc("remote_notebooks", "last_modified_at"),
+        ),
+        Column(
+            "last_modified_by",
+            String,
+            comment=_desc("remote_notebooks", "last_modified_by"),
+        ),
+        Column("owner", String, comment=_desc("remote_notebooks", "owner")),
+        Column("cell_count", Integer, comment=_desc("remote_notebooks", "cell_count")),
+        Column(
+            "ingested_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("remote_notebooks", "ingested_at"),
+        ),
+        UniqueConstraint(
+            "profile_name",
+            "platform",
+            "external_id",
+            name="uq_remote_notebooks_profile_platform_ext",
+        ),
+        Index("idx_remote_notebooks_profile_platform", "profile_name", "platform"),
+        comment=_desc("remote_notebooks"),
+    )
+
+    # ── remote_jobs: Databricks jobs/workflows ────────────────────────────
+    Table(
+        "remote_jobs",
+        md,
+        Column(
+            "id",
+            Integer,
+            primary_key=True,
+            autoincrement=True,
+            comment=_desc("remote_jobs", "id"),
+        ),
+        Column(
+            "profile_name",
+            String,
+            nullable=False,
+            comment=_desc("remote_jobs", "profile_name"),
+        ),
+        Column(
+            "job_id",
+            Integer,
+            nullable=False,
+            comment=_desc("remote_jobs", "job_id"),
+        ),
+        Column("name", String, nullable=False, comment=_desc("remote_jobs", "name")),
+        Column(
+            "creator_user_name",
+            String,
+            comment=_desc("remote_jobs", "creator_user_name"),
+        ),
+        Column("schedule_cron", String, comment=_desc("remote_jobs", "schedule_cron")),
+        Column(
+            "schedule_timezone",
+            String,
+            comment=_desc("remote_jobs", "schedule_timezone"),
+        ),
+        Column(
+            "schedule_pause_status",
+            String,
+            comment=_desc("remote_jobs", "schedule_pause_status"),
+        ),
+        Column(
+            "max_concurrent_runs",
+            Integer,
+            comment=_desc("remote_jobs", "max_concurrent_runs"),
+        ),
+        Column(
+            "email_notifications_json",
+            String,
+            comment=_desc("remote_jobs", "email_notifications_json"),
+        ),
+        Column("tags_json", String, comment=_desc("remote_jobs", "tags_json")),
+        Column(
+            "last_run_status",
+            String,
+            comment=_desc("remote_jobs", "last_run_status"),
+        ),
+        Column(
+            "last_run_started_at",
+            DateTime(timezone=True),
+            comment=_desc("remote_jobs", "last_run_started_at"),
+        ),
+        Column(
+            "success_rate_30d",
+            Float,
+            comment=_desc("remote_jobs", "success_rate_30d"),
+        ),
+        Column(
+            "ingested_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("remote_jobs", "ingested_at"),
+        ),
+        UniqueConstraint("profile_name", "job_id", name="uq_remote_jobs_profile_job"),
+        Index("idx_remote_jobs_profile", "profile_name"),
+        comment=_desc("remote_jobs"),
+    )
+
+    # ── remote_job_tasks: per-task definitions within a job ───────────────
+    Table(
+        "remote_job_tasks",
+        md,
+        Column(
+            "id",
+            Integer,
+            primary_key=True,
+            autoincrement=True,
+            comment=_desc("remote_job_tasks", "id"),
+        ),
+        Column(
+            "job_id_fk",
+            Integer,
+            ForeignKey("remote_jobs.id"),
+            nullable=False,
+            comment=_desc("remote_job_tasks", "job_id_fk"),
+        ),
+        Column(
+            "task_key",
+            String,
+            nullable=False,
+            comment=_desc("remote_job_tasks", "task_key"),
+        ),
+        Column(
+            "task_type",
+            String,
+            nullable=False,
+            comment=_desc("remote_job_tasks", "task_type"),
+        ),
+        Column(
+            "notebook_path",
+            String,
+            comment=_desc("remote_job_tasks", "notebook_path"),
+        ),
+        Column(
+            "notebook_id_fk",
+            Integer,
+            ForeignKey("remote_notebooks.id"),
+            comment=_desc("remote_job_tasks", "notebook_id_fk"),
+        ),
+        Column(
+            "sql_query_id",
+            String,
+            comment=_desc("remote_job_tasks", "sql_query_id"),
+        ),
+        Column(
+            "sql_warehouse_id",
+            String,
+            comment=_desc("remote_job_tasks", "sql_warehouse_id"),
+        ),
+        Column(
+            "pipeline_id_fk",
+            Integer,
+            comment=_desc("remote_job_tasks", "pipeline_id_fk"),
+        ),
+        Column(
+            "depends_on_json",
+            String,
+            comment=_desc("remote_job_tasks", "depends_on_json"),
+        ),
+        Column(
+            "raw_definition_json",
+            Text,
+            nullable=False,
+            comment=_desc("remote_job_tasks", "raw_definition_json"),
+        ),
+        UniqueConstraint("job_id_fk", "task_key", name="uq_remote_job_tasks_job_key"),
+        Index("idx_remote_job_tasks_job", "job_id_fk"),
+        comment=_desc("remote_job_tasks"),
+    )
+
+    # ── remote_job_runs: recent run history for each job ─────────────────
+    Table(
+        "remote_job_runs",
+        md,
+        Column(
+            "id",
+            Integer,
+            primary_key=True,
+            autoincrement=True,
+            comment=_desc("remote_job_runs", "id"),
+        ),
+        Column(
+            "job_id_fk",
+            Integer,
+            ForeignKey("remote_jobs.id"),
+            nullable=False,
+            comment=_desc("remote_job_runs", "job_id_fk"),
+        ),
+        Column(
+            "run_id",
+            Integer,
+            nullable=False,
+            comment=_desc("remote_job_runs", "run_id"),
+        ),
+        Column(
+            "state_result",
+            String,
+            nullable=False,
+            comment=_desc("remote_job_runs", "state_result"),
+        ),
+        Column(
+            "start_time",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("remote_job_runs", "start_time"),
+        ),
+        Column(
+            "end_time",
+            DateTime(timezone=True),
+            comment=_desc("remote_job_runs", "end_time"),
+        ),
+        Column(
+            "setup_duration_ms",
+            Integer,
+            comment=_desc("remote_job_runs", "setup_duration_ms"),
+        ),
+        Column(
+            "execution_duration_ms",
+            Integer,
+            comment=_desc("remote_job_runs", "execution_duration_ms"),
+        ),
+        UniqueConstraint("job_id_fk", "run_id", name="uq_remote_job_runs_job_run"),
+        Index("idx_remote_job_runs_job", "job_id_fk"),
+        comment=_desc("remote_job_runs"),
+    )
+
+    # ── remote_pipelines: Databricks DLT pipeline definitions ────────────
+    Table(
+        "remote_pipelines",
+        md,
+        Column(
+            "id",
+            Integer,
+            primary_key=True,
+            autoincrement=True,
+            comment=_desc("remote_pipelines", "id"),
+        ),
+        Column(
+            "profile_name",
+            String,
+            nullable=False,
+            comment=_desc("remote_pipelines", "profile_name"),
+        ),
+        Column(
+            "pipeline_id",
+            String,
+            nullable=False,
+            comment=_desc("remote_pipelines", "pipeline_id"),
+        ),
+        Column(
+            "name",
+            String,
+            nullable=False,
+            comment=_desc("remote_pipelines", "name"),
+        ),
+        Column(
+            "target_schema",
+            String,
+            comment=_desc("remote_pipelines", "target_schema"),
+        ),
+        Column(
+            "edition",
+            String,
+            comment=_desc("remote_pipelines", "edition"),
+        ),
+        Column(
+            "continuous",
+            Integer,
+            nullable=False,
+            comment=_desc("remote_pipelines", "continuous"),
+        ),
+        Column(
+            "photon",
+            Integer,
+            nullable=False,
+            comment=_desc("remote_pipelines", "photon"),
+        ),
+        Column(
+            "libraries_json",
+            String,
+            nullable=False,
+            comment=_desc("remote_pipelines", "libraries_json"),
+        ),
+        Column(
+            "latest_update_state",
+            String,
+            comment=_desc("remote_pipelines", "latest_update_state"),
+        ),
+        Column(
+            "latest_update_creation_time",
+            DateTime(timezone=True),
+            comment=_desc("remote_pipelines", "latest_update_creation_time"),
+        ),
+        Column(
+            "ingested_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("remote_pipelines", "ingested_at"),
+        ),
+        UniqueConstraint(
+            "profile_name", "pipeline_id", name="uq_remote_pipelines_profile_pipeline"
+        ),
+        Index("idx_remote_pipelines_profile", "profile_name"),
+        comment=_desc("remote_pipelines"),
+    )
+
+    # ── remote_streamlit_apps: Snowflake STREAMLIT objects ───────────────
+    Table(
+        "remote_streamlit_apps",
+        md,
+        Column(
+            "id",
+            Integer,
+            primary_key=True,
+            autoincrement=True,
+            comment=_desc("remote_streamlit_apps", "id"),
+        ),
+        Column(
+            "profile_name",
+            String,
+            nullable=False,
+            comment=_desc("remote_streamlit_apps", "profile_name"),
+        ),
+        Column(
+            "qualified_name",
+            String,
+            nullable=False,
+            comment=_desc("remote_streamlit_apps", "qualified_name"),
+        ),
+        Column(
+            "main_file",
+            String,
+            nullable=False,
+            comment=_desc("remote_streamlit_apps", "main_file"),
+        ),
+        Column(
+            "query_warehouse",
+            String,
+            comment=_desc("remote_streamlit_apps", "query_warehouse"),
+        ),
+        Column(
+            "root_location",
+            String,
+            nullable=False,
+            comment=_desc("remote_streamlit_apps", "root_location"),
+        ),
+        Column(
+            "owner",
+            String,
+            comment=_desc("remote_streamlit_apps", "owner"),
+        ),
+        Column(
+            "last_altered_at",
+            DateTime(timezone=True),
+            comment=_desc("remote_streamlit_apps", "last_altered_at"),
+        ),
+        Column(
+            "ingested_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("remote_streamlit_apps", "ingested_at"),
+        ),
+        UniqueConstraint(
+            "profile_name", "qualified_name", name="uq_remote_streamlit_apps_profile_name"
+        ),
+        Index("idx_remote_streamlit_apps_profile", "profile_name"),
+        comment=_desc("remote_streamlit_apps"),
+    )
+
+    # ── remote_streams: Snowflake CDC streams ────────────────────────────
+    Table(
+        "remote_streams",
+        md,
+        Column(
+            "id",
+            Integer,
+            primary_key=True,
+            autoincrement=True,
+            comment=_desc("remote_streams", "id"),
+        ),
+        Column(
+            "profile_name",
+            String,
+            nullable=False,
+            comment=_desc("remote_streams", "profile_name"),
+        ),
+        Column(
+            "qualified_name",
+            String,
+            nullable=False,
+            comment=_desc("remote_streams", "qualified_name"),
+        ),
+        Column(
+            "source_table_fqn",
+            String,
+            nullable=False,
+            comment=_desc("remote_streams", "source_table_fqn"),
+        ),
+        Column(
+            "source_entity_id",
+            Integer,
+            comment=_desc("remote_streams", "source_entity_id"),
+        ),
+        Column(
+            "mode",
+            String,
+            nullable=False,
+            comment=_desc("remote_streams", "mode"),
+        ),
+        Column(
+            "stale_after",
+            DateTime(timezone=True),
+            comment=_desc("remote_streams", "stale_after"),
+        ),
+        Column(
+            "owner",
+            String,
+            comment=_desc("remote_streams", "owner"),
+        ),
+        Column(
+            "ingested_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("remote_streams", "ingested_at"),
+        ),
+        UniqueConstraint("profile_name", "qualified_name", name="uq_remote_streams_profile_name"),
+        Index("idx_remote_streams_profile", "profile_name"),
+        comment=_desc("remote_streams"),
+    )
+
+    # ── remote_task_dependencies: Snowflake task DAG edges ───────────────
+    Table(
+        "remote_task_dependencies",
+        md,
+        Column(
+            "profile_name",
+            String,
+            nullable=False,
+            comment=_desc("remote_task_dependencies", "profile_name"),
+        ),
+        Column(
+            "parent_task_fqn",
+            String,
+            nullable=False,
+            comment=_desc("remote_task_dependencies", "parent_task_fqn"),
+        ),
+        Column(
+            "child_task_fqn",
+            String,
+            nullable=False,
+            comment=_desc("remote_task_dependencies", "child_task_fqn"),
+        ),
+        PrimaryKeyConstraint(
+            "profile_name",
+            "parent_task_fqn",
+            "child_task_fqn",
+            name="pk_remote_task_dependencies",
+        ),
+        comment=_desc("remote_task_dependencies"),
+    )
+
+    # ── remote_queries: saved queries and execution history ──────────────
+    Table(
+        "remote_queries",
+        md,
+        Column(
+            "id",
+            Integer,
+            primary_key=True,
+            autoincrement=True,
+            comment=_desc("remote_queries", "id"),
+        ),
+        Column(
+            "profile_name",
+            String,
+            nullable=False,
+            comment=_desc("remote_queries", "profile_name"),
+        ),
+        Column(
+            "platform",
+            String,
+            nullable=False,
+            comment=_desc("remote_queries", "platform"),
+        ),
+        Column(
+            "kind",
+            String,
+            nullable=False,
+            comment=_desc("remote_queries", "kind"),
+        ),
+        Column(
+            "external_id",
+            String,
+            nullable=False,
+            comment=_desc("remote_queries", "external_id"),
+        ),
+        Column(
+            "name",
+            String,
+            comment=_desc("remote_queries", "name"),
+        ),
+        Column(
+            "sql_text",
+            Text,
+            nullable=False,
+            comment=_desc("remote_queries", "sql_text"),
+        ),
+        Column(
+            "sql_hash",
+            String,
+            nullable=False,
+            comment=_desc("remote_queries", "sql_hash"),
+        ),
+        Column(
+            "warehouse",
+            String,
+            comment=_desc("remote_queries", "warehouse"),
+        ),
+        Column(
+            "user_name",
+            String,
+            comment=_desc("remote_queries", "user_name"),
+        ),
+        Column(
+            "executed_at",
+            DateTime(timezone=True),
+            comment=_desc("remote_queries", "executed_at"),
+        ),
+        Column(
+            "duration_ms",
+            Integer,
+            comment=_desc("remote_queries", "duration_ms"),
+        ),
+        Column(
+            "ingested_at",
+            DateTime(timezone=True),
+            nullable=False,
+            comment=_desc("remote_queries", "ingested_at"),
+        ),
+        UniqueConstraint(
+            "profile_name",
+            "platform",
+            "kind",
+            "external_id",
+            name="uq_remote_queries_profile_platform_kind_id",
+        ),
+        Index("idx_remote_queries_profile_platform", "profile_name", "platform"),
+        comment=_desc("remote_queries"),
     )
 
     return md

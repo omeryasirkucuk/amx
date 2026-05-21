@@ -365,6 +365,91 @@ def test_codebase_path_reachable(path: str) -> None:
         raise RuntimeError(f"Codebase path must be a local directory: {root}")
 
 
+# Two- or three-part dotted identifier. Each part is a SQL identifier
+# (letters, digits, underscore; first char not a digit). Anchored with
+# word boundaries so it does not match a partial path like "/foo.bar.baz".
+_TABLE_REF_RX = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b"
+    r"|"
+    r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b"
+)
+
+
+def extract_table_refs(source: str, *, language: str) -> list[str]:
+    """Return a deduped list of fully-qualified table identifiers in ``source``.
+
+    Result preserves first-seen order. Each entry is a 2- or 3-part dotted
+    name like ``schema.table`` or ``db.schema.table``. The ``language`` hint
+    routes to language-specific parsers when available:
+
+    * ``"sql"`` — parsed with sqlglot (best-effort; falls through to regex on
+      parse failure).
+    * ``"python"`` / ``"scala"`` / ``"java"`` — runs the regex against the
+      raw source, which catches identifiers embedded in string literals
+      (``spark.read.table("db.schema.t")``) as well as bare SQL embedded in
+      multi-line strings.
+    * Anything else — regex-only fallback.
+
+    Notes:
+
+    * Doesn't try to resolve identifiers against any catalog — it returns
+      whatever shape it sees, lowercased on output. Consumers do their own
+      matching.
+    * Doesn't return single-part identifiers; lineage at table grain needs
+      at least ``schema.table``.
+    """
+    if not source:
+        return []
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _emit(name: str) -> None:
+        lowered = name.lower()
+        if lowered in seen:
+            return
+        seen.add(lowered)
+        candidates.append(lowered)
+
+    # SQL via sqlglot (when present) — surfaces fully-qualified table names
+    # even when the SQL uses CTE aliases, backticks, etc.
+    if language == "sql":
+        try:
+            import sqlglot
+            from sqlglot import exp
+
+            for stmt in sqlglot.parse(source, error_level=sqlglot.ErrorLevel.IGNORE) or []:
+                if stmt is None:
+                    continue
+                for tbl in stmt.find_all(exp.Table):
+                    parts = [
+                        p
+                        for p in (
+                            tbl.args.get("catalog"),
+                            tbl.args.get("db"),
+                            tbl.args.get("this"),
+                        )
+                        if p is not None
+                    ]
+                    names = [p.name for p in parts if hasattr(p, "name") and p.name]
+                    if len(names) >= 2:
+                        _emit(".".join(names))
+        except (ImportError, Exception):  # noqa: BLE001 — fall through to regex
+            pass
+
+    # Regex sweep — runs for every language. Catches python/scala/java
+    # string literals AND the SQL-language case as a fallback for anything
+    # sqlglot missed.
+    for m in _TABLE_REF_RX.finditer(source):
+        # 3-part match groups 1..3, 2-part groups 4..5.
+        if m.group(1) and m.group(2) and m.group(3):
+            _emit(f"{m.group(1)}.{m.group(2)}.{m.group(3)}")
+        elif m.group(4) and m.group(5):
+            _emit(f"{m.group(4)}.{m.group(5)}")
+
+    return candidates
+
+
 def analyze_codebase(
     path: str,
     table_names: list[str],

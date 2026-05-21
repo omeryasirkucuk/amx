@@ -536,6 +536,7 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             role="",
             http_path="",
             access_token="",
+            workspace_token="",
             catalog="",
             tls_no_verify=False,
             tls_trusted_ca_file="",
@@ -727,6 +728,12 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         access_token = _ask_update_secret(
             "Access token", defaults.access_token or "", required=True
         )
+        workspace_token = _ask_update_secret(
+            "Workspace API token (optional, leave blank to reuse access_token "
+            "for the Workspace/Jobs/Pipelines REST APIs)",
+            defaults.workspace_token or "",
+            required=False,
+        )
         # Ask TLS settings BEFORE probing the workspace. Corporate
         # Databricks setups frequently sit behind a self-signed proxy,
         # and the previous wizard order (probe-then-TLS) blew up with
@@ -762,6 +769,7 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
                 host=host,
                 http_path=http_path,
                 access_token=access_token,
+                workspace_token=workspace_token,
                 catalog="",
                 database="",
                 tls_trusted_ca_file=tls_trusted_ca_file,
@@ -794,6 +802,7 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             host=host,
             http_path=http_path,
             access_token=access_token,
+            workspace_token=workspace_token,
             catalog=catalog,
             database=database,
             tls_trusted_ca_file=tls_trusted_ca_file,

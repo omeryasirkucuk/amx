@@ -43,6 +43,7 @@ const LineageRedirect = lazy(() => import("./routes/LineageRedirect"));
 const Pages = lazy(() => import("./routes/Pages"));
 const PageNew = lazy(() => import("./routes/PageNew"));
 const PageEdit = lazy(() => import("./routes/PageEdit"));
+const Assets = lazy(() => import("./routes/Assets"));
 
 // Suspense fallback is intentionally minimal — chunk fetches over
 // loopback land in milliseconds, so a heavy skeleton would flash
@@ -104,6 +105,7 @@ export default function App() {
               <Route path="pages" element={<Pages />} />
               <Route path="pages/new" element={<PageNew />} />
               <Route path="pages/:pageId" element={<PageEdit />} />
+              <Route path="assets" element={<Assets />} />
               <Route path="runs/schedules" element={<Schedules />} />
               <Route
                 path="runs/catalog-refresh-schedules"
