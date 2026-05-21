@@ -123,3 +123,35 @@ def test_list_remote_task_dependencies():
 def test_capability_remote_task_dependencies_flag_on():
     from amx.db.adapters.snowflake import SnowflakeAdapter
     assert SnowflakeAdapter.capabilities.remote_task_dependencies is True
+
+
+def test_list_remote_queries_history_emits_rows():
+    a = _adapter()
+    rows = [{
+        "query_id": "01abc", "query_text": "SELECT 1 FROM RAW.PUBLIC.ORDERS",
+        "warehouse_name": "WH_S", "user_name": "ALICE",
+        "start_time": "2026-05-01T00:00:00", "execution_time": 1500,
+    }]
+    def fake_execute(stmt, *args, **kwargs):
+        if "QUERY_HISTORY" in str(stmt).upper():
+            return MagicMock(mappings=lambda: MagicMock(all=lambda: rows))
+        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+    qs = list(a.list_remote_queries(_engine_with_fake(fake_execute), history_days=7, limit=10))
+    assert qs[0].kind == "history" and qs[0].platform == "snowflake"
+    assert qs[0].external_id == "01abc"
+    assert qs[0].duration_ms == 1500
+
+
+def test_list_remote_queries_degrades_when_privilege_missing(caplog):
+    a = _adapter()
+    def fake_execute(stmt, *args, **kwargs):
+        if "QUERY_HISTORY" in str(stmt).upper():
+            raise PermissionError("does not have privilege on ACCOUNT_USAGE")
+        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+    qs = list(a.list_remote_queries(_engine_with_fake(fake_execute), history_days=7, limit=10))
+    assert qs == []
+
+
+def test_capability_remote_queries_flag_on_for_snowflake():
+    from amx.db.adapters.snowflake import SnowflakeAdapter
+    assert SnowflakeAdapter.capabilities.remote_queries is True

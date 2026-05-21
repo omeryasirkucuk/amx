@@ -43,6 +43,7 @@ class SnowflakeAdapter(DatabaseAdapter):
         remote_streamlit_apps=True,
         remote_streams=True,
         remote_task_dependencies=True,
+        remote_queries=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
 
@@ -826,3 +827,50 @@ class SnowflakeAdapter(DatabaseAdapter):
             for r in rows:
                 if r.get("name_predecessor") and r.get("name"):
                     yield (r["name_predecessor"], r["name"])
+
+    def list_remote_queries(self, engine, *, history_days: int = 7, limit: int = 1000):
+        """Yield :class:`RemoteQuery` rows from
+        ``SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY``.
+
+        Requires the ACCOUNTADMIN role or the MONITOR USAGE privilege on the
+        account. When the view is inaccessible the generator exits cleanly
+        after logging a warning so callers receive an empty sequence rather
+        than an exception.
+        """
+        sql = (
+            f"SELECT query_id, query_text, warehouse_name, user_name, "
+            f"start_time, execution_time "
+            f"FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY "
+            f"WHERE start_time >= DATEADD(day, -{history_days}, CURRENT_TIMESTAMP()) "
+            f"ORDER BY start_time DESC LIMIT {limit}"
+        )
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(text(sql)).mappings().all()
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "Could not read SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY "
+                    "(role lacks ACCOUNT_USAGE privilege?): %s",
+                    exc,
+                )
+                return
+            for r in rows:
+                qtext = r.get("query_text") or ""
+                start = r.get("start_time")
+                if isinstance(start, str):
+                    try:
+                        start = datetime.fromisoformat(start)
+                    except ValueError:
+                        start = None
+                yield RemoteQuery(
+                    platform="snowflake",
+                    kind="history",
+                    external_id=r["query_id"],
+                    name=None,
+                    sql_text=qtext,
+                    sql_hash=hashlib.sha256(qtext.encode("utf-8")).hexdigest(),
+                    warehouse=r.get("warehouse_name"),
+                    user_name=r.get("user_name"),
+                    executed_at=start,
+                    duration_ms=r.get("execution_time"),
+                )
