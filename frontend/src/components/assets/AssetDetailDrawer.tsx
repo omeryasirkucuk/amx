@@ -9,10 +9,12 @@
  *  - Downstream tables: links to the catalog table page
  */
 
-import { useEffect } from "react";
-import { X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, Copy, X } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { api, type RemoteAssetKind } from "../../lib/api";
 import { cn } from "../../lib/cn";
@@ -29,6 +31,7 @@ interface NotebookCell {
   cell_type?: string;
   source?: string | string[];
   outputs?: unknown[];
+  metadata?: { language?: string };
 }
 
 function parseNotebook(text: string): NotebookCell[] | null {
@@ -44,6 +47,63 @@ function cellSource(cell: NotebookCell): string {
   if (typeof cell.source === "string") return cell.source;
   if (Array.isArray(cell.source)) return cell.source.join("");
   return "";
+}
+
+function cellLanguage(cell: NotebookCell): string | undefined {
+  return cell.metadata?.language;
+}
+
+function NotebookCellView({ cell, index }: { cell: NotebookCell; index: number }) {
+  const source = cellSource(cell);
+  const lang = cellLanguage(cell);
+  const isMarkdown = cell.cell_type === "markdown";
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(source);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard unavailable (no HTTPS, no permission) — silent
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+        <span className="rounded bg-surface px-1.5 py-px text-[10px] font-mono uppercase text-ink-dim">
+          {cell.cell_type ?? "unknown"}
+        </span>
+        {lang && lang !== cell.cell_type ? (
+          <span className="rounded bg-surface px-1.5 py-px text-[10px] font-mono text-ink-dim">
+            {lang}
+          </span>
+        ) : null}
+        <span className="text-[11px] text-ink-dim">Cell {index + 1}</span>
+        <button
+          type="button"
+          onClick={copy}
+          aria-label="Copy cell"
+          title={copied ? "Copied" : "Copy cell"}
+          className="ml-auto rounded p-1 text-ink-dim hover:bg-surface hover:text-ink"
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+        </button>
+      </div>
+      {!source ? (
+        <p className="p-3 text-xs text-ink-dim">(empty)</p>
+      ) : isMarkdown ? (
+        <div className="prose prose-sm prose-neutral dark:prose-invert max-w-none px-3 py-2.5 text-xs text-ink">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{source}</ReactMarkdown>
+        </div>
+      ) : (
+        <pre className="overflow-x-auto p-3 text-xs text-ink whitespace-pre-wrap">
+          {source}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 // ── Job / Pipeline / Streamlit detail sub-renderers ────────────────────────
@@ -503,22 +563,7 @@ export default function AssetDetailDrawer({
                     </h3>
                     <div className="space-y-3">
                       {cells.map((cell, idx) => (
-                        <div
-                          key={idx}
-                          className="rounded-md border border-border bg-surface-subtle"
-                        >
-                          <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
-                            <span className="rounded bg-surface px-1.5 py-px text-[10px] font-mono text-ink-dim">
-                              {cell.cell_type ?? "unknown"}
-                            </span>
-                            <span className="text-[11px] text-ink-dim">
-                              Cell {idx + 1}
-                            </span>
-                          </div>
-                          <pre className="overflow-x-auto p-3 text-xs text-ink whitespace-pre-wrap">
-                            {cellSource(cell) || <span className="text-ink-dim">(empty)</span>}
-                          </pre>
-                        </div>
+                        <NotebookCellView key={idx} cell={cell} index={idx} />
                       ))}
                     </div>
                   </section>
