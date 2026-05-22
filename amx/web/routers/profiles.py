@@ -60,7 +60,7 @@ _EMBEDDING_SECRET_FIELDS = frozenset({"api_key"})
 
 #: Sides accepted by the embedding endpoints. The two sides are
 #: independent — docs RAG and code RAG carry their own provider.
-_EMBEDDING_SIDES = ("docs", "code")
+_EMBEDDING_SIDES = ("docs", "code", "assets")
 
 
 # ── Backend / provider catalogs ────────────────────────────────────────
@@ -663,6 +663,11 @@ def _collection_status_for_side(side: str, cfg: AMXConfig) -> dict[str, Any]:
 
         active_provider, active_model, _ = _resolve_docs_embedding(cfg)
         prefix = "amx_search"
+    elif side == "assets":
+        from amx.assets.rag import _resolve_assets_embedding
+
+        active_provider, active_model, _ = _resolve_assets_embedding(cfg)
+        prefix = "amx_assets"
     else:
         from amx.codebase.code_rag import _resolve_code_embedding
 
@@ -757,6 +762,32 @@ def rebuild_embedding(
             "side": "docs",
             "rebuilt": rebuilt,
             "message": f"Rebuilt {len(rebuilt)} docs collection(s).",
+        }
+
+    if side == "assets":
+        try:
+            from amx.assets.rag import AssetRAGStore
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Asset RAG unavailable: {exc.__class__.__name__}: {exc}",
+            ) from exc
+        try:
+            store = AssetRAGStore(cfg=cfg)
+            store.reset_collection()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Asset collection reset failed: {exc.__class__.__name__}: {exc}",
+            ) from exc
+        return {
+            "ok": True,
+            "side": "assets",
+            "cleared": True,
+            "message": (
+                "Cleared the assets collection; run /db assets reindex to "
+                "re-embed under the active provider."
+            ),
         }
 
     # side == "code"

@@ -13,7 +13,9 @@ import {
 } from "../../components/ui";
 import { apiFetch } from "../../lib/api";
 
-type Side = "docs" | "code";
+type Side = "docs" | "code" | "assets";
+
+const SIDES: Side[] = ["docs", "code", "assets"];
 
 interface KindDescriptor {
   id: string;
@@ -62,16 +64,6 @@ interface SideStatus {
   error?: string;
 }
 
-const SIDE_TITLES: Record<Side, string> = {
-  docs: "Docs RAG embedding",
-  code: "Code RAG embedding",
-};
-
-const SIDE_BLURBS: Record<Side, string> = {
-  docs: "Vectorises documentation chunks for /search and /ask retrieval.",
-  code: "Vectorises code snippets for /code search and the code agent.",
-};
-
 const SECRET_PLACEHOLDER = "********";
 
 export default function EmbeddingsTab() {
@@ -110,66 +102,76 @@ export default function EmbeddingsTab() {
   const status = statusQuery.data;
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      {(Object.keys(SIDE_TITLES) as Side[]).map((side) => (
-        <EmbeddingPanel
-          key={side}
-          side={side}
-          kinds={kinds}
-          presets={presets}
-          initial={settings[side]}
-          status={status?.[side]}
-        />
-      ))}
-    </div>
+    <EmbeddingPanel
+      kinds={kinds}
+      presets={presets}
+      initial={settings}
+      status={status}
+    />
   );
 }
 
 interface PanelProps {
-  side: Side;
   kinds: KindDescriptor[];
   presets: Preset[];
-  initial: EmbeddingState;
-  status?: SideStatus;
+  initial: Record<Side, EmbeddingState>;
+  status?: Record<Side, SideStatus>;
 }
 
-function EmbeddingPanel({ side, kinds, presets, initial, status }: PanelProps) {
+function EmbeddingPanel({ kinds, presets, initial, status }: PanelProps) {
   const qc = useQueryClient();
-  const [kind, setKind] = useState<string>(initial.kind || "minilm");
-  const [model, setModel] = useState<string>(initial.model || "");
-  const [baseUrl, setBaseUrl] = useState<string>(initial.base_url || "");
-  // API key starts as the masked placeholder when a secret is on file —
-  // sending the placeholder back means "leave unchanged"; clearing it
-  // means "clear the secret".
-  const [apiKey, setApiKey] = useState<string>(initial.api_key || "");
-  const [testResult, setTestResult] = useState<{ ok: boolean; message: string; dim?: number } | null>(null);
+  // Single embedding form drives all three sides (docs / code / assets).
+  // Seed from the docs side; the other two are assumed to be in sync
+  // (the save handler fans the same payload out to every side, so they
+  // converge on the next click). If a user has edited config.yml by
+  // hand to split them, the next Save here re-aligns them — that is
+  // the documented expectation in the AMX docs ("Studio embedding
+  // settings apply to every RAG store").
+  const seed = initial.docs;
+  const [kind, setKind] = useState<string>(seed.kind || "minilm");
+  const [model, setModel] = useState<string>(seed.model || "");
+  const [baseUrl, setBaseUrl] = useState<string>(seed.base_url || "");
+  const [apiKey, setApiKey] = useState<string>(seed.api_key || "");
+  const [testResult, setTestResult] = useState<
+    { ok: boolean; message: string; dim?: number } | null
+  >(null);
   const [rebuildConfirm, setRebuildConfirm] = useState(false);
 
-  // Keep local state in sync if the upstream query refreshes (e.g.
-  // after another user / panel edits this side via the same SPA).
+  // Keep local state in sync when the upstream query refreshes.
   useEffect(() => {
-    setKind(initial.kind || "minilm");
-    setModel(initial.model || "");
-    setBaseUrl(initial.base_url || "");
-    setApiKey(initial.api_key || "");
-  }, [initial.kind, initial.model, initial.base_url, initial.api_key]);
+    setKind(seed.kind || "minilm");
+    setModel(seed.model || "");
+    setBaseUrl(seed.base_url || "");
+    setApiKey(seed.api_key || "");
+  }, [seed.kind, seed.model, seed.base_url, seed.api_key]);
 
   const kindDescriptor = kinds.find((k) => k.id === kind) ?? kinds[0];
   const needsModel = kindDescriptor?.needs_model ?? false;
   const needsKey = kindDescriptor?.needs_key ?? false;
   const needsBase = kindDescriptor?.needs_base ?? false;
 
+  const payload = () => ({
+    kind,
+    model: needsModel ? model : "",
+    base_url: needsBase ? baseUrl : "",
+    api_key: needsKey ? apiKey : "",
+  });
+
   const saveMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<EmbeddingState>(`/api/profiles/embedding/${side}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          kind,
-          model: needsModel ? model : "",
-          base_url: needsBase ? baseUrl : "",
-          api_key: needsKey ? apiKey : "",
-        }),
-      }),
+    mutationFn: async () => {
+      const body = payload();
+      // Fan-out to all three sides in parallel so a single Save
+      // converges docs/code/assets onto the same model.
+      const results = await Promise.all(
+        SIDES.map((side) =>
+          apiFetch<EmbeddingState>(`/api/profiles/embedding/${side}`, {
+            method: "PUT",
+            body: JSON.stringify(body),
+          }),
+        ),
+      );
+      return results;
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["embedding"] });
       qc.invalidateQueries({ queryKey: ["embedding", "status"] });
@@ -179,16 +181,11 @@ function EmbeddingPanel({ side, kinds, presets, initial, status }: PanelProps) {
   const testMutation = useMutation({
     mutationFn: () =>
       apiFetch<{ ok: boolean; message: string; dim?: number }>(
-        `/api/profiles/embedding/${side}/test`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            kind,
-            model: needsModel ? model : "",
-            base_url: needsBase ? baseUrl : "",
-            api_key: needsKey ? apiKey : "",
-          }),
-        },
+        // Use the docs side as the canary — the test endpoint exercises
+        // the embedding function in-process so the result is identical
+        // for every side.
+        `/api/profiles/embedding/docs/test`,
+        { method: "POST", body: JSON.stringify(payload()) },
       ),
     onSuccess: (result) => setTestResult(result),
     onError: (error: Error) =>
@@ -196,15 +193,24 @@ function EmbeddingPanel({ side, kinds, presets, initial, status }: PanelProps) {
   });
 
   const rebuildMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ ok: boolean; message: string }>(
-        `/api/profiles/embedding/${side}/rebuild`,
-        { method: "POST", body: JSON.stringify({}) },
-      ),
+    mutationFn: async () => {
+      const results = await Promise.all(
+        SIDES.map((side) =>
+          apiFetch<{ ok: boolean; message: string }>(
+            `/api/profiles/embedding/${side}/rebuild`,
+            { method: "POST", body: JSON.stringify({}) },
+          ).catch((err: Error) => ({
+            ok: false,
+            message: `${side}: ${err.message}`,
+          })),
+        ),
+      );
+      return results;
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["embedding", "status"] });
-      if (side === "docs") qc.invalidateQueries({ queryKey: ["profiles", "docs"] });
-      if (side === "code") qc.invalidateQueries({ queryKey: ["profiles", "code"] });
+      qc.invalidateQueries({ queryKey: ["profiles", "docs"] });
+      qc.invalidateQueries({ queryKey: ["profiles", "code"] });
     },
     onSettled: () => setRebuildConfirm(false),
   });
@@ -220,12 +226,20 @@ function EmbeddingPanel({ side, kinds, presets, initial, status }: PanelProps) {
     return true;
   })();
 
-  const totalChunks = (status?.collections ?? []).reduce((acc, c) => acc + (c.count || 0), 0);
-  const collectionCount = status?.collections?.length ?? 0;
+  // Aggregate status across all sides: total chunks across every
+  // collection + stale flag if ANY side is mis-aligned with the
+  // active embedding triple.
+  const allCollections = SIDES.flatMap((side) => status?.[side]?.collections ?? []);
+  const totalChunks = allCollections.reduce((acc, c) => acc + (c.count || 0), 0);
+  const collectionCount = allCollections.length;
+  const isStale = SIDES.some((side) => status?.[side]?.stale);
 
   return (
-    <Card>
-      <CardHeader title={SIDE_TITLES[side]} description={SIDE_BLURBS[side]} />
+    <Card className="max-w-2xl">
+      <CardHeader
+        title="Embedding model"
+        description="One model powers every RAG store — docs, code, and ingested assets. Save applies the same settings to all three."
+      />
       <CardBody className="flex flex-col gap-4">
         <fieldset className="flex flex-col gap-2">
           <legend className="text-xs font-medium text-ink-muted">Provider</legend>
@@ -238,12 +252,14 @@ function EmbeddingPanel({ side, kinds, presets, initial, status }: PanelProps) {
                   className={
                     "flex cursor-pointer items-start gap-2 rounded-md border border-surface-border px-3 py-2 text-sm transition hover:border-accent " +
                     (kind === k.id ? "border-accent bg-accent/5" : "") +
-                    (disabled ? " cursor-not-allowed opacity-50 hover:border-surface-border" : "")
+                    (disabled
+                      ? " cursor-not-allowed opacity-50 hover:border-surface-border"
+                      : "")
                   }
                 >
                   <input
                     type="radio"
-                    name={`kind-${side}`}
+                    name="embedding-kind"
                     value={k.id}
                     checked={kind === k.id}
                     disabled={disabled}
@@ -354,14 +370,14 @@ function EmbeddingPanel({ side, kinds, presets, initial, status }: PanelProps) {
             </Badge>
           )}
           {saveMutation.isSuccess && !saveMutation.isPending && (
-            <Badge tone="positive">Saved</Badge>
+            <Badge tone="positive">Saved to docs, code, and assets</Badge>
           )}
           {saveMutation.error && (
             <Badge tone="critical">{(saveMutation.error as Error).message}</Badge>
           )}
         </div>
 
-        {status?.stale && (
+        {isStale && (
           <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
             <div className="flex items-start gap-2">
               <AlertTriangle size={14} className="mt-0.5 text-amber-500" />
@@ -369,9 +385,10 @@ function EmbeddingPanel({ side, kinds, presets, initial, status }: PanelProps) {
                 <div className="font-medium">Vectors are stale</div>
                 <div className="text-xs text-ink-dim">
                   {collectionCount} collection
-                  {collectionCount === 1 ? "" : "s"} · {totalChunks.toLocaleString()} chunks
-                  embedded with a different provider. Rebuild to re-embed with the
-                  active settings.
+                  {collectionCount === 1 ? "" : "s"} ·{" "}
+                  {totalChunks.toLocaleString()} chunks embedded with a different
+                  provider. Rebuild to re-embed every RAG store under the active
+                  settings.
                 </div>
                 <div className="mt-2">
                   <Button
@@ -385,8 +402,7 @@ function EmbeddingPanel({ side, kinds, presets, initial, status }: PanelProps) {
                       </>
                     ) : (
                       <>
-                        <RefreshCw size={13} className="mr-1" /> Rebuild{" "}
-                        {side === "docs" ? "docs" : "code"}
+                        <RefreshCw size={13} className="mr-1" /> Rebuild all
                       </>
                     )}
                   </Button>
@@ -395,22 +411,25 @@ function EmbeddingPanel({ side, kinds, presets, initial, status }: PanelProps) {
             </div>
           </div>
         )}
-
-        <AlertDialog
-          open={rebuildConfirm}
-          title={`Rebuild ${side} embeddings?`}
-          description={
-            `This clears ${collectionCount} collection${collectionCount === 1 ? "" : "s"} ` +
-            `(${totalChunks.toLocaleString()} chunks) and re-embeds them with the active provider. ` +
-            `Existing data is preserved; only the vector index is rebuilt.`
-          }
-          confirmLabel="Rebuild"
-          onConfirm={() => rebuildMutation.mutate()}
-          onClose={() => setRebuildConfirm(false)}
-          loading={rebuildMutation.isPending}
-          tone="danger"
-        />
       </CardBody>
+
+      <AlertDialog
+        open={rebuildConfirm}
+        title="Rebuild every RAG store?"
+        description={
+          <span>
+            Drops the existing Chroma collections (docs, code, and assets) so
+            the next ingest / query / sync re-embeds with the active provider.
+            Existing chunks are deleted; re-ingestion is required. Tens of
+            seconds for catalogs of a few thousand chunks.
+          </span>
+        }
+        tone="danger"
+        confirmLabel="Rebuild all"
+        loading={rebuildMutation.isPending}
+        onConfirm={() => rebuildMutation.mutate()}
+        onClose={() => setRebuildConfirm(false)}
+      />
     </Card>
   );
 }
