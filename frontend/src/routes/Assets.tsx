@@ -719,7 +719,16 @@ function ChunkingDialog({ open, onClose, profile, kind, row }: ChunkingDialogPro
             </p>
           </div>
 
-          {kind !== "pipeline" && (
+          {/* Char-window knobs only render for strategies that actually
+              consume them. ``whole`` embeds the asset as one blob and
+              ``metadata`` (pipeline-only) emits a fixed metadata chunk
+              — neither path reads chunk_chars / chunk_overlap, so the
+              inputs would be misleading clutter. ``cell`` uses them
+              ONLY as the fallback window for cells longer than the
+              cap; the description below makes that explicit. */}
+          {(strategy === "cell" ||
+            strategy === "statement" ||
+            strategy === "char_window") && (
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs font-medium text-ink-muted">
@@ -734,7 +743,9 @@ function ChunkingDialog({ open, onClose, profile, kind, row }: ChunkingDialogPro
                   className="mt-1 w-full rounded-md border border-surface-border bg-surface px-2.5 py-1.5 text-sm text-ink"
                 />
                 <p className="mt-1 text-[11px] text-ink-dim">
-                  Blank → inherit global default.
+                  {strategy === "cell" || strategy === "statement"
+                    ? "Fallback window when a cell / statement is longer than this. Blank → inherit global default."
+                    : "Window size. Blank → inherit global default."}
                 </p>
               </div>
               <div>
@@ -749,8 +760,18 @@ function ChunkingDialog({ open, onClose, profile, kind, row }: ChunkingDialogPro
                   placeholder={String(dataQuery.data?.default.chunk_overlap ?? "")}
                   className="mt-1 w-full rounded-md border border-surface-border bg-surface px-2.5 py-1.5 text-sm text-ink"
                 />
+                <p className="mt-1 text-[11px] text-ink-dim">
+                  Characters shared between adjacent chunks.
+                </p>
               </div>
             </div>
+          )}
+          {(strategy === "whole" || strategy === "metadata") && (
+            <p className="text-[11px] text-ink-dim">
+              {strategy === "whole"
+                ? "The asset is embedded as one chunk — chunk size / overlap aren't used."
+                : "Pipeline metadata is emitted as a fixed set of chunks — chunk size / overlap aren't used."}
+            </p>
           )}
 
           {dataQuery.data?.has_override && (
