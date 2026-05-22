@@ -144,9 +144,7 @@ def test_ingest_profile_reads_from_history_store(store, tmp_path: Path) -> None:
     # end-to-end loader → splitter path produces.
     chunking = AssetChunkingConfig(notebook=NotebookChunkingConfig(strategy="cell"))
     with history._connect() as conn:
-        indexed = store.ingest_profile(
-            conn=conn, profile_name="p", chunking=chunking
-        )
+        indexed = store.ingest_profile(conn=conn, profile_name="p", chunking=chunking)
     assert indexed >= 2  # markdown + code cell
     hits = store.query("Header", top_k=3, profile="p")
     assert hits
