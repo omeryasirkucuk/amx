@@ -494,14 +494,20 @@ def _semantic_asset_search(cfg, *, query, profile, limit):
         store = AssetRAGStore(cfg=cfg)
     except Exception:  # noqa: BLE001
         return None
+    # Empty collection → tell the caller to fall back to LIKE. This
+    # keeps the CLI useful for users who haven't run ``/db assets
+    # reindex`` yet (e.g. legacy ingests from before the RAG store
+    # landed); the LIKE channel still surfaces matches over the raw
+    # source_text. Once the collection has at least one chunk the
+    # store is the canonical channel — an empty *result set* (no
+    # semantic match) is genuine and we don't fall back.
+    if store.count() == 0:
+        return None
     try:
         results = store.query(query, top_k=limit, profile=profile)
     except Exception:  # noqa: BLE001
         return None
     if not results:
-        # An empty result here is genuine (collection populated but
-        # nothing matched) — do NOT fall back to LIKE in that case;
-        # LIKE would surface false positives on stop-words.
         return []
     out = []
     for hit in results:
