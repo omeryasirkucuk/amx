@@ -14,6 +14,32 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class AssetMetadata:
+    """Cheap-to-fetch identity row for the selective-ingest browse step.
+
+    Adapters yield this from ``list_remote_*_metadata()`` methods —
+    no source_text, no notebook export, no per-job task fan-out. Just
+    enough identity for the user to decide which asset to actually
+    pull. The downstream "full" ``list_remote_*()`` methods accept an
+    ``external_id_filter=`` so a follow-up cherry-pick of selected
+    ids skips re-listing everything from the platform.
+
+    ``path`` is the unique-per-platform identifier the UI uses to
+    disambiguate same-name assets (Databricks workspace_path or
+    Snowflake qualified_name). ``owner`` and ``last_modified`` are
+    best-effort decorations for the browse table; ``None`` is fine
+    when the platform doesn't expose them for a given kind.
+    """
+
+    kind: str  # "notebook" | "job" | "pipeline" | "query" | "stream" | "streamlit_app"
+    external_id: str
+    name: str
+    path: str = ""  # workspace_path (databricks) or qualified_name (snowflake)
+    owner: str | None = None
+    last_modified: datetime | None = None
+
+
+@dataclass(frozen=True)
 class RemoteNotebook:
     external_id: str
     name: str

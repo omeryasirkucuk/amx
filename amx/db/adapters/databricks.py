@@ -930,14 +930,86 @@ class DatabricksAdapter(DatabaseAdapter):
         except (json.JSONDecodeError, AttributeError):
             return None
 
-    def list_remote_notebooks(self, engine=None):
-        # ``engine`` is accepted for signature uniformity with the ABC and
-        # warehouse-backed adapters (Snowflake). Databricks Workspace assets
-        # are fetched over REST, not via SQLAlchemy.
+    def list_remote_notebooks_metadata(self, engine=None):
+        """Yield :class:`AssetMetadata` for every notebook in the workspace.
+
+        The cheap cousin of :meth:`list_remote_notebooks`. Skips the
+        per-notebook ``export_notebook_source`` round-trip so the
+        Studio "browse and pick" wizard can populate its table in
+        seconds even against a 5,000-notebook workspace. Consumers
+        that need the actual source text feed the chosen
+        ``external_id`` values back into ``list_remote_notebooks(
+        external_id_filter=…)`` once the user has confirmed.
+        """
+        from amx.db.adapters.remote_asset_types import AssetMetadata
+
         del engine
         client = self._workspace_client
         for obj in client.list_workspace_objects(path="/"):
             if obj.get("object_type") != "NOTEBOOK":
+                continue
+            modified_ms = obj.get("modified_at")
+            last_modified = (
+                datetime.fromtimestamp(modified_ms / 1000, tz=timezone.utc) if modified_ms else None
+            )
+            yield AssetMetadata(
+                kind="notebook",
+                external_id=str(obj["object_id"]),
+                name=obj["path"].rsplit("/", 1)[-1],
+                path=obj["path"],
+                owner=obj.get("creator_user_name"),
+                last_modified=last_modified,
+            )
+
+    def list_remote_jobs_metadata(self, engine=None):
+        """Yield :class:`AssetMetadata` for every job (header only)."""
+        from amx.db.adapters.remote_asset_types import AssetMetadata
+
+        del engine
+        # _workspace_client exposes a job listing that does not fetch
+        # ``recent_runs`` per job — the heavy ``runs_per_job`` fan-out
+        # only fires inside the full ``list_remote_jobs``.
+        for raw in self._workspace_client.list_jobs_headers():
+            s = raw.get("settings", {})
+            yield AssetMetadata(
+                kind="job",
+                external_id=str(raw["job_id"]),
+                name=s.get("name", f"job_{raw['job_id']}"),
+                path="",
+                owner=raw.get("creator_user_name"),
+                last_modified=None,
+            )
+
+    def list_remote_pipelines_metadata(self, engine=None):
+        """Yield :class:`AssetMetadata` for every DLT pipeline."""
+        from amx.db.adapters.remote_asset_types import AssetMetadata
+
+        del engine
+        for raw in self._workspace_client.list_pipelines():
+            yield AssetMetadata(
+                kind="pipeline",
+                external_id=str(raw.get("pipeline_id") or ""),
+                name=raw.get("name", ""),
+                path=raw.get("target") or "",
+                owner=raw.get("creator_user_name"),
+                last_modified=None,
+            )
+
+    def list_remote_notebooks(self, engine=None, *, external_id_filter=None):
+        # ``engine`` is accepted for signature uniformity with the ABC and
+        # warehouse-backed adapters (Snowflake). Databricks Workspace assets
+        # are fetched over REST, not via SQLAlchemy.
+        # ``external_id_filter`` (PR-A): when provided, only the listed
+        # workspace object ids are exported. Skips the per-notebook
+        # export call on everything outside the set, so a "browse +
+        # pick 50 of 5,000" round-trip stays cheap.
+        del engine
+        wanted = set(external_id_filter) if external_id_filter is not None else None
+        client = self._workspace_client
+        for obj in client.list_workspace_objects(path="/"):
+            if obj.get("object_type") != "NOTEBOOK":
+                continue
+            if wanted is not None and str(obj["object_id"]) not in wanted:
                 continue
             try:
                 raw_source = client.export_notebook_source(workspace_path=obj["path"])

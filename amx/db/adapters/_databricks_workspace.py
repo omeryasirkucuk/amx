@@ -93,6 +93,25 @@ class DatabricksWorkspaceClient:
 
     # ---- jobs ---------------------------------------------------------
 
+    def list_jobs_headers(self) -> Iterator[dict[str, Any]]:
+        """Yield each job's thin list-endpoint record only.
+
+        The cheap browse path used by ``DatabricksAdapter.list_remote_jobs_metadata``:
+        skips the per-job ``/api/2.2/jobs/get`` + ``/jobs/runs/list``
+        round-trips so the Studio browse table populates in one
+        paginated burst instead of one round-trip per job. Each row
+        carries enough identity (``job_id``, ``settings.name``,
+        ``creator_user_name``) for the user to decide which job to
+        ingest in full.
+        """
+        for page in self._paginated_get(
+            "/api/2.2/jobs/list",
+            params={"limit": 25, "expand_tasks": False},
+            page_token_field="next_page_token",
+            items_field="jobs",
+        ):
+            yield from page
+
     def list_jobs_full(self, *, runs_per_job: int = 20) -> Iterator[dict[str, Any]]:
         """Yield each job's full settings + ``recent_runs`` list.
 
