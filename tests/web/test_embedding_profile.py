@@ -33,7 +33,7 @@ def test_kinds_endpoint_returns_three_kinds_and_presets(client, auth_headers) ->
     kind_ids = [k["id"] for k in body["kinds"]]
     assert kind_ids == ["minilm", "openai_compatible", "sentence_transformers"]
     assert {"openai", "vllm"} <= {p["id"] for p in body["presets"]}
-    assert body["sides"] == ["docs", "code"]
+    assert body["sides"] == ["docs", "code", "assets"]
     # MiniLM and OpenAI-compatible are always available; sentence-
     # transformers depends on the host, just assert the shape.
     minilm = next(k for k in body["kinds"] if k["id"] == "minilm")
@@ -47,8 +47,8 @@ def test_get_returns_both_sides_masked(client, auth_headers, secret_store) -> No
     response = client.get("/api/profiles/embedding", headers=auth_headers)
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"docs", "code"}
-    for side in ("docs", "code"):
+    assert set(body.keys()) == {"docs", "code", "assets"}
+    for side in ("docs", "code", "assets"):
         block = body[side]
         assert block["kind"] == "minilm"
         assert block["is_configured"] is True
@@ -211,13 +211,14 @@ def test_test_endpoint_embeds_a_sentinel_with_stubbed_factory(
 # ── GET /api/profiles/embedding/status ─────────────────────────────────
 
 
-def test_status_endpoint_returns_both_sides(client, auth_headers, secret_store) -> None:
+def test_status_endpoint_returns_every_side(client, auth_headers, secret_store) -> None:
     response = client.get("/api/profiles/embedding/status", headers=auth_headers)
-    # Status may probe chromadb; the endpoint must always 200 with both
-    # side keys present even when no collections exist yet.
+    # Status may probe chromadb; the endpoint must always 200 with every
+    # side key present (docs / code / assets) even when no collections
+    # exist yet.
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"docs", "code"}
-    for side in ("docs", "code"):
+    assert set(body.keys()) == {"docs", "code", "assets"}
+    for side in ("docs", "code", "assets"):
         assert "collections" in body[side]
         assert "stale" in body[side]
