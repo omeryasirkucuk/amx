@@ -1994,6 +1994,44 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "duration_ms": "Execution duration in milliseconds. NULL for kind='saved'.",
         "ingested_at": "When AMX last refreshed this row.",
     },
+    "asset_chunking_overrides": {
+        "__table__": (
+            "Per-asset chunking strategy override. Studio's Assets page "
+            "writes a row here when the user picks a strategy from the "
+            "per-row Chunk button — only assets whose desired strategy "
+            "differs from the global ``cfg.assets_chunking`` default need "
+            "a row. Absence of a row means 'inherit the global config'. "
+            "Used by the asset-RAG loaders to override "
+            "``AssetChunkingConfig`` on a per-(kind, remote_id) basis."
+        ),
+        "profile_name": (
+            "Owning AMX DB profile. Joins to the matching ``remote_*`` "
+            "row via (profile_name, id=remote_id) and to the catalog "
+            "bridge entity via (db_profile, source_remote_id)."
+        ),
+        "kind": (
+            "Asset kind discriminator: 'notebook' | 'query' | 'pipeline'. "
+            "Stream / streamlit_app / job are metadata-only and never "
+            "carry overrides."
+        ),
+        "remote_id": ("remote_<kind>s.id of the asset this override applies to."),
+        "strategy": (
+            "Chunking strategy override. Notebook: whole | cell | "
+            "char_window. Query: whole | statement | char_window. "
+            "Pipeline: metadata | whole. Validated against the kind "
+            "before insert."
+        ),
+        "chunk_chars": (
+            "Char-window size override for cell-fallback / char_window "
+            "strategies. NULL inherits the global "
+            "``cfg.assets_chunking.<kind>.chunk_chars`` default."
+        ),
+        "chunk_overlap": (
+            "Char-window overlap override. NULL inherits the global "
+            "``cfg.assets_chunking.<kind>.chunk_overlap`` default."
+        ),
+        "updated_at": "UTC epoch seconds when this row was last written.",
+    },
 }
 
 

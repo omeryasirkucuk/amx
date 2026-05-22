@@ -1429,6 +1429,31 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_remote_queries_profile_platform ON remote_queries(profile_name, platform)"
             )
 
+            # ── asset_chunking_overrides: per-asset chunking strategy ─────────
+            # Studio's per-row "Chunk" button writes here so an individual
+            # notebook / query / pipeline can carry a chunking strategy
+            # that differs from the global ``cfg.assets_chunking``
+            # default. NULL columns (chunk_chars / chunk_overlap) mean
+            # "inherit the default for the active strategy".
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS asset_chunking_overrides (
+                    profile_name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    remote_id INTEGER NOT NULL,
+                    strategy TEXT NOT NULL,
+                    chunk_chars INTEGER,
+                    chunk_overlap INTEGER,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (profile_name, kind, remote_id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_asset_chunking_overrides_profile "
+                "ON asset_chunking_overrides(profile_name, kind)"
+            )
+
             # Seed the bundled default logos into ``lineage_logos`` if
             # they aren't there yet. Idempotent via the UNIQUE(key,
             # source) index — re-runs on every init are no-ops after
