@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from amx.assets.chunking_config import AssetChunkingConfig
 from amx.assets.splitters import (
     split_job,
     split_notebook,
@@ -23,13 +24,18 @@ from amx.assets.types import AssetDocument
 
 
 def load_notebook_documents(
-    *, conn: Any, profile_name: str, only_ids: list[int] | None = None
+    *,
+    conn: Any,
+    profile_name: str,
+    only_ids: list[int] | None = None,
+    chunking: AssetChunkingConfig | None = None,
 ) -> list[AssetDocument]:
     where, params = _profile_filter(profile_name, only_ids)
     rows = conn.execute(
         f"SELECT id, name, workspace_path, source_text FROM remote_notebooks {where}",
         params,
     ).fetchall()
+    nb_cfg = chunking.notebook if chunking else None
     out: list[AssetDocument] = []
     for nb_id, name, workspace_path, source_text in rows:
         out.extend(
@@ -39,19 +45,25 @@ def load_notebook_documents(
                 name=str(name or ""),
                 source_text=str(source_text or ""),
                 workspace_path=str(workspace_path or ""),
+                config=nb_cfg,
             )
         )
     return out
 
 
 def load_query_documents(
-    *, conn: Any, profile_name: str, only_ids: list[int] | None = None
+    *,
+    conn: Any,
+    profile_name: str,
+    only_ids: list[int] | None = None,
+    chunking: AssetChunkingConfig | None = None,
 ) -> list[AssetDocument]:
     where, params = _profile_filter(profile_name, only_ids)
     rows = conn.execute(
         f"SELECT id, name, kind, sql_text, warehouse FROM remote_queries {where}",
         params,
     ).fetchall()
+    q_cfg = chunking.query if chunking else None
     out: list[AssetDocument] = []
     for q_id, name, kind_value, sql_text, warehouse in rows:
         out.extend(
@@ -62,13 +74,18 @@ def load_query_documents(
                 sql_text=str(sql_text or ""),
                 warehouse=str(warehouse or ""),
                 kind_value=str(kind_value or "saved"),
+                config=q_cfg,
             )
         )
     return out
 
 
 def load_pipeline_documents(
-    *, conn: Any, profile_name: str, only_ids: list[int] | None = None
+    *,
+    conn: Any,
+    profile_name: str,
+    only_ids: list[int] | None = None,
+    chunking: AssetChunkingConfig | None = None,
 ) -> list[AssetDocument]:
     where, params = _profile_filter(profile_name, only_ids)
     rows = conn.execute(
@@ -76,6 +93,7 @@ def load_pipeline_documents(
         f"libraries_json, latest_update_state FROM remote_pipelines {where}",
         params,
     ).fetchall()
+    p_cfg = chunking.pipeline if chunking else None
     out: list[AssetDocument] = []
     for p_id, name, target, edition, continuous, photon, libs_json, latest_state in rows:
         out.extend(
@@ -89,6 +107,7 @@ def load_pipeline_documents(
                 continuous=bool(continuous),
                 photon=bool(photon),
                 latest_update_state=str(latest_state or ""),
+                config=p_cfg,
             )
         )
     return out
@@ -203,8 +222,14 @@ def load_asset_documents(
     profile_name: str,
     kinds: list[str] | None = None,
     only_ids: dict[str, list[int]] | None = None,
+    chunking: AssetChunkingConfig | None = None,
 ) -> list[AssetDocument]:
-    """Dispatch across asset kinds. Default loads every kind."""
+    """Dispatch across asset kinds. Default loads every kind.
+
+    ``chunking`` is plumbed through to the per-kind loaders that
+    support strategy switching (notebook / query / pipeline). The
+    metadata-only loaders (stream / streamlit / job) ignore it.
+    """
     if kinds is None:
         kinds = list(_LOADERS.keys())
     out: list[AssetDocument] = []
@@ -213,7 +238,17 @@ def load_asset_documents(
         if loader is None:
             continue
         scoped_ids = (only_ids or {}).get(kind)
-        out.extend(loader(conn=conn, profile_name=profile_name, only_ids=scoped_ids))
+        if kind in {"notebook", "query", "pipeline"}:
+            out.extend(
+                loader(
+                    conn=conn,
+                    profile_name=profile_name,
+                    only_ids=scoped_ids,
+                    chunking=chunking,
+                )
+            )
+        else:
+            out.extend(loader(conn=conn, profile_name=profile_name, only_ids=scoped_ids))
     return out
 
 
