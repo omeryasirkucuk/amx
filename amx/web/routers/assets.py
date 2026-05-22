@@ -402,9 +402,16 @@ def _kind_defaults(cfg: AMXConfig, kind: str) -> dict[str, Any]:
 
 
 def _reindex_single_asset(cfg: AMXConfig, hs: Any, kind: str, profile: str, remote_id: int) -> bool:
-    """Drop + re-embed just one asset's chunks. Best-effort."""
+    """Drop + re-embed just one asset's chunks. Best-effort.
+
+    PR-D: the chunking-override PUT/DELETE that calls this needs the
+    next ingest to re-embed the row even when ``source_hash`` is
+    unchanged (the strategy changed, not the content). Clear
+    ``last_embedded_hash`` for the row before re-embedding so the
+    incremental gate inside ``ingest_profile`` doesn't skip it.
+    """
     try:
-        from amx.assets.rag import AssetRAGStore
+        from amx.assets.rag import AssetRAGStore, _clear_last_embedded_hash_for_row
     except Exception:  # noqa: BLE001
         return False
     try:
@@ -414,6 +421,7 @@ def _reindex_single_asset(cfg: AMXConfig, hs: Any, kind: str, profile: str, remo
     try:
         store.delete_asset(kind=kind, profile=profile, remote_id=remote_id)
         with hs._connect() as conn:  # noqa: SLF001
+            _clear_last_embedded_hash_for_row(conn, profile, kind, remote_id)
             store.ingest_profile(
                 conn=conn,
                 profile_name=profile,

@@ -1242,6 +1242,7 @@ class SQLiteHistoryStore:
                     last_modified_by TEXT,
                     owner TEXT,
                     cell_count INTEGER,
+                    last_embedded_hash TEXT,
                     ingested_at TIMESTAMP NOT NULL,
                     UNIQUE(profile_name, platform, external_id)
                 )
@@ -1340,6 +1341,7 @@ class SQLiteHistoryStore:
                     libraries_json TEXT NOT NULL,
                     latest_update_state TEXT,
                     latest_update_creation_time TIMESTAMP,
+                    last_embedded_hash TEXT,
                     ingested_at TIMESTAMP NOT NULL,
                     UNIQUE(profile_name, pipeline_id)
                 )
@@ -1420,6 +1422,7 @@ class SQLiteHistoryStore:
                     user_name TEXT,
                     executed_at TIMESTAMP,
                     duration_ms INTEGER,
+                    last_embedded_hash TEXT,
                     ingested_at TIMESTAMP NOT NULL,
                     UNIQUE(profile_name, platform, kind, external_id)
                 )
@@ -1453,6 +1456,14 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_asset_chunking_overrides_profile "
                 "ON asset_chunking_overrides(profile_name, kind)"
             )
+
+            # PR-D (incremental embed): add ``last_embedded_hash`` to
+            # the three content-bearing remote_* tables on existing DBs
+            # that pre-date the column. ``CREATE TABLE IF NOT EXISTS``
+            # above is a no-op when the table already lives without
+            # the column, so the explicit migration below is the only
+            # path that gets it added to a pre-PR-D history.db.
+            self._ensure_remote_embed_columns(conn)
 
             # Seed the bundled default logos into ``lineage_logos`` if
             # they aren't there yet. Idempotent via the UNIQUE(key,
@@ -1644,6 +1655,39 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_analysis_runs_shared_uuid "
                 "ON analysis_runs(shared_uuid)"
             )
+
+    def _ensure_remote_embed_columns(self, conn: Any) -> None:
+        """Idempotently add ``last_embedded_hash`` to content-bearing remote_* tables.
+
+        PR-D introduces incremental embedding: ingest_profile skips
+        re-embedding a row whose ``source_hash`` / ``sql_hash`` /
+        pipeline content hash still matches the value last written to
+        ``last_embedded_hash``. The new column is NULL on legacy rows
+        so the first post-migration ingest re-embeds everything once,
+        then stays incremental from there.
+        """
+        for table_name in ("remote_notebooks", "remote_queries", "remote_pipelines"):
+            try:
+                rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+                existing_cols = {str(r[1]) for r in rows}
+            except Exception as exc:
+                log.warning("Could not introspect %s schema: %s", table_name, exc)
+                continue
+            if "last_embedded_hash" in existing_cols:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE {table_name} ADD COLUMN last_embedded_hash TEXT")
+                log.info(
+                    "Migrated %s: added column last_embedded_hash TEXT",
+                    table_name,
+                )
+            except Exception as exc:
+                log.warning(
+                    "Could not add %s.last_embedded_hash: %s  --  incremental "
+                    "embed will fall back to re-embedding every asset.",
+                    table_name,
+                    exc,
+                )
 
     def _ensure_scheduled_columns(self, conn: Any) -> None:
         """Idempotently add ``database`` / ``catalog`` to scheduled_runs.
