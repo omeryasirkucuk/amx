@@ -5,12 +5,37 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Check, Database, FileText, Workflow } from "lucide-react";
+import { Check, Database, FileText, Package, Workflow } from "lucide-react";
 
 import { apiFetch, lineageList } from "../../lib/api";
 import { cn } from "../../lib/cn";
 import type { PageAssetRef } from "../../hooks/usePages";
 import DbAssetTree from "./DbAssetTree";
+
+interface DbProfileSummary {
+  name: string;
+  backend?: string;
+}
+interface DbProfilesResponse {
+  profiles: DbProfileSummary[];
+}
+
+interface IngestedAssetOption {
+  kind: string;
+  ref: string;
+  name: string;
+  location: string;
+  ingested_at: string;
+}
+
+const INGESTED_KINDS: Array<{ kind: string; label: string }> = [
+  { kind: "asset_notebook", label: "Notebooks" },
+  { kind: "asset_job", label: "Jobs" },
+  { kind: "asset_pipeline", label: "Pipelines" },
+  { kind: "asset_query", label: "Queries" },
+  { kind: "asset_stream", label: "Streams" },
+  { kind: "asset_streamlit", label: "Streamlit apps" },
+];
 
 interface DocProfileSummary {
   name: string;
@@ -25,12 +50,13 @@ interface Props {
   onChange: (next: PageAssetRef[]) => void;
 }
 
-type TabId = "db" | "docs" | "lineage";
+type TabId = "db" | "docs" | "lineage" | "ingested";
 
 const TABS: Array<{ id: TabId; label: string; icon: typeof Database }> = [
   { id: "db", label: "DB assets", icon: Database },
   { id: "docs", label: "Doc profiles", icon: FileText },
   { id: "lineage", label: "Lineage", icon: Workflow },
+  { id: "ingested", label: "Ingested assets", icon: Package },
 ];
 
 export default function AssetPicker({ value, onChange }: Props) {
@@ -40,6 +66,7 @@ export default function AssetPicker({ value, onChange }: Props) {
     db: value.filter((a) => a.kind.startsWith("db_")).length,
     docs: value.filter((a) => a.kind === "doc_profile").length,
     lineage: value.filter((a) => a.kind === "lineage_artifact").length,
+    ingested: value.filter((a) => a.kind.startsWith("asset_")).length,
   };
 
   function toggle(asset: PageAssetRef) {
@@ -105,6 +132,9 @@ export default function AssetPicker({ value, onChange }: Props) {
         {active === "lineage" && (
           <LineageTab isSelected={isSelected} onToggle={toggle} />
         )}
+        {active === "ingested" && (
+          <IngestedAssetsTab isSelected={isSelected} onToggle={toggle} />
+        )}
       </div>
 
       {/* sm accordion */}
@@ -143,6 +173,9 @@ export default function AssetPicker({ value, onChange }: Props) {
                   )}
                   {t.id === "lineage" && (
                     <LineageTab isSelected={isSelected} onToggle={toggle} />
+                  )}
+                  {t.id === "ingested" && (
+                    <IngestedAssetsTab isSelected={isSelected} onToggle={toggle} />
                   )}
                 </div>
               )}
@@ -236,6 +269,116 @@ function LineageTab({ isSelected, onToggle }: TabProps) {
           />
         );
       })}
+    </div>
+  );
+}
+
+function IngestedAssetsTab({ isSelected, onToggle }: TabProps) {
+  const profilesQ = useQuery({
+    queryKey: ["pages", "asset-picker", "db-profiles"],
+    queryFn: () => apiFetch<DbProfilesResponse>("/api/profiles/db"),
+    staleTime: 30_000,
+  });
+
+  const profiles = profilesQ.data?.profiles ?? [];
+  const [profile, setProfile] = useState<string>("");
+  const [kind, setKind] = useState<string>(INGESTED_KINDS[0].kind);
+
+  const effectiveProfile = profile || profiles[0]?.name || "";
+
+  const assetsQ = useQuery({
+    queryKey: ["pages", "asset-picker", "ingested", effectiveProfile, kind],
+    queryFn: () =>
+      apiFetch<IngestedAssetOption[]>(
+        `/api/pages/asset-options?kind=${encodeURIComponent(kind)}&profile=${encodeURIComponent(effectiveProfile)}`,
+      ),
+    enabled: Boolean(effectiveProfile),
+    staleTime: 15_000,
+  });
+
+  if (profilesQ.isLoading)
+    return <div className="text-xs text-ink-dim">Loading DB profiles...</div>;
+  if (profiles.length === 0)
+    return (
+      <div className="text-xs text-ink-dim">
+        No DB profiles configured. Add one from Settings and run
+        <code className="mx-1 rounded bg-surface-subtle px-1">
+          /db ingest-assets
+        </code>
+        to populate this tab.
+      </div>
+    );
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <label className="flex items-center gap-2 text-xs text-ink-dim">
+          Profile
+          <select
+            value={effectiveProfile}
+            onChange={(e) => setProfile(e.target.value)}
+            className="rounded border border-border bg-surface px-2 py-1 text-xs text-ink"
+          >
+            {profiles.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="flex flex-wrap gap-1">
+          {INGESTED_KINDS.map((k) => {
+            const isActive = kind === k.kind;
+            return (
+              <button
+                key={k.kind}
+                type="button"
+                onClick={() => setKind(k.kind)}
+                className={cn(
+                  "rounded-md border px-2 py-1 text-xs font-medium transition-colors",
+                  isActive
+                    ? "border-accent bg-accent-soft text-accent-ink"
+                    : "border-border bg-surface text-ink-dim hover:border-accent/40 hover:text-ink",
+                )}
+              >
+                {k.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {assetsQ.isLoading && (
+        <div className="text-xs text-ink-dim">Loading ingested assets...</div>
+      )}
+      {assetsQ.error && (
+        <div className="text-xs text-critical">
+          {(assetsQ.error as Error).message}
+        </div>
+      )}
+      {assetsQ.data && assetsQ.data.length === 0 && (
+        <div className="text-xs text-ink-dim">
+          No ingested{" "}
+          {INGESTED_KINDS.find((k) => k.kind === kind)?.label.toLowerCase() ??
+            kind}{" "}
+          for profile <span className="font-mono">{effectiveProfile}</span>.
+          Run <code className="rounded bg-surface-subtle px-1">/db ingest-assets</code>{" "}
+          first.
+        </div>
+      )}
+      {assetsQ.data && assetsQ.data.length > 0 && (
+        <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+          {assetsQ.data.map((row) => (
+            <AssetRow
+              key={`${row.kind}::${row.ref}`}
+              label={row.name}
+              sublabel={row.location || row.ingested_at}
+              selected={isSelected(row.kind, row.ref)}
+              onClick={() => onToggle({ kind: row.kind, ref: row.ref })}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

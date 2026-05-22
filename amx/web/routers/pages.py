@@ -110,6 +110,73 @@ def list_intent_templates() -> list[dict]:
     ]
 
 
+_REMOTE_ASSET_OPTION_SQL: dict[str, str] = {
+    "asset_notebook": (
+        "SELECT id, name, workspace_path, qualified_name, "
+        "ingested_at FROM remote_notebooks WHERE profile_name = ? "
+        "ORDER BY name LIMIT 500"
+    ),
+    "asset_job": (
+        "SELECT id, name, '' AS workspace_path, '' AS qualified_name, "
+        "ingested_at FROM remote_jobs WHERE profile_name = ? "
+        "ORDER BY name LIMIT 500"
+    ),
+    "asset_pipeline": (
+        "SELECT id, name, '' AS workspace_path, target_schema AS qualified_name, "
+        "ingested_at FROM remote_pipelines WHERE profile_name = ? "
+        "ORDER BY name LIMIT 500"
+    ),
+    "asset_query": (
+        "SELECT id, name, kind AS workspace_path, warehouse AS qualified_name, "
+        "ingested_at FROM remote_queries WHERE profile_name = ? "
+        "ORDER BY executed_at DESC LIMIT 500"
+    ),
+    "asset_stream": (
+        "SELECT id, qualified_name AS name, source_table_fqn AS workspace_path, "
+        "mode AS qualified_name, ingested_at FROM remote_streams "
+        "WHERE profile_name = ? ORDER BY qualified_name LIMIT 500"
+    ),
+    "asset_streamlit": (
+        "SELECT id, qualified_name AS name, main_file AS workspace_path, "
+        "query_warehouse AS qualified_name, ingested_at "
+        "FROM remote_streamlit_apps WHERE profile_name = ? "
+        "ORDER BY qualified_name LIMIT 500"
+    ),
+}
+
+
+@router.get("/asset-options")
+def list_asset_options(
+    kind: str = Query(..., description="One of asset_notebook, asset_job, ..."),
+    profile: str = Query(..., min_length=1),
+    svc: PagesService = Depends(get_pages_service),
+) -> list[dict]:
+    """List ingested remote assets a page can be anchored to.
+
+    Feeds the Studio New-page wizard's "Ingested assets" tab. Rows are
+    sourced from the local ``remote_*`` tables populated by
+    ``/db ingest-assets``; the resolver later excerpts each one when
+    the page is generated.
+    """
+    sql = _REMOTE_ASSET_OPTION_SQL.get(kind)
+    if sql is None:
+        raise HTTPException(status_code=400, detail=f"unknown asset kind: {kind}")
+    with svc.store.history._connect() as conn:
+        cursor = conn.execute(sql, (profile,))
+        cols = [c[0] for c in cursor.description]
+        rows = [dict(zip(cols, row, strict=False)) for row in cursor.fetchall()]
+    return [
+        {
+            "kind": kind,
+            "ref": f"{profile}:{r['id']}",
+            "name": r.get("name") or r.get("id"),
+            "location": r.get("workspace_path") or r.get("qualified_name") or "",
+            "ingested_at": r.get("ingested_at") or "",
+        }
+        for r in rows
+    ]
+
+
 @router.get("/{page_id}")
 def get_page(
     page_id: str,

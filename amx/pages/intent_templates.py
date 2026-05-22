@@ -32,6 +32,10 @@ AssetRequirement = Literal[
     "one_db_profile",
     "many_db_profiles",
     "one_lineage",
+    "one_asset_notebook",
+    "one_asset_job",
+    "one_asset_pipeline",
+    "one_asset_query",
     "any",
 ]
 
@@ -97,6 +101,54 @@ INTENT_TEMPLATES: tuple[IntentTemplate, ...] = (
             "captured by lineage artifact `{lineage}`. Describe the "
             "source systems, the transformations along the way, and the "
             "target tables / reports."
+        ),
+    ),
+    IntentTemplate(
+        slug="notebook-walkthrough",
+        label="Notebook walkthrough — explain an ingested notebook",
+        required_assets="one_asset_notebook",
+        prompt_skeleton=(
+            "Produce a walkthrough page for the ingested notebook "
+            "`{notebook}` in profile `{db_profile}`. Summarise its "
+            "purpose, narrate each section in order, surface the tables "
+            "and columns it reads from or writes to, and flag any "
+            "non-obvious side effects or external calls."
+        ),
+    ),
+    IntentTemplate(
+        slug="job-runbook",
+        label="Job runbook — schedule, tasks, recent runs",
+        required_assets="one_asset_job",
+        prompt_skeleton=(
+            "Produce a runbook page for the ingested job `{job}` in "
+            "profile `{db_profile}`. Describe its schedule, list each "
+            "task and the asset it points at, summarise the most recent "
+            "run outcomes, and call out what an on-call engineer should "
+            "check first when the job fails."
+        ),
+    ),
+    IntentTemplate(
+        slug="pipeline-overview",
+        label="Pipeline overview — sources, transforms, target schema",
+        required_assets="one_asset_pipeline",
+        prompt_skeleton=(
+            "Produce an overview page for the ingested pipeline "
+            "`{pipeline}` in profile `{db_profile}`. Describe the "
+            "source notebooks or libraries it loads, the transformations "
+            "performed, the target schema it writes into, and any "
+            "freshness / continuity guarantees implied by its settings."
+        ),
+    ),
+    IntentTemplate(
+        slug="query-playbook",
+        label="Query playbook — explain an ingested SQL query",
+        required_assets="one_asset_query",
+        prompt_skeleton=(
+            "Produce a playbook page for the ingested query `{query}` "
+            "in profile `{db_profile}`. Explain what the query answers, "
+            "decompose the SQL clause by clause, list every table and "
+            "column it touches, and surface the warehouse / user "
+            "context under which it last ran."
         ),
     ),
     IntentTemplate(

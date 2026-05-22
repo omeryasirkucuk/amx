@@ -47,6 +47,9 @@ class _StubResolver:
     def resolve_lineage(self, ref: str) -> str:
         return f"lineage {ref}"
 
+    def resolve_asset(self, ref: str, kind: str) -> str:
+        return f"asset {kind} {ref}"
+
     def resolve_source(self, src: SourceRef) -> str:
         return f"src {src.original_name}"
 
@@ -87,6 +90,56 @@ def test_list_pages_empty(client: TestClient, headers: dict[str, str]) -> None:
     r = client.get("/api/pages", headers=headers)
     assert r.status_code == 200
     assert r.json() == []
+
+
+def test_list_asset_options_for_notebook_kind(
+    client: TestClient, headers: dict[str, str], service: PagesService
+) -> None:
+    """Studio's New-page wizard 'Ingested assets' tab hits this endpoint
+    to populate the per-kind picker."""
+    hs = service.store.history
+    with hs._lock, hs._connect() as conn:  # type: ignore[attr-defined]
+        conn.execute(
+            "INSERT INTO remote_notebooks (profile_name, platform, external_id, "
+            "name, workspace_path, language, source_text, source_hash, ingested_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "sf_prod",
+                "snowflake",
+                "e1",
+                "nightly_etl",
+                "/etl",
+                "sql",
+                "SELECT 1",
+                "h",
+                "2026-01-01",
+            ),
+        )
+
+    r = client.get(
+        "/api/pages/asset-options",
+        params={"kind": "asset_notebook", "profile": "sf_prod"},
+        headers=headers,
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert isinstance(payload, list)
+    assert len(payload) == 1
+    item = payload[0]
+    assert item["kind"] == "asset_notebook"
+    assert item["name"] == "nightly_etl"
+    assert item["ref"].startswith("sf_prod:")
+
+
+def test_list_asset_options_rejects_unknown_kind(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    r = client.get(
+        "/api/pages/asset-options",
+        params={"kind": "asset_bogus", "profile": "any"},
+        headers=headers,
+    )
+    assert r.status_code == 400
 
 
 def test_list_intent_templates(client: TestClient, headers: dict[str, str]) -> None:

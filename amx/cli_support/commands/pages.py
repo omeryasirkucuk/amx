@@ -48,8 +48,53 @@ _ASSET_KINDS: frozenset[str] = frozenset(
         "db_column",
         "doc_profile",
         "lineage_artifact",
+        "asset_notebook",
+        "asset_job",
+        "asset_pipeline",
+        "asset_query",
+        "asset_stream",
+        "asset_streamlit",
     }
 )
+
+_REMOTE_ASSET_TABLES: dict[str, tuple[str, str]] = {
+    "asset_notebook": (
+        "remote_notebooks",
+        "SELECT id, name, workspace_path, qualified_name "
+        "FROM remote_notebooks WHERE profile_name = ? "
+        "ORDER BY name LIMIT 200",
+    ),
+    "asset_job": (
+        "remote_jobs",
+        "SELECT id, name, '' AS workspace_path, '' AS qualified_name "
+        "FROM remote_jobs WHERE profile_name = ? "
+        "ORDER BY name LIMIT 200",
+    ),
+    "asset_pipeline": (
+        "remote_pipelines",
+        "SELECT id, name, '' AS workspace_path, target_schema AS qualified_name "
+        "FROM remote_pipelines WHERE profile_name = ? "
+        "ORDER BY name LIMIT 200",
+    ),
+    "asset_query": (
+        "remote_queries",
+        "SELECT id, name, kind AS workspace_path, warehouse AS qualified_name "
+        "FROM remote_queries WHERE profile_name = ? "
+        "ORDER BY executed_at DESC LIMIT 200",
+    ),
+    "asset_stream": (
+        "remote_streams",
+        "SELECT id, qualified_name AS name, source_table_fqn AS workspace_path, "
+        "mode AS qualified_name FROM remote_streams WHERE profile_name = ? "
+        "ORDER BY qualified_name LIMIT 200",
+    ),
+    "asset_streamlit": (
+        "remote_streamlit_apps",
+        "SELECT id, qualified_name AS name, main_file AS workspace_path, "
+        "query_warehouse AS qualified_name FROM remote_streamlit_apps "
+        "WHERE profile_name = ? ORDER BY qualified_name LIMIT 200",
+    ),
+}
 
 
 def _utcnow() -> datetime:
@@ -141,6 +186,19 @@ def _collect_template_params(
         params["db_profiles"] = ", ".join(f"`{p}`" for p in picks)
         for name in picks:
             assets.append(AssetRef(kind="db_profile", ref=name))
+    elif req in {
+        "one_asset_notebook",
+        "one_asset_job",
+        "one_asset_pipeline",
+        "one_asset_query",
+    }:
+        kind = "asset_" + req.removeprefix("one_asset_")
+        ref, profile, display = _pick_remote_asset(cfg, kind)
+        if ref is not None:
+            assets.append(ref)
+        params["db_profile"] = profile or "<profile>"
+        placeholder = kind.removeprefix("asset_")
+        params[placeholder] = display or "<unknown>"
     elif req == "one_lineage":
         rows = _list_lineage_artifacts_safe()
         if rows:
@@ -169,6 +227,77 @@ def _collect_template_params(
                 assets.append(AssetRef(kind="doc_profile", ref=name))
 
     return assets, params
+
+
+def _pick_remote_asset(
+    cfg: AMXConfig,
+    kind: str,
+) -> tuple[AssetRef | None, str, str]:
+    """Wizard: pick one ingested remote asset from the active history store.
+
+    Returns ``(ref, profile_name, display_name)``. ``ref`` is ``None``
+    if the user skips or no rows exist for any profile.
+    """
+    spec = _REMOTE_ASSET_TABLES.get(kind)
+    if spec is None:
+        return None, "", ""
+    _, sql = spec
+
+    db_names = sorted((cfg.db_profiles or {}).keys())
+    if not db_names:
+        info("No DB profiles configured. Run /db add first.")
+        return None, "", ""
+    info("Configured DB profiles: " + ", ".join(db_names))
+    profile = click.prompt("DB profile to pick the asset from").strip()
+    if not profile:
+        return None, "", ""
+
+    rows = _list_remote_assets_safe(sql, profile)
+    if not rows:
+        warn(
+            f"No ingested {kind.removeprefix('asset_')}s for profile "
+            f"`{profile}`. Run /db ingest-assets first."
+        )
+        return None, profile, ""
+
+    info(f"Ingested {kind.removeprefix('asset_')}s for `{profile}`:")
+    for idx, row in enumerate(rows[:30], start=1):
+        label_bits = [str(row.get("name") or row.get("id") or "?")]
+        loc = row.get("workspace_path") or row.get("qualified_name")
+        if loc:
+            label_bits.append(f"({loc})")
+        click.echo(f"  {idx}. {' '.join(label_bits)}")
+    raw = click.prompt("Selection (number)").strip()
+    try:
+        choice = int(raw)
+    except ValueError:
+        error(f"Not a number: {raw}")
+        return None, profile, ""
+    if not 1 <= choice <= len(rows[:30]):
+        error(f"Selection out of range: {raw}")
+        return None, profile, ""
+    chosen = rows[choice - 1]
+    asset_id = str(chosen.get("id") or "")
+    display = str(chosen.get("name") or chosen.get("qualified_name") or asset_id)
+    if not asset_id:
+        return None, profile, display
+    return AssetRef(kind=kind, ref=f"{profile}:{asset_id}"), profile, display  # type: ignore[arg-type]
+
+
+def _list_remote_assets_safe(sql: str, profile: str) -> list[dict[str, Any]]:
+    try:
+        from amx.storage.sqlite_store import history_store
+
+        hs = history_store()
+        if hs is None:
+            return []
+        with hs._connect() as conn:
+            cursor = conn.execute(sql, (profile,))
+            cols = [c[0] for c in cursor.description]
+            return [dict(zip(cols, row, strict=False)) for row in cursor.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        warn(f"Could not list ingested assets: {exc}")
+        return []
 
 
 def _list_lineage_artifacts_safe() -> list[dict[str, Any]]:
