@@ -30,6 +30,15 @@ class IngestRequest:
     history_days: int = 7
     runs_per_job: int = 20
     query_history_limit: int = 1000
+    # PR-A: optional per-kind selection from the Studio / CLI
+    # "browse and pick" wizard. Keys are asset_type strings (e.g.
+    # ``"notebooks"``); values are the platform-native external_id
+    # set the user explicitly chose. When the key is absent (or the
+    # whole dict is ``None``) the connector falls back to its
+    # pre-PR-A "all" behaviour for that kind. ``queries`` and
+    # ``task_dependencies`` are never selected here — they're
+    # time-windowed in bulk by ``history_days`` / ``query_history_limit``.
+    selection: dict[str, list[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -154,16 +163,21 @@ class IngestAssetsService:
 
     def _pull(self, asset_type: str, req: IngestRequest) -> Iterable:
         c = self._connector
+        # PR-A: per-kind selection narrows the iterator to a
+        # caller-chosen subset of platform-native external_ids.
+        # ``queries`` and ``task_dependencies`` ignore the selection
+        # — they're time-windowed aggregates, not per-asset rows.
+        sel = (req.selection or {}).get(asset_type)
         if asset_type == "notebooks":
-            return c.list_remote_notebooks()
+            return c.list_remote_notebooks(external_id_filter=sel)
         if asset_type == "jobs":
-            return c.list_remote_jobs(runs_per_job=req.runs_per_job)
+            return c.list_remote_jobs(runs_per_job=req.runs_per_job, external_id_filter=sel)
         if asset_type == "pipelines":
-            return c.list_remote_pipelines()
+            return c.list_remote_pipelines(external_id_filter=sel)
         if asset_type == "streamlit_apps":
-            return c.list_remote_streamlit_apps()
+            return c.list_remote_streamlit_apps(external_id_filter=sel)
         if asset_type == "streams":
-            return c.list_remote_streams()
+            return c.list_remote_streams(external_id_filter=sel)
         if asset_type == "task_dependencies":
             return c.list_remote_task_dependencies()
         if asset_type == "queries":

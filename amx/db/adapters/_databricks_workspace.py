@@ -93,6 +93,25 @@ class DatabricksWorkspaceClient:
 
     # ---- jobs ---------------------------------------------------------
 
+    def list_jobs_headers(self) -> Iterator[dict[str, Any]]:
+        """Yield each job's thin list-endpoint record only.
+
+        The cheap browse path used by ``DatabricksAdapter.list_remote_jobs_metadata``:
+        skips the per-job ``/api/2.2/jobs/get`` + ``/jobs/runs/list``
+        round-trips so the Studio browse table populates in one
+        paginated burst instead of one round-trip per job. Each row
+        carries enough identity (``job_id``, ``settings.name``,
+        ``creator_user_name``) for the user to decide which job to
+        ingest in full.
+        """
+        for page in self._paginated_get(
+            "/api/2.2/jobs/list",
+            params={"limit": 25, "expand_tasks": False},
+            page_token_field="next_page_token",
+            items_field="jobs",
+        ):
+            yield from page
+
     def list_jobs_full(self, *, runs_per_job: int = 20) -> Iterator[dict[str, Any]]:
         """Yield each job's full settings + ``recent_runs`` list.
 
@@ -121,17 +140,28 @@ class DatabricksWorkspaceClient:
 
     # ---- pipelines (DLT) ---------------------------------------------
 
-    def list_pipelines(self) -> Iterator[dict[str, Any]]:
+    def list_pipelines_headers(self) -> Iterator[dict[str, Any]]:
+        """Yield each DLT pipeline's thin list-endpoint record only.
+
+        The cheap browse path used by
+        ``DatabricksAdapter.list_remote_pipelines_metadata`` — skips
+        the per-pipeline ``/api/2.0/pipelines/<id>`` GET so the
+        Studio browse table populates without an O(N) round-trip
+        burst.
+        """
         for page in self._paginated_get(
             "/api/2.0/pipelines",
             params={"max_results": 25},
             page_token_field="next_page_token",
             items_field="statuses",
         ):
-            for thin in page:
-                pid = thin["pipeline_id"]
-                full = self._get(f"/api/2.0/pipelines/{pid}").json()
-                yield full
+            yield from page
+
+    def list_pipelines(self) -> Iterator[dict[str, Any]]:
+        for thin in self.list_pipelines_headers():
+            pid = thin["pipeline_id"]
+            full = self._get(f"/api/2.0/pipelines/{pid}").json()
+            yield full
 
     # ---- SQL queries -------------------------------------------------
 

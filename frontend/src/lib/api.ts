@@ -1198,6 +1198,21 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  /**
+   * Cheap identity-only listing for the IngestDialog "Browse" step.
+   * Returns the live platform's assets of ``kind`` without fetching
+   * content, so the wizard table populates fast even for 5k+ assets.
+   */
+  discoverAssets: (params: { profile: string; kind: string }) => {
+    const qs = new URLSearchParams({
+      profile: params.profile,
+      kind: params.kind,
+    });
+    return apiFetch<{ items: RemoteAssetMetadata[] }>(
+      `/api/assets/discover?${qs.toString()}`,
+    );
+  },
+
   /** List all configured DB profiles (used by the profile picker). */
   listDbProfiles: () =>
     apiFetch<{ profiles: Array<{ name: string; backend?: string }> }>(
@@ -1838,6 +1853,25 @@ export interface RemoteAssetIngestPayload {
   history_days?: number;
   runs_per_job?: number;
   query_history_limit?: number;
+  /**
+   * PR-A: optional per-kind cherry-pick from the IngestDialog "Browse"
+   * step. Keys are asset_type strings ("notebooks", "jobs", ...);
+   * values are the platform-native external_id list the user
+   * explicitly ticked. Omitting a kind keeps the pre-PR-A "all"
+   * behaviour for that kind. Never sent for "queries" or
+   * "task_dependencies" — those are time-windowed aggregates.
+   */
+  selection?: Record<string, string[]>;
+}
+
+/** One row from GET /api/assets/discover (cheap identity, no content). */
+export interface RemoteAssetMetadata {
+  kind: string;
+  external_id: string;
+  name: string;
+  path: string;
+  owner: string | null;
+  last_modified: string | null;
 }
 
 /** One SSE event from GET /api/assets/ingest/{job_id}/events */

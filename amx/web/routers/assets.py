@@ -522,6 +522,77 @@ class IngestBody(BaseModel):
     history_days: int = 7
     runs_per_job: int = 20
     query_history_limit: int = 1000
+    # PR-A: optional per-kind subset of platform-native external_ids
+    # from the Studio / CLI browse-and-pick wizard. When absent, every
+    # asset of the requested types is ingested (pre-PR-A behaviour).
+    selection: dict[str, list[str]] | None = None
+
+
+# PR-A: browse-and-pick wizard data source. Adapters yield
+# ``AssetMetadata`` rows (id + name + path + owner +
+# last_modified, no content) so the Studio table populates in one
+# burst without dragging the heavy per-asset content fetch into
+# the initial paint. The wizard then posts the selected ids back
+# through ``POST /ingest`` with ``selection={kind: [...]}``.
+
+_DISCOVER_METHODS = {
+    "notebooks": "list_remote_notebooks_metadata",
+    "jobs": "list_remote_jobs_metadata",
+    "pipelines": "list_remote_pipelines_metadata",
+    "streamlit_apps": "list_remote_streamlit_apps_metadata",
+    "streams": "list_remote_streams_metadata",
+}
+
+
+@router.get("/discover")
+def discover_assets(
+    profile: str = Query(...),
+    kind: str = Query(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Return cheap identity rows for every asset of ``kind`` in ``profile``.
+
+    Powers the Studio IngestDialog "Browse" step and the CLI wizard's
+    ``Browse and pick?`` flow. ``queries`` and ``task_dependencies``
+    are intentionally absent — they're time-windowed aggregates, not
+    per-asset rows the user picks individually.
+    """
+    method_name = _DISCOVER_METHODS.get(kind)
+    if method_name is None:
+        raise HTTPException(
+            400,
+            f"Unknown asset kind: {kind!r}. Valid: {', '.join(_DISCOVER_METHODS)}",
+        )
+    from amx.cli_support.commands.db_assets_impl import _open_connector
+
+    connector = _open_connector(cfg, profile)
+    fn = getattr(connector, method_name, None)
+    if fn is None:
+        raise HTTPException(
+            501,
+            f"Profile {profile!r} adapter does not support {kind} discovery.",
+        )
+    items: list[dict[str, Any]] = []
+    try:
+        for meta in fn():
+            items.append(
+                {
+                    "kind": meta.kind,
+                    "external_id": meta.external_id,
+                    "name": meta.name,
+                    "path": meta.path,
+                    "owner": meta.owner,
+                    "last_modified": (
+                        meta.last_modified.isoformat() if meta.last_modified else None
+                    ),
+                }
+            )
+    except AttributeError as exc:
+        raise HTTPException(
+            501,
+            f"Profile {profile!r} adapter does not support {kind} discovery.",
+        ) from exc
+    return {"items": items}
 
 
 @router.post("/ingest", status_code=202)
@@ -568,6 +639,7 @@ async def _run_ingest_job(
             history_days=body.history_days,
             runs_per_job=body.runs_per_job,
             query_history_limit=body.query_history_limit,
+            selection=body.selection,
         )
         result = await loop.run_in_executor(None, lambda: svc.run(req, progress=on_progress))
         await queue.put(

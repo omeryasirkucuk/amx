@@ -97,6 +97,104 @@ def test_ingest_assets_with_flags_skips_wizard(monkeypatch, tmp_path):
     assert "notebooks=3" in result.output
 
 
+def test_ingest_assets_include_id_forwards_selection(monkeypatch, tmp_path):
+    """--include-id KIND:EXTERNAL_ID populates IngestRequest.selection."""
+    from amx.services.ingest_assets import IngestResult
+
+    captured = {}
+
+    def fake_run(self, req, *, progress=None):
+        captured["request"] = req
+        return IngestResult(counts={"notebooks": 2, "lineage": 0}, failures={})
+
+    import amx.cli_support.commands.db_assets_impl as impl
+
+    monkeypatch.setattr(impl, "_open_connector", lambda cfg, name: object())
+    monkeypatch.setattr(impl, "_open_catalog", lambda cfg: object())
+    monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
+    monkeypatch.setattr("amx.services.ingest_assets.IngestAssetsService.run", fake_run)
+
+    result = _invoke(
+        [
+            "db",
+            "ingest-assets",
+            "--profile",
+            "prod",
+            "--types",
+            "notebooks,jobs",
+            "--include-id",
+            "notebooks:ext-1",
+            "--include-id",
+            "notebooks:ext-2",
+            "--include-id",
+            "jobs:42",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    sel = captured["request"].selection
+    assert sel == {"notebooks": ["ext-1", "ext-2"], "jobs": ["42"]}
+
+
+def test_ingest_assets_include_id_rejects_non_pickable_kind():
+    """``queries`` is time-windowed — --include-id queries:* must fail loud."""
+    result = _invoke(
+        [
+            "db",
+            "ingest-assets",
+            "--profile",
+            "prod",
+            "--types",
+            "queries",
+            "--include-id",
+            "queries:any",
+        ]
+    )
+    assert result.exit_code != 0
+    assert "not pickable" in result.output.lower()
+
+
+def test_ingest_assets_include_id_rejects_kind_outside_types():
+    """--include-id can't reference a kind the user didn't pick in --types."""
+    result = _invoke(
+        [
+            "db",
+            "ingest-assets",
+            "--profile",
+            "prod",
+            "--types",
+            "jobs",
+            "--include-id",
+            "notebooks:abc",
+        ]
+    )
+    assert result.exit_code != 0
+    assert "--types" in result.output
+
+
+def test_ingest_assets_include_id_rejects_malformed():
+    """Token without a colon is a hard error, not a silent skip."""
+    result = _invoke(
+        [
+            "db",
+            "ingest-assets",
+            "--profile",
+            "prod",
+            "--types",
+            "notebooks",
+            "--include-id",
+            "no-colon",
+        ]
+    )
+    assert result.exit_code != 0
+    assert "KIND:EXTERNAL_ID" in result.output
+
+
+def test_parse_include_ids_returns_none_when_empty():
+    from amx.cli_support.commands.db_assets_impl import _parse_include_ids
+
+    assert _parse_include_ids((), ["notebooks"]) is None
+
+
 def test_ingest_assets_rejects_unknown_type():
     result = _invoke(
         [

@@ -1374,23 +1374,33 @@ class DatabaseConnector:
     # an HTTP Workspace client and ignore it. The passthrough hands the
     # connector's live engine to both so neither variant raises ``TypeError``.
 
-    def list_remote_notebooks(self):
-        return self._adapter.list_remote_notebooks(self.engine)
+    def list_remote_notebooks(self, *, external_id_filter=None):
+        return self._adapter.list_remote_notebooks(
+            self.engine, external_id_filter=external_id_filter
+        )
 
     def fetch_remote_notebook_source(self, external_id: str) -> str:
         return self._adapter.fetch_remote_notebook_source(self.engine, external_id)
 
-    def list_remote_jobs(self, *, runs_per_job: int = 20):
-        return self._adapter.list_remote_jobs(self.engine, runs_per_job=runs_per_job)
+    def list_remote_jobs(self, *, runs_per_job: int = 20, external_id_filter=None):
+        return self._adapter.list_remote_jobs(
+            self.engine,
+            runs_per_job=runs_per_job,
+            external_id_filter=external_id_filter,
+        )
 
-    def list_remote_pipelines(self):
-        return self._adapter.list_remote_pipelines(self.engine)
+    def list_remote_pipelines(self, *, external_id_filter=None):
+        return self._adapter.list_remote_pipelines(
+            self.engine, external_id_filter=external_id_filter
+        )
 
-    def list_remote_streamlit_apps(self):
-        return self._adapter.list_remote_streamlit_apps(self.engine)
+    def list_remote_streamlit_apps(self, *, external_id_filter=None):
+        return self._adapter.list_remote_streamlit_apps(
+            self.engine, external_id_filter=external_id_filter
+        )
 
-    def list_remote_streams(self):
-        return self._adapter.list_remote_streams(self.engine)
+    def list_remote_streams(self, *, external_id_filter=None):
+        return self._adapter.list_remote_streams(self.engine, external_id_filter=external_id_filter)
 
     def list_remote_task_dependencies(self):
         return self._adapter.list_remote_task_dependencies(self.engine)
@@ -1399,6 +1409,28 @@ class DatabaseConnector:
         return self._adapter.list_remote_queries(
             self.engine, history_days=history_days, limit=limit
         )
+
+    # PR-A: metadata-only listings power the Studio / CLI
+    # "browse and pick" wizard. Adapters that don't implement a
+    # given kind raise ``AttributeError`` — callers should check
+    # ``capabilities`` (or catch) before invoking. Each method
+    # yields ``AssetMetadata`` rows: cheap identity only, no
+    # content fetch.
+
+    def list_remote_notebooks_metadata(self):
+        return self._adapter.list_remote_notebooks_metadata(self.engine)
+
+    def list_remote_jobs_metadata(self):
+        return self._adapter.list_remote_jobs_metadata(self.engine)
+
+    def list_remote_pipelines_metadata(self):
+        return self._adapter.list_remote_pipelines_metadata(self.engine)
+
+    def list_remote_streamlit_apps_metadata(self):
+        return self._adapter.list_remote_streamlit_apps_metadata(self.engine)
+
+    def list_remote_streams_metadata(self):
+        return self._adapter.list_remote_streams_metadata(self.engine)
 
     # ── Adapter metadata ──────────────────────────────────────────────────
 

@@ -24,7 +24,9 @@ def test_connector_list_remote_notebooks_delegates_with_engine():
     conn = _connector_with_mock_adapter(engine=sentinel)
     conn._adapter.list_remote_notebooks.return_value = iter([])
     list(conn.list_remote_notebooks())
-    conn._adapter.list_remote_notebooks.assert_called_once_with(sentinel)
+    # PR-A: passthrough now also forwards external_id_filter (None means
+    # the pre-PR-A "ingest all" path is preserved).
+    conn._adapter.list_remote_notebooks.assert_called_once_with(sentinel, external_id_filter=None)
 
 
 def test_connector_fetch_remote_notebook_source_delegates_with_engine():
@@ -40,7 +42,9 @@ def test_connector_list_remote_jobs_passes_runs_per_job():
     conn = _connector_with_mock_adapter(engine=sentinel)
     conn._adapter.list_remote_jobs.return_value = iter([])
     list(conn.list_remote_jobs(runs_per_job=5))
-    conn._adapter.list_remote_jobs.assert_called_once_with(sentinel, runs_per_job=5)
+    conn._adapter.list_remote_jobs.assert_called_once_with(
+        sentinel, runs_per_job=5, external_id_filter=None
+    )
 
 
 def test_connector_list_remote_queries_passes_engine_and_kwargs():

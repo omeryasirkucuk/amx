@@ -715,7 +715,38 @@ class SnowflakeAdapter(DatabaseAdapter):
 
     # ── Remote executable assets ──────────────────────────────────────────
 
-    def list_remote_notebooks(self, engine):
+    def list_remote_notebooks_metadata(self, engine):
+        """Yield :class:`AssetMetadata` for every Snowflake notebook.
+
+        Cheap browse-step cousin of :meth:`list_remote_notebooks`:
+        the per-notebook ``DESC NOTEBOOK`` + stage-read fan-out
+        (which can be 100s of round-trips for a 5,000-notebook
+        account) is skipped. ``SHOW NOTEBOOKS IN ACCOUNT`` alone
+        is enough to surface name + fully-qualified path + owner +
+        last-modified for the Studio browse-and-pick table.
+        """
+        from amx.db.adapters.remote_asset_types import AssetMetadata
+
+        with engine.connect() as conn:
+            rows = conn.execute(text("SHOW NOTEBOOKS IN ACCOUNT")).mappings().all()
+            for r in rows:
+                fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                last_altered = r.get("last_altered")
+                if isinstance(last_altered, str):
+                    try:
+                        last_altered = datetime.fromisoformat(last_altered)
+                    except ValueError:
+                        last_altered = None
+                yield AssetMetadata(
+                    kind="notebook",
+                    external_id=fqn,
+                    name=str(r["name"]),
+                    path=fqn,
+                    owner=r.get("owner"),
+                    last_modified=last_altered if isinstance(last_altered, datetime) else None,
+                )
+
+    def list_remote_notebooks(self, engine, *, external_id_filter=None):
         """Yield :class:`RemoteNotebook` for every Snowflake Notebook visible
         to the active role.
 
@@ -723,11 +754,19 @@ class SnowflakeAdapter(DatabaseAdapter):
         ``SELECT $1 FROM @<stage_ref>`` query with JSON file format. The raw
         JSON is normalized to a minimal ``.ipynb`` shell via
         :func:`normalize_source` before hashing.
+
+        ``external_id_filter`` (PR-A): when provided, only notebooks whose
+        fully-qualified name is in the set are exported. The expensive
+        ``DESC NOTEBOOK`` + stage read fans out only for selected rows so
+        the "browse + pick 50 of 5,000" path stays fast.
         """
+        wanted = set(external_id_filter) if external_id_filter is not None else None
         with engine.connect() as conn:
             rows = conn.execute(text("SHOW NOTEBOOKS IN ACCOUNT")).mappings().all()
             for r in rows:
                 fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                if wanted is not None and fqn not in wanted:
+                    continue
                 try:
                     desc = conn.execute(text(f"DESC NOTEBOOK {fqn}")).mappings().all()
                 except Exception as exc:  # noqa: BLE001
@@ -808,14 +847,48 @@ class SnowflakeAdapter(DatabaseAdapter):
             raw_text = raw if isinstance(raw, str) else json.dumps(raw)
             return normalize_source(raw_text, hint="ipynb")
 
-    def list_remote_streamlit_apps(self, engine):
-        """Yield :class:`RemoteStreamlitApp` for every Snowflake Streamlit app
-        visible to the active role.
+    def list_remote_streamlit_apps_metadata(self, engine):
+        """Cheap browse-step cousin of :meth:`list_remote_streamlit_apps`.
+
+        Skips the per-app ``DESC STREAMLIT`` round-trip — the
+        ``SHOW STREAMLITS`` row already carries enough identity
+        (fqn + owner + last_altered) for the user to decide.
         """
+        from amx.db.adapters.remote_asset_types import AssetMetadata
+
         with engine.connect() as conn:
             rows = conn.execute(text("SHOW STREAMLITS IN ACCOUNT")).mappings().all()
             for r in rows:
                 fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                last = r.get("last_altered")
+                if isinstance(last, str):
+                    try:
+                        last = datetime.fromisoformat(last)
+                    except ValueError:
+                        last = None
+                yield AssetMetadata(
+                    kind="streamlit_app",
+                    external_id=fqn,
+                    name=str(r["name"]),
+                    path=fqn,
+                    owner=r.get("owner"),
+                    last_modified=last if isinstance(last, datetime) else None,
+                )
+
+    def list_remote_streamlit_apps(self, engine, *, external_id_filter=None):
+        """Yield :class:`RemoteStreamlitApp` for every Snowflake Streamlit app
+        visible to the active role.
+
+        ``external_id_filter`` (PR-A): when set, only the listed fqns
+        get the per-app ``DESC STREAMLIT`` round-trip.
+        """
+        wanted = set(external_id_filter) if external_id_filter is not None else None
+        with engine.connect() as conn:
+            rows = conn.execute(text("SHOW STREAMLITS IN ACCOUNT")).mappings().all()
+            for r in rows:
+                fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                if wanted is not None and fqn not in wanted:
+                    continue
                 desc = conn.execute(text(f"DESC STREAMLIT {fqn}")).mappings().all()
                 props = {row["property"]: row["value"] for row in desc}
                 last = r.get("last_altered")
@@ -833,14 +906,48 @@ class SnowflakeAdapter(DatabaseAdapter):
                     last_altered_at=last,
                 )
 
-    def list_remote_streams(self, engine):
-        """Yield :class:`RemoteStream` for every Snowflake stream visible to
-        the active role.
+    def list_remote_streams_metadata(self, engine):
+        """Cheap browse-step cousin of :meth:`list_remote_streams`.
+
+        ``SHOW STREAMS IN ACCOUNT`` is already the source of truth —
+        no per-stream follow-up call. Returned shape matches
+        :class:`AssetMetadata` for the Studio browse table.
         """
+        from amx.db.adapters.remote_asset_types import AssetMetadata
+
         with engine.connect() as conn:
             rows = conn.execute(text("SHOW STREAMS IN ACCOUNT")).mappings().all()
             for r in rows:
                 fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                stale = r.get("stale_after")
+                if isinstance(stale, str):
+                    try:
+                        stale = datetime.fromisoformat(stale)
+                    except ValueError:
+                        stale = None
+                yield AssetMetadata(
+                    kind="stream",
+                    external_id=fqn,
+                    name=str(r["name"]),
+                    path=fqn,
+                    owner=r.get("owner"),
+                    last_modified=stale if isinstance(stale, datetime) else None,
+                )
+
+    def list_remote_streams(self, engine, *, external_id_filter=None):
+        """Yield :class:`RemoteStream` for every Snowflake stream visible to
+        the active role.
+
+        ``external_id_filter`` (PR-A): restricts the yielded streams to
+        the given fqn set.
+        """
+        wanted = set(external_id_filter) if external_id_filter is not None else None
+        with engine.connect() as conn:
+            rows = conn.execute(text("SHOW STREAMS IN ACCOUNT")).mappings().all()
+            for r in rows:
+                fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
+                if wanted is not None and fqn not in wanted:
+                    continue
                 stale = r.get("stale_after")
                 if isinstance(stale, str):
                     try:
