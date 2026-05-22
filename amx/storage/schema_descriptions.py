@@ -731,12 +731,23 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "table_name": "Table name. Empty string when the entity is schema-level.",
         "column_name": "Column name. NULL for non-column entities (database/schema/table).",
         "entity_kind": (
-            "Granularity: database | schema | table | column. Drives how "
-            "/search interprets the row and which COMMENT ON variant to emit."
+            "Granularity: database | schema | table | column for live-DB "
+            "catalog rows, plus notebook | job | pipeline | query | stream | "
+            "streamlit_app for bridge rows that mirror ingested remote "
+            "assets (paired with source_remote_id pointing into the "
+            "matching remote_* table). Drives how /search interprets the "
+            "row and which COMMENT ON variant to emit."
         ),
         "asset_kind": (
             "Specific kind when entity_kind='table': table | view | "
             "materialized_view. Empty/'table' default for non-table entities."
+        ),
+        "source_remote_id": (
+            "Bridge column for ingested remote assets: holds the "
+            "remote_<kind>s.id (e.g. remote_notebooks.id) that this row "
+            "mirrors so the lineage canvas can render asset nodes while "
+            "the asset content lives in the remote_* tables. NULL on "
+            "live-DB rows (database / schema / table / column)."
         ),
         "dtype": "Column data type when entity_kind='column'. Empty string otherwise.",
         "nullable": "1 if the column accepts NULLs, 0 otherwise. Meaningless for non-columns.",

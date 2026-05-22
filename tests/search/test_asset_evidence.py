@@ -67,14 +67,29 @@ def _link_asset(
     from_kind: str,
     from_id: int,
     to_entity_id: int,
+    profile: str = "p",
 ) -> None:
+    """Insert the catalog_entities bridge row + the asset_references_table edge.
+
+    Mirrors the production write path in
+    ``SyncMixin.rebuild_remote_asset_lineage`` so the test exercises the
+    same JOIN that the evidence query relies on.
+    """
     with store._lock, store._connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO catalog_entities (db_profile, db_backend, database_name, "
+            "schema_name, table_name, column_name, entity_kind, asset_kind, "
+            "search_text, source_remote_id, updated_at, last_synced_at) "
+            "VALUES (?, '', '', '__assets', ?, NULL, ?, ?, '', ?, 0, 0)",
+            (profile, f"{from_kind}#{from_id}", from_kind, from_kind, from_id),
+        )
+        bridge_id = int(cur.lastrowid or 0)
         conn.execute(
             "INSERT INTO catalog_relationships (from_entity_id, to_entity_id, "
             "relationship_type, score, source, details_json, last_seen, "
             "from_entity_kind, to_entity_kind) "
             "VALUES (?, ?, 'asset_references_table', 1.0, 'test', '{}', 0, ?, 'table')",
-            (from_id, to_entity_id, from_kind),
+            (bridge_id, to_entity_id, from_kind),
         )
 
 

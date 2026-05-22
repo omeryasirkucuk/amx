@@ -10,6 +10,8 @@
 import { Position } from "reactflow";
 import { EDGE_COLORS, OPERATOR_COLORS } from "../constants";
 import type {
+  AssetNodeData,
+  AssetNodeKind,
   CanvasEdge,
   CanvasNode,
   ColumnSpec,
@@ -120,6 +122,34 @@ export function loadedNodeToCanvasNode(
   n: LoadedNode,
   opts: { multiProfile: boolean; isAnchor: boolean },
 ): CanvasNode {
+  const ASSET_KINDS: ReadonlySet<AssetNodeKind> = new Set<AssetNodeKind>([
+    "notebook",
+    "query",
+    "stream",
+    "pipeline",
+    "streamlit_app",
+    "job",
+  ]);
+  if (ASSET_KINDS.has(n.kind as AssetNodeKind)) {
+    const kind = n.kind as AssetNodeKind;
+    return {
+      id: nodeIdFor(n),
+      type: kind,
+      position: { x: n.x, y: n.y },
+      data: {
+        kind,
+        // The backend surfaces the asset's display name in
+        // ``label`` (sourced from catalog_entities.search_text);
+        // older payloads omitted it so fall back to the bridge
+        // table_name ``<kind>#<remote_id>``.
+        label: n.label || n.table || kind,
+        dbProfile: opts.multiProfile ? n.profile : undefined,
+        subtitle: n.schema && n.schema !== "__assets" ? n.schema : undefined,
+      } satisfies AssetNodeData,
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+    };
+  }
   if (n.kind === "operator") {
     // The backend now surfaces ``op_kind`` and ``expression`` as
     // first-class fields parsed out of the entity's ``search_text``

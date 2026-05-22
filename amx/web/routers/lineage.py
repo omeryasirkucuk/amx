@@ -672,6 +672,13 @@ def get_artifact_by_id(
                 details = decode_operator_details(str(r[6] or ""))
                 meta["op_kind"] = str(details.get("op_kind") or "")
                 meta["expression"] = str(details.get("expression") or "")
+            elif kind in ("notebook", "query", "stream", "pipeline", "streamlit_app", "job"):
+                # Bridge rows for ingested remote assets store the
+                # asset's display name in ``search_text`` (set by
+                # ``SyncMixin._upsert_asset_entity``). Surface it as
+                # ``label`` so the canvas AssetNode can render it
+                # without a second lookup.
+                meta["label"] = str(r[6] or "")
             entity_meta[int(r[0])] = meta
 
     # Bulk-fetch per-table column lists from the column-comments
@@ -757,6 +764,15 @@ def get_artifact_by_id(
         if meta.get("kind") == "operator":
             node_entry["op_kind"] = meta.get("op_kind", "")
             node_entry["expression"] = meta.get("expression", "")
+        elif meta.get("kind") in (
+            "notebook",
+            "query",
+            "stream",
+            "pipeline",
+            "streamlit_app",
+            "job",
+        ):
+            node_entry["label"] = meta.get("label", "")
         elif meta.get("kind") == "table":
             cols = table_columns.get(
                 (
