@@ -61,9 +61,14 @@ def test_ingest_assets_service_emits_progress():
     states = [(e.asset_type, e.state) for e in events]
     assert ("notebooks", "started") in states
     assert ("notebooks", "completed") in states
-    # The orchestrator also emits storage + lineage completion events.
+    # The orchestrator also emits storage + lineage + indexing
+    # completion events. ``indexing`` lands as "completed" when the
+    # asset RAG store is reachable, "failed" otherwise (e.g. CI
+    # environments without chromadb). Either way the event MUST be
+    # emitted so the Studio SSE stream knows the phase ran.
     assert any(e.asset_type == "storage" and e.state == "completed" for e in events)
     assert any(e.asset_type == "lineage" and e.state == "completed" for e in events)
+    assert any(e.asset_type == "indexing" and e.state in {"completed", "failed"} for e in events)
 
 
 def test_ingest_assets_service_reports_per_type_failure():

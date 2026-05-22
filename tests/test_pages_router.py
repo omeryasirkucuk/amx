@@ -47,7 +47,7 @@ class _StubResolver:
     def resolve_lineage(self, ref: str) -> str:
         return f"lineage {ref}"
 
-    def resolve_asset(self, ref: str, kind: str) -> str:
+    def resolve_asset(self, ref: str, kind: str, intent: str = "") -> str:
         return f"asset {kind} {ref}"
 
     def resolve_source(self, src: SourceRef) -> str:
