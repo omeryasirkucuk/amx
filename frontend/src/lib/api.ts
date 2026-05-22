@@ -924,6 +924,12 @@ export const api = {
      *  Omit (or pass an empty array) to force every asset through the
      *  live-profiling path. */
     cache_override_assets?: string[];
+    /** PR4: ingested-asset references the worker resolves into per-table
+     *  context blocks. Each entry is ``{kind: 'asset_notebook'|'asset_query'|
+     *  'asset_stream'|'asset_pipeline', ref: '<profile>:<remote_id>'}``. The
+     *  ProfileAgent renders an "Ingested asset context" section grounded
+     *  in the asset's source text for every table that asset references. */
+    asset_context?: Array<{ kind: string; ref: string }>;
   }) =>
     apiFetch<{ job_id: string; status: string }>("/api/runs", {
       method: "POST",
@@ -940,6 +946,7 @@ export const api = {
         doc_profiles: body.doc_profiles,
         code_profiles: body.code_profiles,
         cache_override_assets: body.cache_override_assets,
+        asset_context: body.asset_context,
       }),
     }),
   /** Pre-flight reachability probe for the bulk-run path. Probes every

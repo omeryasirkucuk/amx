@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { PlayCircle, Settings as SettingsIcon } from "lucide-react";
+import clsx from "clsx";
 
 import { api, apiFetch } from "../lib/api";
 import type { Scope } from "../lib/scope";
@@ -355,6 +356,12 @@ export default function RunNew() {
   const [batchMode, setBatchMode] = useState(false);
   const [overrides, setOverrides] = useState<OverrideFormState>(EMPTY_OVERRIDES);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // PR4: ingested-asset references the worker resolves into per-table
+  // context blocks for the ProfileAgent prompt. Each chip is one
+  // notebook / query / stream / pipeline tied to a profile in scope.
+  const [assetContext, setAssetContext] = useState<
+    Array<{ kind: string; ref: string; label: string; profile: string }>
+  >([]);
 
   const ctx = useQuery({ queryKey: ["context"], queryFn: () => api.context() });
   const supportsBatch = !!ctx.data?.llm_supports_batch;
@@ -483,8 +490,14 @@ export default function RunNew() {
       // job_id comes back first wins the navigate(); the others still
       // exist as separate Runs rows so the user can see all N.
       const results = await Promise.all(
-        selections.map((sel) =>
-          api.submitRun({
+        selections.map((sel) => {
+          // Only forward asset_context entries whose profile matches
+          // the selection we're firing. A notebook attached to
+          // ``db_prod`` should not bleed into a ``db_dev`` run.
+          const selAssets = assetContext
+            .filter((a) => a.profile === sel.profile)
+            .map((a) => ({ kind: a.kind, ref: a.ref }));
+          return api.submitRun({
             scope: buildScopeDict(sel.picks),
             column_overrides: buildColumnOverrides(sel.picks),
             apply: autoApply,
@@ -494,8 +507,9 @@ export default function RunNew() {
             database: sel.isCatalogBackend ? undefined : sel.database,
             catalog: sel.isCatalogBackend ? sel.database : undefined,
             llm_overrides: buildOverridesPayload(overrides, profileDefaults),
-          }),
-        ),
+            asset_context: selAssets.length > 0 ? selAssets : undefined,
+          });
+        }),
       );
       return results;
     },
@@ -651,6 +665,13 @@ export default function RunNew() {
                     ? "Best for large scopes where you can wait. Streams a polling progress indicator instead of per-table updates."
                     : "Only OpenAI and Anthropic providers support batch."
                 }
+              />
+              <AssetContextPanel
+                profiles={Array.from(
+                  new Set(selections.map((s) => s.profile).filter(Boolean)),
+                )}
+                value={assetContext}
+                onChange={setAssetContext}
               />
               <AdvancedLLMOverrides
                 open={advancedOpen}
@@ -864,6 +885,200 @@ function ScopePicker() {
         )}
       </CardBody>
     </Card>
+  );
+}
+
+interface AssetContextItem {
+  kind: string;
+  ref: string;
+  label: string;
+  profile: string;
+}
+
+interface AssetContextPanelProps {
+  profiles: string[];
+  value: AssetContextItem[];
+  onChange: (next: AssetContextItem[]) => void;
+}
+
+const ASSET_KINDS: Array<{ kind: string; label: string }> = [
+  { kind: "asset_notebook", label: "Notebooks" },
+  { kind: "asset_query", label: "Queries" },
+  { kind: "asset_stream", label: "Streams" },
+  { kind: "asset_pipeline", label: "Pipelines" },
+];
+
+interface AssetOption {
+  kind: string;
+  ref: string;
+  name: string;
+  location: string;
+  ingested_at: string;
+}
+
+function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps) {
+  const [pickerProfile, setPickerProfile] = useState<string>("");
+  const [pickerKind, setPickerKind] = useState<string>(ASSET_KINDS[0].kind);
+
+  const effectiveProfile = pickerProfile || profiles[0] || "";
+
+  const optionsQ = useQuery({
+    queryKey: [
+      "run-new",
+      "asset-context-options",
+      effectiveProfile,
+      pickerKind,
+    ],
+    queryFn: () =>
+      apiFetch<AssetOption[]>(
+        `/api/pages/asset-options?kind=${encodeURIComponent(pickerKind)}&profile=${encodeURIComponent(effectiveProfile)}`,
+      ),
+    enabled: Boolean(effectiveProfile),
+    staleTime: 15_000,
+  });
+
+  function add(option: AssetOption) {
+    if (value.some((a) => a.kind === option.kind && a.ref === option.ref)) {
+      return;
+    }
+    onChange([
+      ...value,
+      {
+        kind: option.kind,
+        ref: option.ref,
+        label: option.name,
+        profile: effectiveProfile,
+      },
+    ]);
+  }
+
+  function remove(item: AssetContextItem) {
+    onChange(
+      value.filter((a) => !(a.kind === item.kind && a.ref === item.ref)),
+    );
+  }
+
+  if (profiles.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border border-surface-border bg-surface-subtle p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            Ingested asset context
+          </div>
+          <div className="text-[11px] text-ink-dim">
+            Attach notebooks, queries, streams, or pipelines so the LLM
+            grounds descriptions in actual usage patterns. Only tables the
+            asset references will receive the extra context block.
+          </div>
+        </div>
+      </div>
+
+      {value.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {value.map((item) => (
+            <button
+              key={`${item.kind}::${item.ref}`}
+              type="button"
+              onClick={() => remove(item)}
+              className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft px-2 py-0.5 text-[11px] text-accent-ink hover:border-critical hover:text-critical"
+              title="Remove from run"
+            >
+              <span className="font-mono">{item.kind.replace("asset_", "")}</span>
+              <span>·</span>
+              <span className="truncate" style={{ maxWidth: 140 }}>
+                {item.label}
+              </span>
+              <span className="text-[10px] text-ink-dim">({item.profile})</span>
+              <span>×</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <select
+          value={effectiveProfile}
+          onChange={(e) => setPickerProfile(e.target.value)}
+          className="rounded border border-surface-border bg-surface px-2 py-1 text-xs text-ink"
+        >
+          {profiles.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+        <div className="flex flex-wrap gap-1">
+          {ASSET_KINDS.map((k) => {
+            const isActive = pickerKind === k.kind;
+            return (
+              <button
+                key={k.kind}
+                type="button"
+                onClick={() => setPickerKind(k.kind)}
+                className={clsx(
+                  "rounded-md border px-2 py-1 text-[11px] font-medium",
+                  isActive
+                    ? "border-accent bg-accent-soft text-accent-ink"
+                    : "border-surface-border bg-surface text-ink-dim hover:border-accent/40 hover:text-ink",
+                )}
+              >
+                {k.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {optionsQ.isLoading && (
+        <div className="text-[11px] text-ink-dim">Loading…</div>
+      )}
+      {optionsQ.error && (
+        <div className="text-[11px] text-critical">
+          {(optionsQ.error as Error).message}
+        </div>
+      )}
+      {optionsQ.data && optionsQ.data.length === 0 && (
+        <div className="text-[11px] text-ink-dim">
+          No ingested{" "}
+          {ASSET_KINDS.find((k) => k.kind === pickerKind)?.label.toLowerCase() ??
+            pickerKind}{" "}
+          for <span className="font-mono">{effectiveProfile}</span>. Run{" "}
+          <code className="rounded bg-surface px-1">/db ingest-assets</code>{" "}
+          first.
+        </div>
+      )}
+      {optionsQ.data && optionsQ.data.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {optionsQ.data.slice(0, 25).map((row) => {
+            const isSelected = value.some(
+              (a) => a.kind === row.kind && a.ref === row.ref,
+            );
+            return (
+              <button
+                key={`${row.kind}::${row.ref}`}
+                type="button"
+                disabled={isSelected}
+                onClick={() => add(row)}
+                className={clsx(
+                  "rounded-md border px-2 py-0.5 text-[11px]",
+                  isSelected
+                    ? "cursor-not-allowed border-surface-border bg-surface text-ink-dim"
+                    : "border-surface-border bg-surface text-ink hover:border-accent hover:bg-accent-soft",
+                )}
+                title={row.location || row.ref}
+              >
+                {row.name}
+                {isSelected && " ✓"}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
