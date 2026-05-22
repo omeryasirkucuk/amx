@@ -155,6 +155,27 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
 
         run_refresh(cfg, profile=profile, skip_confirm=yes)
 
+    @assets.command("reindex")
+    @click.option(
+        "--profile",
+        default=None,
+        help="Re-chunk + re-embed all ingested assets for this DB profile.",
+    )
+    @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt.")
+    @pass_config
+    def assets_reindex_cmd(cfg: AMXConfig, profile: str | None, yes: bool) -> None:
+        """Re-embed every ingested asset under the active embedding model.
+
+        Use after switching ``cfg.embedding_assets`` (e.g. MiniLM ->
+        OpenAI ada) — the existing Chroma vectors are in a different
+        space and AssetRAGStore would otherwise raise
+        ``EmbeddingProviderMismatch`` on next open. Recovery is
+        ``reset_collection`` + a fresh ingest under the active triple.
+        """
+        from amx.cli_support.commands.db_assets_impl import run_reindex
+
+        run_reindex(cfg, profile=profile, skip_confirm=yes)
+
     @assets.command("prune")
     @click.option(
         "--older-than",

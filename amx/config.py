@@ -1876,6 +1876,12 @@ class AMXConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embedding_docs: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     embedding_code: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    # Embedding model for the asset RAG store (notebooks, queries,
+    # streams, pipelines, streamlit apps, jobs ingested from remote
+    # platforms). Independent so the user can pin code-specialised
+    # embeddings for assets without touching the docs or code RAG
+    # configs. Defaults to the bundled MiniLM-L6-v2 (kind='minilm').
+    embedding_assets: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     doc_paths: list[str] = field(default_factory=list)
     code_paths: list[str] = field(default_factory=list)
     selected_schemas: list[str] = field(default_factory=list)
@@ -1994,6 +2000,7 @@ class AMXConfig:
             "llm",
             "embedding_docs",
             "embedding_code",
+            "embedding_assets",
             "doc_paths",
             "code_paths",
             "selected_schemas",
@@ -2036,6 +2043,7 @@ class AMXConfig:
             "llm",
             "embedding_docs",
             "embedding_code",
+            "embedding_assets",
             "db_profiles",
             "llm_profiles",
         }:
@@ -2226,6 +2234,9 @@ class AMXConfig:
             embedding_code_raw = data.get("embedding_code")
             if isinstance(embedding_code_raw, dict):
                 cfg.embedding_code = _embedding_from_mapping(embedding_code_raw)
+            embedding_assets_raw = data.get("embedding_assets")
+            if isinstance(embedding_assets_raw, dict):
+                cfg.embedding_assets = _embedding_from_mapping(embedding_assets_raw)
 
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
@@ -3043,6 +3054,8 @@ class AMXConfig:
             object.__setattr__(self.embedding_docs, "_amx_owner", self)
         with suppress(Exception):
             object.__setattr__(self.embedding_code, "_amx_owner", self)
+        with suppress(Exception):
+            object.__setattr__(self.embedding_assets, "_amx_owner", self)
         for profile in getattr(self, "db_profiles", {}).values():
             with suppress(Exception):
                 object.__setattr__(profile, "_amx_owner", self)

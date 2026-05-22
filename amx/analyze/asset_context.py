@@ -68,6 +68,7 @@ def resolve_asset_context_for_run(
     *,
     store: Any,
     refs: list[AssetRef],
+    rag_store: Any | None = None,
 ) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], list[ResolvedAsset]]:
     """Resolve ``refs`` into per-table context blocks for a Run.
 
@@ -78,11 +79,18 @@ def resolve_asset_context_for_run(
       orchestrator copies into ``AgentContext.asset_context``.
     * ``resolved_assets`` is the audit-trail view of the same data,
       flattened so the worker can persist it on ``analysis_runs``.
+
+    When the asset RAG store is available, each per-table block is
+    enriched with the top-K semantic chunks that mention the table —
+    "ProfileAgent prompt sees the cells in this notebook that talk
+    about ``sales.orders``", not just the first 8 cells of the
+    notebook.
     """
     blocks_by_table: dict[tuple[str, str], list[dict[str, Any]]] = {}
     resolved: list[ResolvedAsset] = []
     if not refs or store is None:
         return blocks_by_table, resolved
+    rag = rag_store if rag_store is not None else _try_asset_rag_store()
     with store._connect() as conn:  # noqa: SLF001
         for r in refs:
             payload = _load_one_asset(conn, r)
@@ -96,7 +104,24 @@ def resolve_asset_context_for_run(
             }
             for schema, table in payload["tables"]:
                 key = (schema.lower(), table.lower())
-                blocks_by_table.setdefault(key, []).append(block)
+                # Replace the byte-truncated excerpt with the top-K
+                # semantic chunks for this (table, asset) pairing
+                # when the RAG store is available. The query is the
+                # "fingerprint" of the table (``schema.table``) so
+                # only chunks that mention it bubble to the top.
+                table_block = dict(block)
+                if rag is not None:
+                    rag_excerpt = _rag_excerpt_for_table(
+                        rag=rag,
+                        kind=payload["kind"],
+                        profile=payload["profile"],
+                        remote_id=int(payload["remote_id"]),
+                        schema=schema,
+                        table=table,
+                    )
+                    if rag_excerpt:
+                        table_block["excerpt"] = rag_excerpt
+                blocks_by_table.setdefault(key, []).append(table_block)
             resolved.append(
                 ResolvedAsset(
                     kind=payload["kind"],
@@ -107,6 +132,50 @@ def resolve_asset_context_for_run(
                 )
             )
     return blocks_by_table, resolved
+
+
+def _try_asset_rag_store() -> Any | None:
+    """Attempt to instantiate the asset RAG store; ``None`` on failure
+    so the Run worker degrades to byte-truncated excerpts instead of
+    failing the whole submit when chromadb is missing or the
+    collection's embedding identity has drifted."""
+    try:
+        from amx.assets.rag import AssetRAGStore
+
+        return AssetRAGStore()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _rag_excerpt_for_table(
+    *,
+    rag: Any,
+    kind: str,
+    profile: str,
+    remote_id: int,
+    schema: str,
+    table: str,
+) -> str:
+    """Top-K RAG chunks of asset (kind/remote_id) that mention table."""
+    query = f"{schema}.{table} {table}"
+    try:
+        hits = rag.query(
+            query,
+            top_k=5,
+            profile=profile,
+            kind=kind,
+            remote_ids=[int(remote_id)],
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+    if not hits:
+        return ""
+    pieces: list[str] = []
+    for i, hit in enumerate(hits, start=1):
+        tag = hit.metadata.get("cell_type") or hit.metadata.get("statement_no")
+        prefix = f"[{tag}] " if tag else ""
+        pieces.append(f"{prefix}chunk #{i}: {hit.text.strip()}")
+    return "\n\n".join(pieces)
 
 
 def _load_one_asset(conn: Any, ref: AssetRef) -> dict[str, Any] | None:
@@ -151,6 +220,7 @@ def _load_one_asset(conn: Any, ref: AssetRef) -> dict[str, Any] | None:
         "kind": kind,
         "name": display_name,
         "profile": profile,
+        "remote_id": remote_id,
         "excerpt": excerpt,
         "tables": tables,
     }

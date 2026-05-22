@@ -464,13 +464,70 @@ def run_show(cfg, *, identifier, profile, asset_type):
 
 
 def run_search(cfg, *, query, profile, limit):
-    """Substring search across remote-ingested notebook source and saved/history SQL.
+    """Semantic search across ingested remote assets.
 
-    Note: ships with naive LIKE-based matching. A future PR will add
-    semantic / embedding-based search via the shared amx_code collection
-    (the same one driving /code search).
+    Tries the chunked + embedded :class:`AssetRAGStore` first
+    (notebooks, queries, pipelines, streams, streamlit apps, jobs
+    indexed at ingest time). Falls back to the legacy ``LIKE``
+    substring scan over notebook source + saved-query SQL when the
+    store is unavailable (Chroma not installed yet, no ingest run,
+    or a one-time CollectionIdentityMismatch).
     """
     profile_name = _resolve_profile(cfg, profile)
+    hits = _semantic_asset_search(cfg, query=query, profile=profile_name, limit=limit)
+    if hits is None:
+        hits = _like_asset_search(cfg, query=query, profile=profile_name, limit=limit)
+    if not hits:
+        click.echo(f"No remote assets matched '{query}' in profile '{profile_name}'.")
+        return
+    for h in hits[:limit]:
+        score_str = f" score={h['score']:.2f}" if h.get("score") is not None else ""
+        click.echo(f"  {h['tag']} {h['kind']} #{h['id']}: {h['name']} ({h['context']}){score_str}")
+
+
+def _semantic_asset_search(cfg, *, query, profile, limit):
+    try:
+        from amx.assets.rag import AssetRAGStore
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        store = AssetRAGStore(cfg=cfg)
+    except Exception:  # noqa: BLE001
+        return None
+    # Empty collection → tell the caller to fall back to LIKE. This
+    # keeps the CLI useful for users who haven't run ``/db assets
+    # reindex`` yet (e.g. legacy ingests from before the RAG store
+    # landed); the LIKE channel still surfaces matches over the raw
+    # source_text. Once the collection has at least one chunk the
+    # store is the canonical channel — an empty *result set* (no
+    # semantic match) is genuine and we don't fall back.
+    if store.count() == 0:
+        return None
+    try:
+        results = store.query(query, top_k=limit, profile=profile)
+    except Exception:  # noqa: BLE001
+        return None
+    if not results:
+        return []
+    out = []
+    for hit in results:
+        out.append(
+            {
+                "kind": hit.kind,
+                "id": hit.remote_id,
+                "name": hit.name or hit.chunk_id,
+                "tag": f"[rag:{hit.kind}]",
+                "context": hit.metadata.get("workspace_path")
+                or hit.metadata.get("warehouse")
+                or hit.metadata.get("query_kind")
+                or "",
+                "score": hit.score,
+            }
+        )
+    return out
+
+
+def _like_asset_search(cfg, *, query, profile, limit):
     db_path = _history_db_path(cfg)
     pattern = f"%{query}%"
     hits = []
@@ -479,7 +536,7 @@ def run_search(cfg, *, query, profile, limit):
         for row in conn.execute(
             "SELECT id, name, platform, language FROM remote_notebooks "
             "WHERE profile_name = ? AND source_text LIKE ? LIMIT ?",
-            (profile_name, pattern, limit),
+            (profile, pattern, limit),
         ).fetchall():
             hits.append(
                 {
@@ -488,12 +545,13 @@ def run_search(cfg, *, query, profile, limit):
                     "name": row["name"],
                     "tag": f"[remote:{row['platform']}]",
                     "context": row["language"],
+                    "score": None,
                 }
             )
         for row in conn.execute(
             "SELECT id, platform, kind, name, external_id FROM remote_queries "
             "WHERE profile_name = ? AND sql_text LIKE ? LIMIT ?",
-            (profile_name, pattern, limit),
+            (profile, pattern, limit),
         ).fetchall():
             display_name = row["name"] or row["external_id"]
             hits.append(
@@ -503,16 +561,50 @@ def run_search(cfg, *, query, profile, limit):
                     "name": display_name,
                     "tag": f"[remote:{row['platform']}]",
                     "context": row["kind"],
+                    "score": None,
                 }
             )
-    if not hits:
-        click.echo(f"No remote assets matched '{query}' in profile '{profile_name}'.")
-        return
-    for h in hits[:limit]:
-        click.echo(f"  {h['tag']} {h['kind']} #{h['id']}: {h['name']} ({h['context']})")
+    return hits
 
 
 # ── run_refresh ──────────────────────────────────────────────────────────────
+
+
+def run_reindex(cfg, *, profile, skip_confirm):
+    """Drop the asset RAG collection and re-embed under the active model.
+
+    Used after the user switches embedding providers (the
+    ``EmbeddingProviderMismatch`` recovery path) or to repair a
+    corrupted Chroma collection. Wraps
+    :meth:`AssetRAGStore.reset_collection` + a fresh
+    :meth:`ingest_profile` so the user sees one progress message
+    rather than two separate calls.
+    """
+    from amx.assets.rag import AssetRAGStore
+    from amx.storage.sqlite_store import history_store
+
+    profile_name = _resolve_profile(cfg, profile)
+    if not skip_confirm and not click.confirm(
+        f"Re-embed every ingested asset for profile '{profile_name}' "
+        f"under the active embedding model? This drops the existing "
+        f"Chroma collection.",
+        default=False,
+    ):
+        click.echo("Cancelled.")
+        return
+    hs = history_store()
+    if hs is None:
+        click.echo("History store unavailable — run /db ingest-assets first.")
+        return
+    try:
+        store = AssetRAGStore(cfg=cfg)
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Could not open asset RAG store: {exc}")
+        return
+    store.reset_collection()
+    with hs._connect() as conn:
+        indexed = store.ingest_profile(conn=conn, profile_name=profile_name)
+    click.echo(f"Re-indexed {indexed} chunks for profile '{profile_name}'.")
 
 
 def run_refresh(cfg, *, profile, skip_confirm):

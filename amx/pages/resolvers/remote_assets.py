@@ -29,6 +29,17 @@ _STREAMLIT_CAP = 800
 _NOTEBOOK_CODE_CELLS = 8
 _NOTEBOOK_RECENT_RUNS = 3
 
+# Per-kind cap used by the RAG path so a single asset block cannot
+# blow the 60 KB gather() budget.
+_KIND_CAP: dict[str, int] = {
+    "asset_notebook": _NOTEBOOK_CAP,
+    "asset_query": _QUERY_CAP,
+    "asset_pipeline": _PIPELINE_CAP,
+    "asset_job": _JOB_CAP,
+    "asset_stream": _STREAM_CAP,
+    "asset_streamlit": _STREAMLIT_CAP,
+}
+
 
 class RemoteAssetResolver:
     """Resolve ``asset_*`` page-asset refs into LLM context blocks.
@@ -38,20 +49,39 @@ class RemoteAssetResolver:
     ``_connect`` context manager.
     """
 
-    def __init__(self, history: Any) -> None:
+    def __init__(self, history: Any, *, rag_store: Any | None = None) -> None:
         self.history = history
+        # The RAG store is optional: tests inject a stub, the
+        # production factory leaves it ``None`` and the resolver
+        # opens one on first use (cached on the instance). When
+        # Chroma / sentence-transformers are unavailable we degrade
+        # to the metadata-only renderers below so page generation
+        # still produces *something*.
+        self._rag_store = rag_store
+        self._rag_attempted = rag_store is not None
 
-    def resolve_asset(self, ref: str, kind: str) -> str:
+    def resolve_asset(self, ref: str, kind: str, intent: str = "") -> str:
         try:
-            return self._resolve(ref, kind)
+            return self._resolve(ref, kind, intent)
         except Exception as exc:  # noqa: BLE001
             log.debug("resolve_asset(%s, %s) failed: %s", ref, kind, exc)
             return f"asset {ref} not found"
 
-    def _resolve(self, ref: str, kind: str) -> str:
+    def _resolve(self, ref: str, kind: str, intent: str) -> str:
         profile, asset_id = _split_ref(ref)
         if not profile or not asset_id:
             return f"asset {ref} not found"
+
+        # RAG-first for content-rich kinds. When an embedded
+        # ``AssetRAGStore`` is available and the page intent gives us
+        # a query, pull top-K chunks scoped to this specific asset
+        # and concatenate them under the per-kind byte cap. Avoids
+        # the first-N-cells heuristic that ignored the most relevant
+        # content in long notebooks.
+        if intent and kind in {"asset_notebook", "asset_query", "asset_pipeline"}:
+            rag_block = self._rag_block(profile, asset_id, kind, intent)
+            if rag_block:
+                return rag_block
 
         if kind == "asset_notebook":
             return self._notebook(profile, asset_id)
@@ -66,6 +96,75 @@ class RemoteAssetResolver:
         if kind == "asset_streamlit":
             return self._streamlit(profile, asset_id)
         return f"asset {ref} not found"
+
+    # ── RAG retrieval ───────────────────────────────────────────────
+
+    def _rag_block(self, profile: str, asset_id: str, kind: str, intent: str) -> str:
+        """Pull top-K chunks for ``(profile, kind, remote_id)`` and
+        concatenate them under the per-kind byte cap. Returns ``""``
+        when the store is unavailable so the caller falls through to
+        the legacy renderers.
+        """
+        try:
+            remote_id = int(asset_id)
+        except ValueError:
+            return ""
+        store = self._rag_store_or_open()
+        if store is None:
+            return ""
+        kind_stripped = kind.removeprefix("asset_")
+        try:
+            hits = store.query(
+                intent,
+                top_k=8,
+                profile=profile,
+                kind=kind_stripped,
+                remote_ids=[remote_id],
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("RAG query failed for %s:%s (%s): %s", profile, asset_id, kind, exc)
+            return ""
+        if not hits:
+            return ""
+        cap = _KIND_CAP.get(kind, _NOTEBOOK_CAP)
+        header_meta = hits[0]
+        header = (
+            f"## {kind_stripped.upper()} `{header_meta.name or asset_id}`\n"
+            f"- profile: {profile}\n"
+            f"- semantic match: {len(hits)} chunks\n\n"
+        )
+        body_pieces: list[str] = []
+        used = len(header)
+        for i, hit in enumerate(hits, start=1):
+            cell_type = hit.metadata.get("cell_type") or ""
+            header_path = hit.metadata.get("header_path") or ""
+            tag = ""
+            if cell_type:
+                tag = f"[{cell_type}"
+                if header_path:
+                    tag += f" — {header_path}"
+                tag += "] "
+            piece = f"{tag}chunk #{i} (score={hit.score:.2f}):\n{hit.text}\n"
+            if used + len(piece) > cap:
+                break
+            body_pieces.append(piece)
+            used += len(piece)
+        return header + "\n".join(body_pieces)
+
+    def _rag_store_or_open(self) -> Any | None:
+        if self._rag_store is not None:
+            return self._rag_store
+        if self._rag_attempted:
+            return None
+        self._rag_attempted = True
+        try:
+            from amx.assets.rag import AssetRAGStore
+
+            self._rag_store = AssetRAGStore()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("AssetRAGStore unavailable: %s", exc)
+            self._rag_store = None
+        return self._rag_store
 
     # ── per-kind renderers ──────────────────────────────────────────
 

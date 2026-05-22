@@ -58,6 +58,55 @@ def list_assets(
     return {"items": items, "count": len(items)}
 
 
+@router.get("/search")
+def search_assets(
+    q: str = Query(..., min_length=1, description="Free-form natural-language query."),
+    profile: str | None = Query(default=None),
+    kind: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Semantic search over ingested remote assets.
+
+    Routes the query through :class:`AssetRAGStore` (Chroma + dense
+    embedding). When the store is unavailable (no ingest yet, or a
+    one-time :class:`EmbeddingProviderMismatch` after switching
+    embedding models) the endpoint returns ``items=[]`` and
+    ``rag_available=false`` so the Studio UI can surface a hint.
+    """
+    try:
+        from amx.assets.rag import AssetRAGStore
+    except Exception as exc:  # noqa: BLE001
+        return {"items": [], "rag_available": False, "reason": f"AssetRAGStore unavailable: {exc}"}
+    try:
+        store = AssetRAGStore(cfg=cfg)
+    except Exception as exc:  # noqa: BLE001
+        return {"items": [], "rag_available": False, "reason": str(exc)}
+    try:
+        results = store.query(
+            q,
+            top_k=int(limit),
+            profile=profile or None,
+            kind=kind or None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"items": [], "rag_available": False, "reason": str(exc)}
+    items = [
+        {
+            "chunk_id": hit.chunk_id,
+            "kind": hit.kind,
+            "profile": hit.profile,
+            "remote_id": hit.remote_id,
+            "name": hit.name,
+            "score": hit.score,
+            "matched_text": hit.text,
+            "metadata": hit.metadata,
+        }
+        for hit in results
+    ]
+    return {"items": items, "rag_available": True, "count": len(items)}
+
+
 @router.get("/ingest/{job_id}/events")
 async def ingest_events(job_id: str) -> StreamingResponse:
     """Stream SSE progress events for a running ingest job."""
