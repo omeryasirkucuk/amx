@@ -122,11 +122,30 @@ class IngestAssetsService:
 
         lineage = self._catalog.rebuild_remote_asset_lineage(profile_name=request.profile_name)
         lineage_total = sum(v for v in lineage.values() if isinstance(v, int))
+
+        # Materialise asset-to-asset lineage edges (job → notebook /
+        # pipeline / query, task DAG, pipeline → notebook / target
+        # table) for the Studio Lineage panel. Best-effort: errors
+        # are surfaced via the failures map but do not block the
+        # rest of the refresh.
+        asset_edge_total = 0
+        try:
+            from amx.assets.lineage import LineageExtractor
+            from amx.storage.sqlite_store import history_store
+
+            hs = history_store()
+            if hs is not None:
+                with hs._connect() as conn:  # noqa: SLF001 — internal helper
+                    extractor = LineageExtractor(conn)
+                    asset_edge_total = extractor.extract_for_profile(request.profile_name)
+        except Exception as exc:  # noqa: BLE001
+            failures["asset_lineage_edges"] = str(exc)
+
         emit(
             IngestProgressEvent(
                 asset_type="lineage",
                 state="completed",
-                count=lineage_total,
+                count=lineage_total + asset_edge_total,
             )
         )
 
@@ -151,6 +170,13 @@ class IngestAssetsService:
                         indexed_total = store.ingest_profile(
                             conn=conn, profile_name=request.profile_name
                         )
+                        # Strip Chroma entries whose source row was
+                        # removed since the last ingest so search
+                        # never opens a drawer for a deleted asset.
+                        try:
+                            store.prune_stale_vectors(conn, request.profile_name)
+                        except Exception:  # noqa: BLE001 — best-effort
+                            pass
                 emit(
                     IngestProgressEvent(
                         asset_type="indexing",
@@ -180,6 +206,7 @@ class IngestAssetsService:
             )
 
         counts["lineage"] = lineage_total
+        counts["asset_lineage_edges"] = asset_edge_total
         counts["indexed_chunks"] = indexed_total
         return IngestResult(counts=counts, failures=failures)
 

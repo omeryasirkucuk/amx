@@ -418,12 +418,26 @@ class AssetRAGStore:
             # ingest_profile re-embeds every row regardless of
             # current content hash.
             _clear_last_embedded_hashes(conn, profile_name)
-        return self.ingest_profile(
+        written = self.ingest_profile(
             conn=conn,
             profile_name=profile_name,
             kinds=kinds,
             only_changed=not force,
         )
+        # Sweep any Chroma entries whose row was removed from SQLite
+        # between ingest passes. Stale vectors are the documented
+        # source of the "Asset not found" 404 the Studio drawer
+        # used to display after a search hit. Best-effort: never
+        # blocks the reindex on a sweep failure.
+        try:
+            self.prune_stale_vectors(conn, profile_name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "reindex_profile: prune_stale_vectors failed for %s: %s",
+                profile_name,
+                exc,
+            )
+        return written
 
     # ── reads ─────────────────────────────────────────────────────
 
@@ -507,6 +521,102 @@ class AssetRAGStore:
             return int(self.collection.count())
         except Exception:  # noqa: BLE001
             return 0
+
+    def rerank(
+        self,
+        candidate_remote_ids: list[int],
+        text: str,
+        *,
+        profile: str,
+        kind: str,
+        top_k: int = 20,
+    ) -> list[AssetQueryHit]:
+        """Order ``candidate_remote_ids`` by semantic similarity to ``text``.
+
+        Companion of :meth:`query` used by :class:`HybridAssetSearch`:
+        FTS5 produces the candidate set (keyword presence guaranteed),
+        then Chroma reranks those candidates by cosine. Empty candidate
+        list returns ``[]`` immediately so the caller never pays the
+        Chroma round-trip.
+        """
+        if not candidate_remote_ids or not text or not text.strip() or top_k <= 0:
+            return []
+        unique_ids = list({int(r) for r in candidate_remote_ids})
+        return self.query(
+            text,
+            top_k=int(top_k),
+            profile=profile,
+            kind=kind,
+            remote_ids=unique_ids,
+        )
+
+    def prune_stale_vectors(self, conn: Any, profile_name: str) -> int:
+        """Delete Chroma entries whose (kind, remote_id) is gone from SQLite.
+
+        Runs at the end of every reindex pass. For each asset kind,
+        gather the set of ``remote_id`` values currently alive in
+        SQLite and the set indexed in Chroma; remove the difference.
+
+        Returns the number of stale chunks deleted. Best-effort:
+        Chroma / SQLite errors are logged and the method keeps going
+        with the kinds it can reach.
+        """
+        kinds_to_tables = {
+            "notebook": "remote_notebooks",
+            "query": "remote_queries",
+            "pipeline": "remote_pipelines",
+            "job": "remote_jobs",
+            "stream": "remote_streams",
+            "streamlit": "remote_streamlit_apps",
+        }
+        removed = 0
+        for kind, table in kinds_to_tables.items():
+            try:
+                rows = conn.execute(
+                    f"SELECT id FROM {table} WHERE profile_name = ?",  # noqa: S608
+                    (profile_name,),
+                ).fetchall()
+                live_ids = {int(r[0]) for r in rows}
+            except Exception as exc:  # noqa: BLE001
+                log.warning("prune_stale_vectors: SQLite read failed for %s: %s", kind, exc)
+                continue
+            try:
+                where = {
+                    "$and": [
+                        {"profile": {"$eq": profile_name}},
+                        {"kind": {"$eq": kind}},
+                    ]
+                }
+                got = self.collection.get(where=where, include=["metadatas"])
+            except Exception as exc:  # noqa: BLE001
+                log.warning("prune_stale_vectors: Chroma get failed for %s: %s", kind, exc)
+                continue
+            ids = list(got.get("ids") or [])
+            metas = list(got.get("metadatas") or [])
+            stale_chunk_ids: list[str] = []
+            for chunk_id, meta in zip(ids, metas, strict=False):
+                if not isinstance(meta, dict):
+                    continue
+                try:
+                    rid = int(meta.get("remote_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if rid and rid not in live_ids:
+                    stale_chunk_ids.append(str(chunk_id))
+            if not stale_chunk_ids:
+                continue
+            try:
+                self.collection.delete(ids=stale_chunk_ids)
+                removed += len(stale_chunk_ids)
+                log.info(
+                    "prune_stale_vectors: removed %d stale chunks for %s/%s",
+                    len(stale_chunk_ids),
+                    profile_name,
+                    kind,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("prune_stale_vectors: delete failed for %s: %s", kind, exc)
+        return removed
 
 
 # ── PR-D: incremental-embed helpers ───────────────────────────────────────

@@ -1457,6 +1457,48 @@ class SQLiteHistoryStore:
                 "ON asset_chunking_overrides(profile_name, kind)"
             )
 
+            # ── asset_lineage_edges: asset-to-asset lineage relationships ────
+            # Populated by ``amx.assets.lineage.LineageExtractor`` on every
+            # refresh. Asset-level edges only — never reads into notebook
+            # source. ``from_kind``/``to_kind`` use the same identifiers as
+            # ASSET_KINDS in the assets router. ``raw_ref`` carries the
+            # platform-native pointer (notebook path, pipeline_id, ...)
+            # for forensic debugging when resolution fails. UNIQUE forbids
+            # duplicate edges so extraction is idempotent.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS asset_lineage_edges (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_name TEXT NOT NULL,
+                    from_kind TEXT NOT NULL,
+                    from_id INTEGER NOT NULL,
+                    to_kind TEXT NOT NULL,
+                    to_id INTEGER NOT NULL,
+                    edge_type TEXT NOT NULL,
+                    raw_ref TEXT,
+                    discovered_at REAL NOT NULL,
+                    UNIQUE(profile_name, from_kind, from_id, to_kind, to_id, edge_type)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_asset_lineage_edges_from "
+                "ON asset_lineage_edges(profile_name, from_kind, from_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_asset_lineage_edges_to "
+                "ON asset_lineage_edges(profile_name, to_kind, to_id)"
+            )
+
+            # FTS5 virtual tables backing the hybrid-search candidate
+            # generation step. The Assets search box runs an FTS5 MATCH
+            # first (BM25-ranked candidate ids) and only reranks those
+            # ids semantically — keyword presence is a precondition,
+            # eliminating "result text does not contain the search term"
+            # surprises. profile_name + remote_id are UNINDEXED so they
+            # can be filtered without participating in tokenisation.
+            self._ensure_fts_tables(conn)
+
             # PR-D (incremental embed): add ``last_embedded_hash`` to
             # the three content-bearing remote_* tables on existing DBs
             # that pre-date the column. ``CREATE TABLE IF NOT EXISTS``
@@ -1757,6 +1799,153 @@ class SQLiteHistoryStore:
             log.info("Migrated history.db: created remote_workspace_tree")
         except Exception as exc:
             log.warning("Could not create remote_workspace_tree: %s", exc)
+
+    # FTS5 virtual-table specs used by ``_ensure_fts_tables``. Each entry
+    # maps the FTS table name to the (source_table, [searchable_columns])
+    # pair. Searchable columns are tokenised; profile_name + remote_id
+    # are appended as UNINDEXED auxiliary columns for filtering.
+    _FTS_TABLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+        ("fts_notebooks", "remote_notebooks", ("name", "workspace_path", "source_text")),
+        ("fts_queries", "remote_queries", ("name", "sql_text", "warehouse")),
+        ("fts_jobs", "remote_jobs", ("name", "tags_json")),
+        ("fts_pipelines", "remote_pipelines", ("name", "target_schema", "libraries_json")),
+        ("fts_streams", "remote_streams", ("qualified_name", "source_table_fqn")),
+        (
+            "fts_streamlit",
+            "remote_streamlit_apps",
+            ("qualified_name", "main_file", "root_location"),
+        ),
+    )
+
+    def _ensure_fts_tables(self, conn: Any) -> None:
+        """Idempotently create FTS5 virtual tables and sync triggers.
+
+        For each (fts_<kind>, remote_<kind>s, [cols]) entry in
+        ``_FTS_TABLES`` this method:
+
+        1. Creates the FTS5 virtual table (no-op if it already exists)
+           with the same searchable columns plus ``profile_name`` and
+           ``remote_id`` as UNINDEXED filter columns.
+        2. Installs ``AFTER INSERT``, ``AFTER UPDATE`` and
+           ``AFTER DELETE`` triggers on the source table so the FTS
+           mirror stays in sync without explicit application writes.
+        3. Backfills any rows that pre-existed the FTS table on first
+           creation (empty FTS but populated source).
+
+        The triggers use ``rowid`` so removing a row from the FTS table
+        is an O(1) lookup keyed on ``remote_id``.
+        """
+        existing_tables: set[str] = set()
+        try:
+            existing_tables = {
+                str(r[0])
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+                ).fetchall()
+            }
+        except Exception as exc:
+            log.warning("Could not enumerate sqlite_master for FTS sync: %s", exc)
+            return
+
+        for fts_name, source_table, cols in self._FTS_TABLES:
+            if source_table not in existing_tables:
+                # Source table not yet created on this install: skip.
+                continue
+            cols_decl = ", ".join(cols)
+            try:
+                conn.execute(
+                    f"""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS {fts_name} USING fts5(
+                        {cols_decl},
+                        profile_name UNINDEXED,
+                        remote_id UNINDEXED,
+                        tokenize = 'unicode61 remove_diacritics 2'
+                    )
+                    """
+                )
+            except Exception as exc:
+                log.warning("Could not create FTS table %s: %s", fts_name, exc)
+                continue
+
+            insert_cols = ", ".join(list(cols) + ["profile_name", "remote_id"])
+            new_values = ", ".join([f"COALESCE(new.{c}, '')" for c in cols]) + (
+                ", new.profile_name, new.id"
+            )
+            old_values_for_delete = "old.id"
+            try:
+                conn.execute(
+                    f"""
+                    CREATE TRIGGER IF NOT EXISTS {fts_name}_ai
+                    AFTER INSERT ON {source_table}
+                    BEGIN
+                        INSERT INTO {fts_name}({insert_cols})
+                        VALUES ({new_values});
+                    END
+                    """
+                )
+                conn.execute(
+                    f"""
+                    CREATE TRIGGER IF NOT EXISTS {fts_name}_ad
+                    AFTER DELETE ON {source_table}
+                    BEGIN
+                        DELETE FROM {fts_name}
+                        WHERE remote_id = {old_values_for_delete}
+                          AND profile_name = old.profile_name;
+                    END
+                    """
+                )
+                conn.execute(
+                    f"""
+                    CREATE TRIGGER IF NOT EXISTS {fts_name}_au
+                    AFTER UPDATE ON {source_table}
+                    BEGIN
+                        DELETE FROM {fts_name}
+                        WHERE remote_id = old.id
+                          AND profile_name = old.profile_name;
+                        INSERT INTO {fts_name}({insert_cols})
+                        VALUES ({new_values});
+                    END
+                    """
+                )
+            except Exception as exc:
+                log.warning(
+                    "Could not install %s sync triggers on %s: %s",
+                    fts_name,
+                    source_table,
+                    exc,
+                )
+                continue
+
+            try:
+                fts_count = conn.execute(f"SELECT COUNT(*) FROM {fts_name}").fetchone()[0]
+                src_count = conn.execute(f"SELECT COUNT(*) FROM {source_table}").fetchone()[0]
+            except Exception as exc:
+                log.warning("Could not count rows for %s backfill: %s", fts_name, exc)
+                continue
+            if fts_count >= src_count or src_count == 0:
+                continue
+            # Backfill: source has more rows than FTS (table was just
+            # created against an existing dataset).
+            select_cols = ", ".join([f"COALESCE({c}, '')" for c in cols]) + (", profile_name, id")
+            try:
+                conn.execute(f"DELETE FROM {fts_name}")
+                conn.execute(
+                    f"INSERT INTO {fts_name}({insert_cols}) "
+                    f"SELECT {select_cols} FROM {source_table}"
+                )
+                log.info(
+                    "Backfilled FTS table %s from %s (%d rows)",
+                    fts_name,
+                    source_table,
+                    src_count,
+                )
+            except Exception as exc:
+                log.warning(
+                    "Could not backfill FTS table %s from %s: %s",
+                    fts_name,
+                    source_table,
+                    exc,
+                )
 
     def _ensure_scheduled_columns(self, conn: Any) -> None:
         """Idempotently add ``database`` / ``catalog`` to scheduled_runs.

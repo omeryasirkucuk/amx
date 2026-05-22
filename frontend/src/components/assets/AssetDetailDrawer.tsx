@@ -16,9 +16,10 @@ import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { api, type RemoteAssetKind } from "../../lib/api";
+import { api, ApiError, type RemoteAssetKind } from "../../lib/api";
 import { cn } from "../../lib/cn";
 import AlertDialog from "../ui/AlertDialog";
+import LineagePanel from "./LineagePanel";
 
 interface Props {
   open: boolean;
@@ -628,11 +629,44 @@ export default function AssetDetailDrawer({
           {isLoading && (
             <p className="text-sm text-ink-dim">Loading…</p>
           )}
-          {error && (
-            <p className="rounded-md bg-critical/10 px-3 py-2 text-sm text-critical">
-              {(error as Error).message}
-            </p>
-          )}
+          {error && (() => {
+            // A 404 here means the search hit pointed at a row that is
+            // no longer in SQLite — most often a stale Chroma vector
+            // from a previous ingest. ``reindex_profile`` now prunes
+            // these as a final pass, but until the next refresh runs
+            // the drawer still sees them. Render a soft empty-state
+            // panel instead of a red error toast so the user can act.
+            const apiErr = error as unknown;
+            const isNotFound =
+              apiErr instanceof ApiError && apiErr.status === 404;
+            if (isNotFound) {
+              return (
+                <div className="rounded-md border border-border bg-surface-subtle px-4 py-6 text-center">
+                  <p className="text-sm font-medium text-ink">
+                    Asset no longer available
+                  </p>
+                  <p className="mt-1 text-xs text-ink-dim">
+                    This {kind} may have been removed since the search
+                    index was last refreshed. Try searching again, or
+                    re-run <span className="font-mono">/db assets reindex</span>
+                    {" "}to drop the stale entry.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="mt-3 rounded-md border border-border bg-surface px-3 py-1 text-xs font-medium text-ink hover:bg-surface-subtle"
+                  >
+                    Close
+                  </button>
+                </div>
+              );
+            }
+            return (
+              <p className="rounded-md bg-critical/10 px-3 py-2 text-sm text-critical">
+                {(error as Error).message}
+              </p>
+            );
+          })()}
           {data && (
             <div className="space-y-5">
               {/* Notebook cells */}
@@ -681,6 +715,17 @@ export default function AssetDetailDrawer({
 
               {/* Pipeline detail */}
               {kind === "pipeline" && <PipelineDetail data={data} />}
+
+              {/* Lineage panel (jobs + pipelines only) — clickable
+                  chips swap the drawer to the touched asset. */}
+              {(kind === "job" || kind === "pipeline") && (
+                <LineagePanel
+                  kind={kind}
+                  assetId={assetId}
+                  profile={profile}
+                  onOpenAsset={onOpenAsset}
+                />
+              )}
 
               {/* Streamlit detail */}
               {kind === "streamlit" && <StreamlitDetail data={data} />}
