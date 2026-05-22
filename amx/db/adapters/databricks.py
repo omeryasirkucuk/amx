@@ -981,11 +981,16 @@ class DatabricksAdapter(DatabaseAdapter):
             )
 
     def list_remote_pipelines_metadata(self, engine=None):
-        """Yield :class:`AssetMetadata` for every DLT pipeline."""
+        """Yield :class:`AssetMetadata` for every DLT pipeline.
+
+        Uses the thin ``list_pipelines_headers`` cousin so the wizard
+        avoids the per-pipeline ``/api/2.0/pipelines/<id>`` round-trip
+        — only the picked ids hit ``list_remote_pipelines`` later.
+        """
         from amx.db.adapters.remote_asset_types import AssetMetadata
 
         del engine
-        for raw in self._workspace_client.list_pipelines():
+        for raw in self._workspace_client.list_pipelines_headers():
             yield AssetMetadata(
                 kind="pipeline",
                 external_id=str(raw.get("pipeline_id") or ""),

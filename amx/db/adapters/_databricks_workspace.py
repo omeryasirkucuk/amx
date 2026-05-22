@@ -140,17 +140,28 @@ class DatabricksWorkspaceClient:
 
     # ---- pipelines (DLT) ---------------------------------------------
 
-    def list_pipelines(self) -> Iterator[dict[str, Any]]:
+    def list_pipelines_headers(self) -> Iterator[dict[str, Any]]:
+        """Yield each DLT pipeline's thin list-endpoint record only.
+
+        The cheap browse path used by
+        ``DatabricksAdapter.list_remote_pipelines_metadata`` — skips
+        the per-pipeline ``/api/2.0/pipelines/<id>`` GET so the
+        Studio browse table populates without an O(N) round-trip
+        burst.
+        """
         for page in self._paginated_get(
             "/api/2.0/pipelines",
             params={"max_results": 25},
             page_token_field="next_page_token",
             items_field="statuses",
         ):
-            for thin in page:
-                pid = thin["pipeline_id"]
-                full = self._get(f"/api/2.0/pipelines/{pid}").json()
-                yield full
+            yield from page
+
+    def list_pipelines(self) -> Iterator[dict[str, Any]]:
+        for thin in self.list_pipelines_headers():
+            pid = thin["pipeline_id"]
+            full = self._get(f"/api/2.0/pipelines/{pid}").json()
+            yield full
 
     # ---- SQL queries -------------------------------------------------
 

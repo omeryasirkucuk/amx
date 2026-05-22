@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -33,6 +34,12 @@ ASSET_TYPES = [
 _WINDOW_RX = re.compile(r"^(\d+)([dhm])$")
 
 
+# PR-A: kinds the user can cherry-pick. Queries + task_dependencies
+# are time-windowed aggregates filtered by ``history_days`` /
+# ``query_history_limit`` — they're not per-asset rows.
+_PICKABLE_KINDS = {"notebooks", "jobs", "pipelines", "streamlit_apps", "streams"}
+
+
 def run_ingest_wizard(
     cfg: AMXConfig,
     *,
@@ -41,9 +48,9 @@ def run_ingest_wizard(
     history_days: int,
     runs_per_job: int,
     query_history_limit: int,
+    include_ids: tuple[str, ...] = (),
 ) -> None:
     """Wizard-first ingestion: prompt for missing inputs, then run."""
-    profile_name = _resolve_profile(cfg, profile)
     if types_csv:
         requested = [t.strip() for t in types_csv.split(",") if t.strip()]
         unknown = [t for t in requested if t not in ASSET_TYPES]
@@ -58,9 +65,33 @@ def run_ingest_wizard(
         click.echo("Nothing to do (no asset types selected).")
         return
 
+    # PR-A: validate --include-id flags up front. Doing this before
+    # opening the connector keeps the error surface tight — a typo
+    # in the flag shouldn't depend on whether the DB profile happens
+    # to be reachable. Wizard prompts are deferred to after the
+    # connector is open, since they need the live adapter to browse.
+    selection: dict[str, list[str]] | None = _parse_include_ids(include_ids, types)
+
+    profile_name = _resolve_profile(cfg, profile)
     connector = _open_connector(cfg, profile_name)
     catalog = _open_catalog(cfg)
     svc = IngestAssetsService(connector=connector, catalog=catalog)
+
+    if selection is None and types_csv is None:
+        # Wizard mode: only prompt when stdin is interactive AND the
+        # user picked at least one pickable kind. Non-interactive
+        # (piped) sessions skip the prompt and fall back to "ingest
+        # all", same as `--types ...` on the command line.
+        pickable = [t for t in types if t in _PICKABLE_KINDS]
+        if pickable and sys.stdin.isatty():
+            if click.confirm(
+                "Browse and pick specific assets instead of ingesting all?",
+                default=False,
+            ):
+                selection = _browse_and_pick(connector, pickable)
+                if selection is not None and not any(selection.values()):
+                    click.echo("Nothing to do (no assets picked).")
+                    return
 
     def on_progress(evt: IngestProgressEvent) -> None:
         if evt.state == "started":
@@ -84,6 +115,7 @@ def run_ingest_wizard(
         history_days=history_days,
         runs_per_job=runs_per_job,
         query_history_limit=query_history_limit,
+        selection=selection,
     )
     result = svc.run(req, progress=on_progress)
     summary = ", ".join(f"{k}={v}" for k, v in result.counts.items())
@@ -92,6 +124,108 @@ def run_ingest_wizard(
         click.echo("Failures:")
         for k, v in result.failures.items():
             click.echo(f"  - {k}: {v}")
+
+
+def _parse_include_ids(
+    raw: tuple[str, ...], scoped_types: list[str]
+) -> dict[str, list[str]] | None:
+    """Parse repeated ``--include-id KIND:EXTERNAL_ID`` flags.
+
+    Returns ``None`` when the user supplied no flags (so the caller
+    keeps the pre-PR-A "ingest all" path); otherwise a dict
+    ``{kind: [ids]}`` ready to plug into ``IngestRequest.selection``.
+
+    Validates that every KIND is one of the pickable kinds **and**
+    is in the user's selected ``types`` — passing
+    ``--include-id queries:42`` would be silently ignored otherwise
+    since the service can't filter on a time-windowed kind.
+    """
+    if not raw:
+        return None
+    out: dict[str, list[str]] = {}
+    scoped = set(scoped_types)
+    for token in raw:
+        if ":" not in token:
+            raise click.ClickException(f"--include-id expects KIND:EXTERNAL_ID, got {token!r}.")
+        kind, ext_id = token.split(":", 1)
+        kind = kind.strip()
+        ext_id = ext_id.strip()
+        if kind not in _PICKABLE_KINDS:
+            raise click.ClickException(
+                f"--include-id kind {kind!r} is not pickable. "
+                f"Valid: {', '.join(sorted(_PICKABLE_KINDS))}."
+            )
+        if kind not in scoped:
+            raise click.ClickException(
+                f"--include-id refers to {kind!r} but --types does not include it. "
+                "Add the kind to --types or drop the flag."
+            )
+        if not ext_id:
+            raise click.ClickException(
+                f"--include-id {token!r} is missing an EXTERNAL_ID after the colon."
+            )
+        out.setdefault(kind, []).append(ext_id)
+    return out
+
+
+def _browse_and_pick(connector, pickable: list[str]) -> dict[str, list[str]] | None:
+    """Interactive "browse, then pick" CLI flow.
+
+    Mirrors the Studio IngestDialog browse step: for each pickable
+    kind the user has in scope, list its assets via the connector's
+    cheap metadata methods and prompt for a comma-separated index
+    selection. Returns ``None`` (use defaults) if the user bails
+    out mid-flow; otherwise ``{kind: [ids]}`` (empty list for kinds
+    the user skipped — those still get filtered to nothing).
+    """
+    selection: dict[str, list[str]] = {kind: [] for kind in pickable}
+    method_map = {
+        "notebooks": "list_remote_notebooks_metadata",
+        "jobs": "list_remote_jobs_metadata",
+        "pipelines": "list_remote_pipelines_metadata",
+        "streamlit_apps": "list_remote_streamlit_apps_metadata",
+        "streams": "list_remote_streams_metadata",
+    }
+    for kind in pickable:
+        method = getattr(connector, method_map[kind], None)
+        if method is None:
+            click.echo(f"  · {kind}: profile adapter has no metadata listing — skipped.")
+            continue
+        try:
+            items = list(method())
+        except Exception as exc:  # noqa: BLE001
+            click.echo(f"  ✗ {kind}: failed to browse — {exc}")
+            continue
+        if not items:
+            click.echo(f"  · {kind}: none available — skipped.")
+            continue
+        click.echo(f"\nAvailable {kind} ({len(items)}):")
+        for i, meta in enumerate(items, 1):
+            tail = f"  ({meta.path})" if meta.path else ""
+            click.echo(f"  [{i}] {meta.name}{tail}")
+        raw = click.prompt(
+            f"Pick {kind} (comma-separated indices, blank to skip kind)",
+            default="",
+            show_default=False,
+        )
+        if not raw.strip():
+            continue
+        picks: list[str] = []
+        for tok in raw.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                idx = int(tok)
+            except ValueError:
+                click.echo(f"  · ignoring non-integer pick {tok!r}.")
+                continue
+            if 1 <= idx <= len(items):
+                picks.append(items[idx - 1].external_id)
+            else:
+                click.echo(f"  · ignoring out-of-range pick {idx}.")
+        selection[kind] = picks
+    return selection
 
 
 def _prompt_types(available: list[str]) -> list[str]:

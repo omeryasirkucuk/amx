@@ -67,6 +67,19 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
         type=int,
         help="Cap on query-history rows fetched (Snowflake + Databricks).",
     )
+    @click.option(
+        "--include-id",
+        "include_ids",
+        multiple=True,
+        metavar="KIND:EXTERNAL_ID",
+        help=(
+            "Cherry-pick individual platform assets, repeatable. "
+            "KIND is one of notebooks/jobs/pipelines/streamlit_apps/streams. "
+            "Example: --include-id notebooks:abc123 --include-id jobs:42. "
+            "When set, only the listed ids ingest for each named kind; other "
+            "kinds keep the default 'ingest all' behaviour."
+        ),
+    )
     @pass_config
     def ingest_assets_cmd(
         cfg: AMXConfig,
@@ -75,6 +88,7 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
         history_days: int,
         runs_per_job: int,
         query_history_limit: int,
+        include_ids: tuple[str, ...],
     ) -> None:
         """Ingest remote executable assets (notebooks, jobs, pipelines, ...) for a profile."""
         from amx.cli_support.commands.db_assets_impl import run_ingest_wizard
@@ -86,6 +100,7 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
             history_days=history_days,
             runs_per_job=runs_per_job,
             query_history_limit=query_history_limit,
+            include_ids=include_ids,
         )
 
     @db_group.group("assets")
