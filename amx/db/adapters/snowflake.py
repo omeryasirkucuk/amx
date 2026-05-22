@@ -751,6 +751,30 @@ class SnowflakeAdapter(DatabaseAdapter):
 
     # ── Remote executable assets ──────────────────────────────────────────
 
+    def list_workspace_children(self, engine=None, *, parent_path: str, kind: str):
+        """PR-E lazy discover for Snowflake.
+
+        Snowflake notebooks have no folder hierarchy. For tree-mode
+        parity with Databricks we flatten:
+        * parent_path == '' → yield every notebook as a leaf via
+          :meth:`list_remote_notebooks_metadata`.
+        * Any non-empty parent_path → yield nothing.
+        """
+        from amx.db.adapters.remote_asset_types import WorkspaceEntry
+
+        if kind != "notebook" or parent_path:
+            return
+        for meta in self.list_remote_notebooks_metadata(engine):
+            yield WorkspaceEntry(
+                kind="notebook",
+                path=meta.path or meta.external_id,
+                name=meta.name,
+                is_directory=False,
+                external_id=meta.external_id,
+                owner=meta.owner,
+                last_modified=meta.last_modified,
+            )
+
     def list_remote_notebooks_metadata(self, engine):
         """Yield :class:`AssetMetadata` for every Snowflake notebook.
 

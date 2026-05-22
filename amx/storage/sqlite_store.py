@@ -1465,6 +1465,32 @@ class SQLiteHistoryStore:
             # path that gets it added to a pre-PR-D history.db.
             self._ensure_remote_embed_columns(conn)
 
+            # PR-E (lazy discover): create the workspace tree cache
+            # table for the Studio IngestDialog tree picker. Idempotent.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS remote_workspace_tree (
+                    profile_name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    parent_path TEXT NOT NULL DEFAULT '',
+                    name TEXT NOT NULL,
+                    is_directory INTEGER NOT NULL DEFAULT 0,
+                    external_id TEXT,
+                    owner TEXT,
+                    last_modified TIMESTAMP,
+                    children_fetched_at REAL,
+                    fetched_at REAL NOT NULL,
+                    PRIMARY KEY (profile_name, kind, path)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_remote_workspace_tree_parent "
+                "ON remote_workspace_tree(profile_name, kind, parent_path)"
+            )
+            self._ensure_workspace_tree_table(conn)
+
             # Seed the bundled default logos into ``lineage_logos`` if
             # they aren't there yet. Idempotent via the UNIQUE(key,
             # source) index — re-runs on every init are no-ops after
@@ -1688,6 +1714,49 @@ class SQLiteHistoryStore:
                     table_name,
                     exc,
                 )
+
+    def _ensure_workspace_tree_table(self, conn: Any) -> None:
+        """Idempotently create the PR-E discover cache table.
+
+        ``CREATE TABLE IF NOT EXISTS`` in init() handles fresh DBs;
+        this helper safeguards legacy DBs that were initialised
+        before the table existed.
+        """
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='remote_workspace_tree'"
+            ).fetchone()
+        except Exception as exc:
+            log.warning("Could not check for remote_workspace_tree: %s", exc)
+            return
+        if row:
+            return
+        try:
+            conn.execute(
+                """
+                CREATE TABLE remote_workspace_tree (
+                    profile_name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    parent_path TEXT NOT NULL DEFAULT '',
+                    name TEXT NOT NULL,
+                    is_directory INTEGER NOT NULL DEFAULT 0,
+                    external_id TEXT,
+                    owner TEXT,
+                    last_modified TIMESTAMP,
+                    children_fetched_at REAL,
+                    fetched_at REAL NOT NULL,
+                    PRIMARY KEY (profile_name, kind, path)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_remote_workspace_tree_parent "
+                "ON remote_workspace_tree(profile_name, kind, parent_path)"
+            )
+            log.info("Migrated history.db: created remote_workspace_tree")
+        except Exception as exc:
+            log.warning("Could not create remote_workspace_tree: %s", exc)
 
     def _ensure_scheduled_columns(self, conn: Any) -> None:
         """Idempotently add ``database`` / ``catalog`` to scheduled_runs.

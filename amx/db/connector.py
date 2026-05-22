@@ -1417,6 +1417,12 @@ class DatabaseConnector:
     # yields ``AssetMetadata`` rows: cheap identity only, no
     # content fetch.
 
+    def list_workspace_children(self, *, parent_path: str, kind: str):
+        """PR-E lazy discover — yield immediate children of ``parent_path``."""
+        return self._adapter.list_workspace_children(
+            self.engine, parent_path=parent_path, kind=kind
+        )
+
     def list_remote_notebooks_metadata(self):
         return self._adapter.list_remote_notebooks_metadata(self.engine)
 
