@@ -7,13 +7,14 @@
  * opens the ingest dialog.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, Loader2, Search, Trash2 } from "lucide-react";
+import { Download, Loader2, Scissors, Search, Trash2 } from "lucide-react";
 
 import PageHeader from "../components/PageHeader";
 import { Button } from "../components/ui";
 import AlertDialog from "../components/ui/AlertDialog";
+import Dialog from "../components/ui/Dialog";
 import { api, apiFetch, type RemoteAssetKind, type RemoteAssetRow } from "../lib/api";
 import IngestDialog from "../components/assets/IngestDialog";
 import AssetDetailDrawer from "../components/assets/AssetDetailDrawer";
@@ -56,14 +57,18 @@ interface AssetTableProps {
   kind: RemoteAssetKind;
   onRowClick: (row: RemoteAssetRow) => void;
   onDeleteClick: (row: RemoteAssetRow) => void;
+  onChunkClick: (row: RemoteAssetRow) => void;
   pendingDeleteId: string | null;
 }
+
+const _CHUNKABLE_KINDS = new Set<RemoteAssetKind>(["notebook", "query", "pipeline"]);
 
 function AssetTable({
   profile,
   kind,
   onRowClick,
   onDeleteClick,
+  onChunkClick,
   pendingDeleteId,
 }: AssetTableProps) {
   const { data, isLoading, error } = useQuery({
@@ -139,23 +144,39 @@ function AssetTable({
                   {formatDate(row.last_modified_at)}
                 </td>
                 <td className="py-2 text-right">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteClick(row);
-                    }}
-                    disabled={isDeleting}
-                    aria-label={`Delete ${row.name ?? kind}`}
-                    title="Delete asset"
-                    className="rounded p-1 text-ink-dim hover:bg-critical/10 hover:text-critical disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isDeleting ? (
-                      <Loader2 size={14} className="animate-spin" />
-                    ) : (
-                      <Trash2 size={14} />
+                  <div className="inline-flex items-center gap-0.5">
+                    {_CHUNKABLE_KINDS.has(kind) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onChunkClick(row);
+                        }}
+                        aria-label={`Configure chunking for ${row.name ?? kind}`}
+                        title="Configure chunking strategy"
+                        className="rounded p-1 text-ink-dim hover:bg-accent-soft hover:text-accent-ink"
+                      >
+                        <Scissors size={14} />
+                      </button>
                     )}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteClick(row);
+                      }}
+                      disabled={isDeleting}
+                      aria-label={`Delete ${row.name ?? kind}`}
+                      title="Delete asset"
+                      className="rounded p-1 text-ink-dim hover:bg-critical/10 hover:text-critical disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isDeleting ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={14} />
+                      )}
+                    </button>
+                  </div>
                 </td>
               </tr>
             );
@@ -196,6 +217,10 @@ export default function Assets() {
   const [drawerAssetId, setDrawerAssetId] = useState<string>("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{
+    kind: RemoteAssetKind;
+    row: RemoteAssetRow;
+  } | null>(null);
+  const [chunkingTarget, setChunkingTarget] = useState<{
     kind: RemoteAssetKind;
     row: RemoteAssetRow;
   } | null>(null);
@@ -317,6 +342,7 @@ export default function Assets() {
             kind={activeTab}
             onRowClick={(row) => openDrawer(activeTab, row)}
             onDeleteClick={(row) => setPendingDelete({ kind: activeTab, row })}
+            onChunkClick={(row) => setChunkingTarget({ kind: activeTab, row })}
             pendingDeleteId={
               deleteMutation.isPending && pendingDelete
                 ? String(pendingDelete.row.id)
@@ -375,6 +401,17 @@ export default function Assets() {
           setDrawerAssetId(String(id));
         }}
       />
+
+      {/* Per-row chunking override modal */}
+      {chunkingTarget && (
+        <ChunkingDialog
+          open={true}
+          onClose={() => setChunkingTarget(null)}
+          profile={profile}
+          kind={chunkingTarget.kind}
+          row={chunkingTarget.row}
+        />
+      )}
     </div>
   );
 }
@@ -485,5 +522,252 @@ function AssetSearchResults({
         </li>
       ))}
     </ul>
+  );
+}
+
+interface ChunkingPayload {
+  kind: string;
+  profile: string;
+  remote_id: number;
+  has_override: boolean;
+  effective: {
+    strategy: string;
+    chunk_chars?: number;
+    chunk_overlap?: number;
+  };
+  default: {
+    strategy: string;
+    chunk_chars?: number;
+    chunk_overlap?: number;
+  };
+  override?: {
+    strategy: string;
+    chunk_chars?: number | null;
+    chunk_overlap?: number | null;
+  };
+}
+
+const _STRATEGY_CHOICES: Record<RemoteAssetKind, string[]> = {
+  notebook: ["whole", "cell", "char_window"],
+  query: ["whole", "statement", "char_window"],
+  pipeline: ["metadata", "whole"],
+  // The remaining kinds aren't reachable via the Chunk button — the
+  // table only wires the action up for the entries in _CHUNKABLE_KINDS
+  // — but TypeScript wants exhaustive keys on the Record.
+  stream: [],
+  streamlit: [],
+  job: [],
+};
+
+interface ChunkingDialogProps {
+  open: boolean;
+  onClose: () => void;
+  profile: string;
+  kind: RemoteAssetKind;
+  row: RemoteAssetRow;
+}
+
+function ChunkingDialog({ open, onClose, profile, kind, row }: ChunkingDialogProps) {
+  const qc = useQueryClient();
+  const assetId = String(row.id);
+  const choices = _STRATEGY_CHOICES[kind] ?? [];
+
+  // Strategy / chunk_chars / chunk_overlap form state.
+  const [strategy, setStrategy] = useState<string>("");
+  const [chunkChars, setChunkChars] = useState<string>("");
+  const [chunkOverlap, setChunkOverlap] = useState<string>("");
+  const [seeded, setSeeded] = useState(false);
+
+  const dataQuery = useQuery({
+    queryKey: ["asset-chunking", profile, kind, assetId],
+    queryFn: () =>
+      apiFetch<ChunkingPayload>(
+        `/api/assets/${kind}/${assetId}/chunking?profile=${encodeURIComponent(profile)}`,
+      ),
+    enabled: open,
+    staleTime: 0,
+  });
+
+  // Seed the form from the effective config once the GET lands. We
+  // only seed once per open so user edits aren't clobbered if the
+  // user types while the query refetches.
+  useEffect(() => {
+    if (!open) {
+      setSeeded(false);
+      return;
+    }
+    if (seeded || !dataQuery.data) return;
+    const eff = dataQuery.data.effective;
+    setStrategy(eff.strategy);
+    setChunkChars(eff.chunk_chars != null ? String(eff.chunk_chars) : "");
+    setChunkOverlap(eff.chunk_overlap != null ? String(eff.chunk_overlap) : "");
+    setSeeded(true);
+  }, [open, seeded, dataQuery.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean }>(
+        `/api/assets/${kind}/${assetId}/chunking?profile=${encodeURIComponent(profile)}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            strategy,
+            chunk_chars: chunkChars ? Number(chunkChars) : null,
+            chunk_overlap: chunkOverlap ? Number(chunkOverlap) : null,
+          }),
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["asset-chunking"] });
+      onClose();
+    },
+  });
+
+  const resetMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean }>(
+        `/api/assets/${kind}/${assetId}/chunking?profile=${encodeURIComponent(profile)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["asset-chunking"] });
+      onClose();
+    },
+  });
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={`Chunking · ${row.name ?? `${kind} #${assetId}`}`}
+      description={
+        <span>
+          Override the chunking strategy for this single asset. Other assets
+          continue to use the global default in Settings → Embeddings.
+        </span>
+      }
+      size="md"
+      footer={
+        <div className="flex w-full items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            {dataQuery.data?.has_override && (
+              <Button
+                variant="ghost"
+                onClick={() => resetMutation.mutate()}
+                disabled={resetMutation.isPending}
+              >
+                Reset to default
+              </Button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => saveMutation.mutate()}
+              disabled={!strategy || saveMutation.isPending}
+            >
+              {saveMutation.isPending ? (
+                <>
+                  <Loader2 size={12} className="mr-1 animate-spin" /> Saving…
+                </>
+              ) : (
+                "Save & re-embed"
+              )}
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      {dataQuery.isPending ? (
+        <p className="text-sm text-ink-dim">Loading current config…</p>
+      ) : dataQuery.error ? (
+        <p className="text-sm text-critical">
+          {(dataQuery.error as Error).message}
+        </p>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs font-medium text-ink-muted">
+              Strategy
+            </label>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {choices.map((opt) => {
+                const active = strategy === opt;
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => setStrategy(opt)}
+                    className={
+                      "rounded-md border px-2.5 py-1 text-xs font-medium " +
+                      (active
+                        ? "border-accent bg-accent-soft text-accent-ink"
+                        : "border-surface-border bg-surface text-ink-dim hover:border-accent/40 hover:text-ink")
+                    }
+                  >
+                    {opt}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-[11px] text-ink-dim">
+              Global default for {kind}:{" "}
+              <span className="font-mono">{dataQuery.data?.default.strategy}</span>
+            </p>
+          </div>
+
+          {kind !== "pipeline" && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-ink-muted">
+                  Chunk chars
+                </label>
+                <input
+                  type="number"
+                  min={200}
+                  value={chunkChars}
+                  onChange={(e) => setChunkChars(e.target.value)}
+                  placeholder={String(dataQuery.data?.default.chunk_chars ?? "")}
+                  className="mt-1 w-full rounded-md border border-surface-border bg-surface px-2.5 py-1.5 text-sm text-ink"
+                />
+                <p className="mt-1 text-[11px] text-ink-dim">
+                  Blank → inherit global default.
+                </p>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-ink-muted">
+                  Chunk overlap
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  value={chunkOverlap}
+                  onChange={(e) => setChunkOverlap(e.target.value)}
+                  placeholder={String(dataQuery.data?.default.chunk_overlap ?? "")}
+                  className="mt-1 w-full rounded-md border border-surface-border bg-surface px-2.5 py-1.5 text-sm text-ink"
+                />
+              </div>
+            </div>
+          )}
+
+          {dataQuery.data?.has_override && (
+            <div className="rounded-md border border-accent/30 bg-accent-soft/30 px-3 py-2 text-[11px] text-ink-muted">
+              This asset currently has a per-row override. Save to update,
+              or "Reset to default" to remove and fall back to the global
+              setting.
+            </div>
+          )}
+
+          {(saveMutation.error || resetMutation.error) && (
+            <p className="text-sm text-critical">
+              {((saveMutation.error || resetMutation.error) as Error).message}
+            </p>
+          )}
+        </div>
+      )}
+    </Dialog>
   );
 }
