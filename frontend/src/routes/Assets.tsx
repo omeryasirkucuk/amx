@@ -83,6 +83,11 @@ function assetPathFor(row: RemoteAssetRow, kind: RemoteAssetKind): string {
   return "";
 }
 
+// PR-C (scale): default page size for AssetTable. Mirrors the backend
+// default; the user can paginate forward / backward without exceeding
+// the backend's max (500).
+const _ASSET_TABLE_PAGE_SIZE = 100;
+
 function AssetTable({
   profile,
   kind,
@@ -91,9 +96,34 @@ function AssetTable({
   onChunkClick,
   pendingDeleteId,
 }: AssetTableProps) {
+  // PR-C: per-table filter input (substring against name + path).
+  // Distinct from the page-level semantic search box — this one
+  // talks directly to ``GET /api/assets?q=…`` rather than the RAG
+  // pipeline, so 5,000-row workspaces stay browsable without first
+  // running an embedding query.
+  const [filter, setFilter] = useState("");
+  const [debouncedFilter, setDebouncedFilter] = useState("");
+  const [offset, setOffset] = useState(0);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedFilter(filter.trim()), 200);
+    return () => clearTimeout(t);
+  }, [filter]);
+
+  // Reset offset when filter changes (else we'd land mid-page in a
+  // narrower result set) or when the active kind changes.
+  useEffect(() => {
+    setOffset(0);
+  }, [debouncedFilter, kind, profile]);
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ["remote-assets", profile, kind],
-    queryFn: () => api.listRemoteAssets(profile, kind),
+    queryKey: ["remote-assets", profile, kind, debouncedFilter, offset],
+    queryFn: () =>
+      api.listRemoteAssets(profile, kind, {
+        limit: _ASSET_TABLE_PAGE_SIZE,
+        offset,
+        q: debouncedFilter || undefined,
+      }),
     enabled: !!profile,
     staleTime: 60_000,
   });
@@ -106,12 +136,6 @@ function AssetTable({
     );
   }
 
-  if (isLoading) {
-    return (
-      <p className="py-8 text-center text-sm text-ink-dim">Loading…</p>
-    );
-  }
-
   if (error) {
     return (
       <p className="py-4 text-sm text-critical">
@@ -121,16 +145,35 @@ function AssetTable({
   }
 
   const items = data?.items ?? [];
-
-  if (items.length === 0) {
-    return (
-      <p className="py-8 text-center text-sm text-ink-dim">
-        No {kind}s found for this profile. Run ingestion to populate.
-      </p>
-    );
-  }
+  const total = data?.total ?? items.length;
+  const hasMore = data?.has_more ?? false;
+  const showingFrom = total === 0 ? 0 : offset + 1;
+  const showingTo = offset + items.length;
 
   return (
+    <div className="space-y-2">
+      {/* PR-C: per-table filter strip. ``placeholder`` mirrors the
+          backend's actual search axes so users understand the scope. */}
+      <div className="flex items-center gap-2">
+        <input
+          type="search"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder={`Filter ${kind}s by name or path…`}
+          className="w-full rounded-md border border-border bg-surface-raised px-2 py-1 text-sm placeholder:text-ink-dim sm:max-w-xs"
+        />
+        {isLoading && (
+          <span className="text-xs text-ink-dim">Loading…</span>
+        )}
+      </div>
+
+      {items.length === 0 ? (
+        <p className="py-8 text-center text-sm text-ink-dim">
+          {debouncedFilter
+            ? `No ${kind}s match "${debouncedFilter}".`
+            : `No ${kind}s found for this profile. Run ingestion to populate.`}
+        </p>
+      ) : (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
@@ -222,9 +265,36 @@ function AssetTable({
           })}
         </tbody>
       </table>
-      <p className="mt-2 text-right text-[11px] text-ink-dim">
-        {data?.count ?? items.length} {kind}(s)
-      </p>
+      {/* PR-C: pagination strip. Prev/Next is sticky-cheap on every
+          screen size; mid-page jumps would force a goto-page input
+          that doesn't add value at this scale. */}
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-ink-dim">
+        <span>
+          Showing {showingFrom}–{showingTo} of {total} {kind}(s)
+        </span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            disabled={offset === 0 || isLoading}
+            onClick={() =>
+              setOffset(Math.max(0, offset - _ASSET_TABLE_PAGE_SIZE))
+            }
+            className="rounded border border-border px-2 py-0.5 hover:bg-surface-subtle disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Prev
+          </button>
+          <button
+            type="button"
+            disabled={!hasMore || isLoading}
+            onClick={() => setOffset(offset + _ASSET_TABLE_PAGE_SIZE)}
+            className="rounded border border-border px-2 py-0.5 hover:bg-surface-subtle disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+      )}
     </div>
   );
 }

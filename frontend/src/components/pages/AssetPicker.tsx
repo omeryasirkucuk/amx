@@ -4,7 +4,7 @@
 // page.
 
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, Database, FileText, Package, Workflow } from "lucide-react";
 
 import { apiFetch, lineageList } from "../../lib/api";
@@ -273,6 +273,11 @@ function LineageTab({ isSelected, onToggle }: TabProps) {
   );
 }
 
+// PR-C (scale): cap the visible block size on the New-page wizard's
+// Ingested tab so a 5,000-asset profile doesn't collapse the picker.
+// The backend honours up to 500 per page; 100 keeps the DOM cheap.
+const _INGESTED_ASSETS_PAGE_SIZE = 100;
+
 function IngestedAssetsTab({ isSelected, onToggle }: TabProps) {
   const profilesQ = useQuery({
     queryKey: ["pages", "asset-picker", "db-profiles"],
@@ -283,15 +288,45 @@ function IngestedAssetsTab({ isSelected, onToggle }: TabProps) {
   const profiles = profilesQ.data?.profiles ?? [];
   const [profile, setProfile] = useState<string>("");
   const [kind, setKind] = useState<string>(INGESTED_KINDS[0].kind);
+  // PR-C: in-tab substring filter + page offset. Debounce avoids
+  // a roundtrip on every keystroke.
+  const [filter, setFilter] = useState("");
+  const [debouncedFilter, setDebouncedFilter] = useState("");
+  const [offset, setOffset] = useState(0);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedFilter(filter.trim()), 200);
+    return () => clearTimeout(t);
+  }, [filter]);
+
+  useEffect(() => {
+    setOffset(0);
+  }, [debouncedFilter, kind, profile]);
 
   const effectiveProfile = profile || profiles[0]?.name || "";
 
   const assetsQ = useQuery({
-    queryKey: ["pages", "asset-picker", "ingested", effectiveProfile, kind],
-    queryFn: () =>
-      apiFetch<IngestedAssetOption[]>(
-        `/api/pages/asset-options?kind=${encodeURIComponent(kind)}&profile=${encodeURIComponent(effectiveProfile)}`,
-      ),
+    queryKey: [
+      "pages",
+      "asset-picker",
+      "ingested",
+      effectiveProfile,
+      kind,
+      debouncedFilter,
+      offset,
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams({
+        kind,
+        profile: effectiveProfile,
+        limit: String(_INGESTED_ASSETS_PAGE_SIZE),
+        offset: String(offset),
+      });
+      if (debouncedFilter) params.set("q", debouncedFilter);
+      return apiFetch<IngestedAssetOption[]>(
+        `/api/pages/asset-options?${params.toString()}`,
+      );
+    },
     enabled: Boolean(effectiveProfile),
     staleTime: 15_000,
   });
@@ -366,6 +401,44 @@ function IngestedAssetsTab({ isSelected, onToggle }: TabProps) {
           first.
         </div>
       )}
+      {/* PR-C: substring filter + page nav. ``hasMore`` falls back
+          to "did we return a full page?" since this endpoint returns
+          list[dict] (not the `{has_more}` envelope `/api/assets`
+          carries). Good enough — the wizard tab doesn't need a
+          "Showing X of Y" footer. */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <input
+          type="search"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter by name or path…"
+          className="w-full max-w-xs rounded border border-border bg-surface px-2 py-1 text-xs placeholder:text-ink-dim"
+        />
+        <div className="flex items-center gap-1 text-[11px] text-ink-dim">
+          <button
+            type="button"
+            disabled={offset === 0 || assetsQ.isLoading}
+            onClick={() =>
+              setOffset(Math.max(0, offset - _INGESTED_ASSETS_PAGE_SIZE))
+            }
+            className="rounded border border-border px-2 py-0.5 hover:bg-surface-subtle disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Prev
+          </button>
+          <button
+            type="button"
+            disabled={
+              assetsQ.isLoading ||
+              (assetsQ.data?.length ?? 0) < _INGESTED_ASSETS_PAGE_SIZE
+            }
+            onClick={() => setOffset(offset + _INGESTED_ASSETS_PAGE_SIZE)}
+            className="rounded border border-border px-2 py-0.5 hover:bg-surface-subtle disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+
       {assetsQ.data && assetsQ.data.length > 0 && (
         <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
           {assetsQ.data.map((row) => (
