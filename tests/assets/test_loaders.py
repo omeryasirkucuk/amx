@@ -13,6 +13,11 @@ from pathlib import Path
 
 import pytest
 
+from amx.assets.chunking_config import (
+    AssetChunkingConfig,
+    NotebookChunkingConfig,
+    QueryChunkingConfig,
+)
 from amx.assets.loaders import (
     load_asset_documents,
     load_notebook_documents,
@@ -20,6 +25,11 @@ from amx.assets.loaders import (
     load_stream_documents,
 )
 from amx.storage.sqlite_store import SQLiteHistoryStore
+
+_CELL_CFG = AssetChunkingConfig(
+    notebook=NotebookChunkingConfig(strategy="cell"),
+    query=QueryChunkingConfig(strategy="statement"),
+)
 
 
 @pytest.fixture()
@@ -53,11 +63,27 @@ def test_load_notebook_documents_emits_per_cell_chunks(store: SQLiteHistoryStore
         (ipynb,),
     )
     with store._connect() as conn:
-        docs = load_notebook_documents(conn=conn, profile_name="p")
+        docs = load_notebook_documents(conn=conn, profile_name="p", chunking=_CELL_CFG)
     assert len(docs) == 3
     assert {d.metadata["cell_type"] for d in docs} == {"markdown", "code"}
     assert all(d.kind == "notebook" for d in docs)
     assert all(d.profile == "p" for d in docs)
+
+
+def test_load_notebook_documents_default_is_whole(store: SQLiteHistoryStore) -> None:
+    """Default chunking (no ``chunking=`` arg) returns one chunk per notebook."""
+    ipynb = json.dumps({"cells": [{"cell_type": "code", "source": "select 1"}]})
+    _insert(
+        store,
+        "INSERT INTO remote_notebooks (profile_name, platform, external_id, name, "
+        "language, source_text, source_hash, ingested_at) VALUES "
+        "('p', 'databricks', 'ext-w', 'whole_nb', 'sql', ?, 'h', '0')",
+        (ipynb,),
+    )
+    with store._connect() as conn:
+        docs = load_notebook_documents(conn=conn, profile_name="p")
+    assert len(docs) == 1
+    assert docs[0].metadata["cell_type"] == "whole"
 
 
 def test_load_query_documents_splits_on_statement_boundary(
@@ -72,7 +98,7 @@ def test_load_query_documents_splits_on_statement_boundary(
         (),
     )
     with store._connect() as conn:
-        docs = load_query_documents(conn=conn, profile_name="p")
+        docs = load_query_documents(conn=conn, profile_name="p", chunking=_CELL_CFG)
     assert len(docs) == 2
     assert all(d.kind == "query" for d in docs)
 

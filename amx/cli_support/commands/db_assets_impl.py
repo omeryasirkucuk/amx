@@ -570,6 +570,92 @@ def _like_asset_search(cfg, *, query, profile, limit):
 # ── run_refresh ──────────────────────────────────────────────────────────────
 
 
+_NOTEBOOK_STRATEGIES = ("whole", "cell", "char_window")
+_QUERY_STRATEGIES = ("whole", "statement", "char_window")
+_PIPELINE_STRATEGIES = ("metadata", "whole")
+
+
+def run_chunking(cfg, *, show_only=False):
+    """Interactive editor / printer for ``cfg.assets_chunking``."""
+    from amx.assets.chunking_config import (
+        NotebookChunkingConfig,
+        PipelineChunkingConfig,
+        QueryChunkingConfig,
+    )
+
+    ac = cfg.assets_chunking
+    if show_only:
+        _print_chunking(ac)
+        return
+
+    _print_chunking(ac)
+    click.echo("\nUpdate per-kind settings (press Enter to keep the current value):\n")
+
+    new_nb_strategy = _prompt_choice(
+        "Notebook strategy", ac.notebook.strategy, _NOTEBOOK_STRATEGIES
+    )
+    new_nb_chunk = _prompt_int("Notebook chunk_chars", ac.notebook.chunk_chars, minimum=200)
+    new_nb_overlap = _prompt_int("Notebook chunk_overlap", ac.notebook.chunk_overlap, minimum=0)
+
+    new_q_strategy = _prompt_choice("Query strategy", ac.query.strategy, _QUERY_STRATEGIES)
+    new_q_chunk = _prompt_int("Query chunk_chars", ac.query.chunk_chars, minimum=200)
+    new_q_overlap = _prompt_int("Query chunk_overlap", ac.query.chunk_overlap, minimum=0)
+
+    new_p_strategy = _prompt_choice("Pipeline strategy", ac.pipeline.strategy, _PIPELINE_STRATEGIES)
+
+    cfg.assets_chunking = type(ac)(
+        notebook=NotebookChunkingConfig(
+            strategy=new_nb_strategy,
+            chunk_chars=new_nb_chunk,
+            chunk_overlap=new_nb_overlap,
+        ),
+        query=QueryChunkingConfig(
+            strategy=new_q_strategy,
+            chunk_chars=new_q_chunk,
+            chunk_overlap=new_q_overlap,
+        ),
+        pipeline=PipelineChunkingConfig(strategy=new_p_strategy),
+    )
+    cfg.save()
+    click.echo("\nSaved. Run /db assets reindex to re-embed under the new chunking.")
+    _print_chunking(cfg.assets_chunking)
+
+
+def _print_chunking(ac):
+    click.echo("Asset chunking config:")
+    click.echo(
+        f"  notebook  strategy={ac.notebook.strategy:<12} "
+        f"chunk_chars={ac.notebook.chunk_chars}  chunk_overlap={ac.notebook.chunk_overlap}"
+    )
+    click.echo(
+        f"  query     strategy={ac.query.strategy:<12} "
+        f"chunk_chars={ac.query.chunk_chars}  chunk_overlap={ac.query.chunk_overlap}"
+    )
+    click.echo(f"  pipeline  strategy={ac.pipeline.strategy}")
+    click.echo("  stream / streamlit_app / job: metadata-only (one chunk per asset)")
+
+
+def _prompt_choice(label, current, choices):
+    raw = click.prompt(f"{label} {choices}", default=current, show_default=True).strip()
+    if raw not in choices:
+        click.echo(f"  '{raw}' not in {choices} — keeping '{current}'.", err=True)
+        return current
+    return raw
+
+
+def _prompt_int(label, current, *, minimum):
+    raw = click.prompt(label, default=str(current), show_default=True).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        click.echo(f"  '{raw}' not an int — keeping {current}.", err=True)
+        return current
+    if value < minimum:
+        click.echo(f"  {value} < {minimum} — keeping {current}.", err=True)
+        return current
+    return value
+
+
 def run_reindex(cfg, *, profile, skip_confirm):
     """Drop the asset RAG collection and re-embed under the active model.
 

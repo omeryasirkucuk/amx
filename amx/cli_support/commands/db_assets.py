@@ -155,6 +155,28 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
 
         run_refresh(cfg, profile=profile, skip_confirm=yes)
 
+    @assets.command("chunking")
+    @click.option("--show", is_flag=True, help="Print the active chunking config and exit.")
+    @pass_config
+    def assets_chunking_cmd(cfg: AMXConfig, show: bool) -> None:
+        """View or edit the per-kind chunking strategy for asset RAG ingestion.
+
+        Defaults are ``whole`` (one chunk per notebook / query / pipeline)
+        — coarse but predictable. Pick ``cell`` / ``statement`` to slice
+        a notebook by cell or a query by ``;`` boundary, or
+        ``char_window`` for pure character windows that ignore semantic
+        boundaries. Stream / streamlit / job assets always emit a
+        single metadata chunk; they are not configurable.
+
+        The wizard writes back to ``cfg.embedding_assets`` /
+        ``cfg.assets_chunking`` so the next ``/db ingest-assets`` picks
+        up the new strategy. Run ``/db assets reindex`` afterwards to
+        re-embed already-ingested assets under the new chunking.
+        """
+        from amx.cli_support.commands.db_assets_impl import run_chunking
+
+        run_chunking(cfg, show_only=show)
+
     @assets.command("reindex")
     @click.option(
         "--profile",
