@@ -2,6 +2,7 @@
  * Single source of truth for ReactFlow's nodeTypes map.
  */
 
+import { AssetNode } from "./AssetNode";
 import { CommentNode } from "./CommentNode";
 import { DataFrameNode } from "./DataFrameNode";
 import { FilterNode } from "./FilterNode";
@@ -14,6 +15,12 @@ export const nodeTypes = {
   operator: OperatorNode,
   comment: CommentNode,
   logo: LogoNode,
+  notebook: AssetNode,
+  query: AssetNode,
+  stream: AssetNode,
+  pipeline: AssetNode,
+  streamlit_app: AssetNode,
+  job: AssetNode,
 };
 
 /** Map AMX op_kind → ReactFlow node type. */

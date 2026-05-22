@@ -215,6 +215,76 @@ def test_rebuild_remote_asset_lineage_for_stream_resolves_source_table(tmp_path)
     assert ("stream", ent) in edges
 
 
+def test_rebuild_remote_asset_lineage_mirrors_assets_into_catalog_entities(tmp_path):
+    """Lineage rebuild mirrors each ingested asset into catalog_entities so
+    the Studio canvas can render notebook / query / stream / pipeline
+    nodes by joining on catalog_entities.id."""
+    store, catalog = _store_and_catalog(tmp_path)
+    with sqlite3.connect(store.db_path) as c:
+        c.execute(
+            """INSERT INTO catalog_entities
+                   (db_profile, db_backend, database_name, schema_name, table_name,
+                    entity_kind, asset_kind, updated_at)
+               VALUES ('prod', 'snowflake', 'raw', 'public', 'orders',
+                       'table', 'table', 0.0)"""
+        )
+        c.commit()
+    nb_src = '{"cells":[{"cell_type":"code","source":["select * from raw.public.orders"],"metadata":{"language":"sql"},"execution_count":null,"outputs":[]}],"nbformat":4,"nbformat_minor":5,"metadata":{}}'
+    catalog.sync_remote_assets(
+        profile_name="prod", notebooks=[_nb(source_text=nb_src, source_hash="h", language="sql")]
+    )
+    catalog.rebuild_remote_asset_lineage(profile_name="prod")
+
+    with sqlite3.connect(store.db_path) as c:
+        # Bridge row exists with entity_kind='notebook' and the original
+        # remote_notebooks.id stored in source_remote_id.
+        bridge_rows = c.execute(
+            "SELECT entity_kind, schema_name, source_remote_id, search_text "
+            "FROM catalog_entities WHERE entity_kind = 'notebook'"
+        ).fetchall()
+        assert len(bridge_rows) == 1
+        kind, schema, source_id, display = bridge_rows[0]
+        assert (kind, schema) == ("notebook", "__assets")
+        assert source_id is not None
+        assert display == "n1"
+
+        # The asset_references_table edge now points at the bridge id,
+        # not the raw remote_notebooks.id.
+        edges = c.execute(
+            "SELECT from_entity_id, to_entity_kind, from_entity_kind "
+            "FROM catalog_relationships WHERE relationship_type='asset_references_table'"
+        ).fetchall()
+        bridge_id = c.execute(
+            "SELECT id FROM catalog_entities WHERE entity_kind='notebook'"
+        ).fetchone()[0]
+        assert any(e[0] == bridge_id and e[2] == "notebook" for e in edges)
+
+
+def test_rebuild_remote_asset_lineage_prunes_orphan_bridge_rows(tmp_path):
+    """When a remote asset is deleted, its catalog_entities bridge row
+    should disappear on the next lineage rebuild."""
+    store, catalog = _store_and_catalog(tmp_path)
+    nb_src = '{"cells":[{"cell_type":"code","source":["select 1"],"metadata":{},"execution_count":null,"outputs":[]}],"nbformat":4,"nbformat_minor":5,"metadata":{}}'
+    catalog.sync_remote_assets(
+        profile_name="prod", notebooks=[_nb(source_text=nb_src, source_hash="h", language="sql")]
+    )
+    catalog.rebuild_remote_asset_lineage(profile_name="prod")
+    with sqlite3.connect(store.db_path) as c:
+        before = c.execute(
+            "SELECT COUNT(*) FROM catalog_entities WHERE entity_kind='notebook'"
+        ).fetchone()[0]
+        assert before == 1
+        c.execute("DELETE FROM remote_notebooks WHERE profile_name = 'prod'")
+        c.commit()
+
+    catalog.rebuild_remote_asset_lineage(profile_name="prod")
+    with sqlite3.connect(store.db_path) as c:
+        after = c.execute(
+            "SELECT COUNT(*) FROM catalog_entities WHERE entity_kind='notebook'"
+        ).fetchone()[0]
+    assert after == 0
+
+
 def test_notebook_id_fk_resolved_after_job_ingest(tmp_path):
     from amx.db.adapters.remote_asset_types import RemoteJob, RemoteJobTask
 
