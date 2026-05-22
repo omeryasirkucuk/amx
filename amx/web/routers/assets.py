@@ -125,6 +125,223 @@ async def ingest_events(job_id: str) -> StreamingResponse:
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+_CHUNKING_KIND_NORM = {
+    "notebook": "notebook",
+    "query": "query",
+    "pipeline": "pipeline",
+    # ``streamlit`` and ``stream`` / ``job`` are metadata-only — no
+    # override is meaningful, so the endpoints return 400 for them.
+}
+
+
+class ChunkingOverrideIn(BaseModel):
+    strategy: str
+    chunk_chars: int | None = None
+    chunk_overlap: int | None = None
+
+
+@router.get("/{kind}/{asset_id}/chunking")
+def get_asset_chunking(
+    kind: str,
+    asset_id: int,
+    profile: str = Query(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Return the effective chunking config for a single asset.
+
+    Merges the global ``cfg.assets_chunking`` default with the
+    per-asset override (if any) so the Studio modal can render the
+    current values without two round-trips.
+    """
+    normalized = _CHUNKING_KIND_NORM.get(kind)
+    if normalized is None:
+        raise HTTPException(
+            400,
+            f"Chunking is configurable only for {sorted(_CHUNKING_KIND_NORM)}. Got {kind!r}.",
+        )
+    from amx.assets.chunking_overrides import get_override
+    from amx.storage.sqlite_store import history_store
+
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(503, "History store unavailable.")
+    override = get_override(
+        history=hs, profile_name=profile, kind=normalized, remote_id=int(asset_id)
+    )
+    defaults = _kind_defaults(cfg, normalized)
+    if override is None:
+        return {
+            "kind": normalized,
+            "profile": profile,
+            "remote_id": int(asset_id),
+            "has_override": False,
+            "effective": defaults,
+            "default": defaults,
+        }
+    effective = {**defaults}
+    effective["strategy"] = override.strategy
+    if override.chunk_chars is not None:
+        effective["chunk_chars"] = override.chunk_chars
+    if override.chunk_overlap is not None:
+        effective["chunk_overlap"] = override.chunk_overlap
+    return {
+        "kind": normalized,
+        "profile": profile,
+        "remote_id": int(asset_id),
+        "has_override": True,
+        "effective": effective,
+        "default": defaults,
+        "override": {
+            "strategy": override.strategy,
+            "chunk_chars": override.chunk_chars,
+            "chunk_overlap": override.chunk_overlap,
+            "updated_at": override.updated_at,
+        },
+    }
+
+
+@router.put("/{kind}/{asset_id}/chunking")
+def set_asset_chunking(
+    kind: str,
+    asset_id: int,
+    body: ChunkingOverrideIn,
+    profile: str = Query(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Set the per-asset chunking override and re-embed just this asset.
+
+    Studio's "Chunk" button calls this; the endpoint validates the
+    strategy against the asset kind, writes the row, drops the
+    asset's existing chunks from Chroma, and re-ingests under the new
+    strategy. Best-effort: a missing chromadb / collection identity
+    mismatch still persists the row so the next ingest picks it up.
+    """
+    normalized = _CHUNKING_KIND_NORM.get(kind)
+    if normalized is None:
+        raise HTTPException(
+            400,
+            f"Chunking is configurable only for {sorted(_CHUNKING_KIND_NORM)}. Got {kind!r}.",
+        )
+    from amx.assets.chunking_overrides import (
+        ChunkingOverrideValidationError,
+        set_override,
+    )
+    from amx.storage.sqlite_store import history_store
+
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(503, "History store unavailable.")
+    try:
+        override = set_override(
+            history=hs,
+            profile_name=profile,
+            kind=normalized,
+            remote_id=int(asset_id),
+            strategy=body.strategy,
+            chunk_chars=body.chunk_chars,
+            chunk_overlap=body.chunk_overlap,
+        )
+    except ChunkingOverrideValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    reindexed = _reindex_single_asset(cfg, hs, normalized, profile, int(asset_id))
+    return {
+        "ok": True,
+        "kind": normalized,
+        "profile": profile,
+        "remote_id": int(asset_id),
+        "override": {
+            "strategy": override.strategy,
+            "chunk_chars": override.chunk_chars,
+            "chunk_overlap": override.chunk_overlap,
+            "updated_at": override.updated_at,
+        },
+        "reindexed": reindexed,
+    }
+
+
+@router.delete("/{kind}/{asset_id}/chunking")
+def clear_asset_chunking(
+    kind: str,
+    asset_id: int,
+    profile: str = Query(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Clear the per-asset override and re-embed under the global default."""
+    normalized = _CHUNKING_KIND_NORM.get(kind)
+    if normalized is None:
+        raise HTTPException(
+            400,
+            f"Chunking is configurable only for {sorted(_CHUNKING_KIND_NORM)}. Got {kind!r}.",
+        )
+    from amx.assets.chunking_overrides import clear_override
+    from amx.storage.sqlite_store import history_store
+
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(503, "History store unavailable.")
+    cleared = clear_override(
+        history=hs, profile_name=profile, kind=normalized, remote_id=int(asset_id)
+    )
+    reindexed = _reindex_single_asset(cfg, hs, normalized, profile, int(asset_id))
+    return {
+        "ok": True,
+        "kind": normalized,
+        "profile": profile,
+        "remote_id": int(asset_id),
+        "cleared": cleared,
+        "reindexed": reindexed,
+    }
+
+
+def _kind_defaults(cfg: AMXConfig, kind: str) -> dict[str, Any]:
+    """Return the global chunking defaults for a kind."""
+    ac = getattr(cfg, "assets_chunking", None)
+    if ac is None:
+        from amx.assets.chunking_config import AssetChunkingConfig
+
+        ac = AssetChunkingConfig()
+    if kind == "notebook":
+        return {
+            "strategy": ac.notebook.strategy,
+            "chunk_chars": ac.notebook.chunk_chars,
+            "chunk_overlap": ac.notebook.chunk_overlap,
+        }
+    if kind == "query":
+        return {
+            "strategy": ac.query.strategy,
+            "chunk_chars": ac.query.chunk_chars,
+            "chunk_overlap": ac.query.chunk_overlap,
+        }
+    if kind == "pipeline":
+        return {"strategy": ac.pipeline.strategy}
+    return {}
+
+
+def _reindex_single_asset(cfg: AMXConfig, hs: Any, kind: str, profile: str, remote_id: int) -> bool:
+    """Drop + re-embed just one asset's chunks. Best-effort."""
+    try:
+        from amx.assets.rag import AssetRAGStore
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        store = AssetRAGStore(cfg=cfg)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        store.delete_asset(kind=kind, profile=profile, remote_id=remote_id)
+        with hs._connect() as conn:  # noqa: SLF001
+            store.ingest_profile(
+                conn=conn,
+                profile_name=profile,
+                kinds=[kind],
+                only_ids={kind: [remote_id]},
+            )
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 @router.get("/{kind}/{asset_id}")
 def get_asset(
     kind: str,

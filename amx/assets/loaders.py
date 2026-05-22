@@ -5,13 +5,26 @@ pipeline.
 Each loader is responsible for one asset kind. ``load_asset_documents``
 is the dispatcher used by :class:`amx.assets.rag.AssetRAGStore.ingest_profile`
 to fan out across all kinds for a given DB profile.
+
+Per-asset overrides live in ``asset_chunking_overrides``. When a row
+matches ``(profile_name, kind, remote_id)`` the loader hydrates a
+fresh kind-specific config for that asset, merging the override's
+strategy / chunk_chars / chunk_overlap on top of the global default
+so the splitter sees the user's per-row choice. Absent override =
+inherit ``AssetChunkingConfig`` unchanged.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
-from amx.assets.chunking_config import AssetChunkingConfig
+from amx.assets.chunking_config import (
+    AssetChunkingConfig,
+    NotebookChunkingConfig,
+    PipelineChunkingConfig,
+    QueryChunkingConfig,
+)
 from amx.assets.splitters import (
     split_job,
     split_notebook,
@@ -21,6 +34,71 @@ from amx.assets.splitters import (
     split_streamlit,
 )
 from amx.assets.types import AssetDocument
+
+
+def _load_overrides_for_kind(conn: Any, profile_name: str, kind: str) -> dict[int, dict[str, Any]]:
+    """Per-asset chunking overrides keyed by ``remote_id``.
+
+    Schema absence is tolerated for older history stores that pre-date
+    PR-B; the legacy path returns no overrides and the global config
+    flows through.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT remote_id, strategy, chunk_chars, chunk_overlap "
+            "FROM asset_chunking_overrides "
+            "WHERE profile_name = ? AND kind = ?",
+            (profile_name, kind),
+        ).fetchall()
+    except Exception:  # noqa: BLE001 — older history.db without the table
+        return {}
+    return {
+        int(rid): {
+            "strategy": str(strategy),
+            "chunk_chars": int(chars) if chars is not None else None,
+            "chunk_overlap": int(overlap) if overlap is not None else None,
+        }
+        for rid, strategy, chars, overlap in rows
+    }
+
+
+def _apply_notebook_override(
+    base: NotebookChunkingConfig | None, override: dict[str, Any]
+) -> NotebookChunkingConfig:
+    fallback = base or NotebookChunkingConfig()
+    return replace(
+        fallback,
+        strategy=override["strategy"],
+        chunk_chars=override["chunk_chars"]
+        if override["chunk_chars"] is not None
+        else fallback.chunk_chars,
+        chunk_overlap=override["chunk_overlap"]
+        if override["chunk_overlap"] is not None
+        else fallback.chunk_overlap,
+    )
+
+
+def _apply_query_override(
+    base: QueryChunkingConfig | None, override: dict[str, Any]
+) -> QueryChunkingConfig:
+    fallback = base or QueryChunkingConfig()
+    return replace(
+        fallback,
+        strategy=override["strategy"],
+        chunk_chars=override["chunk_chars"]
+        if override["chunk_chars"] is not None
+        else fallback.chunk_chars,
+        chunk_overlap=override["chunk_overlap"]
+        if override["chunk_overlap"] is not None
+        else fallback.chunk_overlap,
+    )
+
+
+def _apply_pipeline_override(
+    base: PipelineChunkingConfig | None, override: dict[str, Any]
+) -> PipelineChunkingConfig:
+    fallback = base or PipelineChunkingConfig()
+    return replace(fallback, strategy=override["strategy"])
 
 
 def load_notebook_documents(
@@ -36,8 +114,12 @@ def load_notebook_documents(
         params,
     ).fetchall()
     nb_cfg = chunking.notebook if chunking else None
+    overrides = _load_overrides_for_kind(conn, profile_name, "notebook")
     out: list[AssetDocument] = []
     for nb_id, name, workspace_path, source_text in rows:
+        per_asset_cfg = nb_cfg
+        if int(nb_id) in overrides:
+            per_asset_cfg = _apply_notebook_override(nb_cfg, overrides[int(nb_id)])
         out.extend(
             split_notebook(
                 profile=profile_name,
@@ -45,7 +127,7 @@ def load_notebook_documents(
                 name=str(name or ""),
                 source_text=str(source_text or ""),
                 workspace_path=str(workspace_path or ""),
-                config=nb_cfg,
+                config=per_asset_cfg,
             )
         )
     return out
@@ -64,8 +146,12 @@ def load_query_documents(
         params,
     ).fetchall()
     q_cfg = chunking.query if chunking else None
+    overrides = _load_overrides_for_kind(conn, profile_name, "query")
     out: list[AssetDocument] = []
     for q_id, name, kind_value, sql_text, warehouse in rows:
+        per_asset_cfg = q_cfg
+        if int(q_id) in overrides:
+            per_asset_cfg = _apply_query_override(q_cfg, overrides[int(q_id)])
         out.extend(
             split_query(
                 profile=profile_name,
@@ -74,7 +160,7 @@ def load_query_documents(
                 sql_text=str(sql_text or ""),
                 warehouse=str(warehouse or ""),
                 kind_value=str(kind_value or "saved"),
-                config=q_cfg,
+                config=per_asset_cfg,
             )
         )
     return out
@@ -94,8 +180,12 @@ def load_pipeline_documents(
         params,
     ).fetchall()
     p_cfg = chunking.pipeline if chunking else None
+    overrides = _load_overrides_for_kind(conn, profile_name, "pipeline")
     out: list[AssetDocument] = []
     for p_id, name, target, edition, continuous, photon, libs_json, latest_state in rows:
+        per_asset_cfg = p_cfg
+        if int(p_id) in overrides:
+            per_asset_cfg = _apply_pipeline_override(p_cfg, overrides[int(p_id)])
         out.extend(
             split_pipeline(
                 profile=profile_name,
@@ -107,7 +197,7 @@ def load_pipeline_documents(
                 continuous=bool(continuous),
                 photon=bool(photon),
                 latest_update_state=str(latest_state or ""),
-                config=p_cfg,
+                config=per_asset_cfg,
             )
         )
     return out
