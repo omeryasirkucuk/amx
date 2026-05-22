@@ -26,9 +26,7 @@ def test_connector_list_remote_notebooks_delegates_with_engine():
     list(conn.list_remote_notebooks())
     # PR-A: passthrough now also forwards external_id_filter (None means
     # the pre-PR-A "ingest all" path is preserved).
-    conn._adapter.list_remote_notebooks.assert_called_once_with(
-        sentinel, external_id_filter=None
-    )
+    conn._adapter.list_remote_notebooks.assert_called_once_with(sentinel, external_id_filter=None)
 
 
 def test_connector_fetch_remote_notebook_source_delegates_with_engine():
