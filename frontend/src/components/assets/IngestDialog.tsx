@@ -6,11 +6,24 @@
  * surfaces a count summary. Errors are surfaced inline.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { api, type RemoteAssetIngestEvent } from "../../lib/api";
 import { Button, Dialog, Field, Input } from "../ui";
+import AssetBrowsePicker from "./AssetBrowsePicker";
+
+// Kinds the discover endpoint serves — anything outside this set
+// stays in "ingest all" mode even when the picker is open.
+// ``queries`` + ``task_dependencies`` are time-windowed aggregates,
+// not per-asset rows the user picks individually.
+const PICKABLE_KIND_IDS = new Set([
+  "notebooks",
+  "jobs",
+  "pipelines",
+  "streamlit_apps",
+  "streams",
+]);
 
 const ASSET_TYPE_OPTIONS: Array<{ id: string; label: string }> = [
   { id: "notebooks", label: "Notebooks" },
@@ -51,8 +64,18 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
     null,
   );
   const [done, setDone] = useState(false);
+  // PR-A: per-kind cherry-pick state. Empty (or pickerOpen=false)
+  // means "ingest every asset of each selected type". Toggled on
+  // by the "Pick specific assets" disclosure below.
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [selection, setSelection] = useState<Record<string, Set<string>>>({});
   const esRef = useRef<EventSource | null>(null);
   const allCheckboxRef = useRef<HTMLInputElement>(null);
+
+  const pickableSelectedKinds = useMemo(
+    () => Array.from(selectedTypes).filter((id) => PICKABLE_KIND_IDS.has(id)),
+    [selectedTypes],
+  );
 
   // ``indeterminate`` is not a React prop — it has to be set imperatively
   // after the input mounts. Keep it in sync with selectedTypes so the
@@ -80,6 +103,8 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
     setFinalCounts(null);
     setFinalFailures(null);
     setDone(false);
+    setPickerOpen(false);
+    setSelection({});
     esRef.current?.close();
     esRef.current = null;
   }
@@ -119,11 +144,35 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
     setDone(false);
 
     const days = parseInt(historyDays, 10);
+    // Only fold selection into the body when the picker is open and
+    // the user actually picked at least one row. An empty Set for a
+    // kind would otherwise instruct the backend to ingest nothing
+    // for it — surface that explicitly so the user can correct it.
+    let selectionPayload: Record<string, string[]> | undefined;
+    if (pickerOpen) {
+      const built: Record<string, string[]> = {};
+      let pickedSomething = false;
+      for (const kind of pickableSelectedKinds) {
+        const ids = Array.from(selection[kind] ?? []);
+        built[kind] = ids;
+        if (ids.length > 0) pickedSomething = true;
+      }
+      if (!pickedSomething && pickableSelectedKinds.length > 0) {
+        setError(
+          'Pick at least one asset in the "Browse" step, or turn it off to ingest everything.',
+        );
+        setSubmitting(false);
+        return;
+      }
+      selectionPayload = built;
+    }
+
     try {
       const { job_id } = await api.startIngestAssets({
         profile,
         types: Array.from(selectedTypes),
         history_days: isNaN(days) ? 30 : days,
+        selection: selectionPayload,
       });
 
       const es = new EventSource(`/api/assets/ingest/${encodeURIComponent(job_id)}/events`);
@@ -298,6 +347,44 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
             className="w-24"
           />
         </Field>
+
+        {/* PR-A: optional cherry-pick. Closed by default — "ingest
+            all of each selected type" is the common path. When open,
+            user can tick individual external_ids per kind. */}
+        <div className="rounded-md border border-border">
+          <label className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm">
+            <input
+              type="checkbox"
+              checked={pickerOpen}
+              onChange={(e) => setPickerOpen(e.target.checked)}
+              disabled={submitting || done || pickableSelectedKinds.length === 0}
+              className="h-3.5 w-3.5 accent-accent"
+            />
+            <span className="flex-1 font-medium text-ink">
+              Pick specific assets instead of ingesting all
+            </span>
+            {pickerOpen && (
+              <span className="text-[11px] text-ink-muted">
+                {Object.values(selection).reduce(
+                  (sum, s) => sum + s.size,
+                  0,
+                )}{" "}
+                selected
+              </span>
+            )}
+          </label>
+          {pickerOpen && (
+            <div className="border-t border-border px-3 py-3">
+              <AssetBrowsePicker
+                profile={profile}
+                enabledKinds={pickableSelectedKinds}
+                selection={selection}
+                onSelectionChange={setSelection}
+                disabled={submitting || done}
+              />
+            </div>
+          )}
+        </div>
 
         {/* Error */}
         {error && (
