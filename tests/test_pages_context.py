@@ -16,6 +16,9 @@ class StubResolver:
     def resolve_lineage(self, ref: str) -> str:
         return f"lineage block for {ref}"
 
+    def resolve_asset(self, ref: str, kind: str) -> str:
+        return f"asset {kind} block for {ref}"
+
     def resolve_source(self, src: SourceRef) -> str:
         return f"source body {src.original_name}"
 
@@ -52,6 +55,40 @@ def test_gather_respects_budget() -> None:
     )
     # Should fit at most 3 blocks of 500 bytes each.
     assert len(ctx.db_blocks) == 3
+
+
+def test_gather_serialises_ingested_asset_kinds() -> None:
+    ctx = gather(
+        intent="walk through notebook",
+        assets=[
+            AssetRef("asset_notebook", "sf_prod:abc-123"),
+            AssetRef("asset_query", "db_prod:q-456"),
+            AssetRef("asset_stream", "sf_prod:s-789"),
+        ],
+        sources=[],
+        resolver=StubResolver(),
+        budget_bytes=10_000,
+    )
+    s = ctx.serialise()
+    assert "asset asset_notebook block for sf_prod:abc-123" in s
+    assert "asset asset_query block for db_prod:q-456" in s
+    assert "asset asset_stream block for sf_prod:s-789" in s
+    assert "# INGESTED ASSETS" in s
+
+
+def test_gather_respects_budget_for_assets() -> None:
+    class BigAssetResolver(StubResolver):
+        def resolve_asset(self, ref: str, kind: str) -> str:
+            return "y" * 500
+
+    ctx = gather(
+        intent="i",
+        assets=[AssetRef("asset_notebook", f"p:{i}") for i in range(10)],
+        sources=[],
+        resolver=BigAssetResolver(),
+        budget_bytes=1500,
+    )
+    assert len(ctx.asset_blocks) == 3
 
 
 def test_gather_includes_sources() -> None:

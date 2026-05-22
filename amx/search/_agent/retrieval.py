@@ -250,6 +250,37 @@ def enrich_retrieval_details_with_lineage_and_pages(
             ],
         }
 
+    # Ingested-asset evidence (notebooks, queries, streams, pipelines)
+    # that reference the resolved tables via catalog_relationships
+    # edges of type ``asset_references_table``.
+    from amx.search._agent.asset_evidence import build_assets_evidence
+
+    assets_payload = build_assets_evidence(
+        store=store,
+        entity_ids=entity_ids,
+        question_terms=_question_terms_for_pages(question, plan),
+        max_assets=3,
+        max_excerpt_chars=400,
+        enabled=True,
+    )
+    if not assets_payload.is_empty:
+        retrieval_details.setdefault("evidence_sources", [])
+        if "assets" not in retrieval_details["evidence_sources"]:
+            retrieval_details["evidence_sources"].append("assets")
+        retrieval_details["assets"] = {
+            "kind": "assets",
+            "items": [
+                {
+                    "kind": it.kind,
+                    "name": it.name,
+                    "profile": it.profile,
+                    "location": it.location,
+                    "excerpt": it.excerpt,
+                }
+                for it in assets_payload.items
+            ],
+        }
+
     return retrieval_details
 
 

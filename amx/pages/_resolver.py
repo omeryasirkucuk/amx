@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from amx.config import AMXConfig
+from amx.pages.resolvers import RemoteAssetResolver
 from amx.pages.types import SourceRef
 from amx.utils.logging import get_logger
 
@@ -51,6 +52,7 @@ class AMXResolver:
 
     def __init__(self, cfg: AMXConfig) -> None:
         self.cfg = cfg
+        self._asset_resolver: RemoteAssetResolver | None = None
 
     def resolve_db_asset(self, ref: str) -> str:
         try:
@@ -73,12 +75,26 @@ class AMXResolver:
             log.debug("resolve_lineage(%s) failed: %s", ref, exc)
             return f"lineage {ref} not found"
 
+    def resolve_asset(self, ref: str, kind: str) -> str:
+        try:
+            return self._asset_resolver_lazy().resolve_asset(ref, kind)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("resolve_asset(%s, %s) failed: %s", ref, kind, exc)
+            return f"asset {ref} not found"
+
     def resolve_source(self, src: SourceRef) -> str:
         try:
             return self._resolve_source(src)
         except Exception as exc:  # noqa: BLE001
             log.debug("resolve_source(%s) failed: %s", src.path, exc)
             return f"source {src.original_name} unavailable"
+
+    def _asset_resolver_lazy(self) -> RemoteAssetResolver:
+        if self._asset_resolver is None:
+            from amx.storage.sqlite_store import history_store
+
+            self._asset_resolver = RemoteAssetResolver(history_store())
+        return self._asset_resolver
 
     # ------------------------------------------------------------------
     # Internal helpers - uncaught exceptions bubble to the public wrappers.

@@ -21,6 +21,7 @@ class Resolver(Protocol):
     def resolve_db_asset(self, ref: str) -> str: ...
     def resolve_doc_profile(self, ref: str, intent: str, k: int = 5) -> list[str]: ...
     def resolve_lineage(self, ref: str) -> str: ...
+    def resolve_asset(self, ref: str, kind: str) -> str: ...
     def resolve_source(self, src: SourceRef) -> str: ...
 
 
@@ -58,6 +59,13 @@ def gather(
             block = resolver.resolve_lineage(a.ref)
             if _fits(used, block, budget=budget_bytes):
                 ctx.lineage_blocks.append(block)
+                used += len(block)
+
+    for a in assets:
+        if a.kind.startswith("asset_"):
+            block = resolver.resolve_asset(a.ref, a.kind)
+            if _fits(used, block, budget=budget_bytes):
+                ctx.asset_blocks.append(block)
                 used += len(block)
 
     for src in sources:
