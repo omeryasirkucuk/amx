@@ -247,6 +247,22 @@ class RunRequest(BaseModel):
             "disk. The saved config is never mutated."
         ),
     )
+    asset_context: list[dict[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "PR4: ingested-asset references attached to this run as "
+            "additional LLM context. Each entry is "
+            "``{'kind': 'asset_notebook'|'asset_query'|'asset_stream'|"
+            "'asset_pipeline', 'ref': '<profile>:<remote_id>'}``. The "
+            "worker resolves each ref against the local ``remote_*`` "
+            "tables, derives the set of tables that asset references "
+            "via ``catalog_relationships``, and injects a per-table "
+            "context block into the ProfileAgent prompt so generated "
+            "descriptions reflect the actual usage patterns. Pass an "
+            "empty list (default) to leave the run pre-PR4 behaviour "
+            "unchanged."
+        ),
+    )
     cache_override_assets: list[str] | None = Field(
         default=None,
         description=(
@@ -1038,6 +1054,28 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
             translated[(schema, table)] = set(cols)
         if translated:
             orchestrator.column_overrides = translated
+
+    # PR4: resolve attached ingested-asset refs into per-table context
+    # blocks. Each block surfaces a short excerpt of the referencing
+    # notebook / query / stream / pipeline so the ProfileAgent prompt
+    # can ground generated descriptions in real usage patterns. The
+    # orchestrator copies the matching list into ``AgentContext`` per
+    # table — see :meth:`Orchestrator._build_context`. Uses the
+    # module-level ``history_store`` symbol already imported at the top.
+    if body.asset_context:
+        from amx.analyze.asset_context import AssetRef as _AssetRef
+        from amx.analyze.asset_context import resolve_asset_context_for_run
+
+        _hs = history_store()
+        if _hs is not None:
+            refs_list = [
+                _AssetRef(kind=str(item.get("kind") or ""), ref=str(item.get("ref") or ""))
+                for item in body.asset_context
+                if item.get("kind") and item.get("ref")
+            ]
+            blocks_by_table, _resolved = resolve_asset_context_for_run(store=_hs, refs=refs_list)
+            if blocks_by_table:
+                orchestrator.asset_context_by_table = blocks_by_table
 
     processed_assets: list[str] = []
     skipped_assets: list[str] = []
