@@ -232,8 +232,19 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
         help="Re-chunk + re-embed all ingested assets for this DB profile.",
     )
     @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt.")
+    @click.option(
+        "--force",
+        is_flag=True,
+        help=(
+            "Re-embed every asset regardless of source_hash. PR-D: by "
+            "default the reindex respects last_embedded_hash so a "
+            "5,000-notebook profile only re-embeds the ones whose "
+            "content changed. --force is the explicit 'rebuild from "
+            "scratch' lever for embedding-model swaps."
+        ),
+    )
     @pass_config
-    def assets_reindex_cmd(cfg: AMXConfig, profile: str | None, yes: bool) -> None:
+    def assets_reindex_cmd(cfg: AMXConfig, profile: str | None, yes: bool, force: bool) -> None:
         """Re-embed every ingested asset under the active embedding model.
 
         Use after switching ``cfg.embedding_assets`` (e.g. MiniLM ->
@@ -244,7 +255,7 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
         """
         from amx.cli_support.commands.db_assets_impl import run_reindex
 
-        run_reindex(cfg, profile=profile, skip_confirm=yes)
+        run_reindex(cfg, profile=profile, skip_confirm=yes, force=force)
 
     @assets.command("prune")
     @click.option(

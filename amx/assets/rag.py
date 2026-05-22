@@ -21,6 +21,7 @@ degrade across vector spaces; ``reset_collection`` (used by
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -266,6 +267,7 @@ class AssetRAGStore:
         kinds: list[str] | None = None,
         only_ids: dict[str, list[int]] | None = None,
         chunking: Any | None = None,
+        only_changed: bool = True,
     ) -> int:
         """Re-chunk + upsert every (or scoped) asset for ``profile_name``.
 
@@ -277,6 +279,14 @@ class AssetRAGStore:
         construction) controls strategy + chunk_chars + chunk_overlap
         per kind. Tests inject a custom config; production callers
         leave it ``None`` and the cfg.yml value flows through.
+
+        ``only_changed`` (PR-D): when true (the default), notebooks /
+        queries / pipelines whose current content hash already matches
+        ``last_embedded_hash`` are skipped before chunking. The hash
+        update happens after a successful embed so a crashed run
+        leaves the row eligible for retry. Set to ``False`` for the
+        ``/db assets reindex --force`` path that drops and rebuilds
+        unconditionally.
         """
         cfg = chunking if chunking is not None else self.chunking_cfg
         docs = load_asset_documents(
@@ -286,11 +296,28 @@ class AssetRAGStore:
             only_ids=only_ids,
             chunking=cfg,
         )
+        if only_changed:
+            # PR-D: drop documents whose underlying row's current
+            # content hash already matches what we last embedded.
+            # Other kinds (jobs / streams / streamlit_apps) fall
+            # through unchanged — their content is metadata-only and
+            # cheap to re-embed.
+            current = _current_hashes_for_kinds(conn, profile_name, docs)
+            last = _last_embedded_hashes_for_kinds(conn, profile_name, docs)
+            skipped: set[tuple[str, int]] = set()
+            for (kind, rid), curr_hash in current.items():
+                if curr_hash and last.get((kind, rid)) == curr_hash:
+                    skipped.add((kind, rid))
+            if skipped:
+                docs = [d for d in docs if (d.kind, d.remote_id) not in skipped]
         # Clear any stale chunks for the asset rows we are about to
         # rewrite so a shrunk notebook (fewer cells) does not leave
         # orphaned chunks at the tail.
         self.delete_chunks_for_assets([(d.kind, d.profile, d.remote_id) for d in docs])
-        return self.ingest_documents(docs)
+        written = self.ingest_documents(docs)
+        if only_changed and written:
+            _update_last_embedded_hashes(conn, profile_name, docs)
+        return written
 
     def delete_chunks_for_assets(self, refs: list[tuple[str, str, int]]) -> int:
         """Delete every chunk for a list of ``(kind, profile, remote_id)``.
@@ -366,8 +393,17 @@ class AssetRAGStore:
         conn: Any,
         profile_name: str,
         kinds: list[str] | None = None,
+        force: bool = True,
     ) -> int:
-        """Drop and rebuild the index for ``profile_name`` from scratch."""
+        """Drop and rebuild the index for ``profile_name`` from scratch.
+
+        PR-D: ``force=True`` (the default for this entry point —
+        the user invoked ``/db assets reindex`` for a reason)
+        wipes every chunk for the profile, NULLs out the per-row
+        ``last_embedded_hash``, and re-embeds unconditionally.
+        ``force=False`` is the cheap path for the ingest auto-hook
+        — it skips assets whose hash matches the last embed.
+        """
         # Delete every existing chunk for this profile first so an
         # asset that was removed since the last ingest does not linger.
         try:
@@ -377,7 +413,17 @@ class AssetRAGStore:
                 self.collection.delete(ids=stale_ids)
         except Exception as exc:  # noqa: BLE001
             log.warning("reindex_profile: profile sweep failed: %s", exc)
-        return self.ingest_profile(conn=conn, profile_name=profile_name, kinds=kinds)
+        if force:
+            # PR-D: clear the last_embedded_hash so the follow-up
+            # ingest_profile re-embeds every row regardless of
+            # current content hash.
+            _clear_last_embedded_hashes(conn, profile_name)
+        return self.ingest_profile(
+            conn=conn,
+            profile_name=profile_name,
+            kinds=kinds,
+            only_changed=not force,
+        )
 
     # ── reads ─────────────────────────────────────────────────────
 
@@ -461,6 +507,166 @@ class AssetRAGStore:
             return int(self.collection.count())
         except Exception:  # noqa: BLE001
             return 0
+
+
+# ── PR-D: incremental-embed helpers ───────────────────────────────────────
+
+# Per-kind config for the incremental-embed hash check. Each entry
+# is ``(table, hash_expr)``: a SQL expression that yields the current
+# canonical content hash for a row. notebooks + queries already store
+# a hash in a dedicated column; pipelines have no native hash so we
+# derive one from the content envelope at compare time. Other kinds
+# (jobs / streams / streamlit_apps) are absent on purpose — their
+# content is metadata-only and re-embedding them on every ingest is
+# cheap.
+_HASHABLE_KIND_SQL: dict[str, tuple[str, str]] = {
+    "notebook": ("remote_notebooks", "source_hash"),
+    "query": ("remote_queries", "sql_hash"),
+    "pipeline": (
+        "remote_pipelines",
+        "COALESCE(libraries_json, '') || '::' || COALESCE(latest_update_state, '')",
+    ),
+}
+
+
+def _hashable_for_pipeline(envelope: str) -> str:
+    """Return a stable sha256 over the pipeline content envelope.
+
+    Pipelines lack a per-row hash column; we compute one at compare
+    time from the same envelope the loader uses. Notebook + query
+    callers reuse their existing column values directly (already a
+    sha256 hex), so this helper is only used for pipelines.
+    """
+    return hashlib.sha256(envelope.encode("utf-8")).hexdigest()
+
+
+def _current_hashes_for_kinds(
+    conn: Any, profile_name: str, docs: list[AssetDocument]
+) -> dict[tuple[str, int], str]:
+    """Resolve current content hashes for the rows behind ``docs``.
+
+    Returns ``(kind, remote_id) -> hash`` for hashable kinds; other
+    kinds are absent so the caller treats them as "always re-embed".
+    """
+    out: dict[tuple[str, int], str] = {}
+    by_kind: dict[str, set[int]] = {}
+    for d in docs:
+        if d.kind not in _HASHABLE_KIND_SQL:
+            continue
+        by_kind.setdefault(d.kind, set()).add(int(d.remote_id))
+    for kind, ids in by_kind.items():
+        table, hash_expr = _HASHABLE_KIND_SQL[kind]
+        placeholders = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"SELECT id, {hash_expr} FROM {table} "  # noqa: S608 — identifiers controlled above
+            f"WHERE profile_name = ? AND id IN ({placeholders})",
+            (profile_name, *ids),
+        ).fetchall()
+        for rid, raw in rows:
+            if raw is None:
+                continue
+            value = str(raw)
+            if kind == "pipeline":
+                value = _hashable_for_pipeline(value)
+            out[(kind, int(rid))] = value
+    return out
+
+
+def _last_embedded_hashes_for_kinds(
+    conn: Any, profile_name: str, docs: list[AssetDocument]
+) -> dict[tuple[str, int], str | None]:
+    """Read the most-recently-stamped embed hash per hashable row."""
+    out: dict[tuple[str, int], str | None] = {}
+    by_kind: dict[str, set[int]] = {}
+    for d in docs:
+        if d.kind not in _HASHABLE_KIND_SQL:
+            continue
+        by_kind.setdefault(d.kind, set()).add(int(d.remote_id))
+    for kind, ids in by_kind.items():
+        table = _HASHABLE_KIND_SQL[kind][0]
+        placeholders = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"SELECT id, last_embedded_hash FROM {table} "  # noqa: S608 — identifiers controlled
+            f"WHERE profile_name = ? AND id IN ({placeholders})",
+            (profile_name, *ids),
+        ).fetchall()
+        for rid, value in rows:
+            out[(kind, int(rid))] = str(value) if value is not None else None
+    return out
+
+
+def _update_last_embedded_hashes(conn: Any, profile_name: str, docs: list[AssetDocument]) -> None:
+    """Stamp ``last_embedded_hash`` for every hashable row in ``docs``.
+
+    Called only after :meth:`AssetRAGStore.ingest_documents` succeeds,
+    so a crashed embed leaves the row eligible for retry on the next
+    ingest. The same set may be re-stamped on a re-run with identical
+    content — that's a no-op and cheap.
+    """
+    current = _current_hashes_for_kinds(conn, profile_name, docs)
+    if not current:
+        return
+    by_kind: dict[str, list[tuple[str, int]]] = {}
+    for (kind, rid), value in current.items():
+        by_kind.setdefault(kind, []).append((value, rid))
+    for kind, pairs in by_kind.items():
+        table = _HASHABLE_KIND_SQL[kind][0]
+        conn.executemany(
+            f"UPDATE {table} SET last_embedded_hash = ? "  # noqa: S608 — identifiers controlled
+            "WHERE profile_name = ? AND id = ?",
+            [(value, profile_name, rid) for value, rid in pairs],
+        )
+    if hasattr(conn, "commit"):
+        try:
+            conn.commit()
+        except Exception:  # noqa: BLE001 — best-effort autocommit
+            pass
+
+
+def _clear_last_embedded_hashes(conn: Any, profile_name: str) -> None:
+    """NULL out ``last_embedded_hash`` for every hashable row in a profile.
+
+    Used by ``reindex_profile(force=True)`` and by the per-asset
+    chunking-override PUT/DELETE so the next ingest re-embeds that
+    row even if its source_hash has not changed.
+    """
+    for kind in _HASHABLE_KIND_SQL:
+        table = _HASHABLE_KIND_SQL[kind][0]
+        conn.execute(
+            f"UPDATE {table} SET last_embedded_hash = NULL WHERE profile_name = ?",  # noqa: S608
+            (profile_name,),
+        )
+    if hasattr(conn, "commit"):
+        try:
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _clear_last_embedded_hash_for_row(
+    conn: Any, profile_name: str, kind: str, remote_id: int
+) -> None:
+    """NULL out a single row's ``last_embedded_hash``.
+
+    Used by the per-asset chunking-override PUT / DELETE: the user
+    asked for a different chunking strategy on this one asset, so
+    the next ingest must re-embed it under the new strategy even
+    when the source content is byte-identical.
+    """
+    spec = _HASHABLE_KIND_SQL.get(kind)
+    if spec is None:
+        return
+    table = spec[0]
+    conn.execute(
+        f"UPDATE {table} SET last_embedded_hash = NULL "  # noqa: S608 — identifiers controlled
+        "WHERE profile_name = ? AND id = ?",
+        (profile_name, int(remote_id)),
+    )
+    if hasattr(conn, "commit"):
+        try:
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 __all__ = ["AssetRAGStore", "EmbeddingProviderMismatch"]

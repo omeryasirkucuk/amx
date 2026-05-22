@@ -948,7 +948,7 @@ def _prompt_int(label, current, *, minimum):
     return value
 
 
-def run_reindex(cfg, *, profile, skip_confirm):
+def run_reindex(cfg, *, profile, skip_confirm, force: bool = False):
     """Drop the asset RAG collection and re-embed under the active model.
 
     Used after the user switches embedding providers (the
@@ -957,6 +957,12 @@ def run_reindex(cfg, *, profile, skip_confirm):
     :meth:`AssetRAGStore.reset_collection` + a fresh
     :meth:`ingest_profile` so the user sees one progress message
     rather than two separate calls.
+
+    PR-D: ``force=True`` re-embeds every asset regardless of
+    ``last_embedded_hash`` (the typical reason to run /reindex);
+    ``force=False`` calls the incremental path so re-running the
+    command after a partial failure only re-embeds what's still
+    stale.
     """
     from amx.assets.rag import AssetRAGStore
     from amx.storage.sqlite_store import history_store
@@ -981,7 +987,7 @@ def run_reindex(cfg, *, profile, skip_confirm):
         return
     store.reset_collection()
     with hs._connect() as conn:
-        indexed = store.ingest_profile(conn=conn, profile_name=profile_name)
+        indexed = store.reindex_profile(conn=conn, profile_name=profile_name, force=force)
     click.echo(f"Re-indexed {indexed} chunks for profile '{profile_name}'.")
 
 

@@ -1888,6 +1888,7 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "last_modified_by": "User identifier of the last editor on the platform (NULL if unknown).",
         "owner": "Notebook owner per platform conventions (Snowflake OWNER role; Databricks creator). Distinct from last_modified_by.",
         "cell_count": "Number of cells parsed from the normalized .ipynb (NULL if parsing failed).",
+        "last_embedded_hash": "sha256 of source_text as of the most recent successful embed into the asset RAG store. PR-D: ingest_profile compares this against source_hash to skip re-embedding unchanged notebooks; NULL forces a fresh embed on next ingest (set on every new row and after per-asset chunking overrides change).",
         "ingested_at": "When AMX last ran ingestion for this row. Updated on every refresh.",
     },
     "remote_jobs": {
@@ -1946,6 +1947,7 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "libraries_json": "JSON array of library refs (notebook paths, files, jars) the pipeline executes.",
         "latest_update_state": "State of the most recent pipeline update (e.g. RUNNING, COMPLETED, FAILED).",
         "latest_update_creation_time": "Creation TIMESTAMP of the most recent update.",
+        "last_embedded_hash": "sha256 of the canonical libraries_json + latest_update_state pair as of the most recent successful embed. PR-D: lets ingest_profile skip pipelines whose content envelope is unchanged since the last embed; NULL forces a re-embed.",
         "ingested_at": "When AMX last refreshed this row.",
     },
     "remote_streamlit_apps": {
@@ -1992,6 +1994,7 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "user_name": "User who ran (history) or owns (saved) the query.",
         "executed_at": "Execution TIMESTAMP. NULL for kind='saved'.",
         "duration_ms": "Execution duration in milliseconds. NULL for kind='saved'.",
+        "last_embedded_hash": "sha256 of sql_text as of the most recent successful embed. PR-D: lets ingest_profile skip queries whose SQL hasn't changed; NULL forces re-embed.",
         "ingested_at": "When AMX last refreshed this row.",
     },
     "asset_chunking_overrides": {
