@@ -77,24 +77,31 @@ def build_assets_evidence(
     kinds_placeholder = ",".join("?" for _ in _ASSET_KINDS)
     ids_placeholder = ",".join("?" for _ in ids)
     with store._connect() as conn:  # noqa: SLF001
+        # ``from_entity_id`` points at a catalog_entities bridge row
+        # (entity_kind='notebook'|'query'|'stream'|'pipeline',
+        # schema_name='__assets'); ``source_remote_id`` carries the
+        # canonical remote_<kind>s.id so the per-kind text content can
+        # be loaded from the appropriate remote_* table.
         rows = conn.execute(
             f"""
-            SELECT DISTINCT r.from_entity_kind, r.from_entity_id
+            SELECT DISTINCT r.from_entity_kind, ce.source_remote_id
             FROM catalog_relationships r
+            JOIN catalog_entities ce ON ce.id = r.from_entity_id
             WHERE r.relationship_type = 'asset_references_table'
               AND r.from_entity_kind IN ({kinds_placeholder})
               AND r.to_entity_id IN ({ids_placeholder})
+              AND ce.source_remote_id IS NOT NULL
             """,
             (*_ASSET_KINDS, *ids),
         ).fetchall()
         scored: list[tuple[float, AssetEvidenceItem]] = []
-        for from_kind, from_id in rows:
+        for from_kind, remote_id in rows:
             kind = str(from_kind)
             spec = _ASSET_KIND_TO_TABLE.get(kind)
-            if spec is None:
+            if spec is None or remote_id is None:
                 continue
             table_name, text_fields = spec
-            payload = _load_asset_row(conn, table_name, int(from_id), text_fields)
+            payload = _load_asset_row(conn, table_name, int(remote_id), text_fields)
             if payload is None:
                 continue
             text = " ".join(payload["text_blobs"])

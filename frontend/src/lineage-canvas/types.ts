@@ -98,11 +98,33 @@ export interface OperatorNodeData {
   upstreamColumns?: string[];
 }
 
+/** Bridge entity for an ingested remote asset. The canvas treats
+ *  these as singleton nodes — no per-column rail; the
+ *  ``catalog_entities.source_remote_id`` lookup happens server-side. */
+export type AssetNodeKind =
+  | "notebook"
+  | "query"
+  | "stream"
+  | "pipeline"
+  | "streamlit_app"
+  | "job";
+
+export interface AssetNodeData {
+  kind: AssetNodeKind;
+  /** Display name sourced from ``catalog_entities.search_text``. */
+  label: string;
+  /** Owning DB profile chip (shown when multi-profile is in scope). */
+  dbProfile?: string;
+  /** Optional one-line subtitle (e.g. workspace path). */
+  subtitle?: string;
+}
+
 export type CanvasNodeData =
   | TableNodeData
   | OperatorNodeData
   | CommentNodeData
-  | LogoNodeData;
+  | LogoNodeData
+  | AssetNodeData;
 
 export type CanvasNode = RFNode<CanvasNodeData>;
 

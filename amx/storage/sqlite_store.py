@@ -595,6 +595,19 @@ class SQLiteHistoryStore:
                 )
                 """
             )
+            # Bridge column for ingested remote assets: holds the
+            # ``remote_<kind>s.id`` that this catalog_entities row mirrors
+            # so the lineage canvas can render notebook / job / pipeline /
+            # query / stream / streamlit_app nodes while the asset content
+            # itself lives in the ``remote_*`` tables. NULL on every
+            # database table / column row.
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute("ALTER TABLE catalog_entities ADD COLUMN source_remote_id INTEGER")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalog_entities_source_remote "
+                "ON catalog_entities(source_remote_id, entity_kind) "
+                "WHERE source_remote_id IS NOT NULL"
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_descriptions (

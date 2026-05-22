@@ -162,6 +162,11 @@ export interface LoadedNode {
    *  filter / join / aggregate / function / projection. */
   op_kind?: string;
   expression?: string;
+  /** Asset bridge rows (entity_kind = notebook / query / stream /
+   *  pipeline / streamlit_app / job) carry the asset's display name
+   *  here so the canvas AssetNode can render it without a second
+   *  round-trip. Sourced from catalog_entities.search_text. */
+  label?: string;
 }
 
 export interface LoadedEdge {

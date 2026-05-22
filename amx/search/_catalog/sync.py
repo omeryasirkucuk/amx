@@ -1172,20 +1172,54 @@ class SyncMixin:
 
         counts = {"notebooks": 0, "queries": 0, "streams": 0, "pipelines": 0}
         with self._connect() as conn:
-            # Clear stale edges for this profile's remote assets.
+            # Mirror every ingested asset into catalog_entities so the
+            # lineage canvas can render notebook / query / stream /
+            # pipeline nodes by joining on catalog_entities.id. The
+            # bridge rows live under schema_name='__assets' and carry
+            # source_remote_id pointing back at the canonical
+            # remote_<kind>s.id. Map of remote_id -> catalog_entities.id
+            # is built once per kind so the lineage insert loops below
+            # use the bridge id directly.
+            bridge: dict[tuple[str, int], int] = {}
+            # (kind, table, name column, backend column).
+            # remote_pipelines and remote_streams don't carry a platform
+            # column so the bridge inherits an empty backend marker for
+            # those kinds.
+            _ASSET_BRIDGE_SOURCES = (
+                ("notebook", "remote_notebooks", "name", "platform"),
+                ("query", "remote_queries", "name", "platform"),
+                ("stream", "remote_streams", "qualified_name", None),
+                ("pipeline", "remote_pipelines", "name", None),
+            )
+            for kind, table_name_sql, name_col, backend_col in _ASSET_BRIDGE_SOURCES:
+                select_cols = f"id, {name_col}"
+                select_cols += f", COALESCE({backend_col}, '')" if backend_col else ", ''"
+                sql = f"SELECT {select_cols} FROM {table_name_sql} WHERE profile_name = ?"  # noqa: S608 — column names are literals controlled above
+                for rid, display, platform in conn.execute(sql, (profile_name,)).fetchall():
+                    bridge[(kind, int(rid))] = self._upsert_asset_entity(
+                        conn,
+                        profile_name=profile_name,
+                        kind=kind,
+                        remote_id=int(rid),
+                        display_name=str(display or f"{kind}#{rid}"),
+                        backend=str(platform or ""),
+                    )
+
+            # Clear stale edges for this profile's remote assets. After
+            # the bridge upserts above, from_entity_id values point at
+            # catalog_entities.id, so wipe any edge whose source is one
+            # of THIS profile's asset bridge rows.
             conn.execute(
                 """
                 DELETE FROM catalog_relationships
                 WHERE relationship_type = 'asset_references_table'
                   AND from_entity_kind IN ('notebook', 'query', 'stream', 'pipeline')
                   AND from_entity_id IN (
-                      SELECT id FROM remote_notebooks WHERE profile_name = ?
-                      UNION SELECT id FROM remote_queries WHERE profile_name = ?
-                      UNION SELECT id FROM remote_streams WHERE profile_name = ?
-                      UNION SELECT id FROM remote_pipelines WHERE profile_name = ?
+                      SELECT id FROM catalog_entities
+                      WHERE db_profile = ? AND schema_name = '__assets'
                   )
                 """,
-                (profile_name, profile_name, profile_name, profile_name),
+                (profile_name,),
             )
 
             # Notebooks
@@ -1195,7 +1229,7 @@ class SyncMixin:
             ).fetchall():
                 counts["notebooks"] += self._link_asset_refs_to_tables(
                     conn,
-                    asset_id=row[0],
+                    asset_id=bridge[("notebook", int(row[0]))],
                     asset_kind="notebook",
                     profile_name=profile_name,
                     source=row[2],
@@ -1209,7 +1243,7 @@ class SyncMixin:
             ).fetchall():
                 counts["queries"] += self._link_asset_refs_to_tables(
                     conn,
-                    asset_id=row[0],
+                    asset_id=bridge[("query", int(row[0]))],
                     asset_kind="query",
                     profile_name=profile_name,
                     source=row[1],
@@ -1226,7 +1260,7 @@ class SyncMixin:
                     self._insert_asset_edge(
                         conn,
                         from_kind="stream",
-                        from_id=row[0],
+                        from_id=bridge[("stream", int(row[0]))],
                         to_kind="table",
                         to_id=target,
                     )
@@ -1265,12 +1299,15 @@ class SyncMixin:
                 if source_chunks:
                     counts["pipelines"] += self._link_asset_refs_to_tables(
                         conn,
-                        asset_id=row[0],
+                        asset_id=bridge[("pipeline", int(row[0]))],
                         asset_kind="pipeline",
                         profile_name=profile_name,
                         source="\n".join(source_chunks),
                         language="python",
                     )
+
+            # Prune bridge rows whose source asset has been deleted.
+            self._prune_orphan_asset_entities(conn, profile_name)
 
             conn.commit()
         return counts
@@ -1341,6 +1378,88 @@ class SyncMixin:
         else:
             row = None
         return int(row[0]) if row else None
+
+    @staticmethod
+    def _upsert_asset_entity(
+        conn,
+        *,
+        profile_name: str,
+        kind: str,
+        remote_id: int,
+        display_name: str,
+        backend: str,
+    ) -> int:
+        """Mirror a row from ``remote_<kind>s`` into ``catalog_entities``.
+
+        Returns the catalog_entities.id. The bridge row's identity tuple
+        is ``(profile, '', '__assets', f'{kind}#{remote_id}', NULL,
+        kind)`` so it cannot collide with any live-DB table row and stays
+        stable across re-runs. ``source_remote_id`` carries the
+        originating ``remote_<kind>s.id`` so the asset content can still
+        be loaded from the canonical table.
+        """
+        table_name = f"{kind}#{remote_id}"
+        existing = conn.execute(
+            """SELECT id FROM catalog_entities
+               WHERE db_profile = ? AND database_name = '' AND schema_name = '__assets'
+                 AND table_name = ? AND column_name IS NULL AND entity_kind = ?""",
+            (profile_name, table_name, kind),
+        ).fetchone()
+        now = time.time()
+        if existing is not None:
+            conn.execute(
+                "UPDATE catalog_entities SET search_text = ?, source_remote_id = ?, "
+                "db_backend = ?, updated_at = ?, last_synced_at = ? WHERE id = ?",
+                (display_name, remote_id, backend, now, now, int(existing[0])),
+            )
+            return int(existing[0])
+        cur = conn.execute(
+            """INSERT INTO catalog_entities
+                   (db_profile, db_backend, database_name, schema_name, table_name,
+                    column_name, entity_kind, asset_kind, search_text, source_remote_id,
+                    updated_at, last_synced_at)
+               VALUES (?, ?, '', '__assets', ?, NULL, ?, ?, ?, ?, ?, ?)""",
+            (
+                profile_name,
+                backend,
+                table_name,
+                kind,
+                kind,
+                display_name,
+                remote_id,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+    @staticmethod
+    def _prune_orphan_asset_entities(conn, profile_name: str) -> int:
+        """Delete catalog_entities bridge rows whose source_remote_id no
+        longer matches a live ``remote_*`` row for ``profile_name``.
+
+        Keeps the catalog clean after an asset is removed from the remote
+        platform (or after ``/db assets delete``). Returns the deleted
+        row count for observability.
+        """
+        deleted = 0
+        for kind, table in (
+            ("notebook", "remote_notebooks"),
+            ("query", "remote_queries"),
+            ("stream", "remote_streams"),
+            ("pipeline", "remote_pipelines"),
+        ):
+            cur = conn.execute(
+                f"""DELETE FROM catalog_entities
+                    WHERE db_profile = ? AND schema_name = '__assets'
+                      AND entity_kind = ?
+                      AND source_remote_id NOT IN (
+                          SELECT id FROM {table} WHERE profile_name = ?
+                      )""",
+                (profile_name, kind, profile_name),
+            )
+            deleted += cur.rowcount or 0
+        return deleted
 
     @staticmethod
     def _insert_asset_edge(conn, *, from_kind, from_id, to_kind, to_id):
