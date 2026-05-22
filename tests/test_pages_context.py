@@ -16,7 +16,7 @@ class StubResolver:
     def resolve_lineage(self, ref: str) -> str:
         return f"lineage block for {ref}"
 
-    def resolve_asset(self, ref: str, kind: str) -> str:
+    def resolve_asset(self, ref: str, kind: str, intent: str = "") -> str:
         return f"asset {kind} block for {ref}"
 
     def resolve_source(self, src: SourceRef) -> str:
@@ -78,7 +78,7 @@ def test_gather_serialises_ingested_asset_kinds() -> None:
 
 def test_gather_respects_budget_for_assets() -> None:
     class BigAssetResolver(StubResolver):
-        def resolve_asset(self, ref: str, kind: str) -> str:
+        def resolve_asset(self, ref: str, kind: str, intent: str = "") -> str:
             return "y" * 500
 
     ctx = gather(

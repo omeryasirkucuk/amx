@@ -9,12 +9,12 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, Loader2, Trash2 } from "lucide-react";
+import { Download, Loader2, Search, Trash2 } from "lucide-react";
 
 import PageHeader from "../components/PageHeader";
 import { Button } from "../components/ui";
 import AlertDialog from "../components/ui/AlertDialog";
-import { api, type RemoteAssetKind, type RemoteAssetRow } from "../lib/api";
+import { api, apiFetch, type RemoteAssetKind, type RemoteAssetRow } from "../lib/api";
 import IngestDialog from "../components/assets/IngestDialog";
 import AssetDetailDrawer from "../components/assets/AssetDetailDrawer";
 
@@ -169,9 +169,28 @@ function AssetTable({
   );
 }
 
+interface AssetSearchHit {
+  chunk_id: string;
+  kind: RemoteAssetKind;
+  profile: string;
+  remote_id: number;
+  name: string;
+  score: number;
+  matched_text: string;
+  metadata: Record<string, unknown>;
+}
+
+interface AssetSearchResponse {
+  items: AssetSearchHit[];
+  rag_available: boolean;
+  count?: number;
+  reason?: string;
+}
+
 export default function Assets() {
   const [activeTab, setActiveTab] = useState<RemoteAssetKind>("notebook");
   const [profile, setProfile] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [ingestOpen, setIngestOpen] = useState(false);
   const [drawerKind, setDrawerKind] = useState<RemoteAssetKind>("notebook");
   const [drawerAssetId, setDrawerAssetId] = useState<string>("");
@@ -222,7 +241,7 @@ export default function Assets() {
         }
       />
 
-      {/* Profile picker + tab bar — stack vertically on mobile */}
+      {/* Profile picker + semantic search box — stack vertically on mobile */}
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
         <div className="flex items-center gap-2">
           <label
@@ -246,6 +265,16 @@ export default function Assets() {
             ))}
           </select>
         </div>
+        <div className="flex flex-1 items-center gap-2 sm:max-w-md">
+          <Search size={14} className="text-ink-dim" />
+          <input
+            type="search"
+            placeholder="Semantic search across ingested assets…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+          />
+        </div>
       </div>
 
       {/* Tab bar — horizontally scrollable on overflow */}
@@ -268,19 +297,33 @@ export default function Assets() {
         </div>
       </div>
 
-      {/* Asset table */}
+      {/* Asset table — or semantic search results when a query is typed. */}
       <div className="rounded-lg border border-border bg-surface-raised px-4 py-3">
-        <AssetTable
-          profile={profile}
-          kind={activeTab}
-          onRowClick={(row) => openDrawer(activeTab, row)}
-          onDeleteClick={(row) => setPendingDelete({ kind: activeTab, row })}
-          pendingDeleteId={
-            deleteMutation.isPending && pendingDelete
-              ? String(pendingDelete.row.id)
-              : null
-          }
-        />
+        {searchQuery.trim() ? (
+          <AssetSearchResults
+            profile={profile}
+            kind={activeTab}
+            query={searchQuery.trim()}
+            onRowClick={(hit) =>
+              openDrawer(hit.kind, {
+                id: String(hit.remote_id),
+                name: hit.name,
+              } as RemoteAssetRow)
+            }
+          />
+        ) : (
+          <AssetTable
+            profile={profile}
+            kind={activeTab}
+            onRowClick={(row) => openDrawer(activeTab, row)}
+            onDeleteClick={(row) => setPendingDelete({ kind: activeTab, row })}
+            pendingDeleteId={
+              deleteMutation.isPending && pendingDelete
+                ? String(pendingDelete.row.id)
+                : null
+            }
+          />
+        )}
       </div>
 
       <AlertDialog
@@ -333,5 +376,114 @@ export default function Assets() {
         }}
       />
     </div>
+  );
+}
+
+interface AssetSearchResultsProps {
+  profile: string;
+  kind: RemoteAssetKind;
+  query: string;
+  onRowClick: (hit: AssetSearchHit) => void;
+}
+
+function AssetSearchResults({
+  profile,
+  kind,
+  query,
+  onRowClick,
+}: AssetSearchResultsProps) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["assets-search", profile, kind, query],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      params.set("q", query);
+      if (profile) params.set("profile", profile);
+      if (kind) params.set("kind", kind);
+      return apiFetch<AssetSearchResponse>(
+        `/api/assets/search?${params.toString()}`,
+      );
+    },
+    enabled: Boolean(query),
+    staleTime: 5_000,
+  });
+
+  if (isLoading) {
+    return (
+      <p className="py-8 text-center text-sm text-ink-dim">
+        Searching ingested assets…
+      </p>
+    );
+  }
+
+  if (error) {
+    return (
+      <p className="py-4 text-sm text-critical">{(error as Error).message}</p>
+    );
+  }
+
+  const payload = data ?? { items: [], rag_available: true };
+
+  if (!payload.rag_available) {
+    return (
+      <div className="space-y-1 py-4 text-sm">
+        <p className="text-warn">
+          Semantic search is not available yet — run{" "}
+          <code className="rounded bg-surface-subtle px-1">
+            /db ingest-assets
+          </code>{" "}
+          to build the asset index, or{" "}
+          <code className="rounded bg-surface-subtle px-1">
+            /db assets reindex
+          </code>{" "}
+          if you just switched embedding models.
+        </p>
+        {payload.reason && (
+          <p className="text-ink-dim">{payload.reason}</p>
+        )}
+      </div>
+    );
+  }
+
+  const items = payload.items ?? [];
+
+  if (items.length === 0) {
+    return (
+      <p className="py-8 text-center text-sm text-ink-dim">
+        No semantic matches for{" "}
+        <span className="font-mono">{query}</span> in profile{" "}
+        <span className="font-mono">{profile || "(any)"}</span>.
+      </p>
+    );
+  }
+
+  return (
+    <ul className="divide-y divide-border/50">
+      {items.map((hit) => (
+        <li
+          key={hit.chunk_id}
+          className="cursor-pointer py-2 transition-colors hover:bg-surface-subtle"
+          onClick={() => onRowClick(hit)}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-sm">
+                <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent-ink">
+                  {hit.kind}
+                </span>
+                <span className="truncate font-medium text-ink">
+                  {hit.name || `#${hit.remote_id}`}
+                </span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-xs text-ink-muted">
+                {hit.matched_text}
+              </p>
+            </div>
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-ink-dim">
+              {hit.score.toFixed(2)}
+            </span>
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }

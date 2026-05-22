@@ -113,7 +113,43 @@ class IngestAssetsService:
             )
         )
 
+        # Chunk + embed every refreshed asset into the asset-RAG store
+        # so Pages / Ask / Run / Studio all read from the same Chroma
+        # collection. Best-effort: a missing optional dep (chromadb /
+        # sentence-transformers) or a Chroma upsert failure must NOT
+        # roll the ingest back; the raw remote_* rows are still
+        # available and consumer code falls back to the no-RAG path.
+        indexed_total = 0
+        try:
+            emit(IngestProgressEvent(asset_type="indexing", state="started"))
+            from amx.assets.rag import AssetRAGStore
+            from amx.storage.sqlite_store import history_store
+
+            hs = history_store()
+            if hs is not None:
+                store = AssetRAGStore()
+                with hs._connect() as conn:  # noqa: SLF001
+                    indexed_total = store.ingest_profile(
+                        conn=conn, profile_name=request.profile_name
+                    )
+            emit(
+                IngestProgressEvent(
+                    asset_type="indexing",
+                    state="completed",
+                    count=indexed_total,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — indexing is best-effort
+            emit(
+                IngestProgressEvent(
+                    asset_type="indexing",
+                    state="failed",
+                    message=str(exc),
+                )
+            )
+
         counts["lineage"] = lineage_total
+        counts["indexed_chunks"] = indexed_total
         return IngestResult(counts=counts, failures=failures)
 
     def _pull(self, asset_type: str, req: IngestRequest) -> Iterable:
