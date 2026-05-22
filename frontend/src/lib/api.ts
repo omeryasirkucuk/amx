@@ -1188,6 +1188,14 @@ export const api = {
       `/api/assets/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`,
     ),
 
+  /** Fetch asset-to-asset lineage edges anchored at one asset. */
+  getRemoteAssetLineage: (kind: RemoteAssetKind, id: string, profile: string) =>
+    apiFetch<RemoteAssetLineage>(
+      `/api/assets/${encodeURIComponent(kind)}/${encodeURIComponent(
+        id,
+      )}/lineage?profile=${encodeURIComponent(profile)}`,
+    ),
+
   /** Delete a single asset. Cascade-removes job children + lineage edges. */
   deleteRemoteAsset: (kind: RemoteAssetKind, id: string) =>
     apiFetch<{
@@ -1909,6 +1917,34 @@ export interface RemoteAssetListResponse {
 export interface RemoteAssetDownstreamTable {
   fqn: string;
   entity_id?: number | null;
+}
+
+/** One lineage edge endpoint as resolved by GET /lineage. */
+export interface RemoteAssetLineageEdge {
+  to_kind?: string;
+  to_id?: number;
+  from_kind?: string;
+  from_id?: number;
+  to_name?: string;
+  to_path?: string;
+  edge_type: string;
+  raw_ref?: unknown;
+}
+
+/** One task-DAG entry on a job's lineage payload. */
+export interface RemoteAssetTaskDagEdge {
+  from_task: string;
+  to_task: string;
+}
+
+/** Response from GET /api/assets/{kind}/{id}/lineage */
+export interface RemoteAssetLineage {
+  kind: string;
+  id: number;
+  profile: string;
+  outgoing: RemoteAssetLineageEdge[];
+  incoming: RemoteAssetLineageEdge[];
+  task_dag: RemoteAssetTaskDagEdge[];
 }
 
 /** Full detail row from GET /api/assets/{kind}/{id} */

@@ -2055,6 +2055,138 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
         "updated_at": "UTC epoch seconds when this row was last written.",
     },
+    "asset_lineage_edges": {
+        "__table__": (
+            "Asset-to-asset lineage relationships. One row per directed "
+            "edge linking a source asset (job/pipeline) to a target "
+            "asset (notebook/pipeline/query) or table. Populated by "
+            "``amx.assets.lineage.LineageExtractor`` on every refresh "
+            "and consumed by the Studio Lineage panel rendered inside "
+            "the asset detail drawer. Edges are extracted from "
+            "platform metadata only (job tasks_json, pipeline "
+            "libraries_json, DLT target schema) — never by parsing "
+            "notebook source. The UNIQUE constraint makes extraction "
+            "idempotent across refreshes."
+        ),
+        "id": "AMX-internal autoincrement integer primary key.",
+        "profile_name": (
+            "Owning AMX DB profile. Matches ``db_profiles.name`` and "
+            "scopes lineage discovery to the profile that ingested "
+            "both endpoints of the edge."
+        ),
+        "from_kind": (
+            "Kind discriminator for the source asset: 'job' | "
+            "'pipeline'. Identifies which ``remote_<kind>s`` table "
+            "``from_id`` references."
+        ),
+        "from_id": (
+            "Primary key of the source asset row in its "
+            "``remote_<from_kind>s`` table. With ``profile_name`` and "
+            "``from_kind`` this triple is the natural foreign key."
+        ),
+        "to_kind": (
+            "Kind discriminator for the target: 'notebook' | "
+            "'pipeline' | 'query' | 'table'. 'table' targets resolve "
+            "against ``catalog_entities.id`` instead of a "
+            "``remote_<kind>s`` table."
+        ),
+        "to_id": (
+            "Primary key of the target row in its "
+            "``remote_<to_kind>s`` table (or ``catalog_entities.id`` "
+            "when to_kind='table')."
+        ),
+        "edge_type": (
+            "Semantic label for the relationship: "
+            "'task_runs_notebook' | 'task_runs_pipeline' | "
+            "'task_runs_query' | 'task_depends_on' | "
+            "'pipeline_includes_notebook' | 'pipeline_writes_table'. "
+            "Drives the UI badge and grouping in the Lineage panel."
+        ),
+        "raw_ref": (
+            "Platform-native pointer kept for forensic debugging when "
+            "resolution misses (e.g. notebook path that did not match "
+            "any ingested notebook). JSON-encoded for "
+            "``task_depends_on`` edges to carry from_task / to_task "
+            "keys."
+        ),
+        "discovered_at": (
+            "UTC epoch seconds when this edge was written. Refresh "
+            "wipes and rewrites edges per profile, so this is also "
+            "the timestamp of the most recent extraction pass."
+        ),
+    },
+    "fts_notebooks": {
+        "__table__": (
+            "FTS5 virtual table indexing remote_notebooks for "
+            "keyword-first hybrid search. Synchronised via "
+            "AFTER INSERT/UPDATE/DELETE triggers on remote_notebooks "
+            "by ``_ensure_fts_tables``. UNINDEXED auxiliary columns "
+            "let the Assets search filter by profile + remote_id "
+            "without participating in tokenisation."
+        ),
+        "name": "Notebook display name (tokenised).",
+        "workspace_path": "Databricks workspace absolute path (tokenised).",
+        "source_text": "Normalised .ipynb JSON text (tokenised).",
+        "profile_name": "UNINDEXED. Owning AMX DB profile for filtering.",
+        "remote_id": "UNINDEXED. ``remote_notebooks.id`` for downstream lookups.",
+    },
+    "fts_queries": {
+        "__table__": (
+            "FTS5 virtual table indexing remote_queries for "
+            "keyword-first hybrid search. Synchronised via triggers "
+            "on remote_queries."
+        ),
+        "name": "Query name (tokenised).",
+        "sql_text": "SQL source (tokenised).",
+        "warehouse": "Warehouse identifier (tokenised).",
+        "profile_name": "UNINDEXED. Owning AMX DB profile for filtering.",
+        "remote_id": "UNINDEXED. ``remote_queries.id`` for downstream lookups.",
+    },
+    "fts_jobs": {
+        "__table__": (
+            "FTS5 virtual table indexing remote_jobs for keyword "
+            "search. Synchronised via triggers on remote_jobs."
+        ),
+        "name": "Job display name (tokenised).",
+        "tags_json": "Job tags as JSON text (tokenised).",
+        "profile_name": "UNINDEXED. Owning AMX DB profile for filtering.",
+        "remote_id": "UNINDEXED. ``remote_jobs.id`` for downstream lookups.",
+    },
+    "fts_pipelines": {
+        "__table__": (
+            "FTS5 virtual table indexing remote_pipelines for "
+            "keyword search. Synchronised via triggers on "
+            "remote_pipelines."
+        ),
+        "name": "Pipeline display name (tokenised).",
+        "target_schema": "DLT target schema (tokenised).",
+        "libraries_json": "Pipeline libraries (notebook refs) as JSON text (tokenised).",
+        "profile_name": "UNINDEXED. Owning AMX DB profile for filtering.",
+        "remote_id": "UNINDEXED. ``remote_pipelines.id`` for downstream lookups.",
+    },
+    "fts_streams": {
+        "__table__": (
+            "FTS5 virtual table indexing remote_streams for "
+            "keyword search. Synchronised via triggers on "
+            "remote_streams."
+        ),
+        "qualified_name": "Stream fully-qualified name (tokenised).",
+        "source_table_fqn": "Source table fully-qualified name (tokenised).",
+        "profile_name": "UNINDEXED. Owning AMX DB profile for filtering.",
+        "remote_id": "UNINDEXED. ``remote_streams.id`` for downstream lookups.",
+    },
+    "fts_streamlit": {
+        "__table__": (
+            "FTS5 virtual table indexing remote_streamlit_apps for "
+            "keyword search. Synchronised via triggers on "
+            "remote_streamlit_apps."
+        ),
+        "qualified_name": "Streamlit app fully-qualified name (tokenised).",
+        "main_file": "Entry-point file name (tokenised).",
+        "root_location": "Root stage location (tokenised).",
+        "profile_name": "UNINDEXED. Owning AMX DB profile for filtering.",
+        "remote_id": "UNINDEXED. ``remote_streamlit_apps.id`` for downstream lookups.",
+    },
 }
 
 

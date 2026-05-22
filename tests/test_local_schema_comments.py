@@ -30,7 +30,15 @@ from amx.storage.sqlite_store import SQLiteHistoryStore
 # ``_docsize``, ``_config`` that show up in sqlite_master with type='table'.
 # These are SQLite implementation details, not AMX-owned tables, and have
 # no place in SCHEMA_DESCRIPTIONS.
-_FTS_SHADOW_PREFIXES = ("catalog_entities_fts_",)
+_FTS_SHADOW_PREFIXES = (
+    "catalog_entities_fts_",
+    "fts_notebooks_",
+    "fts_queries_",
+    "fts_jobs_",
+    "fts_pipelines_",
+    "fts_streams_",
+    "fts_streamlit_",
+)
 
 
 def _is_shadow(name: str) -> bool:

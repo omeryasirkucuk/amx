@@ -529,3 +529,127 @@ def test_ingest_body_honours_selection(monkeypatch, tmp_path):
     )
     assert resp.status_code == 202
     assert captured["selection"] == {"notebooks": ["ext-1", "ext-3"]}
+
+
+# ── Hybrid search + lineage endpoint coverage ──────────────────────────────
+
+
+def _seed_query_row(db_path, *, profile, external, name, sql_text):
+    """Insert a remote_queries row and return its id."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO remote_queries
+                (profile_name, platform, kind, external_id, name, sql_text,
+                 sql_hash, warehouse, user_name, executed_at, duration_ms,
+                 ingested_at)
+            VALUES (?, 'databricks', 'history', ?, ?, ?, 'h', 'wh', NULL,
+                    NULL, NULL, '2026-05-21T00:00:00')
+            """,
+            (profile, external, name, sql_text),
+        )
+        conn.commit()
+        return conn.execute(
+            "SELECT id FROM remote_queries WHERE external_id = ?", (external,)
+        ).fetchone()[0]
+
+
+def test_search_endpoint_requires_kind_and_profile(tmp_path):
+    """``/search`` is now tab-scoped: both kind and profile are required."""
+    client, _ = _make_client(tmp_path)
+    # Missing kind: 422 from FastAPI's parameter validation.
+    resp = client.get("/api/assets/search?q=trips&profile=prod", headers=_AUTH)
+    assert resp.status_code == 422
+
+
+def test_search_rejects_unknown_kind(tmp_path):
+    client, _ = _make_client(tmp_path)
+    resp = client.get("/api/assets/search?q=trips&profile=prod&kind=banana", headers=_AUTH)
+    assert resp.status_code == 400
+
+
+def test_search_keyword_strict_filters_to_keyword_matches(tmp_path):
+    """A query containing 'trips' is returned; one that doesn't isn't."""
+    client, db_path = _make_client(tmp_path)
+    matching = _seed_query_row(
+        db_path,
+        profile="prod",
+        external="q1",
+        name="trips_count",
+        sql_text="SELECT COUNT(*) FROM trips",
+    )
+    _seed_query_row(
+        db_path,
+        profile="prod",
+        external="q2",
+        name="users_count",
+        sql_text="SELECT COUNT(*) FROM _amx_users",
+    )
+    resp = client.get(
+        "/api/assets/search?q=trips&profile=prod&kind=query&mode=keyword_strict",
+        headers=_AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["kind"] == "query"
+    ids = [item["remote_id"] for item in body["items"]]
+    assert ids == [matching]
+
+
+def test_lineage_endpoint_returns_outgoing_edges(tmp_path):
+    client, db_path = _make_client(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO remote_notebooks
+                (profile_name, platform, external_id, name, workspace_path,
+                 qualified_name, language, source_text, source_hash,
+                 last_modified_at, last_modified_by, owner, cell_count,
+                 ingested_at)
+            VALUES ('prod', 'databricks', 'ext-nb', 'loader', '/Workspace/loader',
+                    NULL, 'python', '{}', 'h', NULL, NULL, NULL, 1,
+                    '2026-05-21T00:00:00')
+            """
+        )
+        nb_id = conn.execute("SELECT id FROM remote_notebooks").fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO remote_jobs (profile_name, job_id, name, ingested_at)
+            VALUES ('prod', 7, 'main_job', '2026-05-21T00:00:00')
+            """
+        )
+        job_id = conn.execute("SELECT id FROM remote_jobs").fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO remote_job_tasks
+                (job_id_fk, task_key, task_type, notebook_path, notebook_id_fk,
+                 depends_on_json, raw_definition_json)
+            VALUES (?, 'load', 'notebook_task', '/Workspace/loader', ?, '[]', '{}')
+            """,
+            (job_id, nb_id),
+        )
+        conn.commit()
+
+    # Trigger extraction directly so we don't need to wire ingest fixtures.
+    from amx.assets.lineage import LineageExtractor
+
+    with sqlite3.connect(db_path) as conn:
+        LineageExtractor(conn).extract_for_profile("prod")
+
+    resp = client.get(f"/api/assets/job/{job_id}/lineage?profile=prod", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["kind"] == "job"
+    assert body["task_dag"] == []
+    outgoing = body["outgoing"]
+    assert len(outgoing) == 1
+    assert outgoing[0]["to_kind"] == "notebook"
+    assert outgoing[0]["to_id"] == nb_id
+    assert outgoing[0]["edge_type"] == "task_runs_notebook"
+    assert outgoing[0]["to_name"] == "loader"
+
+
+def test_lineage_endpoint_unknown_asset_returns_404(tmp_path):
+    client, _ = _make_client(tmp_path)
+    resp = client.get("/api/assets/job/99999/lineage?profile=prod", headers=_AUTH)
+    assert resp.status_code == 404

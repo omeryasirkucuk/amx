@@ -112,36 +112,86 @@ def list_assets(
 @router.get("/search")
 def search_assets(
     q: str = Query(..., min_length=1, description="Free-form natural-language query."),
-    profile: str | None = Query(default=None),
-    kind: str | None = Query(default=None),
+    profile: str = Query(..., description="DB profile to search within."),
+    kind: str = Query(..., description="Asset kind to search within (tab-scoped)."),
     limit: int = Query(default=20, ge=1, le=100),
+    mode: str = Query(
+        default="keyword_strict",
+        description=(
+            "Search mode: keyword_strict (default, FTS5 + semantic "
+            "rerank), semantic_only (pure embedding), or auto "
+            "(keyword first, fall back to semantic when zero hits)."
+        ),
+    ),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """Semantic search over ingested remote assets.
+    """Hybrid keyword-first search over ingested remote assets.
 
-    Routes the query through :class:`AssetRAGStore` (Chroma + dense
-    embedding). When the store is unavailable (no ingest yet, or a
+    The Studio Assets page always passes the currently-selected tab
+    as ``kind`` so search is tab-scoped end to end. The default
+    ``keyword_strict`` mode runs an FTS5 candidate query on
+    ``fts_<kind>`` and reranks the surviving ``remote_id`` set by
+    cosine similarity through :class:`AssetRAGStore`. Hits are
+    guaranteed to contain the search tokens — no more "result text
+    does not contain the search term" surprises.
+
+    Set ``mode=semantic_only`` to bypass FTS5 (synonym recall), or
+    ``mode=auto`` to fall back to semantic when keyword returns zero.
+
+    When ``AssetRAGStore`` is unavailable (no ingest yet, or a
     one-time :class:`EmbeddingProviderMismatch` after switching
-    embedding models) the endpoint returns ``items=[]`` and
-    ``rag_available=false`` so the Studio UI can surface a hint.
+    embedding models), the endpoint falls back to a no-embed
+    keyword-only result built straight from FTS5 so the UI never
+    shows an empty list for an obviously-matching query.
     """
+    if kind not in ASSET_KINDS:
+        raise HTTPException(400, f"Unknown asset kind: {kind!r}. Valid: {', '.join(ASSET_KINDS)}")
+    if mode not in ("keyword_strict", "semantic_only", "auto"):
+        raise HTTPException(
+            400, f"Unknown search mode: {mode!r}. Valid: keyword_strict, semantic_only, auto"
+        )
+
+    db_path = _history_db_path(cfg)
+    rag_available = True
+    rag_reason = ""
+    store = None
     try:
         from amx.assets.rag import AssetRAGStore
-    except Exception as exc:  # noqa: BLE001
-        return {"items": [], "rag_available": False, "reason": f"AssetRAGStore unavailable: {exc}"}
-    try:
+
         store = AssetRAGStore(cfg=cfg)
     except Exception as exc:  # noqa: BLE001
-        return {"items": [], "rag_available": False, "reason": str(exc)}
+        rag_available = False
+        rag_reason = str(exc)
+
     try:
-        results = store.query(
-            q,
-            top_k=int(limit),
-            profile=profile or None,
-            kind=kind or None,
-        )
+        from amx.assets.search import HybridAssetSearch
     except Exception as exc:  # noqa: BLE001
-        return {"items": [], "rag_available": False, "reason": str(exc)}
+        raise HTTPException(500, f"Hybrid search unavailable: {exc}") from exc
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        if store is None or not rag_available:
+            # Fall back to keyword-only: FTS5 candidates with no
+            # rerank. Builds minimal hits for the UI so the user
+            # still sees keyword matches before any embed pass.
+            search = HybridAssetSearch(conn, _NullRAGStore(conn))  # type: ignore[arg-type]
+            hits = search.search(
+                q,
+                kind=kind,
+                profile=profile,
+                limit=int(limit),
+                mode="keyword_strict",
+            )
+        else:
+            search = HybridAssetSearch(conn, store)
+            hits = search.search(
+                q,
+                kind=kind,
+                profile=profile,
+                limit=int(limit),
+                mode=mode,  # type: ignore[arg-type]
+            )
+
     items = [
         {
             "chunk_id": hit.chunk_id,
@@ -149,20 +199,42 @@ def search_assets(
             "profile": hit.profile,
             "remote_id": hit.remote_id,
             "name": hit.name,
-            # PR-B: surface the disambiguating path as a top-level
-            # field so Studio doesn't have to dig through ``metadata``
-            # to render "name (path)" for same-name assets. The metadata
-            # dict still carries the original ``workspace_path`` /
-            # ``qualified_name`` (Snowflake) / ``target_schema``
-            # (pipelines) for callers that need the raw value.
             "path": _hit_path(hit),
             "score": hit.score,
             "matched_text": hit.text,
+            "match_type": hit.metadata.get("match_type", "keyword_strict"),
             "metadata": hit.metadata,
         }
-        for hit in results
+        for hit in hits
     ]
-    return {"items": items, "rag_available": True, "count": len(items)}
+    payload: dict[str, Any] = {
+        "items": items,
+        "rag_available": rag_available,
+        "count": len(items),
+        "mode": mode,
+        "kind": kind,
+    }
+    if rag_reason:
+        payload["reason"] = rag_reason
+    return payload
+
+
+class _NullRAGStore:
+    """Stand-in for :class:`AssetRAGStore` when embedding is unavailable.
+
+    Only :meth:`rerank` and :meth:`query` are wired — both return ``[]``
+    so :class:`HybridAssetSearch` falls back to its built-in FTS-only
+    hit builder.
+    """
+
+    def __init__(self, conn: Any) -> None:  # noqa: D401 — narrow shim
+        self.conn = conn
+
+    def rerank(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+        return []
+
+    def query(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+        return []
 
 
 def _hit_path(hit: Any) -> str:
@@ -555,6 +627,188 @@ def _reindex_single_asset(cfg: AMXConfig, hs: Any, kind: str, profile: str, remo
     except Exception:  # noqa: BLE001
         return False
     return True
+
+
+@router.get("/{kind}/{asset_id}/lineage")
+def get_asset_lineage(
+    kind: str,
+    asset_id: int,
+    profile: str = Query(...),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Return asset-to-asset lineage edges anchored at one asset.
+
+    Materialised by ``amx.assets.lineage.LineageExtractor`` and stored
+    in :data:`asset_lineage_edges`. The response carries three lists:
+
+    * ``outgoing`` — edges this asset sources (job → notebook /
+      pipeline / query, pipeline → notebook / target table)
+    * ``incoming`` — edges that target this asset (notebook used by
+      job X, table written by pipeline Y)
+    * ``task_dag`` — task-to-task ``depends_on`` edges within the
+      same job, always empty for non-job kinds
+
+    Each edge entry includes ``to_kind``, ``to_id``, ``to_name``
+    (resolved against the appropriate ``remote_*`` / ``catalog_entities``
+    row), ``edge_type`` and the raw platform reference. The Studio
+    Lineage panel renders ``outgoing`` as clickable asset chips and
+    ``task_dag`` as an adjacency list.
+    """
+    if kind not in ASSET_KINDS:
+        raise HTTPException(400, f"Unknown asset kind: {kind!r}. Valid: {', '.join(ASSET_KINDS)}")
+    table, _name_col = ASSET_KINDS[kind]
+    db_path = _history_db_path(cfg)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        anchor = conn.execute(
+            f"SELECT id FROM {table} WHERE id = ? AND profile_name = ?",  # noqa: S608
+            (int(asset_id), profile),
+        ).fetchone()
+        if anchor is None:
+            raise HTTPException(404, "Asset not found")
+
+        outgoing_rows = conn.execute(
+            """
+            SELECT id, to_kind, to_id, edge_type, raw_ref, discovered_at
+            FROM asset_lineage_edges
+            WHERE profile_name = ?
+              AND from_kind = ?
+              AND from_id = ?
+              AND edge_type != 'task_depends_on'
+            ORDER BY edge_type, to_kind, to_id
+            """,
+            (profile, kind, int(asset_id)),
+        ).fetchall()
+        incoming_rows = conn.execute(
+            """
+            SELECT id, from_kind, from_id, edge_type, raw_ref, discovered_at
+            FROM asset_lineage_edges
+            WHERE profile_name = ?
+              AND to_kind = ?
+              AND to_id = ?
+              AND edge_type != 'task_depends_on'
+            ORDER BY edge_type, from_kind, from_id
+            """,
+            (profile, kind, int(asset_id)),
+        ).fetchall()
+        dag_rows: list[sqlite3.Row] = []
+        if kind == "job":
+            dag_rows = conn.execute(
+                """
+                SELECT raw_ref
+                FROM asset_lineage_edges
+                WHERE profile_name = ?
+                  AND from_kind = 'job'
+                  AND from_id = ?
+                  AND edge_type = 'task_depends_on'
+                """,
+                (profile, int(asset_id)),
+            ).fetchall()
+
+        outgoing = [
+            {
+                **_describe_edge_endpoint(conn, r["to_kind"], int(r["to_id"]), profile),
+                "to_kind": r["to_kind"],
+                "to_id": int(r["to_id"]),
+                "edge_type": r["edge_type"],
+                "raw_ref": _decode_raw_ref(r["raw_ref"]),
+            }
+            for r in outgoing_rows
+        ]
+        incoming = [
+            {
+                **_describe_edge_endpoint(conn, r["from_kind"], int(r["from_id"]), profile),
+                "from_kind": r["from_kind"],
+                "from_id": int(r["from_id"]),
+                "edge_type": r["edge_type"],
+                "raw_ref": _decode_raw_ref(r["raw_ref"]),
+            }
+            for r in incoming_rows
+        ]
+        task_dag = [
+            entry
+            for r in dag_rows
+            if (entry := _decode_raw_ref(r["raw_ref"])) is not None
+            and isinstance(entry, dict)
+            and "from_task" in entry
+            and "to_task" in entry
+        ]
+    return {
+        "kind": kind,
+        "id": int(asset_id),
+        "profile": profile,
+        "outgoing": outgoing,
+        "incoming": incoming,
+        "task_dag": task_dag,
+    }
+
+
+def _describe_edge_endpoint(
+    conn: sqlite3.Connection, endpoint_kind: str, endpoint_id: int, profile: str
+) -> dict[str, Any]:
+    """Resolve a display name + optional path for a lineage endpoint.
+
+    Falls back to a placeholder when the endpoint row is gone (e.g.
+    asset was deleted after the edge was materialised). Lineage is
+    rewritten on every refresh, so stale endpoints are rare but
+    possible during a partial refresh.
+    """
+    if endpoint_kind == "table":
+        row = conn.execute(
+            """
+            SELECT database_name, schema_name, table_name
+            FROM catalog_entities WHERE id = ?
+            """,
+            (endpoint_id,),
+        ).fetchone()
+        if row is None:
+            return {"to_name": "(table removed)", "to_path": ""}
+        fqn = ".".join(filter(None, (row[0], row[1], row[2])))
+        return {"to_name": str(row[2] or ""), "to_path": fqn}
+
+    spec = ASSET_KINDS.get(endpoint_kind)
+    if spec is None:
+        return {"to_name": "(unknown)", "to_path": ""}
+    table, name_col = spec
+    path_expr = _LINEAGE_PATH_EXPR.get(endpoint_kind, "''")
+    row = conn.execute(
+        f"SELECT {name_col} AS display_name, "  # noqa: S608 — identifiers controlled
+        f"{path_expr} AS display_path "
+        f"FROM {table} WHERE id = ? AND profile_name = ?",
+        (endpoint_id, profile),
+    ).fetchone()
+    if row is None:
+        return {"to_name": "(asset removed)", "to_path": ""}
+    return {
+        "to_name": str(row["display_name"] or ""),
+        "to_path": str(row["display_path"] or ""),
+    }
+
+
+# Per-kind SQL expression for the lineage endpoint's "display path"
+# field. Only kinds whose table actually carries the relevant column
+# get a non-empty expression; the rest collapse to ``''`` so the
+# COALESCE in the query never references a missing column.
+_LINEAGE_PATH_EXPR: dict[str, str] = {
+    "notebook": "COALESCE(workspace_path, qualified_name, '')",
+    "pipeline": "COALESCE(target_schema, '')",
+    "stream": "COALESCE(qualified_name, '')",
+    "streamlit": "COALESCE(qualified_name, '')",
+    "query": "''",
+    "job": "''",
+}
+
+
+def _decode_raw_ref(raw: Any) -> Any:
+    """Decode the ``raw_ref`` payload as JSON, return raw string on failure."""
+    if not raw:
+        return None
+    if not isinstance(raw, str):
+        return raw
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
 
 
 @router.get("/{kind}/{asset_id}")
