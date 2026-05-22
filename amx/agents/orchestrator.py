@@ -6,6 +6,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from typing import Any
 
 from amx.agents._orchestrator.merge import (
     MERGE_FILLUP_PROMPT as MERGE_FILLUP_PROMPT,  # noqa: PLC0414 - re-export for legacy callers
@@ -186,6 +187,16 @@ class Orchestrator:
         # applied for tables not in this map (so other scope levels
         # behave exactly as before).
         self.column_overrides: dict[tuple[str, str], set[str]] = {}
+        # Ingested-asset context blocks indexed by lower-cased
+        # ``(schema, table)``. Populated by the worker layer when the
+        # user attaches notebook / query / stream / pipeline refs to
+        # the run; the orchestrator copies the matching list into
+        # :class:`AgentContext.asset_context` per-table so the
+        # ProfileAgent prompt can render an "Ingested asset context"
+        # section grounded in the actual usage patterns of each
+        # referencing asset. Empty dict on normal runs preserves the
+        # pre-PR4 behaviour byte-identically.
+        self.asset_context_by_table: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     _SQL_VERB_RE = re.compile(
         r"\b(select|insert|update|delete|merge|join|where|group\s+by|order\s+by)\b", re.IGNORECASE
@@ -636,6 +647,9 @@ class Orchestrator:
                 "schema_comment": profile.schema_comment,
                 "database_comment": profile.database_comment,
             },
+            asset_context=list(
+                self.asset_context_by_table.get((profile.schema.lower(), profile.name.lower()), [])
+            ),
         )
 
     def _build_query_usage_hints(self, profile: TableProfile) -> dict[str, object]:

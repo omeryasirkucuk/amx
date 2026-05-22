@@ -868,6 +868,25 @@ class ProfileAgent(BaseAgent):
                 ]
             )
 
+        if ctx.asset_context:
+            lines.append("")
+            lines.append(
+                "Ingested asset context (notebooks / queries / streams / "
+                "pipelines that reference this table — use these to ground "
+                "descriptions in actual usage patterns):"
+            )
+            for block in ctx.asset_context:
+                kind = str(block.get("kind") or "asset")
+                name = str(block.get("name") or "")
+                profile = str(block.get("profile") or "")
+                excerpt = str(block.get("excerpt") or "")
+                header = f"  [{kind}] {name}"
+                if profile:
+                    header += f" (profile: {profile})"
+                lines.append(header)
+                for line in excerpt.splitlines():
+                    lines.append(f"    {line}")
+
         from amx.agents.base import _user_instructions_block
 
         return "\n".join(lines) + _user_instructions_block(ctx)

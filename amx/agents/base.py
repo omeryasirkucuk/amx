@@ -211,6 +211,15 @@ class AgentContext:
     # ``query_code_snippets`` call (pre-PR-δ behaviour).
     code_hits: list[dict[str, Any]] = field(default_factory=list)
     existing_metadata: dict[str, Any] = field(default_factory=dict)
+    # Optional ingested-asset context blocks for this run. Each entry
+    # is ``{kind, name, profile, excerpt}`` covering a notebook /
+    # query / stream / pipeline the user attached as additional
+    # context for the table currently being processed. Empty list on
+    # normal runs; populated by the orchestrator per-table when the
+    # caller resolved ``asset_context`` refs at submit time. The
+    # profile agent emits an "Ingested asset context" prompt section
+    # when this list is non-empty.
+    asset_context: list[dict[str, Any]] = field(default_factory=list)
     # Optional free-text addendum from the user, populated by the
     # Re-Run flow. Empty string on normal runs. Each agent's
     # ``_build_prompt`` appends it as a final "Additional instructions
