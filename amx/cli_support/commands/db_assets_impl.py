@@ -337,15 +337,20 @@ def run_list(cfg, *, profile, asset_type):
         conn.row_factory = sqlite3.Row
         if asset_type == "notebooks":
             rows = conn.execute(
-                "SELECT id, name, platform, language, cell_count, "
-                "last_modified_at, owner "
+                "SELECT id, name, "
+                "COALESCE(workspace_path, qualified_name, '') AS path, "
+                "platform, language, cell_count, last_modified_at, owner "
                 "FROM remote_notebooks WHERE profile_name = ? "
-                "ORDER BY name",
+                "ORDER BY name, path",
                 (profile_name,),
             ).fetchall()
             table = RichTable(title=f"Remote Notebooks ({profile_name})")
             table.add_column("ID")
             table.add_column("Name")
+            # PR-B: Path disambiguates two notebooks with the same name in
+            # different folders / schemas. Empty for legacy rows ingested
+            # before the bridge captured the path.
+            table.add_column("Path", overflow="fold")
             table.add_column("Platform")
             table.add_column("Lang")
             table.add_column("Cells")
@@ -355,6 +360,7 @@ def run_list(cfg, *, profile, asset_type):
                 table.add_row(
                     str(r["id"]),
                     r["name"] or "-",
+                    r["path"] or "-",
                     r["platform"] or "-",
                     r["language"] or "-",
                     str(r["cell_count"] or "-"),
@@ -495,7 +501,19 @@ def run_list(cfg, *, profile, asset_type):
 
 
 def _fetch_asset_by_identifier(conn, asset_type, profile_name, identifier):
-    """Look up a single asset row by id (numeric) or name/qualified_name."""
+    """Look up a single asset row by id, name, or ``name@path-prefix``.
+
+    PR-B (path-as-identity) shapes the identifier into one of three
+    resolution paths:
+
+    * pure-digit string → match by ``id`` (legacy behaviour).
+    * ``name@prefix`` form → match by name AND ``LIKE prefix%`` on the
+      kind's path column. Lets the user disambiguate two same-name
+      notebooks with ``etl@/Workspace/team-a``.
+    * bare ``name`` (no ``@``) → match by name; an ambiguous result
+      raises an ``_AmbiguousAsset`` error carrying every candidate
+      so the caller can render a disambiguation list.
+    """
     by_id = identifier.isdigit()
     table_map = {
         "notebooks": "remote_notebooks",
@@ -513,15 +531,79 @@ def _fetch_asset_by_identifier(conn, asset_type, profile_name, identifier):
             f"SELECT * FROM {tbl} WHERE profile_name = ? AND id = ?",
             (profile_name, int(identifier)),
         )
+        row = cur.fetchone()
+        cols = [d[0] for d in cur.description] if cur.description else []
+        return (dict(row) if row else None), cols
+
+    name_col = "qualified_name" if asset_type in {"streamlit_apps", "streams"} else "name"
+    path_expr = _path_expr_for(asset_type)
+    name_part, _, path_prefix = identifier.partition("@")
+
+    if path_prefix and path_expr:
+        cur = conn.execute(
+            f"SELECT * FROM {tbl} WHERE profile_name = ? "  # noqa: S608 — literals are controlled above
+            f"AND {name_col} = ? AND {path_expr} LIKE ?",
+            (profile_name, name_part, f"{path_prefix}%"),
+        )
+        candidates = cur.fetchall()
     else:
-        name_col = "qualified_name" if asset_type in {"streamlit_apps", "streams"} else "name"
         cur = conn.execute(
             f"SELECT * FROM {tbl} WHERE profile_name = ? AND {name_col} = ?",
-            (profile_name, identifier),
+            (profile_name, name_part),
         )
-    row = cur.fetchone()
+        candidates = cur.fetchall()
+
     cols = [d[0] for d in cur.description] if cur.description else []
-    return (dict(row) if row else None), cols
+    if len(candidates) > 1:
+        raise _AmbiguousAsset(
+            asset_type=asset_type,
+            identifier=identifier,
+            candidates=[dict(c) for c in candidates],
+            path_expr_label=path_expr,
+        )
+    return (dict(candidates[0]) if candidates else None), cols
+
+
+def _path_expr_for(asset_type: str) -> str:
+    """Return the path-column SQL expression for a kind, or ``''``.
+
+    Notebooks store the path in ``workspace_path`` (Databricks) OR
+    ``qualified_name`` (Snowflake); pipelines use ``target_schema``;
+    everything else has no natural path disambiguator.
+    """
+    if asset_type == "notebooks":
+        return "COALESCE(workspace_path, qualified_name, '')"
+    if asset_type == "pipelines":
+        return "COALESCE(target_schema, '')"
+    return ""
+
+
+class _AmbiguousAsset(click.ClickException):
+    """Raised when a bare name maps to more than one asset row."""
+
+    def __init__(
+        self,
+        *,
+        asset_type: str,
+        identifier: str,
+        candidates: list[dict],
+        path_expr_label: str,
+    ) -> None:
+        lines = [
+            f"{len(candidates)} {asset_type} match '{identifier}'. "
+            "Disambiguate with id, or with name@path-prefix:",
+        ]
+        for c in candidates:
+            path = (
+                c.get("workspace_path") or c.get("qualified_name") or c.get("target_schema") or ""
+            )
+            lines.append(
+                f"  [{c.get('id')}] {c.get('name', '?')}{' (' + path + ')' if path else ''}"
+            )
+        super().__init__("\n".join(lines))
+        self.asset_type = asset_type
+        self.candidates = candidates
+        self._path_expr_label = path_expr_label
 
 
 def _list_downstream_tables(conn, *, asset_kind, asset_id):

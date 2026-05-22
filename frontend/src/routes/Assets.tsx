@@ -63,6 +63,26 @@ interface AssetTableProps {
 
 const _CHUNKABLE_KINDS = new Set<RemoteAssetKind>(["notebook", "query", "pipeline"]);
 
+/**
+ * PR-B (path-as-identity): return the disambiguating identifier for
+ * an asset row. Notebooks carry ``workspace_path`` (Databricks) or
+ * ``qualified_name`` (Snowflake); streams + streamlit apps already
+ * have ``qualified_name`` as their canonical name (so path renders
+ * redundantly — return ""); pipelines surface ``target_schema``;
+ * queries and jobs have no natural path. Empty string means "no
+ * column value to render in the Path column".
+ */
+function assetPathFor(row: RemoteAssetRow, kind: RemoteAssetKind): string {
+  if (kind === "stream" || kind === "streamlit") return "";
+  const wp = (row.workspace_path as string | null | undefined) ?? "";
+  if (wp) return wp;
+  const qn = (row.qualified_name as string | null | undefined) ?? "";
+  if (qn && qn !== row.name) return qn;
+  const ts = (row.target_schema as string | null | undefined) ?? "";
+  if (ts) return ts;
+  return "";
+}
+
 function AssetTable({
   profile,
   kind,
@@ -116,6 +136,11 @@ function AssetTable({
         <thead>
           <tr className="border-b border-border text-left text-xs font-medium uppercase tracking-wide text-ink-dim">
             <th className="pb-2 pr-4 pt-1">Name</th>
+            {/* PR-B: Path column resolves same-name collisions. Hidden
+                on mobile per the responsive contract; the name cell
+                itself shows the path inline on sm: so the disambiguator
+                is never invisible. */}
+            <th className="hidden pb-2 pr-4 pt-1 md:table-cell">Path</th>
             <th className="hidden pb-2 pr-4 pt-1 sm:table-cell">Platform</th>
             <th className="hidden pb-2 pr-4 pt-1 md:table-cell">Owner</th>
             <th className="hidden pb-2 pr-4 pt-1 lg:table-cell">Last modified</th>
@@ -125,6 +150,7 @@ function AssetTable({
         <tbody className="divide-y divide-border/50">
           {items.map((row) => {
             const isDeleting = pendingDeleteId === String(row.id);
+            const path = assetPathFor(row, kind);
             return (
               <tr
                 key={String(row.id)}
@@ -132,7 +158,20 @@ function AssetTable({
                 className="cursor-pointer transition-colors hover:bg-surface-subtle"
               >
                 <td className="py-2 pr-4">
-                  <span className="font-medium text-ink">{row.name ?? "—"}</span>
+                  <div className="flex flex-col">
+                    <span className="font-medium text-ink">{row.name ?? "—"}</span>
+                    {/* On mobile (md:hidden) the Path column is hidden, so
+                        surface the path under the name to keep the
+                        same-name disambiguator visible. */}
+                    {path && (
+                      <span className="break-all font-mono text-[11px] text-ink-dim md:hidden">
+                        {path}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className="hidden break-all py-2 pr-4 font-mono text-xs text-ink-muted md:table-cell">
+                  {path || "—"}
                 </td>
                 <td className="hidden py-2 pr-4 text-ink-muted sm:table-cell">
                   {formatValue(row.platform)}
@@ -196,6 +235,9 @@ interface AssetSearchHit {
   profile: string;
   remote_id: number;
   name: string;
+  /** PR-B: disambiguating path the backend resolved from the
+      metadata dict. Empty for kinds without a natural path. */
+  path?: string | null;
   score: number;
   matched_text: string;
   metadata: Record<string, unknown>;
@@ -511,6 +553,11 @@ function AssetSearchResults({
                   {hit.name || `#${hit.remote_id}`}
                 </span>
               </div>
+              {hit.path && (
+                <p className="mt-0.5 truncate font-mono text-[11px] text-ink-dim">
+                  {hit.path}
+                </p>
+              )}
               <p className="mt-1 line-clamp-2 text-xs text-ink-muted">
                 {hit.matched_text}
               </p>
@@ -639,7 +686,14 @@ function ChunkingDialog({ open, onClose, profile, kind, row }: ChunkingDialogPro
     <Dialog
       open={open}
       onClose={onClose}
-      title={`Chunking · ${row.name ?? `${kind} #${assetId}`}`}
+      title={(() => {
+        const base = row.name ?? `${kind} #${assetId}`;
+        // PR-B: when two same-name assets are open back-to-back, the
+        // dialog title alone reads identically. Append the path
+        // suffix so the title disambiguates without changing layout.
+        const path = assetPathFor(row, kind);
+        return `Chunking · ${base}${path ? ` · ${path}` : ""}`;
+      })()}
       description={
         <span>
           Override the chunking strategy for this single asset. Other assets

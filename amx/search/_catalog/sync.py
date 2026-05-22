@@ -1181,21 +1181,33 @@ class SyncMixin:
             # is built once per kind so the lineage insert loops below
             # use the bridge id directly.
             bridge: dict[tuple[str, int], int] = {}
-            # (kind, table, name column, backend column).
+            # (kind, table, name column, backend column, path expression).
             # remote_pipelines and remote_streams don't carry a platform
             # column so the bridge inherits an empty backend marker for
-            # those kinds.
+            # those kinds. ``path_expr`` is a SQL expression that yields
+            # the disambiguating path/qualified-name; PR-B (path-as-
+            # identity) folds it into the bridge ``search_text`` so two
+            # same-name assets in different folders / schemas don't
+            # collide in semantic search results.
             _ASSET_BRIDGE_SOURCES = (
-                ("notebook", "remote_notebooks", "name", "platform"),
-                ("query", "remote_queries", "name", "platform"),
-                ("stream", "remote_streams", "qualified_name", None),
-                ("pipeline", "remote_pipelines", "name", None),
+                (
+                    "notebook",
+                    "remote_notebooks",
+                    "name",
+                    "platform",
+                    "COALESCE(workspace_path, qualified_name, '')",
+                ),
+                ("query", "remote_queries", "name", "platform", "''"),
+                ("stream", "remote_streams", "qualified_name", None, "''"),
+                ("pipeline", "remote_pipelines", "name", None, "COALESCE(target_schema, '')"),
             )
-            for kind, table_name_sql, name_col, backend_col in _ASSET_BRIDGE_SOURCES:
-                select_cols = f"id, {name_col}"
-                select_cols += f", COALESCE({backend_col}, '')" if backend_col else ", ''"
-                sql = f"SELECT {select_cols} FROM {table_name_sql} WHERE profile_name = ?"  # noqa: S608 — column names are literals controlled above
-                for rid, display, platform in conn.execute(sql, (profile_name,)).fetchall():
+            for kind, table_name_sql, name_col, backend_col, path_expr in _ASSET_BRIDGE_SOURCES:
+                backend_select = f"COALESCE({backend_col}, '')" if backend_col else "''"
+                sql = (
+                    f"SELECT id, {name_col}, {backend_select}, {path_expr} "  # noqa: S608 — column names are literals controlled above
+                    f"FROM {table_name_sql} WHERE profile_name = ?"
+                )
+                for rid, display, platform, path in conn.execute(sql, (profile_name,)).fetchall():
                     bridge[(kind, int(rid))] = self._upsert_asset_entity(
                         conn,
                         profile_name=profile_name,
@@ -1203,6 +1215,7 @@ class SyncMixin:
                         remote_id=int(rid),
                         display_name=str(display or f"{kind}#{rid}"),
                         backend=str(platform or ""),
+                        path=str(path or ""),
                     )
 
             # Clear stale edges for this profile's remote assets. After
@@ -1388,6 +1401,7 @@ class SyncMixin:
         remote_id: int,
         display_name: str,
         backend: str,
+        path: str = "",
     ) -> int:
         """Mirror a row from ``remote_<kind>s`` into ``catalog_entities``.
 
@@ -1397,8 +1411,17 @@ class SyncMixin:
         stable across re-runs. ``source_remote_id`` carries the
         originating ``remote_<kind>s.id`` so the asset content can still
         be loaded from the canonical table.
+
+        PR-B (path-as-identity): ``path`` — when non-empty — is folded
+        into ``search_text`` as ``"{name} ({path})"`` so two same-name
+        assets in different folders/schemas disambiguate cleanly in
+        semantic search hits, lineage canvas tooltips, and Ask
+        evidence labels. The empty-string default keeps callers
+        without a natural path (queries, streams whose name IS the
+        FQN) on the historical name-only ``search_text``.
         """
         table_name = f"{kind}#{remote_id}"
+        search_text = f"{display_name} ({path})" if path else display_name
         existing = conn.execute(
             """SELECT id FROM catalog_entities
                WHERE db_profile = ? AND database_name = '' AND schema_name = '__assets'
@@ -1410,7 +1433,7 @@ class SyncMixin:
             conn.execute(
                 "UPDATE catalog_entities SET search_text = ?, source_remote_id = ?, "
                 "db_backend = ?, updated_at = ?, last_synced_at = ? WHERE id = ?",
-                (display_name, remote_id, backend, now, now, int(existing[0])),
+                (search_text, remote_id, backend, now, now, int(existing[0])),
             )
             return int(existing[0])
         cur = conn.execute(
@@ -1425,7 +1448,7 @@ class SyncMixin:
                 table_name,
                 kind,
                 kind,
-                display_name,
+                search_text,
                 remote_id,
                 now,
                 now,

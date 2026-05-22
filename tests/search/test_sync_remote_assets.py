@@ -246,7 +246,10 @@ def test_rebuild_remote_asset_lineage_mirrors_assets_into_catalog_entities(tmp_p
         kind, schema, source_id, display = bridge_rows[0]
         assert (kind, schema) == ("notebook", "__assets")
         assert source_id is not None
-        assert display == "n1"
+        # PR-B (path-as-identity): search_text is now "name (path)" when
+        # the source row has a workspace_path / qualified_name, so two
+        # notebooks called "n1" in different folders disambiguate.
+        assert display == "n1 (/n1)"
 
         # The asset_references_table edge now points at the bridge id,
         # not the raw remote_notebooks.id.
