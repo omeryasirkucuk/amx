@@ -1228,6 +1228,59 @@ export const api = {
     );
   },
 
+  /**
+   * PR-E: fetch immediate children of ``parent`` from the lazy
+   * discover cache. Backend transparently fetches + writes the
+   * cache on a miss.
+   */
+  discoverTree: (params: {
+    profile: string;
+    kind?: string;
+    parent?: string;
+  }) => {
+    const qs = new URLSearchParams({
+      profile: params.profile,
+      kind: params.kind ?? "notebook",
+      parent: params.parent ?? "",
+    });
+    return apiFetch<DiscoverTreeResponse>(
+      `/api/assets/discover/tree?${qs.toString()}`,
+    );
+  },
+
+  /** PR-E: refresh one folder's immediate children (atomic replace). */
+  refreshDiscoverTree: (params: {
+    profile: string;
+    kind?: string;
+    parent?: string;
+  }) => {
+    const qs = new URLSearchParams({
+      profile: params.profile,
+      kind: params.kind ?? "notebook",
+      parent: params.parent ?? "",
+    });
+    return apiFetch<DiscoverTreeResponse>(
+      `/api/assets/discover/tree/refresh?${qs.toString()}`,
+      { method: "POST" },
+    );
+  },
+
+  /**
+   * PR-E: full recursive walk — seeds the entire cache. Slow on
+   * first call, instant on subsequent reads. Used by the search
+   * input when the cache is empty.
+   */
+  walkDiscoverTree: (params: { profile: string; kind?: string }) => {
+    const qs = new URLSearchParams({
+      profile: params.profile,
+      kind: params.kind ?? "notebook",
+    });
+    return apiFetch<DiscoverTreeWalkResult>(
+      `/api/assets/discover/tree/walk?${qs.toString()}`,
+      { method: "POST" },
+    );
+  },
+
   /** List all configured DB profiles (used by the profile picker). */
   listDbProfiles: () =>
     apiFetch<{ profiles: Array<{ name: string; backend?: string }> }>(
@@ -1894,6 +1947,34 @@ export interface RemoteAssetMetadata {
   path: string;
   owner: string | null;
   last_modified: string | null;
+}
+
+/** One row from GET /api/assets/discover/tree (PR-E lazy tree). */
+export interface DiscoverTreeNode {
+  path: string;
+  parent_path: string;
+  name: string;
+  is_directory: boolean | number; // SQLite returns 0/1
+  external_id: string | null;
+  owner: string | null;
+  last_modified: string | null;
+  children_fetched_at: number | null;
+  fetched_at: number;
+}
+
+/** Response shape for GET /api/assets/discover/tree. */
+export interface DiscoverTreeResponse {
+  items: DiscoverTreeNode[];
+  parent_path: string;
+  parent_fetched_at: number | null;
+  cache_empty: boolean;
+}
+
+/** Response shape for POST /api/assets/discover/tree/walk. */
+export interface DiscoverTreeWalkResult {
+  rows_written: number;
+  directories: number;
+  leaves: number;
 }
 
 /** One SSE event from GET /api/assets/ingest/{job_id}/events */

@@ -70,6 +70,20 @@ class DatabricksWorkspaceClient:
                         stack.append(obj["path"])
                     yield obj
 
+    def list_workspace_objects_immediate(self, *, path: str) -> Iterator[dict[str, Any]]:
+        """Yield NOTEBOOK / FILE / DIRECTORY entries immediately under ``path``.
+
+        PR-E lazy counterpart of :meth:`list_workspace_objects` —
+        one single ``/api/2.0/workspace/list`` call, no recursion.
+        """
+        for page in self._paginated_get(
+            "/api/2.0/workspace/list",
+            params={"path": path or "/"},
+            page_token_field="next_page_token",
+            items_field="objects",
+        ):
+            yield from page
+
     def export_notebook_source(self, *, workspace_path: str) -> str:
         """Return the notebook source text in SOURCE format (Databricks # COMMAND ---------- shape).
 

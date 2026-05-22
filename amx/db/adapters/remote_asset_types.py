@@ -160,3 +160,22 @@ class RemoteQuery:
     user_name: str | None
     executed_at: datetime | None  # None for saved queries
     duration_ms: int | None
+
+
+@dataclass(frozen=True)
+class WorkspaceEntry:
+    """One node in a lazily-fetched workspace tree (PR-E).
+
+    The discover cache stores these per parent folder; the Studio
+    tree picker reads them via ``GET /api/assets/discover/tree``.
+    ``is_directory=True`` rows have ``external_id=None`` — only
+    leaves are ingestable.
+    """
+
+    kind: str  # 'notebook' (future: 'job' | 'pipeline' | ...)
+    path: str
+    name: str
+    is_directory: bool
+    external_id: str | None
+    owner: str | None
+    last_modified: datetime | None
