@@ -116,12 +116,45 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
         type=click.Choice(ASSET_TYPES),
         help="Asset type to list. Omit to be prompted.",
     )
+    @click.option(
+        "--limit",
+        default=50,
+        show_default=True,
+        type=click.IntRange(min=1, max=500),
+        help="Page size. Pair with --offset to paginate.",
+    )
+    @click.option(
+        "--offset",
+        default=0,
+        show_default=True,
+        type=click.IntRange(min=0),
+        help="Start at this row in the result set.",
+    )
+    @click.option(
+        "--search",
+        default="",
+        help="Case-insensitive substring filter against name and path.",
+    )
     @pass_config
-    def assets_list_cmd(cfg: AMXConfig, profile: str | None, asset_type: str | None) -> None:
+    def assets_list_cmd(
+        cfg: AMXConfig,
+        profile: str | None,
+        asset_type: str | None,
+        limit: int,
+        offset: int,
+        search: str,
+    ) -> None:
         """List remote-ingested assets in a tabular view."""
         from amx.cli_support.commands.db_assets_impl import run_list
 
-        run_list(cfg, profile=profile, asset_type=asset_type)
+        run_list(
+            cfg,
+            profile=profile,
+            asset_type=asset_type,
+            limit=limit,
+            offset=offset,
+            search=search,
+        )
 
     @assets.command("show")
     @click.argument("identifier")

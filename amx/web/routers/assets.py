@@ -27,6 +27,18 @@ ASSET_KINDS = {
     "query": ("remote_queries", "name"),
 }
 
+# PR-C (scale): the additional column the substring search hits beyond
+# the primary name column. None means "no second search axis for this
+# kind" — query rows have no natural path, jobs are name-only.
+_PATH_SEARCH_COL = {
+    "notebook": "COALESCE(workspace_path, qualified_name, '')",
+    "job": None,
+    "pipeline": "COALESCE(target_schema, '')",
+    "streamlit": None,  # qualified_name IS the name
+    "stream": None,
+    "query": None,
+}
+
 # In-process registry of ingest jobs to asyncio.Queue. Studio is single-tenant
 # per process, so a module-level dict is fine.
 _INGEST_JOBS: dict[str, asyncio.Queue] = {}
@@ -42,20 +54,59 @@ def _history_db_path(cfg: AMXConfig) -> Path:
 def list_assets(
     profile: str = Query(...),
     type: str = Query(..., alias="type"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    q: str = Query(default="", description="Case-insensitive substring filter on name + path."),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """Return all ingested assets of the given type for a DB profile."""
+    """Return a paginated slice of ingested assets for a DB profile.
+
+    PR-C (scale): the endpoint used to ``SELECT *`` without bounds —
+    a 5,000-notebook profile sent 5,000 rows on first paint. Studio
+    now requests pages (default 100, max 500) plus an optional
+    substring filter ``q`` against both the name column and the
+    kind's natural path column. The response carries
+    ``{items, count, total, has_more, offset, limit}`` so the table
+    can render a "Showing 100 of 5,000" footer + Next/Prev controls.
+    Legacy callers (no limit/offset/q) get the first 100 rows; the
+    ``count`` field still reflects ``len(items)`` for backwards
+    compatibility.
+    """
     if type not in ASSET_KINDS:
         raise HTTPException(400, f"Unknown asset type: {type!r}. Valid: {', '.join(ASSET_KINDS)}")
-    table, _name_col = ASSET_KINDS[type]
+    table, name_col = ASSET_KINDS[type]
+    path_expr = _PATH_SEARCH_COL.get(type)
+    needle = q.strip()
+    params: list[Any] = [profile]
+    where = "profile_name = ?"
+    if needle:
+        like = f"%{needle.lower()}%"
+        if path_expr:
+            where += f" AND (LOWER({name_col}) LIKE ? OR LOWER({path_expr}) LIKE ?)"
+            params.extend([like, like])
+        else:
+            where += f" AND LOWER({name_col}) LIKE ?"
+            params.append(like)
     with sqlite3.connect(_history_db_path(cfg)) as conn:
         conn.row_factory = sqlite3.Row
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {where}",  # noqa: S608 — identifiers controlled above
+            params,
+        ).fetchone()[0]
+        page_params = [*params, int(limit), int(offset)]
         rows = conn.execute(
-            f"SELECT * FROM {table} WHERE profile_name = ? ORDER BY id",
-            (profile,),
+            f"SELECT * FROM {table} WHERE {where} ORDER BY {name_col}, id LIMIT ? OFFSET ?",  # noqa: S608 — identifiers controlled above
+            page_params,
         ).fetchall()
         items = [dict(r) for r in rows]
-    return {"items": items, "count": len(items)}
+    return {
+        "items": items,
+        "count": len(items),
+        "total": int(total),
+        "has_more": (int(offset) + len(items)) < int(total),
+        "offset": int(offset),
+        "limit": int(limit),
+    }
 
 
 @router.get("/search")

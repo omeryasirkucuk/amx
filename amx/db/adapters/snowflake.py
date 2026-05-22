@@ -23,6 +23,42 @@ from amx.db.adapters.remote_asset_types import (
 log = logging.getLogger(__name__)
 
 
+# PR-C (scale): refuse runaway listings rather than load the whole
+# account into RAM. 10,000 is well past the largest realistic
+# enterprise (a 5,000-notebook workspace already maxes out the
+# bundled chunking strategies); anything beyond suggests a
+# permissions misconfiguration (e.g. SYSADMIN scanning every role's
+# notebooks) and should surface as an actionable error.
+_REMOTE_LIST_HARD_CAP = 10_000
+
+
+class RemoteListingTooLarge(RuntimeError):
+    """Raised when a SHOW listing exceeds ``_REMOTE_LIST_HARD_CAP``.
+
+    The catalog/service layer translates this into a per-kind ingest
+    failure (one entry in ``IngestResult.failures``) rather than
+    aborting the whole job, so a user with a runaway notebook count
+    can still ingest jobs / pipelines successfully.
+    """
+
+
+def _stream_with_cap(result, kind: str):
+    """Iterate a SQLAlchemy ``Result`` row by row, enforcing the cap.
+
+    Generator that yields mappings as they come off the cursor; raises
+    :class:`RemoteListingTooLarge` when the cap is exceeded so the
+    caller sees a structured error rather than a partial result.
+    """
+    for count, row in enumerate(result, start=1):
+        if count > _REMOTE_LIST_HARD_CAP:
+            raise RemoteListingTooLarge(
+                f"Snowflake returned more than {_REMOTE_LIST_HARD_CAP} {kind}; "
+                "refusing to load all of them into memory. Narrow the role / "
+                "warehouse scope or pre-filter via --include-id."
+            )
+        yield row
+
+
 class SnowflakeAdapter(DatabaseAdapter):
     name = "snowflake"
     capabilities = BackendCapabilities(
@@ -759,11 +795,16 @@ class SnowflakeAdapter(DatabaseAdapter):
         fully-qualified name is in the set are exported. The expensive
         ``DESC NOTEBOOK`` + stage read fans out only for selected rows so
         the "browse + pick 50 of 5,000" path stays fast.
+
+        PR-C (scale): iterates ``SHOW NOTEBOOKS IN ACCOUNT`` row by row
+        instead of materializing every notebook header into a list,
+        and enforces ``_REMOTE_LIST_HARD_CAP`` so a runaway account
+        listing surfaces as a structured error instead of an OOM.
         """
         wanted = set(external_id_filter) if external_id_filter is not None else None
         with engine.connect() as conn:
-            rows = conn.execute(text("SHOW NOTEBOOKS IN ACCOUNT")).mappings().all()
-            for r in rows:
+            result = conn.execute(text("SHOW NOTEBOOKS IN ACCOUNT")).mappings()
+            for r in _stream_with_cap(result, "notebooks"):
                 fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
                 if wanted is not None and fqn not in wanted:
                     continue
@@ -881,11 +922,13 @@ class SnowflakeAdapter(DatabaseAdapter):
 
         ``external_id_filter`` (PR-A): when set, only the listed fqns
         get the per-app ``DESC STREAMLIT`` round-trip.
+
+        PR-C: streams the listing + enforces the cross-kind hard cap.
         """
         wanted = set(external_id_filter) if external_id_filter is not None else None
         with engine.connect() as conn:
-            rows = conn.execute(text("SHOW STREAMLITS IN ACCOUNT")).mappings().all()
-            for r in rows:
+            result = conn.execute(text("SHOW STREAMLITS IN ACCOUNT")).mappings()
+            for r in _stream_with_cap(result, "streamlit apps"):
                 fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
                 if wanted is not None and fqn not in wanted:
                     continue
@@ -940,11 +983,13 @@ class SnowflakeAdapter(DatabaseAdapter):
 
         ``external_id_filter`` (PR-A): restricts the yielded streams to
         the given fqn set.
+
+        PR-C: streams the listing + enforces the cross-kind hard cap.
         """
         wanted = set(external_id_filter) if external_id_filter is not None else None
         with engine.connect() as conn:
-            rows = conn.execute(text("SHOW STREAMS IN ACCOUNT")).mappings().all()
-            for r in rows:
+            result = conn.execute(text("SHOW STREAMS IN ACCOUNT")).mappings()
+            for r in _stream_with_cap(result, "streams"):
                 fqn = f"{r['database_name']}.{r['schema_name']}.{r['name']}"
                 if wanted is not None and fqn not in wanted:
                     continue

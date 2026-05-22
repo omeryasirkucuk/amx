@@ -110,38 +110,61 @@ def list_intent_templates() -> list[dict]:
     ]
 
 
-_REMOTE_ASSET_OPTION_SQL: dict[str, str] = {
-    "asset_notebook": (
-        "SELECT id, name, workspace_path, qualified_name, "
-        "ingested_at FROM remote_notebooks WHERE profile_name = ? "
-        "ORDER BY name LIMIT 500"
-    ),
-    "asset_job": (
-        "SELECT id, name, '' AS workspace_path, '' AS qualified_name, "
-        "ingested_at FROM remote_jobs WHERE profile_name = ? "
-        "ORDER BY name LIMIT 500"
-    ),
-    "asset_pipeline": (
-        "SELECT id, name, '' AS workspace_path, target_schema AS qualified_name, "
-        "ingested_at FROM remote_pipelines WHERE profile_name = ? "
-        "ORDER BY name LIMIT 500"
-    ),
-    "asset_query": (
-        "SELECT id, name, kind AS workspace_path, warehouse AS qualified_name, "
-        "ingested_at FROM remote_queries WHERE profile_name = ? "
-        "ORDER BY executed_at DESC LIMIT 500"
-    ),
-    "asset_stream": (
-        "SELECT id, qualified_name AS name, source_table_fqn AS workspace_path, "
-        "mode AS qualified_name, ingested_at FROM remote_streams "
-        "WHERE profile_name = ? ORDER BY qualified_name LIMIT 500"
-    ),
-    "asset_streamlit": (
-        "SELECT id, qualified_name AS name, main_file AS workspace_path, "
-        "query_warehouse AS qualified_name, ingested_at "
-        "FROM remote_streamlit_apps WHERE profile_name = ? "
-        "ORDER BY qualified_name LIMIT 500"
-    ),
+# PR-C (scale): per-kind config powering ``/asset-options``.
+# ``select`` is the projection used to build option rows; ``table``,
+# ``name_col``, and ``path_col`` drive the WHERE / ORDER BY + the
+# optional substring search axis. Wiring it into a config dict beats
+# the previous per-kind SQL-string copy/paste and lets pagination
+# threads through every kind uniformly.
+_REMOTE_ASSET_OPTION_CONFIG: dict[str, dict[str, str]] = {
+    "asset_notebook": {
+        "select": "id, name, workspace_path, qualified_name, ingested_at",
+        "table": "remote_notebooks",
+        "name_col": "name",
+        "path_col": "COALESCE(workspace_path, qualified_name, '')",
+        "order_by": "name, id",
+    },
+    "asset_job": {
+        "select": "id, name, '' AS workspace_path, '' AS qualified_name, ingested_at",
+        "table": "remote_jobs",
+        "name_col": "name",
+        "path_col": "",
+        "order_by": "name, id",
+    },
+    "asset_pipeline": {
+        "select": "id, name, '' AS workspace_path, target_schema AS qualified_name, ingested_at",
+        "table": "remote_pipelines",
+        "name_col": "name",
+        "path_col": "COALESCE(target_schema, '')",
+        "order_by": "name, id",
+    },
+    "asset_query": {
+        "select": "id, name, kind AS workspace_path, warehouse AS qualified_name, ingested_at",
+        "table": "remote_queries",
+        "name_col": "name",
+        "path_col": "",
+        "order_by": "executed_at DESC, id",
+    },
+    "asset_stream": {
+        "select": (
+            "id, qualified_name AS name, source_table_fqn AS workspace_path, "
+            "mode AS qualified_name, ingested_at"
+        ),
+        "table": "remote_streams",
+        "name_col": "qualified_name",
+        "path_col": "",
+        "order_by": "qualified_name, id",
+    },
+    "asset_streamlit": {
+        "select": (
+            "id, qualified_name AS name, main_file AS workspace_path, "
+            "query_warehouse AS qualified_name, ingested_at"
+        ),
+        "table": "remote_streamlit_apps",
+        "name_col": "qualified_name",
+        "path_col": "",
+        "order_by": "qualified_name, id",
+    },
 }
 
 
@@ -149,6 +172,9 @@ _REMOTE_ASSET_OPTION_SQL: dict[str, str] = {
 def list_asset_options(
     kind: str = Query(..., description="One of asset_notebook, asset_job, ..."),
     profile: str = Query(..., min_length=1),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    q: str = Query(default="", description="Substring filter on name + path."),
     svc: PagesService = Depends(get_pages_service),
 ) -> list[dict]:
     """List ingested remote assets a page can be anchored to.
@@ -157,12 +183,37 @@ def list_asset_options(
     sourced from the local ``remote_*`` tables populated by
     ``/db ingest-assets``; the resolver later excerpts each one when
     the page is generated.
+
+    PR-C (scale): the legacy ``LIMIT 500`` cap let the picker fall
+    over silently past 500 assets. The endpoint now paginates
+    explicitly (``limit`` / ``offset``) and accepts a substring
+    filter ``q`` that hits both the name column and the kind's
+    natural path column. Response shape stays list[dict] for
+    backwards compatibility with the existing AssetPicker client;
+    the page wizard tab simply pages with Prev/Next instead of
+    relying on an invisible cap.
     """
-    sql = _REMOTE_ASSET_OPTION_SQL.get(kind)
-    if sql is None:
+    spec = _REMOTE_ASSET_OPTION_CONFIG.get(kind)
+    if spec is None:
         raise HTTPException(status_code=400, detail=f"unknown asset kind: {kind}")
+    where = "profile_name = ?"
+    params: list = [profile]
+    needle = (q or "").strip().lower()
+    if needle:
+        like = f"%{needle}%"
+        if spec["path_col"]:
+            where += f" AND (LOWER({spec['name_col']}) LIKE ? OR LOWER({spec['path_col']}) LIKE ?)"
+            params.extend([like, like])
+        else:
+            where += f" AND LOWER({spec['name_col']}) LIKE ?"
+            params.append(like)
+    sql = (
+        f"SELECT {spec['select']} FROM {spec['table']} "  # noqa: S608 — identifiers controlled above
+        f"WHERE {where} ORDER BY {spec['order_by']} LIMIT ? OFFSET ?"
+    )
+    params.extend([int(limit), int(offset)])
     with svc.store.history._connect() as conn:
-        cursor = conn.execute(sql, (profile,))
+        cursor = conn.execute(sql, params)
         cols = [c[0] for c in cursor.description]
         rows = [dict(zip(cols, row, strict=False)) for row in cursor.fetchall()]
     return [

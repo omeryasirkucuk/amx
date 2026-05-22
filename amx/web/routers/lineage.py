@@ -1199,7 +1199,64 @@ def get_lineage(
     payload = lineage_service.lineage_for_studio(
         hs=hs, scope=scope, include_heuristics=include_heuristics
     )
-    return payload
+    # PR-C (scale): a 500-node canvas is unreadable regardless of how
+    # cheap the data fetch is; the renderer also chokes past a few
+    # hundred react-flow nodes. Cap to the 200 most-connected nodes
+    # (anchor is always preserved) and surface ``truncated=true`` so
+    # the Studio canvas can show a banner.
+    return _cap_lineage_nodes(payload, limit=200)
+
+
+def _cap_lineage_nodes(payload: dict[str, Any], *, limit: int) -> dict[str, Any]:
+    """Trim a lineage payload to the ``limit`` most-connected nodes.
+
+    Connectivity = number of edges that touch the node. Ties broken
+    by insertion order so the result is deterministic. The anchor
+    table / column is always kept regardless of degree so the canvas
+    has a focal point even on heavily-pruned scopes.
+
+    When trimming happens, every edge that referenced a dropped node
+    is removed (else the renderer would log "edge endpoint missing"
+    warnings on every paint), and the payload grows two fields:
+
+    * ``truncated`` — boolean
+    * ``original_node_count`` — pre-cap node count, for the banner
+    """
+    nodes = payload.get("nodes") or []
+    if len(nodes) <= limit:
+        payload.setdefault("truncated", False)
+        return payload
+
+    edges = payload.get("edges") or []
+    anchor = payload.get("anchor") or {}
+    anchor_table = anchor.get("table") or ""
+    degree: dict[str, int] = {n.get("id") or "": 0 for n in nodes if n.get("id")}
+    for e in edges:
+        for end in ("source", "target", "from", "to"):
+            nid = e.get(end)
+            if nid in degree:
+                degree[nid] += 1
+
+    def _sort_key(n: dict[str, Any]) -> tuple[int, int, int]:
+        # (anchor first, then high degree, then earliest seen)
+        nid = n.get("id") or ""
+        is_anchor = 0 if anchor_table and n.get("table") == anchor_table else 1
+        return (is_anchor, -degree.get(nid, 0), nodes.index(n))
+
+    kept = sorted(nodes, key=_sort_key)[:limit]
+    kept_ids = {n.get("id") for n in kept}
+    filtered_edges = [
+        e
+        for e in edges
+        if e.get("source", e.get("from")) in kept_ids and e.get("target", e.get("to")) in kept_ids
+    ]
+    return {
+        **payload,
+        "nodes": kept,
+        "edges": filtered_edges,
+        "truncated": True,
+        "original_node_count": len(nodes),
+    }
 
 
 @router.post("/{anchor_path:path}/refresh")
