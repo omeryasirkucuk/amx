@@ -437,8 +437,7 @@ def ask_context(
                 try:
                     placeholders = ",".join("?" for _ in scope_dbs)
                     (n,) = conn.execute(
-                        f"SELECT COUNT(*) FROM {table_name} "
-                        f"WHERE profile_name IN ({placeholders})",
+                        f"SELECT COUNT(*) FROM {table_name} WHERE profile_name IN ({placeholders})",
                         tuple(scope_dbs),
                     ).fetchone()
                     ingested_assets_count += int(n or 0)

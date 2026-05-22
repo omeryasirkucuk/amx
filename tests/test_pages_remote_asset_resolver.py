@@ -109,7 +109,17 @@ def test_resolve_job_includes_schedule_tasks_and_runs(store: SQLiteHistoryStore)
         "INSERT INTO remote_jobs (profile_name, job_id, name, creator_user_name, "
         "schedule_cron, schedule_timezone, last_run_status, success_rate_30d, "
         "ingested_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("db_prod", 42, "nightly_load", "alice@example", "0 2 * * *", "UTC", "SUCCESS", 0.95, "2026-01-01"),
+        (
+            "db_prod",
+            42,
+            "nightly_load",
+            "alice@example",
+            "0 2 * * *",
+            "UTC",
+            "SUCCESS",
+            0.95,
+            "2026-01-01",
+        ),
     )
     _insert(
         store,
@@ -137,7 +147,18 @@ def test_resolve_pipeline_lists_notebook_libraries(store: SQLiteHistoryStore) ->
         "INSERT INTO remote_pipelines (profile_name, pipeline_id, name, target_schema, "
         "edition, continuous, photon, libraries_json, latest_update_state, ingested_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("db_prod", "pid-1", "bronze_loader", "bronze", "PRO", 0, 1, json.dumps(libs), "RUNNING", "2026-01-01"),
+        (
+            "db_prod",
+            "pid-1",
+            "bronze_loader",
+            "bronze",
+            "PRO",
+            0,
+            1,
+            json.dumps(libs),
+            "RUNNING",
+            "2026-01-01",
+        ),
     )
     block = RemoteAssetResolver(store).resolve_asset(f"db_prod:{pipe_id}", "asset_pipeline")
     assert "bronze_loader" in block
@@ -178,7 +199,15 @@ def test_resolve_stream_renders_compact_summary(store: SQLiteHistoryStore) -> No
         store,
         "INSERT INTO remote_streams (profile_name, qualified_name, source_table_fqn, "
         "mode, stale_after, owner, ingested_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("sf_prod", "DB.STG.ORDERS_STREAM", "DB.RAW.ORDERS", "APPEND_ONLY", "1 day", "alice", "2026-01-01"),
+        (
+            "sf_prod",
+            "DB.STG.ORDERS_STREAM",
+            "DB.RAW.ORDERS",
+            "APPEND_ONLY",
+            "1 day",
+            "alice",
+            "2026-01-01",
+        ),
     )
     block = RemoteAssetResolver(store).resolve_asset(f"sf_prod:{s_id}", "asset_stream")
     assert "STREAM" in block

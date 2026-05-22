@@ -36,7 +36,17 @@ def _seed_notebook(store: SQLiteHistoryStore, profile: str, name: str, source: s
             "INSERT INTO remote_notebooks (profile_name, platform, external_id, name, "
             "workspace_path, language, source_text, source_hash, ingested_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (profile, "databricks", f"ext-{name}", name, f"/ws/{name}", "python", source, "h", "2026-01-01"),
+            (
+                profile,
+                "databricks",
+                f"ext-{name}",
+                name,
+                f"/ws/{name}",
+                "python",
+                source,
+                "h",
+                "2026-01-01",
+            ),
         )
         return int(cur.lastrowid or 0)
 
@@ -108,9 +118,7 @@ def test_pulls_notebook_referencing_table(store: SQLiteHistoryStore) -> None:
 
 def test_ranks_higher_keyword_match_first(store: SQLiteHistoryStore) -> None:
     entity_id = _seed_table_entity(store, "db_prod", "sales", "orders")
-    high = _seed_notebook(
-        store, "db_prod", "orders_centric", "orders orders orders process orders"
-    )
+    high = _seed_notebook(store, "db_prod", "orders_centric", "orders orders orders process orders")
     low = _seed_notebook(store, "db_prod", "tangential", "schema setup nothing about it")
     _link_asset(store, from_kind="notebook", from_id=high, to_entity_id=entity_id)
     _link_asset(store, from_kind="notebook", from_id=low, to_entity_id=entity_id)

@@ -103,7 +103,17 @@ def test_list_asset_options_for_notebook_kind(
             "INSERT INTO remote_notebooks (profile_name, platform, external_id, "
             "name, workspace_path, language, source_text, source_hash, ingested_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("sf_prod", "snowflake", "e1", "nightly_etl", "/etl", "sql", "SELECT 1", "h", "2026-01-01"),
+            (
+                "sf_prod",
+                "snowflake",
+                "e1",
+                "nightly_etl",
+                "/etl",
+                "sql",
+                "SELECT 1",
+                "h",
+                "2026-01-01",
+            ),
         )
 
     r = client.get(
