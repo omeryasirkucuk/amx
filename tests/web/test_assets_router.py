@@ -422,3 +422,110 @@ def test_get_streamlit_surfaces_launch_info(tmp_path):
         "root_location": "@APPS.DASH_STAGE/dash_kpis",
         "query_warehouse": "WH_S",
     }
+
+
+# ── PR-A: /discover endpoint + selection round-trip ─────────────────────────
+
+
+def _make_meta(*, kind, external_id, name, path="", owner=None):
+    """Build an AssetMetadata stand-in for the connector stub."""
+    from amx.db.adapters.remote_asset_types import AssetMetadata
+
+    return AssetMetadata(
+        kind=kind,
+        external_id=external_id,
+        name=name,
+        path=path,
+        owner=owner,
+        last_modified=None,
+    )
+
+
+def test_discover_returns_metadata_rows(monkeypatch, tmp_path):
+    """GET /api/assets/discover yields cheap identity rows, no content."""
+    from amx.cli_support.commands import db_assets_impl as impl_mod
+
+    client, _ = _make_client(tmp_path)
+
+    class StubConnector:
+        def list_remote_notebooks_metadata(self):
+            return iter(
+                [
+                    _make_meta(
+                        kind="notebook",
+                        external_id="ext-1",
+                        name="etl",
+                        path="/Workspace/team-a/etl",
+                        owner="alice",
+                    ),
+                    _make_meta(
+                        kind="notebook",
+                        external_id="ext-2",
+                        name="etl",
+                        path="/Workspace/team-b/etl",
+                    ),
+                ]
+            )
+
+    monkeypatch.setattr(impl_mod, "_open_connector", lambda cfg, profile: StubConnector())
+    resp = client.get("/api/assets/discover?profile=prod&kind=notebooks", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [it["external_id"] for it in body["items"]] == ["ext-1", "ext-2"]
+    # Same-name collision is preserved precisely because path stays distinct.
+    assert body["items"][0]["path"] != body["items"][1]["path"]
+    # No source content leaks through.
+    assert "source_text" not in body["items"][0]
+
+
+def test_discover_rejects_unknown_kind(monkeypatch, tmp_path):
+    """Only the five pickable kinds are valid; queries/task_deps stay out."""
+    client, _ = _make_client(tmp_path)
+    resp = client.get("/api/assets/discover?profile=prod&kind=queries", headers=_AUTH)
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "queries" in body["detail"]
+
+
+def test_discover_returns_501_when_adapter_lacks_method(monkeypatch, tmp_path):
+    """An adapter without the metadata listing surfaces a clean 501.
+
+    Empty-result Snowflake notebooks listing is fine; missing the
+    method entirely is the explicit "not implemented for this
+    backend" path that the router must report rather than 500.
+    """
+    from amx.cli_support.commands import db_assets_impl as impl_mod
+
+    client, _ = _make_client(tmp_path)
+
+    class BareConnector:
+        pass
+
+    monkeypatch.setattr(impl_mod, "_open_connector", lambda cfg, profile: BareConnector())
+    resp = client.get("/api/assets/discover?profile=prod&kind=notebooks", headers=_AUTH)
+    assert resp.status_code == 501
+
+
+def test_ingest_body_honours_selection(monkeypatch, tmp_path):
+    """POST /ingest forwards body.selection into IngestRequest verbatim."""
+    import amx.web.routers.assets as a_mod
+
+    client, _ = _make_client(tmp_path)
+    captured: dict = {}
+
+    async def fake_runner(*, job_id, body, cfg, queue):
+        captured["selection"] = body.selection
+        await queue.put({"_eof": True})
+
+    monkeypatch.setattr(a_mod, "_run_ingest_job", fake_runner)
+    resp = client.post(
+        "/api/assets/ingest",
+        json={
+            "profile": "prod",
+            "types": ["notebooks"],
+            "selection": {"notebooks": ["ext-1", "ext-3"]},
+        },
+        headers=_AUTH,
+    )
+    assert resp.status_code == 202
+    assert captured["selection"] == {"notebooks": ["ext-1", "ext-3"]}
