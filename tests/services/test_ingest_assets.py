@@ -70,8 +70,7 @@ def test_ingest_assets_service_emits_progress():
     assert any(e.asset_type == "storage" and e.state == "completed" for e in events)
     assert any(e.asset_type == "lineage" and e.state == "completed" for e in events)
     assert any(
-        e.asset_type == "indexing" and e.state in {"completed", "failed", "skipped"}
-        for e in events
+        e.asset_type == "indexing" and e.state in {"completed", "failed", "skipped"} for e in events
     )
 
 

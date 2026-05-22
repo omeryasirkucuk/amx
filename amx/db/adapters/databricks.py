@@ -975,17 +975,13 @@ class DatabricksAdapter(DatabaseAdapter):
             return
         if kind != "notebook":
             return
-        for obj in self._workspace_client.list_workspace_objects_immediate(
-            path=parent_path or "/"
-        ):
+        for obj in self._workspace_client.list_workspace_objects_immediate(path=parent_path or "/"):
             object_type = obj.get("object_type")
             full_path = obj.get("path") or ""
             name = full_path.rsplit("/", 1)[-1] or full_path
             modified_ms = obj.get("modified_at")
             last_modified = (
-                datetime.fromtimestamp(modified_ms / 1000, tz=timezone.utc)
-                if modified_ms
-                else None
+                datetime.fromtimestamp(modified_ms / 1000, tz=timezone.utc) if modified_ms else None
             )
             if object_type == "DIRECTORY":
                 yield WorkspaceEntry(

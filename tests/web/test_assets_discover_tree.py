@@ -64,9 +64,7 @@ def test_tree_get_cache_miss_triggers_adapter_fetch(monkeypatch, tmp_path):
         impl_mod, "_open_connector", lambda cfg, profile: _StubConnector(entries=entries)
     )
     client, _db = _make_client(tmp_path)
-    resp = client.get(
-        "/api/assets/discover/tree?profile=prod&kind=notebook&parent=", headers=_AUTH
-    )
+    resp = client.get("/api/assets/discover/tree?profile=prod&kind=notebook&parent=", headers=_AUTH)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["cache_empty"] is False
@@ -101,9 +99,7 @@ def test_tree_get_cache_hit_does_not_call_adapter(monkeypatch, tmp_path):
         raise AssertionError("adapter must not be opened on cache hit")
 
     monkeypatch.setattr(impl_mod, "_open_connector", _boom)
-    resp = client.get(
-        "/api/assets/discover/tree?profile=prod&kind=notebook&parent=", headers=_AUTH
-    )
+    resp = client.get("/api/assets/discover/tree?profile=prod&kind=notebook&parent=", headers=_AUTH)
     assert resp.status_code == 200
     body = resp.json()
     assert any(r["path"] == "/Cached" for r in body["items"])
@@ -196,9 +192,7 @@ def test_tree_walk_seeds_full_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(
         impl_mod, "_open_connector", lambda cfg, profile: _StubConnector(leaves=leaves)
     )
-    resp = client.post(
-        "/api/assets/discover/tree/walk?profile=prod&kind=notebook", headers=_AUTH
-    )
+    resp = client.post("/api/assets/discover/tree/walk?profile=prod&kind=notebook", headers=_AUTH)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["leaves"] == 2
