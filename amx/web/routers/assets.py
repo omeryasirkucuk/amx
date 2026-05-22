@@ -223,6 +223,130 @@ class ChunkingOverrideIn(BaseModel):
     chunk_overlap: int | None = None
 
 
+# ── PR-E: Lazy discover tree endpoints ──────────────────────────────────────
+# Registered BEFORE ``/{kind}/{asset_id}`` so the literal path segments
+# ``discover/tree`` aren't mis-matched as ``kind=discover, asset_id=tree``
+# (which would 422 on the int parse of ``"tree"``).
+
+
+@router.get("/discover/tree")
+def discover_tree(
+    profile: str = Query(...),
+    kind: str = Query(default="notebook"),
+    parent: str = Query(default=""),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Return immediate children of ``parent`` for the Studio tree picker."""
+    from amx.assets.discover_cache import read_children, refresh_parent
+
+    db_path = _history_db_path(cfg)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cached, parent_fetched_at = read_children(
+            conn, profile=profile, kind=kind, parent_path=parent
+        )
+        if parent_fetched_at is not None:
+            return {
+                "items": cached,
+                "parent_path": parent,
+                "parent_fetched_at": parent_fetched_at,
+                "cache_empty": False,
+            }
+        from amx.cli_support.commands.db_assets_impl import _open_connector
+
+        try:
+            connector = _open_connector(cfg, profile)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"Could not open connector: {exc}") from exc
+        try:
+            entries = list(connector.list_workspace_children(parent_path=parent, kind=kind))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                502, f"Adapter listing failed for parent={parent!r}: {exc}"
+            ) from exc
+        refresh_parent(conn, profile=profile, kind=kind, parent_path=parent, entries=entries)
+        rows, parent_fetched_at = read_children(
+            conn, profile=profile, kind=kind, parent_path=parent
+        )
+    return {
+        "items": rows,
+        "parent_path": parent,
+        "parent_fetched_at": parent_fetched_at,
+        "cache_empty": False,
+    }
+
+
+@router.post("/discover/tree/refresh")
+def refresh_tree(
+    profile: str = Query(...),
+    kind: str = Query(default="notebook"),
+    parent: str = Query(default=""),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Force-refresh ``parent``'s immediate children (atomic replace)."""
+    from amx.assets.discover_cache import read_children, refresh_parent
+    from amx.cli_support.commands.db_assets_impl import _open_connector
+
+    db_path = _history_db_path(cfg)
+    try:
+        connector = _open_connector(cfg, profile)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Could not open connector: {exc}") from exc
+    try:
+        entries = list(connector.list_workspace_children(parent_path=parent, kind=kind))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Adapter listing failed for parent={parent!r}: {exc}") from exc
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        written = refresh_parent(
+            conn, profile=profile, kind=kind, parent_path=parent, entries=entries
+        )
+        rows, parent_fetched_at = read_children(
+            conn, profile=profile, kind=kind, parent_path=parent
+        )
+    return {
+        "items": rows,
+        "parent_path": parent,
+        "parent_fetched_at": parent_fetched_at,
+        "cache_empty": False,
+        "written": written,
+    }
+
+
+@router.post("/discover/tree/walk")
+def walk_tree(
+    profile: str = Query(...),
+    kind: str = Query(default="notebook"),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Full recursive walk that seeds the entire cache."""
+    from amx.assets.discover_cache import walk_full
+    from amx.cli_support.commands.db_assets_impl import _open_connector
+
+    db_path = _history_db_path(cfg)
+    try:
+        connector = _open_connector(cfg, profile)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Could not open connector: {exc}") from exc
+    fetch_method_name = {
+        "notebook": "list_remote_notebooks_metadata",
+        "job": "list_remote_jobs_metadata",
+        "pipeline": "list_remote_pipelines_metadata",
+    }.get(kind)
+    if fetch_method_name is None:
+        raise HTTPException(400, f"Walk not supported for kind={kind!r}.")
+    fetcher = getattr(connector, fetch_method_name, None)
+    if fetcher is None:
+        raise HTTPException(501, f"Adapter has no {fetch_method_name} for profile={profile!r}.")
+    try:
+        leaves = list(fetcher())
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Walk failed: {exc}") from exc
+    with sqlite3.connect(db_path) as conn:
+        counts = walk_full(conn, profile=profile, kind=kind, leaves=leaves)
+    return counts
+
+
 @router.get("/{kind}/{asset_id}/chunking")
 def get_asset_chunking(
     kind: str,

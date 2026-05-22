@@ -8,10 +8,31 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { api, type RemoteAssetIngestEvent } from "../../lib/api";
 import { Button, Dialog, Field, Input } from "../ui";
 import AssetBrowsePicker from "./AssetBrowsePicker";
+
+// Ingest is pull-only — chunking + embedding happens via the
+// per-asset Chunk button or `/db assets reindex`. ``indexed_chunks``
+// always lands as ``0`` and was confusing users on the completion
+// banner, so hide it. (Keep the field on the wire so older callers
+// don't break; we just don't render the count.)
+const _HIDDEN_FINAL_COUNT_KEYS = new Set(["indexed_chunks"]);
+
+// Map the orchestrator's plural ``asset_type`` events back to the
+// singular kind that AssetTable's queryKey uses. Naive ``replace(/s$/, "")``
+// loses the "streamlit_app" → "streamlit" alias and turns "queries"
+// into "querie", so the per-kind invalidation needs an explicit map.
+const _ASSET_TYPE_TO_KIND: Record<string, string> = {
+  notebooks: "notebook",
+  jobs: "job",
+  pipelines: "pipeline",
+  streamlit_apps: "streamlit",
+  streams: "stream",
+  queries: "query",
+};
 
 // Kinds the discover endpoint serves — anything outside this set
 // stays in "ingest all" mode even when the picker is open.
@@ -71,6 +92,10 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
   const [selection, setSelection] = useState<Record<string, Set<string>>>({});
   const esRef = useRef<EventSource | null>(null);
   const allCheckboxRef = useRef<HTMLInputElement>(null);
+  // After an ingest completes we invalidate the Assets table queries
+  // so the row that just landed in remote_notebooks shows up without
+  // the user closing the dialog and reloading the page.
+  const queryClient = useQueryClient();
 
   const pickableSelectedKinds = useMemo(
     () => Array.from(selectedTypes).filter((id) => PICKABLE_KIND_IDS.has(id)),
@@ -201,6 +226,12 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
             setSubmitting(false);
             es.close();
             esRef.current = null;
+            // Final invalidation — every assets-related query for this
+            // profile gets a fresh fetch so the table reflects the new
+            // rows immediately.
+            queryClient.invalidateQueries({
+              queryKey: ["remote-assets", profile],
+            });
             return;
           }
 
@@ -223,6 +254,20 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
                 message: data.message,
               },
             }));
+            // Per-kind real-time refresh: as each asset_type lands
+            // ``state: "completed"``, invalidate that kind's table
+            // query so the Studio rows trickle in while the next
+            // kind is still pulling. ``storage`` / ``lineage`` /
+            // ``indexing`` stages don't map to a Studio tab so we
+            // skip them.
+            if (data.state === "completed" && data.asset_type) {
+              const singular = _ASSET_TYPE_TO_KIND[data.asset_type];
+              if (singular) {
+                queryClient.invalidateQueries({
+                  queryKey: ["remote-assets", profile, singular],
+                });
+              }
+            }
           }
         } catch {
           // Non-JSON event — ignore
@@ -246,7 +291,7 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
       open={open}
       onClose={handleClose}
       title="Ingest remote assets"
-      size="md"
+      size={pickerOpen ? "xl" : "md"}
       footer={
         done ? (
           <Button variant="primary" onClick={handleClose}>
@@ -418,13 +463,28 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
             <div className={wrapper}>
               <p className={`mb-1.5 text-sm font-medium ${headlineColor}`}>{headline}</p>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-ink-muted sm:grid-cols-3">
-                {Object.entries(finalCounts).map(([k, v]) => (
-                  <div key={k} className="flex gap-1">
-                    <dt className="text-ink-dim">{k}:</dt>
-                    <dd className="font-mono">{v}</dd>
-                  </div>
-                ))}
+                {Object.entries(finalCounts)
+                  .filter(([k]) => !_HIDDEN_FINAL_COUNT_KEYS.has(k))
+                  .map(([k, v]) => (
+                    <div key={k} className="flex gap-1">
+                      <dt className="text-ink-dim">{k}:</dt>
+                      <dd className="font-mono">{v}</dd>
+                    </div>
+                  ))}
               </dl>
+              {/* Pull-only ingest: tell the user where chunking + embedding
+                  live now so they don't expect indexed_chunks > 0. */}
+              {!allFailed && (
+                <p className="mt-2 border-t border-border/40 pt-2 text-[11px] text-ink-dim">
+                  Chunking + embedding is a separate step. Use the{" "}
+                  <span className="font-mono">Chunk</span> action on each row
+                  of the Assets table, or run{" "}
+                  <code className="rounded bg-surface-subtle px-1">
+                    /db assets reindex
+                  </code>{" "}
+                  to embed everything under the active chunking config.
+                </p>
+              )}
               {finalFailures && Object.keys(finalFailures).length > 0 && (
                 <div className="mt-2 border-t border-border/50 pt-2">
                   <p className="mb-1 text-xs font-medium text-critical">

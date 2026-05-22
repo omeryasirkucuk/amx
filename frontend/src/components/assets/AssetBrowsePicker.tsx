@@ -1,54 +1,45 @@
 /**
- * AssetBrowsePicker — browse-then-pick step for IngestDialog.
+ * AssetBrowsePicker — PR-E lazy tree.
  *
- * Renders one tab per pickable asset kind (notebooks / jobs /
- * pipelines / streamlit_apps / streams). Each tab hits
- * GET /api/assets/discover for cheap identity rows (no source
- * content) and shows a DataTable with a checkbox column so the
- * user can cherry-pick individual external_ids before submitting
- * the ingest job. ``queries`` and ``task_dependencies`` are
- * intentionally not pickable — they're time-windowed aggregates
- * filtered by ``history_days`` / ``query_history_limit``, not
- * per-asset rows.
- *
- * Selection state lives in the parent (IngestDialog) so the
- * submit handler can fold it into the ``selection`` field on
- * /api/assets/ingest.
+ * Talks to ``/api/assets/discover/tree``: root loads instantly
+ * from cache, each folder expand fires one /tree call for its
+ * immediate children, per-folder refresh re-fetches just that
+ * level. Search filters loaded rows when the cache has data;
+ * empty cache offers an explicit "walk workspace" fallback.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  RefreshCw,
+  Search,
+} from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 
-import { api, type RemoteAssetMetadata } from "../../lib/api";
-import { DataTable, type DataTableColumn } from "../ui";
+import { api, type DiscoverTreeNode } from "../../lib/api";
 
-/**
- * Kinds the discover endpoint serves. Order is the tab order; pick
- * "notebooks" first because it's the most common entry point.
- */
-const PICKABLE_KINDS: Array<{ id: string; label: string }> = [
-  { id: "notebooks", label: "Notebooks" },
-  { id: "jobs", label: "Jobs" },
-  { id: "pipelines", label: "Pipelines" },
-  { id: "streamlit_apps", label: "Streamlit apps" },
-  { id: "streams", label: "Streams" },
+const PICKABLE_KINDS: Array<{ id: string; label: string; kindParam: string }> = [
+  { id: "notebooks", label: "Notebooks", kindParam: "notebook" },
+  // Jobs + pipelines are flat (no folder hierarchy) — the same tree
+  // component renders them with zero indentation.
+  { id: "jobs", label: "Jobs", kindParam: "job" },
+  { id: "pipelines", label: "Pipelines", kindParam: "pipeline" },
 ];
 
 interface Props {
   profile: string;
-  /** Kinds the user has ticked in the type picker — only these tabs render. */
   enabledKinds: string[];
-  /** kind → Set of selected external_ids. Owned by parent. */
   selection: Record<string, Set<string>>;
-  /** Parent updates the per-kind Set in immutable fashion. */
   onSelectionChange: (next: Record<string, Set<string>>) => void;
-  /** Disable interactions during submission. */
   disabled?: boolean;
 }
 
-interface KindState {
+interface NodeState {
+  expanded: boolean;
   loading: boolean;
   error: string | null;
-  items: RemoteAssetMetadata[];
+  children: DiscoverTreeNode[] | null;
 }
 
 export default function AssetBrowsePicker({
@@ -58,152 +49,203 @@ export default function AssetBrowsePicker({
   onSelectionChange,
   disabled,
 }: Props) {
-  const tabs = useMemo(
-    () => PICKABLE_KINDS.filter((k) => enabledKinds.includes(k.id)),
-    [enabledKinds],
+  const tabs = PICKABLE_KINDS.filter((k) => enabledKinds.includes(k.id));
+  const [activeTabId, setActiveTabId] = useState<string>(
+    tabs[0]?.id ?? "notebooks",
   );
-  const [activeKind, setActiveKind] = useState<string>(tabs[0]?.id ?? "");
-  const [cache, setCache] = useState<Record<string, KindState>>({});
+  const activeTab =
+    tabs.find((t) => t.id === activeTabId) ?? tabs[0] ?? PICKABLE_KINDS[0];
 
-  // When the enabled set shrinks past the current active tab,
-  // re-anchor to the first remaining tab.
-  useEffect(() => {
-    if (tabs.length === 0) {
-      setActiveKind("");
-      return;
-    }
-    if (!tabs.some((t) => t.id === activeKind)) {
-      setActiveKind(tabs[0].id);
-    }
-  }, [tabs, activeKind]);
+  const [nodes, setNodes] = useState<Record<string, NodeState>>({});
+  const [rootLoading, setRootLoading] = useState(false);
+  const [rootError, setRootError] = useState<string | null>(null);
+  const [rootChildren, setRootChildren] = useState<DiscoverTreeNode[] | null>(
+    null,
+  );
+  const [rootRefreshing, setRootRefreshing] = useState(false);
 
-  // Lazy-load each kind's metadata the first time its tab is opened.
-  // Mounting all tabs at once would fire one /discover call per kind
-  // on dialog open, which is wasteful for the common path where the
-  // user only browses one kind.
+  const [filter, setFilter] = useState("");
+  const [debouncedFilter, setDebouncedFilter] = useState("");
+  const [walking, setWalking] = useState(false);
+  const [walkError, setWalkError] = useState<string | null>(null);
+
+  // Reset all state when profile/kind changes.
   useEffect(() => {
-    if (!activeKind || cache[activeKind]) return;
-    let cancelled = false;
-    setCache((prev) => ({
-      ...prev,
-      [activeKind]: { loading: true, error: null, items: [] },
-    }));
-    api
-      .discoverAssets({ profile, kind: activeKind })
-      .then((res) => {
-        if (cancelled) return;
-        setCache((prev) => ({
+    setNodes({});
+    setRootChildren(null);
+    setRootError(null);
+    setFilter("");
+    setDebouncedFilter("");
+  }, [profile, activeTab.kindParam]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedFilter(filter.trim()), 200);
+    return () => clearTimeout(t);
+  }, [filter]);
+
+  const fetchRoot = useCallback(
+    async (force: boolean) => {
+      if (force) setRootRefreshing(true);
+      else setRootLoading(true);
+      setRootError(null);
+      try {
+        const fn = force ? api.refreshDiscoverTree : api.discoverTree;
+        const res = await fn({
+          profile,
+          kind: activeTab.kindParam,
+          parent: "",
+        });
+        setRootChildren(res.items);
+      } catch (err) {
+        setRootError((err as Error).message || "Failed to load workspace.");
+      } finally {
+        setRootLoading(false);
+        setRootRefreshing(false);
+      }
+    },
+    [profile, activeTab.kindParam],
+  );
+
+  useEffect(() => {
+    if (!profile) return;
+    if (rootChildren !== null) return;
+    fetchRoot(false);
+  }, [profile, rootChildren, fetchRoot]);
+
+  const fetchChildren = useCallback(
+    async (parentPath: string, force: boolean) => {
+      setNodes((prev) => ({
+        ...prev,
+        [parentPath]: {
+          ...(prev[parentPath] ?? { expanded: true, children: null }),
+          loading: true,
+          error: null,
+          expanded: true,
+        },
+      }));
+      try {
+        const fn = force ? api.refreshDiscoverTree : api.discoverTree;
+        const res = await fn({
+          profile,
+          kind: activeTab.kindParam,
+          parent: parentPath,
+        });
+        setNodes((prev) => ({
           ...prev,
-          [activeKind]: { loading: false, error: null, items: res.items },
-        }));
-      })
-      .catch((err: Error) => {
-        if (cancelled) return;
-        setCache((prev) => ({
-          ...prev,
-          [activeKind]: {
+          [parentPath]: {
+            ...(prev[parentPath] ?? { expanded: true }),
             loading: false,
-            error: err.message ?? "Failed to load assets.",
-            items: [],
+            error: null,
+            children: res.items,
+            expanded: true,
           },
         }));
-      });
-    return () => {
-      cancelled = true;
+      } catch (err) {
+        setNodes((prev) => ({
+          ...prev,
+          [parentPath]: {
+            ...(prev[parentPath] ?? { expanded: true, children: null }),
+            loading: false,
+            error: (err as Error).message ?? "Fetch failed.",
+            expanded: true,
+          },
+        }));
+      }
+    },
+    [profile, activeTab.kindParam],
+  );
+
+  const toggleFolder = useCallback(
+    (folder: DiscoverTreeNode) => {
+      const state = nodes[folder.path];
+      if (state?.expanded) {
+        setNodes((prev) => ({
+          ...prev,
+          [folder.path]: { ...prev[folder.path]!, expanded: false },
+        }));
+        return;
+      }
+      if (state?.children) {
+        setNodes((prev) => ({
+          ...prev,
+          [folder.path]: { ...prev[folder.path]!, expanded: true },
+        }));
+        return;
+      }
+      void fetchChildren(folder.path, false);
+    },
+    [nodes, fetchChildren],
+  );
+
+  const selectedSet = selection[activeTab.id] ?? new Set<string>();
+
+  const toggleLeaf = (leaf: DiscoverTreeNode) => {
+    if (!leaf.external_id) return;
+    const next = new Set(selectedSet);
+    if (next.has(leaf.external_id)) next.delete(leaf.external_id);
+    else next.add(leaf.external_id);
+    onSelectionChange({ ...selection, [activeTab.id]: next });
+  };
+
+  const allLoadedLeaves = useCallback((): DiscoverTreeNode[] => {
+    const acc: DiscoverTreeNode[] = [];
+    const pushLeaf = (n: DiscoverTreeNode) => {
+      if (!isDir(n)) acc.push(n);
     };
-  }, [activeKind, profile, cache]);
+    (rootChildren ?? []).forEach(pushLeaf);
+    Object.values(nodes).forEach((s) => {
+      (s.children ?? []).forEach(pushLeaf);
+    });
+    return acc;
+  }, [rootChildren, nodes]);
 
-  function toggle(kind: string, id: string) {
-    const current = selection[kind] ?? new Set<string>();
-    const next = new Set(current);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    onSelectionChange({ ...selection, [kind]: next });
-  }
+  const cacheHasAnyRow = (rootChildren?.length ?? 0) > 0;
 
-  function selectAllVisible(kind: string, ids: string[]) {
-    const current = selection[kind] ?? new Set<string>();
-    const next = new Set(current);
-    for (const id of ids) next.add(id);
-    onSelectionChange({ ...selection, [kind]: next });
-  }
+  const onWalk = async () => {
+    setWalking(true);
+    setWalkError(null);
+    try {
+      await api.walkDiscoverTree({ profile, kind: activeTab.kindParam });
+      await fetchRoot(false);
+    } catch (err) {
+      setWalkError((err as Error).message ?? "Walk failed.");
+    } finally {
+      setWalking(false);
+    }
+  };
 
-  function clearKind(kind: string) {
-    onSelectionChange({ ...selection, [kind]: new Set() });
-  }
+  const matched = (() => {
+    if (!debouncedFilter) return null;
+    const needle = debouncedFilter.toLowerCase();
+    return allLoadedLeaves().filter((l) => {
+      const hay = `${l.name} ${l.path} ${l.owner ?? ""}`.toLowerCase();
+      return hay.includes(needle);
+    });
+  })();
 
   if (tabs.length === 0) {
     return (
       <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-sm text-ink-muted">
-        Pick at least one type above (notebooks, jobs, pipelines, streamlit
-        apps, or streams) to browse individual assets. Queries and task
-        dependencies are time-windowed and can't be cherry-picked.
+        Pick at least one of Notebooks / Jobs / Pipelines above to browse
+        individual assets. Other kinds (queries, task dependencies, streams,
+        streamlit apps) are time-windowed or have no folder hierarchy worth
+        a picker.
       </p>
     );
   }
 
-  const state = cache[activeKind];
-  const selectedForKind = selection[activeKind] ?? new Set<string>();
-
-  const columns: DataTableColumn<RemoteAssetMetadata>[] = [
-    {
-      id: "_pick",
-      header: "",
-      width: "w-10",
-      cell: (row) => (
-        <input
-          type="checkbox"
-          checked={selectedForKind.has(row.external_id)}
-          onChange={() => toggle(activeKind, row.external_id)}
-          disabled={disabled}
-          className="h-3.5 w-3.5 accent-accent"
-          aria-label={`Select ${row.name}`}
-        />
-      ),
-    },
-    {
-      id: "name",
-      header: "Name",
-      sortValue: (row) => row.name,
-      cell: (row) => <span className="font-medium">{row.name}</span>,
-    },
-    {
-      id: "path",
-      header: "Path",
-      sortValue: (row) => row.path,
-      hideOnMobile: true,
-      mono: true,
-      cell: (row) => (
-        <span className="break-all text-xs text-ink-muted">
-          {row.path || "—"}
-        </span>
-      ),
-    },
-    {
-      id: "owner",
-      header: "Owner",
-      sortValue: (row) => row.owner ?? "",
-      hideOnMobile: true,
-      cell: (row) => row.owner ?? "—",
-    },
-  ];
-
   return (
     <div className="space-y-2">
-      {/* Tab strip — flex-wrap keeps it usable on narrow screens. */}
-      <div
-        role="tablist"
-        className="flex flex-wrap gap-1 border-b border-border"
-      >
+      <div role="tablist" className="flex flex-wrap gap-1 border-b border-border">
         {tabs.map((tab) => {
-          const isActive = tab.id === activeKind;
+          const isActive = tab.id === activeTabId;
           const count = (selection[tab.id] ?? new Set()).size;
           return (
             <button
               key={tab.id}
               role="tab"
               type="button"
-              onClick={() => setActiveKind(tab.id)}
+              onClick={() => setActiveTabId(tab.id)}
               disabled={disabled}
               className={`-mb-px border-b-2 px-3 py-1.5 text-xs font-medium transition-colors ${
                 isActive
@@ -222,56 +264,389 @@ export default function AssetBrowsePicker({
         })}
       </div>
 
-      {/* Per-tab toolbar — bulk actions for the currently visible set. */}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search
+            size={14}
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-dim"
+          />
+          <input
+            type="search"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Search by name, path, or owner…"
+            disabled={disabled}
+            className="w-full rounded-md border border-border bg-surface-raised py-1.5 pl-7 pr-2 text-sm placeholder:text-ink-dim disabled:cursor-not-allowed disabled:opacity-50"
+          />
+        </div>
+        <button
+          type="button"
+          title="Refresh root folder"
+          onClick={() => fetchRoot(true)}
+          disabled={disabled || rootRefreshing || rootLoading}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border hover:bg-surface-subtle disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label="Refresh root level"
+        >
+          {rootRefreshing ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <RefreshCw size={14} />
+          )}
+        </button>
+      </div>
+
       <div className="flex items-center justify-between gap-2 text-xs text-ink-muted">
         <span>
-          {selectedForKind.size > 0
-            ? `${selectedForKind.size} selected`
+          {selectedSet.size > 0
+            ? `${selectedSet.size} selected`
             : "None selected — every shown row will be skipped at submit."}
         </span>
-        <div className="flex gap-2">
+        {selectedSet.size > 0 && (
           <button
             type="button"
-            disabled={disabled || !state || state.items.length === 0}
             onClick={() =>
-              selectAllVisible(
-                activeKind,
-                (state?.items ?? []).map((r) => r.external_id),
-              )
+              onSelectionChange({ ...selection, [activeTab.id]: new Set() })
             }
-            className="text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Select all
-          </button>
-          <button
-            type="button"
-            disabled={disabled || selectedForKind.size === 0}
-            onClick={() => clearKind(activeKind)}
-            className="text-ink-muted hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+            className="text-ink-muted hover:underline"
           >
             Clear
           </button>
-        </div>
+        )}
       </div>
 
-      <DataTable
-        columns={columns}
-        rows={state?.items ?? []}
-        rowKey={(row) => row.external_id}
-        searchable
-        searchPlaceholder={`Search ${activeKind.replace("_", " ")}…`}
-        searchAccessor={(row) =>
-          `${row.name} ${row.path} ${row.owner ?? ""}`.toLowerCase()
-        }
-        isLoading={state?.loading ?? false}
-        error={state?.error ?? null}
-        pageSize={25}
-        emptyState={
-          <span className="text-ink-muted">
-            No {activeKind.replace("_", " ")} found in this profile.
-          </span>
-        }
-      />
+      <div className="max-h-[55vh] overflow-y-auto rounded-md border border-border">
+        {rootLoading ? (
+          <div className="px-3 py-6 text-center text-xs text-ink-dim">
+            Loading workspace root…
+          </div>
+        ) : rootError ? (
+          <div className="px-3 py-4 text-xs text-critical">{rootError}</div>
+        ) : matched ? (
+          <SearchResults
+            matched={matched}
+            cacheHasAnyRow={cacheHasAnyRow}
+            walking={walking}
+            walkError={walkError}
+            onWalk={onWalk}
+            selectedSet={selectedSet}
+            onToggleLeaf={toggleLeaf}
+            disabled={!!disabled}
+          />
+        ) : (
+          <TreeList
+            level={(rootChildren ?? []).filter(distinctByPath())}
+            nodes={nodes}
+            depth={0}
+            onToggleFolder={toggleFolder}
+            onRefreshFolder={(p) => fetchChildren(p, true)}
+            onToggleLeaf={toggleLeaf}
+            selectedSet={selectedSet}
+            disabled={!!disabled}
+          />
+        )}
+      </div>
     </div>
+  );
+}
+
+function isDir(n: DiscoverTreeNode): boolean {
+  return Boolean(n.is_directory);
+}
+
+function distinctByPath() {
+  const seen = new Set<string>();
+  return (n: DiscoverTreeNode) => {
+    if (seen.has(n.path)) return false;
+    seen.add(n.path);
+    return true;
+  };
+}
+
+interface TreeListProps {
+  level: DiscoverTreeNode[];
+  nodes: Record<string, NodeState>;
+  depth: number;
+  onToggleFolder: (folder: DiscoverTreeNode) => void;
+  onRefreshFolder: (path: string) => void;
+  onToggleLeaf: (leaf: DiscoverTreeNode) => void;
+  selectedSet: Set<string>;
+  disabled: boolean;
+}
+
+function TreeList({
+  level,
+  nodes,
+  depth,
+  onToggleFolder,
+  onRefreshFolder,
+  onToggleLeaf,
+  selectedSet,
+  disabled,
+}: TreeListProps) {
+  if (level.length === 0) {
+    return (
+      <div className="px-3 py-4 text-center text-xs text-ink-muted">
+        Empty.
+      </div>
+    );
+  }
+  return (
+    <ul className="divide-y divide-border/60">
+      {level.map((entry) =>
+        isDir(entry) ? (
+          <FolderRow
+            key={entry.path}
+            folder={entry}
+            state={nodes[entry.path]}
+            depth={depth}
+            onToggleFolder={onToggleFolder}
+            onRefreshFolder={onRefreshFolder}
+            onToggleLeaf={onToggleLeaf}
+            selectedSet={selectedSet}
+            disabled={disabled}
+            nodes={nodes}
+          />
+        ) : (
+          <LeafRow
+            key={entry.path}
+            leaf={entry}
+            depth={depth}
+            selectedSet={selectedSet}
+            onToggleLeaf={onToggleLeaf}
+            disabled={disabled}
+          />
+        ),
+      )}
+    </ul>
+  );
+}
+
+function FolderRow({
+  folder,
+  state,
+  depth,
+  onToggleFolder,
+  onRefreshFolder,
+  onToggleLeaf,
+  selectedSet,
+  disabled,
+  nodes,
+}: {
+  folder: DiscoverTreeNode;
+  state: NodeState | undefined;
+  depth: number;
+  onToggleFolder: (folder: DiscoverTreeNode) => void;
+  onRefreshFolder: (path: string) => void;
+  onToggleLeaf: (leaf: DiscoverTreeNode) => void;
+  selectedSet: Set<string>;
+  disabled: boolean;
+  nodes: Record<string, NodeState>;
+}) {
+  const expanded = state?.expanded ?? false;
+  const loading = state?.loading ?? false;
+  const error = state?.error ?? null;
+  const children = state?.children ?? null;
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRefreshing(true);
+    try {
+      await Promise.resolve(onRefreshFolder(folder.path));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  return (
+    <li>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => onToggleFolder(folder)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggleFolder(folder);
+          }
+        }}
+        style={{ paddingLeft: 8 + depth * 16 }}
+        className="flex cursor-pointer items-center gap-2 py-1.5 pr-2 text-sm hover:bg-surface-subtle"
+      >
+        {loading ? (
+          <Loader2 size={14} className="shrink-0 animate-spin text-ink-dim" />
+        ) : expanded ? (
+          <ChevronDown size={14} className="shrink-0 text-ink-dim" />
+        ) : (
+          <ChevronRight size={14} className="shrink-0 text-ink-dim" />
+        )}
+        <span className="flex-1 truncate font-mono text-xs text-ink">
+          {folder.path || "/"}
+        </span>
+        {children && (
+          <span className="shrink-0 text-[11px] text-ink-dim">
+            {children.length} items
+          </span>
+        )}
+        <button
+          type="button"
+          title="Refresh this folder"
+          onClick={handleRefresh}
+          disabled={disabled || refreshing || loading}
+          className="shrink-0 rounded p-0.5 text-ink-dim hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label={`Refresh ${folder.path}`}
+        >
+          {refreshing ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <RefreshCw size={12} />
+          )}
+        </button>
+      </div>
+      {expanded && (
+        <>
+          {error && (
+            <div
+              style={{ paddingLeft: 24 + depth * 16 }}
+              className="py-1 text-[11px] text-critical"
+            >
+              {error}
+            </div>
+          )}
+          {children && (
+            <TreeList
+              level={children.filter(distinctByPath())}
+              nodes={nodes}
+              depth={depth + 1}
+              onToggleFolder={onToggleFolder}
+              onRefreshFolder={onRefreshFolder}
+              onToggleLeaf={onToggleLeaf}
+              selectedSet={selectedSet}
+              disabled={disabled}
+            />
+          )}
+        </>
+      )}
+    </li>
+  );
+}
+
+function LeafRow({
+  leaf,
+  depth,
+  selectedSet,
+  onToggleLeaf,
+  disabled,
+}: {
+  leaf: DiscoverTreeNode;
+  depth: number;
+  selectedSet: Set<string>;
+  onToggleLeaf: (leaf: DiscoverTreeNode) => void;
+  disabled: boolean;
+}) {
+  const checked = leaf.external_id ? selectedSet.has(leaf.external_id) : false;
+  return (
+    <li
+      style={{ paddingLeft: 24 + depth * 16 }}
+      className="flex items-center gap-2 py-1 pr-2 text-sm hover:bg-surface-subtle"
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={() => onToggleLeaf(leaf)}
+        disabled={disabled || !leaf.external_id}
+        className="h-3.5 w-3.5 shrink-0 accent-accent"
+        aria-label={`Select ${leaf.name}`}
+      />
+      <span className="flex-1 truncate text-ink">{leaf.name}</span>
+      {leaf.owner && (
+        <span className="shrink-0 text-[11px] text-ink-dim">{leaf.owner}</span>
+      )}
+    </li>
+  );
+}
+
+function SearchResults({
+  matched,
+  cacheHasAnyRow,
+  walking,
+  walkError,
+  onWalk,
+  selectedSet,
+  onToggleLeaf,
+  disabled,
+}: {
+  matched: DiscoverTreeNode[];
+  cacheHasAnyRow: boolean;
+  walking: boolean;
+  walkError: string | null;
+  onWalk: () => void;
+  selectedSet: Set<string>;
+  onToggleLeaf: (leaf: DiscoverTreeNode) => void;
+  disabled: boolean;
+}) {
+  if (!cacheHasAnyRow) {
+    return (
+      <div className="space-y-2 px-3 py-4 text-xs text-ink-muted">
+        <p>
+          The cache is empty. Run a full workspace walk once to enable search
+          across every folder. Subsequent searches are instant.
+        </p>
+        <button
+          type="button"
+          onClick={onWalk}
+          disabled={walking}
+          className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium hover:bg-surface-subtle disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {walking ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <RefreshCw size={12} />
+          )}
+          {walking ? "Walking workspace…" : "Walk workspace + search"}
+        </button>
+        {walkError && <p className="text-critical">{walkError}</p>}
+      </div>
+    );
+  }
+  if (matched.length === 0) {
+    return (
+      <div className="px-3 py-6 text-center text-xs text-ink-muted">
+        No matches in the loaded folders. Tip: expand more folders or hit{" "}
+        <button
+          type="button"
+          onClick={onWalk}
+          className="underline hover:text-accent"
+          disabled={walking}
+        >
+          walk workspace
+        </button>{" "}
+        to search the entire tree.
+      </div>
+    );
+  }
+  return (
+    <ul className="divide-y divide-border/60">
+      {matched.map((leaf) => (
+        <li
+          key={leaf.path}
+          className="flex items-center gap-2 px-3 py-1 text-sm hover:bg-surface-subtle"
+        >
+          <input
+            type="checkbox"
+            checked={
+              leaf.external_id ? selectedSet.has(leaf.external_id) : false
+            }
+            onChange={() => onToggleLeaf(leaf)}
+            disabled={disabled || !leaf.external_id}
+            className="h-3.5 w-3.5 shrink-0 accent-accent"
+          />
+          <span className="flex-1 truncate text-ink">{leaf.name}</span>
+          <span className="shrink-0 truncate font-mono text-[11px] text-ink-dim">
+            {leaf.path}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }

@@ -930,6 +930,80 @@ class DatabricksAdapter(DatabaseAdapter):
         except (json.JSONDecodeError, AttributeError):
             return None
 
+    def list_workspace_children(self, engine=None, *, parent_path: str, kind: str):
+        """Yield :class:`WorkspaceEntry` rows immediately under ``parent_path``.
+
+        PR-E lazy discover. Behaviour per kind:
+
+        * ``notebook`` — one ``/api/2.0/workspace/list`` call per
+          expand. FILE / REPO entries are skipped.
+        * ``job`` — flat list at ``parent_path=''`` (Databricks
+          jobs have no folder hierarchy). Subfolder requests yield
+          nothing.
+        * ``pipeline`` — same flat-on-root pattern as jobs.
+        """
+        from amx.db.adapters.remote_asset_types import WorkspaceEntry
+
+        del engine
+        if kind == "job":
+            if parent_path:
+                return
+            for meta in self.list_remote_jobs_metadata():
+                yield WorkspaceEntry(
+                    kind="job",
+                    path=meta.path or meta.external_id,
+                    name=meta.name,
+                    is_directory=False,
+                    external_id=meta.external_id,
+                    owner=meta.owner,
+                    last_modified=meta.last_modified,
+                )
+            return
+        if kind == "pipeline":
+            if parent_path:
+                return
+            for meta in self.list_remote_pipelines_metadata():
+                yield WorkspaceEntry(
+                    kind="pipeline",
+                    path=meta.path or meta.external_id,
+                    name=meta.name,
+                    is_directory=False,
+                    external_id=meta.external_id,
+                    owner=meta.owner,
+                    last_modified=meta.last_modified,
+                )
+            return
+        if kind != "notebook":
+            return
+        for obj in self._workspace_client.list_workspace_objects_immediate(path=parent_path or "/"):
+            object_type = obj.get("object_type")
+            full_path = obj.get("path") or ""
+            name = full_path.rsplit("/", 1)[-1] or full_path
+            modified_ms = obj.get("modified_at")
+            last_modified = (
+                datetime.fromtimestamp(modified_ms / 1000, tz=timezone.utc) if modified_ms else None
+            )
+            if object_type == "DIRECTORY":
+                yield WorkspaceEntry(
+                    kind="notebook",
+                    path=full_path,
+                    name=name,
+                    is_directory=True,
+                    external_id=None,
+                    owner=obj.get("creator_user_name"),
+                    last_modified=last_modified,
+                )
+            elif object_type == "NOTEBOOK":
+                yield WorkspaceEntry(
+                    kind="notebook",
+                    path=full_path,
+                    name=name,
+                    is_directory=False,
+                    external_id=str(obj.get("object_id") or ""),
+                    owner=obj.get("creator_user_name"),
+                    last_modified=last_modified,
+                )
+
     def list_remote_notebooks_metadata(self, engine=None):
         """Yield :class:`AssetMetadata` for every notebook in the workspace.
 

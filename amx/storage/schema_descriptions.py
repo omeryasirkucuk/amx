@@ -1997,6 +1997,26 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "last_embedded_hash": "sha256 of sql_text as of the most recent successful embed. PR-D: lets ingest_profile skip queries whose SQL hasn't changed; NULL forces re-embed.",
         "ingested_at": "When AMX last refreshed this row.",
     },
+    "remote_workspace_tree": {
+        "__table__": (
+            "PR-E discover cache. Lazy-fetched workspace tree backing the Studio "
+            "IngestDialog 'Browse and pick' step — one row per node (folder or "
+            "leaf). The picker reads immediate children of a parent on demand "
+            "instead of paying the full recursive workspace walk on every dialog "
+            "open."
+        ),
+        "profile_name": "Owning AMX DB profile (matches db_profiles.name).",
+        "kind": "Asset kind this node belongs to ('notebook'; reserved for future kinds).",
+        "path": "Full platform-native path of the node (Databricks workspace path or Snowflake qualified_name).",
+        "parent_path": "Path of the parent folder. '' (empty string) means root level.",
+        "name": "Display name (the leaf segment of path).",
+        "is_directory": "1 when this row is a folder whose children can be lazily fetched, 0 when this row is an ingestable leaf asset.",
+        "external_id": "Platform-native external_id for leaves (e.g. Databricks object_id); NULL for directories.",
+        "owner": "Owner per platform conventions (NULL if API doesn't expose).",
+        "last_modified": "Last modification TIMESTAMP per the platform (NULL when unavailable).",
+        "children_fetched_at": "When this folder's immediate children were last fetched into the cache. NULL means children have never been listed (the chevron expand still triggers a fetch).",
+        "fetched_at": "When this row itself was written. Used to age rows for /db assets prune-style cleanup in future passes.",
+    },
     "asset_chunking_overrides": {
         "__table__": (
             "Per-asset chunking strategy override. Studio's Assets page "
