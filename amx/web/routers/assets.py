@@ -98,6 +98,13 @@ def search_assets(
             "profile": hit.profile,
             "remote_id": hit.remote_id,
             "name": hit.name,
+            # PR-B: surface the disambiguating path as a top-level
+            # field so Studio doesn't have to dig through ``metadata``
+            # to render "name (path)" for same-name assets. The metadata
+            # dict still carries the original ``workspace_path`` /
+            # ``qualified_name`` (Snowflake) / ``target_schema``
+            # (pipelines) for callers that need the raw value.
+            "path": _hit_path(hit),
             "score": hit.score,
             "matched_text": hit.text,
             "metadata": hit.metadata,
@@ -105,6 +112,31 @@ def search_assets(
         for hit in results
     ]
     return {"items": items, "rag_available": True, "count": len(items)}
+
+
+def _hit_path(hit: Any) -> str:
+    """Return the disambiguating path for a semantic-search hit.
+
+    Different kinds expose the path under different metadata keys, so
+    normalize them into a single ``path`` surface for the Studio rows:
+
+    * notebook → ``workspace_path`` (Databricks) or
+      ``qualified_name`` (Snowflake)
+    * stream / streamlit → ``qualified_name`` IS the identity, but we
+      expose it under ``path`` for rendering uniformity
+    * pipeline → ``target_schema`` (logical, not a path, but the
+      natural same-name disambiguator)
+    * query / job → no natural path; empty string
+
+    Returns ``""`` when no candidate metadata key is set so the UI can
+    render ``name`` alone for kinds that don't carry a path.
+    """
+    md = getattr(hit, "metadata", None) or {}
+    for key in ("workspace_path", "qualified_name", "target_schema"):
+        value = md.get(key)
+        if value:
+            return str(value)
+    return ""
 
 
 @router.get("/ingest/{job_id}/events")

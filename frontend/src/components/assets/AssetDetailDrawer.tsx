@@ -560,6 +560,28 @@ export default function AssetDetailDrawer({
             <h2 className="mt-1 truncate text-base font-semibold text-ink">
               {data?.name ?? assetId}
             </h2>
+            {(() => {
+              // PR-B: surface the disambiguating path right under the
+              // title so two same-name assets in different folders /
+              // schemas read distinctly. We pick the first non-empty
+              // path-like field; the row carries them via the index
+              // signature on RemoteAssetRow.
+              if (!data) return null;
+              const path =
+                (data["workspace_path"] as string | null | undefined) ||
+                ((data["qualified_name"] as string | null | undefined) &&
+                data["qualified_name"] !== data.name
+                  ? (data["qualified_name"] as string)
+                  : "") ||
+                (data["target_schema"] as string | null | undefined) ||
+                "";
+              if (!path) return null;
+              return (
+                <p className="mt-0.5 break-all font-mono text-[11px] text-ink-dim">
+                  {path}
+                </p>
+              );
+            })()}
             <div className="mt-0.5 flex flex-wrap gap-3 text-xs text-ink-dim">
               {data?.owner && <span>Owner: {data.owner}</span>}
               {data?.last_modified_at && (
