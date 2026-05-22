@@ -741,13 +741,19 @@ class DatabaseAdapter(ABC):
     # matching ``BackendCapabilities`` flag to True.
     # ------------------------------------------------------------------
 
-    def list_remote_notebooks(self):
-        """Yield :class:`RemoteNotebook` rows for every notebook on the platform."""
+    def list_remote_notebooks(self, engine):
+        """Yield :class:`RemoteNotebook` rows for every notebook on the platform.
+
+        ``engine`` is the live SQLAlchemy engine for warehouses whose remote
+        assets are queried over SQL (Snowflake's ``SHOW NOTEBOOKS``). Adapters
+        that pull through a different transport (Databricks Workspace REST)
+        accept the argument for signature uniformity and ignore it.
+        """
         raise UnsupportedDatabaseOperation(
             f"{type(self).__name__} does not support remote notebook ingestion"
         )
 
-    def fetch_remote_notebook_source(self, external_id: str) -> str:
+    def fetch_remote_notebook_source(self, engine, external_id: str) -> str:
         """Return the normalized ``.ipynb`` JSON for the given notebook.
 
         Implementations are responsible for converting any platform-native
@@ -758,37 +764,37 @@ class DatabaseAdapter(ABC):
             f"{type(self).__name__} does not support remote notebook source fetch"
         )
 
-    def list_remote_jobs(self):
+    def list_remote_jobs(self, engine, *, runs_per_job: int = 20):
         """Yield :class:`RemoteJob` rows including task graph and recent runs."""
         raise UnsupportedDatabaseOperation(
             f"{type(self).__name__} does not support remote job ingestion"
         )
 
-    def list_remote_pipelines(self):
+    def list_remote_pipelines(self, engine):
         """Yield :class:`RemotePipeline` rows (e.g. Delta Live Tables)."""
         raise UnsupportedDatabaseOperation(
             f"{type(self).__name__} does not support remote pipeline ingestion"
         )
 
-    def list_remote_streamlit_apps(self):
+    def list_remote_streamlit_apps(self, engine):
         """Yield :class:`RemoteStreamlitApp` rows."""
         raise UnsupportedDatabaseOperation(
             f"{type(self).__name__} does not support remote Streamlit app ingestion"
         )
 
-    def list_remote_streams(self):
+    def list_remote_streams(self, engine):
         """Yield :class:`RemoteStream` rows (CDC streams)."""
         raise UnsupportedDatabaseOperation(
             f"{type(self).__name__} does not support remote stream ingestion"
         )
 
-    def list_remote_task_dependencies(self):
+    def list_remote_task_dependencies(self, engine):
         """Yield ``(parent_task_fqn, child_task_fqn)`` tuples for the task DAG."""
         raise UnsupportedDatabaseOperation(
             f"{type(self).__name__} does not support task-dependency ingestion"
         )
 
-    def list_remote_queries(self, *, history_days: int = 7, limit: int = 1000):
+    def list_remote_queries(self, engine, *, history_days: int = 7, limit: int = 1000):
         """Yield :class:`RemoteQuery` rows (saved queries + recent history).
 
         ``history_days`` and ``limit`` cap the query-history portion only;

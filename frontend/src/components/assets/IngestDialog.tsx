@@ -52,6 +52,18 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
   );
   const [done, setDone] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+  const allCheckboxRef = useRef<HTMLInputElement>(null);
+
+  // ``indeterminate`` is not a React prop — it has to be set imperatively
+  // after the input mounts. Keep it in sync with selectedTypes so the
+  // master checkbox correctly shows the partial-selection state.
+  useEffect(() => {
+    if (allCheckboxRef.current) {
+      const count = selectedTypes.size;
+      allCheckboxRef.current.indeterminate =
+        count > 0 && count < ASSET_TYPE_OPTIONS.length;
+    }
+  }, [selectedTypes]);
 
   // Clean up SSE connection when dialog closes.
   useEffect(() => {
@@ -86,6 +98,14 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
     });
   }
 
+  function toggleAll() {
+    setSelectedTypes((prev) =>
+      prev.size === ASSET_TYPE_OPTIONS.length
+        ? new Set()
+        : new Set(ASSET_TYPE_OPTIONS.map((o) => o.id)),
+    );
+  }
+
   async function handleSubmit() {
     if (selectedTypes.size === 0) {
       setError("Select at least one asset type.");
@@ -113,10 +133,32 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
         try {
           const data = JSON.parse(evt.data) as RemoteAssetIngestEvent;
 
-          if (data.state === "completed") {
+          // The orchestrator emits ``state: "completed"`` once per asset
+          // type (with ``asset_type`` set and a single-integer ``count``)
+          // AND again per intermediate stage (``asset_type: "storage"``,
+          // ``asset_type: "lineage"``). The router then sends the FINAL
+          // completion event with no ``asset_type`` but a full ``counts``
+          // dict + ``failures`` dict. Only that final event closes the
+          // stream and renders the banner.
+          const isFinalCompletion =
+            data.state === "completed" &&
+            !data.asset_type &&
+            data.counts !== undefined;
+
+          if (isFinalCompletion) {
             setFinalCounts(data.counts ?? {});
             setFinalFailures(data.failures ?? {});
             setDone(true);
+            setSubmitting(false);
+            es.close();
+            esRef.current = null;
+            return;
+          }
+
+          // Terminal error from the router's outer try/except (the service
+          // itself crashed before producing any per-type results).
+          if (data.state === "error") {
+            setError(data.message ?? "Ingestion failed.");
             setSubmitting(false);
             es.close();
             esRef.current = null;
@@ -182,6 +224,29 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
         {/* Asset type multi-select */}
         <Field label="Asset types">
           <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-2">
+            {/* Master toggle — spans both columns so it reads as a group
+                header rather than a sibling option. Indeterminate when
+                some-but-not-all rows are selected; see useEffect above. */}
+            <label
+              className="col-span-2 flex cursor-pointer items-center gap-2 rounded-md border border-dashed border-border px-2.5 py-1.5 text-sm font-medium text-ink-muted hover:bg-surface-subtle"
+            >
+              <input
+                ref={allCheckboxRef}
+                type="checkbox"
+                checked={selectedTypes.size === ASSET_TYPE_OPTIONS.length}
+                onChange={toggleAll}
+                disabled={submitting || done}
+                className="h-3.5 w-3.5 accent-accent"
+                aria-label="Select all asset types"
+              />
+              <span className="flex-1">
+                {selectedTypes.size === ASSET_TYPE_OPTIONS.length
+                  ? "All selected"
+                  : selectedTypes.size === 0
+                    ? "Select all"
+                    : `${selectedTypes.size} of ${ASSET_TYPE_OPTIONS.length} selected`}
+              </span>
+            </label>
             {ASSET_TYPE_OPTIONS.map((opt) => {
               const status = typeStatuses[opt.id];
               return (

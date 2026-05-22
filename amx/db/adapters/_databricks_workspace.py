@@ -29,26 +29,46 @@ class DatabricksApiError(RuntimeError):
 
 class DatabricksWorkspaceClient:
     def __init__(self, *, host: str, token: str, timeout: int = DEFAULT_TIMEOUT) -> None:
-        self.host = host.rstrip("/")
+        # AMX stores the Databricks host bare (no scheme) so the
+        # databricks-sql-connector can consume it directly. The Workspace
+        # REST API needs an https:// prefix or ``requests`` raises
+        # ``MissingSchema``. Prepend the scheme defensively here so the
+        # adapter doesn't need to coordinate with how the profile is stored.
+        stripped = host.strip().rstrip("/")
+        if not stripped.startswith(("http://", "https://")):
+            stripped = f"https://{stripped}"
+        self.host = stripped
         self._headers = {"Authorization": f"Bearer {token}"}
         self._timeout = timeout
 
     # ---- workspace ----------------------------------------------------
 
     def list_workspace_objects(self, *, path: str = "/") -> Iterator[dict[str, Any]]:
-        """List every object under ``path`` with pagination support.
+        """Yield every NOTEBOOK / FILE / DIRECTORY under ``path``, recursively.
 
-        Yields one dict per object as returned by the API.  Callers that need
-        a full recursive walk should call this method for each DIRECTORY they
-        encounter in the results.
+        Databricks' ``/api/2.0/workspace/list`` only returns the immediate
+        children of a directory. To enumerate the whole tree the caller
+        needs to recurse into each DIRECTORY entry — which is what this
+        method does. Notebooks live under ``/Users/<email>/...`` etc., so a
+        non-recursive call on ``/`` yields only the three top-level folders
+        and no notebooks at all.
+
+        Directories are yielded as well as descended into so the caller can
+        observe the full tree shape if needed.
         """
-        for page in self._paginated_get(
-            "/api/2.0/workspace/list",
-            params={"path": path},
-            page_token_field="next_page_token",
-            items_field="objects",
-        ):
-            yield from page
+        stack = [path]
+        while stack:
+            current = stack.pop()
+            for page in self._paginated_get(
+                "/api/2.0/workspace/list",
+                params={"path": current},
+                page_token_field="next_page_token",
+                items_field="objects",
+            ):
+                for obj in page:
+                    if obj.get("object_type") == "DIRECTORY":
+                        stack.append(obj["path"])
+                    yield obj
 
     def export_notebook_source(self, *, workspace_path: str) -> str:
         """Return the notebook source text in SOURCE format (Databricks # COMMAND ---------- shape).

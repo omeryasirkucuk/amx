@@ -930,7 +930,11 @@ class DatabricksAdapter(DatabaseAdapter):
         except (json.JSONDecodeError, AttributeError):
             return None
 
-    def list_remote_notebooks(self):
+    def list_remote_notebooks(self, engine=None):
+        # ``engine`` is accepted for signature uniformity with the ABC and
+        # warehouse-backed adapters (Snowflake). Databricks Workspace assets
+        # are fetched over REST, not via SQLAlchemy.
+        del engine
         client = self._workspace_client
         for obj in client.list_workspace_objects(path="/"):
             if obj.get("object_type") != "NOTEBOOK":
@@ -967,7 +971,8 @@ class DatabricksAdapter(DatabaseAdapter):
                 cell_count=self._count_cells(normalized),
             )
 
-    def fetch_remote_notebook_source(self, external_id: str) -> str:
+    def fetch_remote_notebook_source(self, engine=None, external_id: str = "") -> str:
+        del engine
         client = self._workspace_client
         path = (
             external_id if external_id.startswith("/") else client.path_for_object_id(external_id)
@@ -975,7 +980,8 @@ class DatabricksAdapter(DatabaseAdapter):
         raw = client.export_notebook_source(workspace_path=path)
         return normalize_source(raw, hint="databricks_source", default_language="python")
 
-    def list_remote_jobs(self, *, runs_per_job: int = 20):
+    def list_remote_jobs(self, engine=None, *, runs_per_job: int = 20):
+        del engine
         for raw in self._workspace_client.list_jobs_full(runs_per_job=runs_per_job):
             s = raw.get("settings", {})
             schedule = s.get("schedule") or {}
@@ -1027,7 +1033,8 @@ class DatabricksAdapter(DatabaseAdapter):
             raw_definition=t,
         )
 
-    def list_remote_pipelines(self):
+    def list_remote_pipelines(self, engine=None):
+        del engine
         for raw in self._workspace_client.list_pipelines():
             spec = raw.get("spec") or {}
             latest_list = raw.get("latest_updates") or []
@@ -1062,7 +1069,8 @@ class DatabricksAdapter(DatabaseAdapter):
             execution_duration_ms=r.get("execution_duration"),
         )
 
-    def list_remote_queries(self, *, history_days: int = 7, limit: int = 1000):
+    def list_remote_queries(self, engine=None, *, history_days: int = 7, limit: int = 1000):
+        del engine
         for sq in self._workspace_client.list_saved_queries():
             text = sq.get("query") or ""
             yield RemoteQuery(

@@ -175,3 +175,33 @@ def register_db_assets_commands(db_group: click.Group, *, pass_config) -> None:
         from amx.cli_support.commands.db_assets_impl import run_prune
 
         run_prune(cfg, older_than=older_than, profile=profile, skip_confirm=yes)
+
+    @assets.command("delete")
+    @click.argument("identifier")
+    @click.option(
+        "--type",
+        "asset_type",
+        default=None,
+        type=click.Choice(ASSET_TYPES),
+        help="Asset type. Required when the identifier is a name (not a numeric id).",
+    )
+    @click.option("--profile", default=None)
+    @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt.")
+    @pass_config
+    def assets_delete_cmd(
+        cfg: AMXConfig,
+        identifier: str,
+        asset_type: str | None,
+        profile: str | None,
+        yes: bool,
+    ) -> None:
+        """Delete a single remote asset (cascade tasks/runs + lineage edges)."""
+        from amx.cli_support.commands.db_assets_impl import run_delete
+
+        run_delete(
+            cfg,
+            identifier=identifier,
+            asset_type=asset_type,
+            profile=profile,
+            skip_confirm=yes,
+        )

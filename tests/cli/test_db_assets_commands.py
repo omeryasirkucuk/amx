@@ -1,3 +1,5 @@
+import sqlite3
+
 import click
 from click.testing import CliRunner
 
@@ -318,3 +320,80 @@ def test_db_assets_refresh_confirmation_no(monkeypatch, tmp_path):
     result = _invoke(["db", "assets", "refresh", "--profile", "prod"])
     assert result.exit_code == 0
     assert "Cancelled" in result.output or "cancelled" in result.output.lower()
+
+
+def test_db_assets_delete_by_id_removes_row(monkeypatch, tmp_path):
+    """/db assets delete <id> cascades children + lineage edges."""
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
+    db_path = tmp_path / "amx.db"
+    SQLiteHistoryStore(db_path).init()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO remote_jobs (profile_name, job_id, name, ingested_at) "
+            "VALUES ('prod', 99, 'nightly', '2026-05-21T00:00:00')"
+        )
+        job_pk = conn.execute("SELECT id FROM remote_jobs").fetchone()[0]
+        conn.execute(
+            "INSERT INTO remote_job_tasks (job_id_fk, task_key, task_type, "
+            "raw_definition_json) VALUES (?, 'extract', 'notebook_task', '{}')",
+            (job_pk,),
+        )
+        conn.execute(
+            "INSERT INTO remote_job_runs (job_id_fk, run_id, state_result, start_time) "
+            "VALUES (?, 1, 'SUCCESS', '2026-05-21T00:00:00')",
+            (job_pk,),
+        )
+        conn.commit()
+
+    import amx.cli_support.commands.db_assets_impl as impl
+
+    monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
+    monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
+
+    result = _invoke(
+        [
+            "db",
+            "assets",
+            "delete",
+            str(job_pk),
+            "--type",
+            "jobs",
+            "--profile",
+            "prod",
+            "-y",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Deleted job" in result.output
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM remote_jobs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM remote_job_tasks").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM remote_job_runs").fetchone()[0] == 0
+
+
+def test_db_assets_delete_by_name_requires_type(monkeypatch, tmp_path):
+    """Identifier that isn't numeric requires --type so AMX knows the table."""
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
+    db_path = tmp_path / "amx.db"
+    SQLiteHistoryStore(db_path).init()
+
+    import amx.cli_support.commands.db_assets_impl as impl
+
+    monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
+    monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
+
+    result = _invoke(
+        [
+            "db",
+            "assets",
+            "delete",
+            "some_name",
+            "--profile",
+            "prod",
+            "-y",
+        ]
+    )
+    assert result.exit_code != 0
+    assert "pass --type" in result.output.lower()
