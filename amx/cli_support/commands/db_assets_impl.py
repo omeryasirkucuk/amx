@@ -323,26 +323,83 @@ def _singular(asset_type: str) -> str:
 
 # ── run_list ────────────────────────────────────────────────────────────────
 
+# PR-C (scale): per-kind config consumed by ``run_list`` to apply
+# search + pagination uniformly. ``name_col`` is the column used for
+# the substring match + ORDER BY; ``path_expr`` is the second axis
+# for search (kinds without a natural path use ``None``).
+_LIST_SEARCH_CONFIG = {
+    "notebooks": ("remote_notebooks", "name", "COALESCE(workspace_path, qualified_name, '')"),
+    "jobs": ("remote_jobs", "name", None),
+    "pipelines": ("remote_pipelines", "name", "COALESCE(target_schema, '')"),
+    "streamlit_apps": ("remote_streamlit_apps", "qualified_name", None),
+    "streams": ("remote_streams", "qualified_name", None),
+    "task_dependencies": ("remote_task_dependencies", "parent_task_fqn", "child_task_fqn"),
+    "queries": ("remote_queries", "name", None),
+}
 
-def run_list(cfg, *, profile, asset_type):
-    """List remote-ingested assets in a tabular view."""
+
+def _build_list_filter(asset_type: str, profile_name: str, search: str) -> tuple[str, list]:
+    """Build the WHERE clause + params for ``run_list`` pagination."""
+    spec = _LIST_SEARCH_CONFIG.get(asset_type)
+    if spec is None:
+        return "profile_name = ?", [profile_name]
+    _table, name_col, path_expr = spec
+    params: list = [profile_name]
+    where = "profile_name = ?"
+    needle = (search or "").strip().lower()
+    if needle:
+        like = f"%{needle}%"
+        if path_expr:
+            where += f" AND (LOWER({name_col}) LIKE ? OR LOWER({path_expr}) LIKE ?)"
+            params.extend([like, like])
+        else:
+            where += f" AND LOWER({name_col}) LIKE ?"
+            params.append(like)
+    return where, params
+
+
+def run_list(
+    cfg,
+    *,
+    profile,
+    asset_type,
+    limit: int = 50,
+    offset: int = 0,
+    search: str = "",
+):
+    """List remote-ingested assets in a paginated tabular view.
+
+    PR-C (scale): pagination + substring search keep the CLI usable
+    past a few hundred assets. ``--limit`` caps the page size,
+    ``--offset`` steps through pages, ``--search`` filters on name +
+    path. When the result set is truncated, the footer surfaces the
+    exact rerun command.
+    """
     from rich.console import Console
     from rich.table import Table as RichTable
 
     profile_name = _resolve_profile(cfg, profile)
     if not asset_type:
         asset_type = _ask_choice("Asset type", ASSET_TYPES)
+    if asset_type not in _LIST_SEARCH_CONFIG:
+        raise click.ClickException(f"Unknown asset type: {asset_type}")
+    where_sql, base_params = _build_list_filter(asset_type, profile_name, search)
+    page_params = [*base_params, int(limit), int(offset)]
     db_path = _history_db_path(cfg)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM {_LIST_SEARCH_CONFIG[asset_type][0]} WHERE {where_sql}",  # noqa: S608 — identifiers controlled above
+            base_params,
+        ).fetchone()[0]
         if asset_type == "notebooks":
             rows = conn.execute(
                 "SELECT id, name, "
                 "COALESCE(workspace_path, qualified_name, '') AS path, "
                 "platform, language, cell_count, last_modified_at, owner "
-                "FROM remote_notebooks WHERE profile_name = ? "
-                "ORDER BY name, path",
-                (profile_name,),
+                f"FROM remote_notebooks WHERE {where_sql} "  # noqa: S608 — controlled above
+                "ORDER BY name, path LIMIT ? OFFSET ?",
+                page_params,
             ).fetchall()
             table = RichTable(title=f"Remote Notebooks ({profile_name})")
             table.add_column("ID")
@@ -371,8 +428,9 @@ def run_list(cfg, *, profile, asset_type):
             rows = conn.execute(
                 "SELECT id, job_id, name, schedule_cron, schedule_pause_status, "
                 "last_run_status, success_rate_30d "
-                "FROM remote_jobs WHERE profile_name = ? ORDER BY name",
-                (profile_name,),
+                f"FROM remote_jobs WHERE {where_sql} "  # noqa: S608 — controlled above
+                "ORDER BY name, id LIMIT ? OFFSET ?",
+                page_params,
             ).fetchall()
             table = RichTable(title=f"Remote Jobs ({profile_name})")
             for col in ("ID", "Job ID", "Name", "Schedule", "Pause", "Last run", "Success 30d"):
@@ -393,8 +451,9 @@ def run_list(cfg, *, profile, asset_type):
             rows = conn.execute(
                 "SELECT id, pipeline_id, name, target_schema, edition, continuous, "
                 "photon, latest_update_state "
-                "FROM remote_pipelines WHERE profile_name = ? ORDER BY name",
-                (profile_name,),
+                f"FROM remote_pipelines WHERE {where_sql} "  # noqa: S608 — controlled above
+                "ORDER BY name, id LIMIT ? OFFSET ?",
+                page_params,
             ).fetchall()
             table = RichTable(title=f"Remote Pipelines ({profile_name})")
             for col in ("ID", "Pipeline", "Name", "Target", "Edition", "Cont.", "Photon", "Latest"):
@@ -414,8 +473,9 @@ def run_list(cfg, *, profile, asset_type):
             rows = conn.execute(
                 "SELECT id, qualified_name, main_file, query_warehouse, owner, "
                 "last_altered_at FROM remote_streamlit_apps "
-                "WHERE profile_name = ? ORDER BY qualified_name",
-                (profile_name,),
+                f"WHERE {where_sql} "  # noqa: S608 — controlled above
+                "ORDER BY qualified_name, id LIMIT ? OFFSET ?",
+                page_params,
             ).fetchall()
             table = RichTable(title=f"Streamlit Apps ({profile_name})")
             for col in ("ID", "Qualified name", "Main file", "Warehouse", "Owner", "Last altered"):
@@ -432,9 +492,9 @@ def run_list(cfg, *, profile, asset_type):
         elif asset_type == "streams":
             rows = conn.execute(
                 "SELECT id, qualified_name, source_table_fqn, mode, stale_after, owner "
-                "FROM remote_streams WHERE profile_name = ? "
-                "ORDER BY qualified_name",
-                (profile_name,),
+                f"FROM remote_streams WHERE {where_sql} "  # noqa: S608 — controlled above
+                "ORDER BY qualified_name, id LIMIT ? OFFSET ?",
+                page_params,
             ).fetchall()
             table = RichTable(title=f"Streams ({profile_name})")
             for col in ("ID", "Stream", "Source table", "Mode", "Stale after", "Owner"):
@@ -451,9 +511,10 @@ def run_list(cfg, *, profile, asset_type):
         elif asset_type == "task_dependencies":
             rows = conn.execute(
                 "SELECT parent_task_fqn, child_task_fqn "
-                "FROM remote_task_dependencies WHERE profile_name = ? "
-                "ORDER BY parent_task_fqn, child_task_fqn",
-                (profile_name,),
+                f"FROM remote_task_dependencies WHERE {where_sql} "  # noqa: S608 — controlled above
+                "ORDER BY parent_task_fqn, child_task_fqn "
+                "LIMIT ? OFFSET ?",
+                page_params,
             ).fetchall()
             table = RichTable(title=f"Task dependencies ({profile_name})")
             table.add_column("Parent")
@@ -464,9 +525,9 @@ def run_list(cfg, *, profile, asset_type):
             rows = conn.execute(
                 "SELECT id, platform, kind, name, warehouse, user_name, "
                 "executed_at, duration_ms "
-                "FROM remote_queries WHERE profile_name = ? "
-                "ORDER BY COALESCE(executed_at, '0000') DESC",
-                (profile_name,),
+                f"FROM remote_queries WHERE {where_sql} "  # noqa: S608 — controlled above
+                "ORDER BY COALESCE(executed_at, '0000') DESC, id LIMIT ? OFFSET ?",
+                page_params,
             ).fetchall()
             table = RichTable(title=f"Queries ({profile_name})")
             for col in (
@@ -495,6 +556,21 @@ def run_list(cfg, *, profile, asset_type):
             raise click.ClickException(f"Unknown asset type: {asset_type}")
     console = Console()
     console.print(table)
+    # PR-C: pagination footer — surface "Showing X of Y" plus an
+    # explicit rerun command so the user knows how to step forward
+    # without guessing the flag name.
+    shown_end = int(offset) + len(rows)
+    footer = f"Showing {int(offset) + 1}–{shown_end} of {total} {asset_type}"
+    if shown_end < total:
+        next_offset = int(offset) + int(limit)
+        more = (
+            f" · next page: /db assets list --type {asset_type} "
+            f"--limit {int(limit)} --offset {next_offset}"
+        )
+        if search:
+            more += f' --search "{search}"'
+        footer += more
+    console.print(footer, style="dim")
 
 
 # ── run_show ─────────────────────────────────────────────────────────────────

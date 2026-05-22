@@ -8,6 +8,31 @@ def _adapter():
     return a
 
 
+class _FakeResult:
+    """Stand-in for a SQLAlchemy ``Result.mappings()``.
+
+    PR-C (scale) switched the adapter from ``.mappings().all()`` to
+    iterating the mapping result directly. The test fakes need to
+    satisfy both the new iteration path AND the legacy ``.all()``
+    code paths still used by query history / task deps; this class
+    backs both interfaces from the same list.
+    """
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def all(self):
+        return self._rows
+
+
+def _result(rows):
+    """Build a MagicMock execute() result that yields ``rows``."""
+    return MagicMock(mappings=lambda: _FakeResult(rows))
+
+
 def _engine_with_fake(execute_fn):
     eng = MagicMock()
     eng.connect.return_value.__enter__.return_value.execute = execute_fn
@@ -42,12 +67,12 @@ def test_list_remote_notebooks_yields_normalized_ipynb():
     def fake_execute(stmt, *args, **kwargs):
         s = str(stmt).upper()
         if s.startswith("SHOW NOTEBOOKS"):
-            return MagicMock(mappings=lambda: MagicMock(all=lambda: show_rows))
+            return _result(show_rows)
         if s.startswith("DESC NOTEBOOK"):
-            return MagicMock(mappings=lambda: MagicMock(all=lambda: desc_rows))
+            return _result(desc_rows)
         if "SELECT $1" in s or s.startswith("SELECT $1"):
-            return MagicMock(mappings=lambda: MagicMock(all=lambda: stage_rows))
-        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+            return _result(stage_rows)
+        return _result([])
 
     nbs = list(a.list_remote_notebooks(_engine_with_fake(fake_execute)))
     assert len(nbs) == 1
@@ -85,10 +110,10 @@ def test_list_remote_streamlit_apps():
     def fake_execute(stmt, *args, **kwargs):
         s = str(stmt).upper()
         if "SHOW STREAMLITS" in s:
-            return MagicMock(mappings=lambda: MagicMock(all=lambda: show_rows))
+            return _result(show_rows)
         if "DESC STREAMLIT" in s:
-            return MagicMock(mappings=lambda: MagicMock(all=lambda: desc_rows))
-        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+            return _result(desc_rows)
+        return _result([])
 
     apps = list(a.list_remote_streamlit_apps(_engine_with_fake(fake_execute)))
     assert apps[0].qualified_name == "ANALYTICS.APPS.DASH_KPIS"
@@ -118,8 +143,8 @@ def test_list_remote_streams():
 
     def fake_execute(stmt, *args, **kwargs):
         if "SHOW STREAMS" in str(stmt).upper():
-            return MagicMock(mappings=lambda: MagicMock(all=lambda: rows))
-        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+            return _result(rows)
+        return _result([])
 
     streams = list(a.list_remote_streams(_engine_with_fake(fake_execute)))
     assert streams[0].qualified_name == "RAW.PUBLIC.ORDERS_STREAM"
@@ -142,8 +167,8 @@ def test_list_remote_task_dependencies():
 
     def fake_execute(stmt, *args, **kwargs):
         if "TASK_DEPENDENTS" in str(stmt).upper():
-            return MagicMock(mappings=lambda: MagicMock(all=lambda: rows))
-        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+            return _result(rows)
+        return _result([])
 
     edges = list(a.list_remote_task_dependencies(_engine_with_fake(fake_execute)))
     assert ("RAW.PUBLIC.LOAD_TASK", "MARTS.GOLD.AGG_TASK") in edges
@@ -170,8 +195,8 @@ def test_list_remote_queries_history_emits_rows():
 
     def fake_execute(stmt, *args, **kwargs):
         if "QUERY_HISTORY" in str(stmt).upper():
-            return MagicMock(mappings=lambda: MagicMock(all=lambda: rows))
-        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+            return _result(rows)
+        return _result([])
 
     qs = list(a.list_remote_queries(_engine_with_fake(fake_execute), history_days=7, limit=10))
     assert qs[0].kind == "history" and qs[0].platform == "snowflake"
@@ -185,7 +210,7 @@ def test_list_remote_queries_degrades_when_privilege_missing(caplog):
     def fake_execute(stmt, *args, **kwargs):
         if "QUERY_HISTORY" in str(stmt).upper():
             raise PermissionError("does not have privilege on ACCOUNT_USAGE")
-        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+        return _result([])
 
     qs = list(a.list_remote_queries(_engine_with_fake(fake_execute), history_days=7, limit=10))
     assert qs == []
@@ -214,10 +239,10 @@ def test_list_events_includes_task_definition_sql():
     def fake_execute(stmt, *args, **kwargs):
         s = str(stmt).upper()
         if s.startswith("SHOW TASKS"):
-            return MagicMock(mappings=lambda: MagicMock(all=lambda: show_rows))
+            return _result(show_rows)
         if "GET_DDL" in s:
             return MagicMock(scalar=lambda: "CREATE TASK LOAD_TASK ...")
-        return MagicMock(mappings=lambda: MagicMock(all=lambda: []))
+        return _result([])
 
     events = a.list_events(_engine_with_fake(fake_execute), "PUBLIC")
     assert events, "expected at least one event row"

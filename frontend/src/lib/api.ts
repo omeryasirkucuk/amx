@@ -1159,9 +1159,24 @@ export const api = {
 
   // ── Remote asset ingestion (Phase F) ──────────────────────────────────
 
-  /** List remote assets for a profile + kind combination. */
-  listRemoteAssets: (profile: string, kind: RemoteAssetKind) => {
+  /**
+   * List remote assets for a profile + kind combination.
+   *
+   * PR-C (scale): accepts ``limit`` / ``offset`` / ``q`` so the
+   * Studio table doesn't drag down 5,000 rows at once. The response
+   * carries ``{items, total, has_more, offset, limit}`` instead of
+   * the legacy ``{items, count}``-only shape; the ``count`` field
+   * still mirrors ``len(items)`` for backwards compatibility.
+   */
+  listRemoteAssets: (
+    profile: string,
+    kind: RemoteAssetKind,
+    opts: { limit?: number; offset?: number; q?: string } = {},
+  ) => {
     const params = new URLSearchParams({ profile, type: kind });
+    if (opts.limit != null) params.set("limit", String(opts.limit));
+    if (opts.offset != null) params.set("offset", String(opts.offset));
+    if (opts.q) params.set("q", opts.q);
     return apiFetch<RemoteAssetListResponse>(
       `/api/assets?${params.toString()}`,
     );
@@ -1828,6 +1843,13 @@ export interface RemoteAssetRow {
 export interface RemoteAssetListResponse {
   items: RemoteAssetRow[];
   count: number;
+  /** PR-C: total matching rows in the DB ignoring offset/limit.
+      Absent on legacy callers; the Studio renders ``items.length``
+      as fallback when undefined. */
+  total?: number;
+  has_more?: boolean;
+  offset?: number;
+  limit?: number;
 }
 
 /** One downstream table reference on a detail row. */
