@@ -1052,9 +1052,17 @@ class DatabricksAdapter(DatabaseAdapter):
         raw = client.export_notebook_source(workspace_path=path)
         return normalize_source(raw, hint="databricks_source", default_language="python")
 
-    def list_remote_jobs(self, engine=None, *, runs_per_job: int = 20):
+    def list_remote_jobs(self, engine=None, *, runs_per_job: int = 20, external_id_filter=None):
+        # ``external_id_filter`` (PR-A): keep the page-by-page listing
+        # for cheap discovery, but skip the expensive per-job
+        # ``/jobs/get`` + ``/runs/list`` fan-out for ids outside the
+        # set so a "pick 50 of 5,000" round-trip stays linear in the
+        # selection size.
         del engine
+        wanted = set(external_id_filter) if external_id_filter is not None else None
         for raw in self._workspace_client.list_jobs_full(runs_per_job=runs_per_job):
+            if wanted is not None and str(raw.get("job_id")) not in wanted:
+                continue
             s = raw.get("settings", {})
             schedule = s.get("schedule") or {}
             tasks = tuple(self._map_remote_task(t) for t in s.get("tasks", []))
@@ -1105,9 +1113,15 @@ class DatabricksAdapter(DatabaseAdapter):
             raw_definition=t,
         )
 
-    def list_remote_pipelines(self, engine=None):
+    def list_remote_pipelines(self, engine=None, *, external_id_filter=None):
+        # ``external_id_filter`` (PR-A): restrict the yielded pipelines
+        # to the given pipeline_id set. The header listing is cheap;
+        # filtering at the source avoids downstream churn.
         del engine
+        wanted = set(external_id_filter) if external_id_filter is not None else None
         for raw in self._workspace_client.list_pipelines():
+            if wanted is not None and str(raw.get("pipeline_id") or "") not in wanted:
+                continue
             spec = raw.get("spec") or {}
             latest_list = raw.get("latest_updates") or []
             latest = latest_list[0] if latest_list else {}
