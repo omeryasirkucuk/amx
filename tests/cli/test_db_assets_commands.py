@@ -33,9 +33,20 @@ def _make_root():
 
 
 def _invoke(args):
-    """Invoke the minimal Click root with the given args."""
+    """Invoke the minimal Click root with the given args.
+
+    Forces a wide pseudo-terminal so Rich-rendered tables don't wrap
+    mid-cell on narrow CI runners. Without this, the new Path column
+    in /db assets list squeezes other cells into multi-line wraps
+    and substring assertions on the output break.
+    """
     runner = CliRunner()
-    return runner.invoke(_make_root(), args, catch_exceptions=False)
+    return runner.invoke(
+        _make_root(),
+        args,
+        catch_exceptions=False,
+        env={"COLUMNS": "240"},
+    )
 
 
 def test_db_assets_help_resolves():
@@ -270,6 +281,77 @@ def test_db_assets_list_jobs_renders_rows(monkeypatch, tmp_path):
     result = _invoke(["db", "assets", "list", "--profile", "prod", "--type", "jobs"])
     assert result.exit_code == 0, result.output
     assert "nightly_etl" in result.output
+
+
+# ── PR-B: ambiguous bare-name show + name@path resolution ────────────────────
+
+
+def _seed_two_same_name_notebooks(tmp_path):
+    """Insert two notebooks called 'etl' in different workspace paths."""
+    import sqlite3
+
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
+    db_path = tmp_path / "amx.db"
+    SQLiteHistoryStore(db_path).init()
+    with sqlite3.connect(db_path) as conn:
+        for ext, path in (
+            ("ext-a", "/Workspace/team-a/etl"),
+            ("ext-b", "/Workspace/team-b/etl"),
+        ):
+            conn.execute(
+                """INSERT INTO remote_notebooks
+                       (profile_name, platform, external_id, name, workspace_path,
+                        qualified_name, language, source_text, source_hash,
+                        last_modified_at, last_modified_by, owner, cell_count, ingested_at)
+                   VALUES ('prod', 'databricks', ?, 'etl', ?, NULL,
+                           'python', '{}', 'h', NULL, NULL, NULL, 1,
+                           '2026-05-21')""",
+                (ext, path),
+            )
+        conn.commit()
+    return db_path
+
+
+def test_db_assets_show_bare_name_ambiguous_lists_candidates(monkeypatch, tmp_path):
+    """Two notebooks named 'etl' → bare `show etl` should error with both ids + paths."""
+    db_path = _seed_two_same_name_notebooks(tmp_path)
+    import amx.cli_support.commands.db_assets_impl as impl
+
+    monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
+    monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
+
+    result = _invoke(["db", "assets", "show", "etl", "--profile", "prod", "--type", "notebooks"])
+    assert result.exit_code != 0
+    assert "2 notebooks match 'etl'" in result.output
+    assert "/Workspace/team-a/etl" in result.output
+    assert "/Workspace/team-b/etl" in result.output
+
+
+def test_db_assets_show_name_at_path_disambiguates(monkeypatch, tmp_path):
+    """`show etl@/Workspace/team-a` should resolve to the team-a notebook."""
+    db_path = _seed_two_same_name_notebooks(tmp_path)
+    import amx.cli_support.commands.db_assets_impl as impl
+
+    monkeypatch.setattr(impl, "_resolve_profile", lambda cfg, name: "prod")
+    monkeypatch.setattr(impl, "_history_db_path", lambda cfg: db_path, raising=False)
+
+    result = _invoke(
+        [
+            "db",
+            "assets",
+            "show",
+            "etl@/Workspace/team-a",
+            "--profile",
+            "prod",
+            "--type",
+            "notebooks",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert "/Workspace/team-a/etl" in result.output
+    # The team-b notebook should not appear in the detail panel.
+    assert "/Workspace/team-b/etl" not in result.output
 
 
 # ── Task 34: run_show ─────────────────────────────────────────────────────────
