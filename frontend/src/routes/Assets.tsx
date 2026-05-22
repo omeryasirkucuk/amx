@@ -310,6 +310,10 @@ interface AssetSearchHit {
   path?: string | null;
   score: number;
   matched_text: string;
+  /** "keyword_strict" | "semantic_only" — UI badges semantic hits
+      so the user knows a synonym match is showing instead of a
+      literal keyword match. */
+  match_type?: string;
   metadata: Record<string, unknown>;
 }
 
@@ -318,12 +322,19 @@ interface AssetSearchResponse {
   rag_available: boolean;
   count?: number;
   reason?: string;
+  /** Echoed mode (keyword_strict | semantic_only | auto). */
+  mode?: string;
+  /** Echoed kind so the UI can render a "searching X" pill. */
+  kind?: RemoteAssetKind;
 }
+
+type SearchMode = "keyword_strict" | "semantic_only";
 
 export default function Assets() {
   const [activeTab, setActiveTab] = useState<RemoteAssetKind>("notebook");
   const [profile, setProfile] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<SearchMode>("keyword_strict");
   const [ingestOpen, setIngestOpen] = useState(false);
   const [drawerKind, setDrawerKind] = useState<RemoteAssetKind>("notebook");
   const [drawerAssetId, setDrawerAssetId] = useState<string>("");
@@ -402,15 +413,35 @@ export default function Assets() {
             ))}
           </select>
         </div>
-        <div className="flex flex-1 items-center gap-2 sm:max-w-md">
-          <Search size={14} className="text-ink-dim" />
-          <input
-            type="search"
-            placeholder="Semantic search across ingested assets…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
-          />
+        <div className="flex flex-1 flex-col gap-1 sm:max-w-md">
+          <div className="flex items-center gap-2">
+            <Search size={14} className="text-ink-dim" />
+            <input
+              type="search"
+              placeholder={`Search ${
+                TABS.find((t) => t.id === activeTab)?.label.toLowerCase() ?? "assets"
+              }…`}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+            />
+            <label className="flex shrink-0 items-center gap-1 text-[11px] text-ink-dim">
+              <input
+                type="checkbox"
+                checked={searchMode === "semantic_only"}
+                onChange={(e) =>
+                  setSearchMode(e.target.checked ? "semantic_only" : "keyword_strict")
+                }
+                className="h-3 w-3 rounded border-border accent-accent"
+              />
+              Semantic
+            </label>
+          </div>
+          {searchQuery.trim() && (
+            <p className="text-[10px] text-ink-dim">
+              Scoped to current tab. Toggle "Semantic" for synonym matching.
+            </p>
+          )}
         </div>
       </div>
 
@@ -441,6 +472,7 @@ export default function Assets() {
             profile={profile}
             kind={activeTab}
             query={searchQuery.trim()}
+            mode={searchMode}
             onRowClick={(hit) =>
               openDrawer(hit.kind, {
                 id: String(hit.remote_id),
@@ -532,6 +564,7 @@ interface AssetSearchResultsProps {
   profile: string;
   kind: RemoteAssetKind;
   query: string;
+  mode: SearchMode;
   onRowClick: (hit: AssetSearchHit) => void;
 }
 
@@ -539,20 +572,22 @@ function AssetSearchResults({
   profile,
   kind,
   query,
+  mode,
   onRowClick,
 }: AssetSearchResultsProps) {
   const { data, isLoading, error } = useQuery({
-    queryKey: ["assets-search", profile, kind, query],
+    queryKey: ["assets-search", profile, kind, query, mode],
     queryFn: () => {
       const params = new URLSearchParams();
       params.set("q", query);
-      if (profile) params.set("profile", profile);
-      if (kind) params.set("kind", kind);
+      params.set("profile", profile);
+      params.set("kind", kind);
+      params.set("mode", mode);
       return apiFetch<AssetSearchResponse>(
         `/api/assets/search?${params.toString()}`,
       );
     },
-    enabled: Boolean(query),
+    enabled: Boolean(query && profile && kind),
     staleTime: 5_000,
   });
 
@@ -598,9 +633,15 @@ function AssetSearchResults({
   if (items.length === 0) {
     return (
       <p className="py-8 text-center text-sm text-ink-dim">
-        No semantic matches for{" "}
-        <span className="font-mono">{query}</span> in profile{" "}
-        <span className="font-mono">{profile || "(any)"}</span>.
+        No {mode === "semantic_only" ? "semantic" : "keyword"} matches for{" "}
+        <span className="font-mono">{query}</span> in {kind}s.
+        {mode === "keyword_strict" && (
+          <>
+            {" "}
+            Toggle <span className="font-mono">Semantic</span> for synonym
+            matches.
+          </>
+        )}
       </p>
     );
   }
@@ -622,6 +663,11 @@ function AssetSearchResults({
                 <span className="truncate font-medium text-ink">
                   {hit.name || `#${hit.remote_id}`}
                 </span>
+                {hit.match_type === "semantic_only" && (
+                  <span className="rounded bg-warn/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-warn">
+                    semantic
+                  </span>
+                )}
               </div>
               {hit.path && (
                 <p className="mt-0.5 truncate font-mono text-[11px] text-ink-dim">
