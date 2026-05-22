@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from amx.assets.chunking_config import AssetChunkingConfig
 from amx.assets.loaders import load_asset_documents
 from amx.assets.types import AssetDocument, AssetQueryHit
 from amx.utils.logging import get_logger
@@ -121,6 +122,7 @@ class AssetRAGStore:
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
         cfg: Any | None = None,
+        chunking_cfg: AssetChunkingConfig | None = None,
     ):
         # Lazy install of the docs-extended bundle (chromadb +
         # sentence-transformers). Same pattern as docs RAG so module
@@ -164,6 +166,16 @@ class AssetRAGStore:
             kwargs["embedding_function"] = embedding_function
         self.collection = self.client.get_or_create_collection(**kwargs)
         self._reconcile_collection_identity()
+
+        # Resolve the asset chunking strategy. Explicit arg wins over
+        # ``cfg.assets_chunking`` so tests can inject a deterministic
+        # config without touching the global cfg.
+        if chunking_cfg is not None:
+            self.chunking_cfg = chunking_cfg
+        else:
+            self.chunking_cfg = (
+                getattr(cfg, "assets_chunking", None) if cfg is not None else None
+            ) or AssetChunkingConfig()
 
     # ── identity reconciliation ───────────────────────────────────
 
@@ -253,15 +265,26 @@ class AssetRAGStore:
         profile_name: str,
         kinds: list[str] | None = None,
         only_ids: dict[str, list[int]] | None = None,
+        chunking: Any | None = None,
     ) -> int:
         """Re-chunk + upsert every (or scoped) asset for ``profile_name``.
 
         ``only_ids`` lets the auto-index hook pass the exact remote ids
         that the ingest just refreshed so a 5,000-notebook workspace
         does not re-embed unchanged assets every time.
+
+        ``chunking`` (defaults to ``self.chunking_cfg`` resolved at
+        construction) controls strategy + chunk_chars + chunk_overlap
+        per kind. Tests inject a custom config; production callers
+        leave it ``None`` and the cfg.yml value flows through.
         """
+        cfg = chunking if chunking is not None else self.chunking_cfg
         docs = load_asset_documents(
-            conn=conn, profile_name=profile_name, kinds=kinds, only_ids=only_ids
+            conn=conn,
+            profile_name=profile_name,
+            kinds=kinds,
+            only_ids=only_ids,
+            chunking=cfg,
         )
         # Clear any stale chunks for the asset rows we are about to
         # rewrite so a shrunk notebook (fewer cells) does not leave

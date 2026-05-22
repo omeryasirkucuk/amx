@@ -2,10 +2,10 @@
 
 Each splitter consumes ONE row from the matching ``remote_*`` table
 and produces a list of :class:`amx.assets.types.AssetDocument`
-chunks. Chunk size is tuned to MiniLM-L6-v2's 512-token window;
-notebook cells over the cap fall back to character-window splitting
-with overlap so a 200-line dbt SQL cell still yields useful
-embeddings.
+chunks. The strategy + chunk sizes are user-tunable via
+:class:`amx.assets.chunking_config.AssetChunkingConfig`; defaults
+are conservative (``whole`` per asset) so a user who never touches
+the knob gets coarse but predictable embeddings.
 
 The splitters are intentionally pure functions over the raw row
 data — no DB access, no embedding calls — so unit tests can feed
@@ -19,14 +19,14 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
+from amx.assets.chunking_config import (
+    DEFAULT_CHUNK_CHARS,
+    DEFAULT_CHUNK_OVERLAP,
+    NotebookChunkingConfig,
+    PipelineChunkingConfig,
+    QueryChunkingConfig,
+)
 from amx.assets.types import AssetDocument
-
-# Char window for cells / statements that overflow a single chunk.
-# Matches the docs RAG defaults (1000 char chunk + 200 overlap)
-# tuned for MiniLM's typical token budget.
-_CHUNK_CHARS = 1000
-_CHUNK_OVERLAP = 200
-
 
 # ── notebook ──────────────────────────────────────────────────────
 
@@ -38,23 +38,56 @@ def split_notebook(
     name: str,
     source_text: str,
     workspace_path: str = "",
+    config: NotebookChunkingConfig | None = None,
 ) -> list[AssetDocument]:
-    """Split an ipynb JSON blob into per-cell chunks with header path.
+    """Split a notebook source blob per the active chunking strategy.
 
-    Markdown cells become single chunks; markdown headers
-    (``# foo`` / ``## bar``) update the running header path so
-    downstream chunks for code cells inherit "Section: foo > bar"
-    context in their metadata.
-
-    Code cells over ``_CHUNK_CHARS`` are split into char-window
-    sub-chunks with overlap so large statements (a 200-line dbt SQL
-    block, a chained-pandas data wrangling cell) still produce
-    embeddings tight enough to match relevant queries.
-
-    Falls back to char-window over the raw blob when JSON parse fails
-    so non-Jupyter source (e.g. Snowflake SHOW NOTEBOOKS returning a
-    raw SQL file) still indexes.
+    * ``strategy='whole'`` (default) — one chunk per notebook, no
+      parsing. Predictable but coarse for long notebooks.
+    * ``strategy='cell'`` — parse ipynb JSON, emit one chunk per
+      markdown / code cell, preserve header path in metadata,
+      char-window-split cells longer than ``chunk_chars``.
+      Falls back to char-window when JSON parse fails so non-Jupyter
+      source (e.g. raw SQL files) still indexes.
+    * ``strategy='char_window'`` — ignore cell boundaries; pure
+      char-window over the raw source text.
     """
+    cfg = config or NotebookChunkingConfig()
+    chunk_chars = max(int(cfg.chunk_chars or DEFAULT_CHUNK_CHARS), 200)
+    chunk_overlap = max(int(cfg.chunk_overlap or DEFAULT_CHUNK_OVERLAP), 0)
+
+    if cfg.strategy == "whole":
+        text = (source_text or "").strip()
+        if not text:
+            return []
+        return [
+            AssetDocument(
+                kind="notebook",
+                profile=profile,
+                remote_id=remote_id,
+                chunk_index=0,
+                text=text,
+                metadata={
+                    "cell_type": "whole",
+                    "workspace_path": workspace_path,
+                    "asset_name": name,
+                },
+            )
+        ]
+
+    if cfg.strategy == "char_window":
+        return _char_window_chunks(
+            profile=profile,
+            kind="notebook",
+            remote_id=remote_id,
+            name=name,
+            text=source_text or "",
+            chunk_chars=chunk_chars,
+            chunk_overlap=chunk_overlap,
+            extra_meta={"cell_type": "char_window", "workspace_path": workspace_path},
+        )
+
+    # strategy == "cell"
     try:
         nb = json.loads(source_text or "")
     except (json.JSONDecodeError, TypeError):
@@ -64,6 +97,8 @@ def split_notebook(
             remote_id=remote_id,
             name=name,
             text=source_text or "",
+            chunk_chars=chunk_chars,
+            chunk_overlap=chunk_overlap,
             extra_meta={"cell_type": "raw", "workspace_path": workspace_path},
         )
 
@@ -93,7 +128,7 @@ def split_notebook(
                 "workspace_path": workspace_path,
                 "asset_name": name,
             }
-            for piece in _maybe_split_long(text):
+            for piece in _maybe_split_long(text, chunk_chars, chunk_overlap):
                 out.append(
                     AssetDocument(
                         kind="notebook",
@@ -113,7 +148,7 @@ def split_notebook(
                 "workspace_path": workspace_path,
                 "asset_name": name,
             }
-            for piece in _maybe_split_long(text):
+            for piece in _maybe_split_long(text, chunk_chars, chunk_overlap):
                 out.append(
                     AssetDocument(
                         kind="notebook",
@@ -166,43 +201,79 @@ def split_query(
     sql_text: str,
     warehouse: str = "",
     kind_value: str = "saved",
+    config: QueryChunkingConfig | None = None,
 ) -> list[AssetDocument]:
-    """Split a SQL blob into per-statement chunks.
+    """Split a SQL blob per the active chunking strategy.
 
-    Splits on ``;`` boundaries first. Statements over
-    ``_CHUNK_CHARS`` fall back to char-window splitting so a 5 KB
-    CTE-heavy analytical query still yields several focused chunks.
+    * ``strategy='whole'`` (default) — full SQL embedded as one chunk.
+    * ``strategy='statement'`` — split on ``;`` boundaries; statements
+      over ``chunk_chars`` get char-window sub-split.
+    * ``strategy='char_window'`` — ignore boundaries; pure
+      char-window.
     """
+    cfg = config or QueryChunkingConfig()
+    chunk_chars = max(int(cfg.chunk_chars or DEFAULT_CHUNK_CHARS), 200)
+    chunk_overlap = max(int(cfg.chunk_overlap or DEFAULT_CHUNK_OVERLAP), 0)
+
     text = (sql_text or "").strip()
     if not text:
         return []
 
+    base_meta_root = {
+        "warehouse": warehouse,
+        "asset_name": name,
+        "query_kind": kind_value,
+    }
+
+    if cfg.strategy == "whole":
+        return [
+            AssetDocument(
+                kind="query",
+                profile=profile,
+                remote_id=remote_id,
+                chunk_index=0,
+                text=text,
+                metadata={**base_meta_root, "statement_no": -1},
+            )
+        ]
+
+    if cfg.strategy == "char_window":
+        out: list[AssetDocument] = []
+        for idx, piece in enumerate(_maybe_split_long(text, chunk_chars, chunk_overlap)):
+            out.append(
+                AssetDocument(
+                    kind="query",
+                    profile=profile,
+                    remote_id=remote_id,
+                    chunk_index=idx,
+                    text=piece,
+                    metadata={**base_meta_root, "statement_no": -1},
+                )
+            )
+        return out
+
+    # strategy == "statement"
     statements = [s.strip() for s in re.split(r";\s*", text) if s.strip()]
     if not statements:
         statements = [text]
 
-    out: list[AssetDocument] = []
+    out_stmt: list[AssetDocument] = []
     chunk_idx = 0
     for statement_no, statement in enumerate(statements):
-        base_meta = {
-            "warehouse": warehouse,
-            "asset_name": name,
-            "query_kind": kind_value,
-            "statement_no": statement_no,
-        }
-        for piece in _maybe_split_long(statement):
-            out.append(
+        meta = {**base_meta_root, "statement_no": statement_no}
+        for piece in _maybe_split_long(statement, chunk_chars, chunk_overlap):
+            out_stmt.append(
                 AssetDocument(
                     kind="query",
                     profile=profile,
                     remote_id=remote_id,
                     chunk_index=chunk_idx,
                     text=piece,
-                    metadata=base_meta,
+                    metadata=meta,
                 )
             )
             chunk_idx += 1
-    return out
+    return out_stmt
 
 
 # ── pipeline ──────────────────────────────────────────────────────
@@ -219,15 +290,17 @@ def split_pipeline(
     continuous: bool = False,
     photon: bool = False,
     latest_update_state: str = "",
+    config: PipelineChunkingConfig | None = None,
 ) -> list[AssetDocument]:
-    """Split a pipeline metadata blob into a small fixed set of chunks.
+    """Split a pipeline metadata blob per the active strategy.
 
-    Pipelines hold metadata only (notebook libraries reference paths
-    that AMX indexes separately as ``notebook`` rows). We emit a
-    single descriptive chunk per pipeline plus one extra chunk per
-    notebook library reference so a query for ``"bronze loader"``
-    surfaces both the pipeline shell and the linked notebooks.
+    * ``strategy='metadata'`` (default) — one chunk for the
+      pipeline header plus one per notebook library reference, so a
+      query for ``"bronze loader"`` surfaces both the pipeline
+      shell and the linked notebooks.
+    * ``strategy='whole'`` — one chunk with everything inlined.
     """
+    cfg = config or PipelineChunkingConfig()
     try:
         libs = json.loads(libraries_json or "[]")
     except (json.JSONDecodeError, TypeError):
@@ -248,6 +321,22 @@ def split_pipeline(
         f"- notebook libraries: {len(notebook_paths)}"
     )
     base_meta = {"asset_name": name, "target_schema": target_schema}
+
+    if cfg.strategy == "whole":
+        nb_block = "\n".join(f"  - {p}" for p in notebook_paths) if notebook_paths else "  (none)"
+        text = header + "\nNotebook libraries:\n" + nb_block
+        return [
+            AssetDocument(
+                kind="pipeline",
+                profile=profile,
+                remote_id=remote_id,
+                chunk_index=0,
+                text=text,
+                metadata=base_meta,
+            )
+        ]
+
+    # strategy == "metadata"
     out = [
         AssetDocument(
             kind="pipeline",
@@ -376,18 +465,21 @@ def split_job(
 # ── helpers ───────────────────────────────────────────────────────
 
 
-def _maybe_split_long(text: str) -> Iterator[str]:
-    """Emit ``text`` whole if it fits, otherwise char-window pieces."""
-    if len(text) <= _CHUNK_CHARS:
+def _maybe_split_long(
+    text: str,
+    chunk_chars: int = DEFAULT_CHUNK_CHARS,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+) -> Iterator[str]:
+    """Emit ``text`` whole if it fits ``chunk_chars``, otherwise yield
+    char-window pieces of ``chunk_chars`` with ``chunk_overlap``."""
+    if len(text) <= chunk_chars:
         if text.strip():
             yield text
         return
-    # Char-window with overlap. Matches docs RAG's
-    # RecursiveCharacterTextSplitter behaviour for non-markdown content.
-    step = _CHUNK_CHARS - _CHUNK_OVERLAP
+    step = max(chunk_chars - chunk_overlap, 1)
     start = 0
     while start < len(text):
-        end = min(start + _CHUNK_CHARS, len(text))
+        end = min(start + chunk_chars, len(text))
         piece = text[start:end].strip()
         if piece:
             yield piece
@@ -403,11 +495,13 @@ def _char_window_chunks(
     remote_id: int,
     name: str,
     text: str,
+    chunk_chars: int = DEFAULT_CHUNK_CHARS,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     extra_meta: dict[str, Any] | None = None,
 ) -> list[AssetDocument]:
     base_meta = {"asset_name": name, **(extra_meta or {})}
     out: list[AssetDocument] = []
-    for idx, piece in enumerate(_maybe_split_long(text)):
+    for idx, piece in enumerate(_maybe_split_long(text, chunk_chars, chunk_overlap)):
         out.append(
             AssetDocument(
                 kind=kind,

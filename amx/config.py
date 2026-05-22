@@ -26,6 +26,11 @@ from urllib.parse import quote_plus
 
 import yaml
 
+from amx.assets.chunking_config import (
+    AssetChunkingConfig,
+    chunking_from_mapping,
+    chunking_to_mapping,
+)
 from amx.storage.secrets import (
     SecretStore,
     get_default_store,
@@ -1882,6 +1887,13 @@ class AMXConfig:
     # embeddings for assets without touching the docs or code RAG
     # configs. Defaults to the bundled MiniLM-L6-v2 (kind='minilm').
     embedding_assets: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    # Per-kind chunking strategy for the asset RAG ingest pipeline.
+    # See ``amx/assets/chunking_config.py``. Defaults to whole-asset
+    # embedding (one chunk per notebook / query / pipeline) so users
+    # who don't tune this knob get coarse but predictable behaviour.
+    # Edit via ``/db assets chunking`` or the ``assets_chunking``
+    # block in ``~/.amx/config.yml``.
+    assets_chunking: AssetChunkingConfig = field(default_factory=AssetChunkingConfig)
     doc_paths: list[str] = field(default_factory=list)
     code_paths: list[str] = field(default_factory=list)
     selected_schemas: list[str] = field(default_factory=list)
@@ -2001,6 +2013,7 @@ class AMXConfig:
             "embedding_docs",
             "embedding_code",
             "embedding_assets",
+            "assets_chunking",
             "doc_paths",
             "code_paths",
             "selected_schemas",
@@ -2044,6 +2057,7 @@ class AMXConfig:
             "embedding_docs",
             "embedding_code",
             "embedding_assets",
+            "assets_chunking",
             "db_profiles",
             "llm_profiles",
         }:
@@ -2237,6 +2251,9 @@ class AMXConfig:
             embedding_assets_raw = data.get("embedding_assets")
             if isinstance(embedding_assets_raw, dict):
                 cfg.embedding_assets = _embedding_from_mapping(embedding_assets_raw)
+            assets_chunking_raw = data.get("assets_chunking")
+            if isinstance(assets_chunking_raw, dict):
+                cfg.assets_chunking = chunking_from_mapping(assets_chunking_raw)
 
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
@@ -2610,6 +2627,8 @@ class AMXConfig:
             data["history_store_database"] = str(self.history_store_database or "")
             data["embedding_docs"] = _embedding_to_mapping(self.embedding_docs)
             data["embedding_code"] = _embedding_to_mapping(self.embedding_code)
+            data["embedding_assets"] = _embedding_to_mapping(self.embedding_assets)
+            data["assets_chunking"] = chunking_to_mapping(self.assets_chunking)
             # Move plaintext secrets to the OS keyring; the YAML now stores only
             # opaque "keyring:..." references. No-op when keyring is unavailable.
             _externalise_secrets_in_data(
