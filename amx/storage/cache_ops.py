@@ -263,6 +263,37 @@ def cache_stats() -> dict[str, CacheStat]:
         conn.close()
 
 
+def cache_runtime_counters() -> dict[str, Any]:
+    """Snapshot the in-process counters that complement the persistent
+    cache stats.
+
+    Returns two sections:
+
+    * ``listing_memo`` — wizard-driven ``list_catalogs`` / ``list_databases``
+      hit/miss tallies from the connector's in-memory memo.
+    * ``drift_probe`` — how many handshakes the cache-age gate skipped
+      vs how many actually ran a live count.
+
+    Imports are deferred so this helper stays cheap to call when those
+    modules haven't been loaded yet (e.g. ``/db cache stats`` before
+    any DB connection has been opened).
+    """
+    out: dict[str, Any] = {"listing_memo": {}, "drift_probe": {}}
+    try:
+        from amx.db.connector import get_listing_memo_counters
+
+        out["listing_memo"] = get_listing_memo_counters()
+    except Exception:
+        pass
+    try:
+        from amx.search.drift import get_drift_probe_counters
+
+        out["drift_probe"] = get_drift_probe_counters()
+    except Exception:
+        pass
+    return out
+
+
 def _expand_types(types: list[str] | None) -> list[str]:
     if not types:
         return list(CACHE_TYPES)
