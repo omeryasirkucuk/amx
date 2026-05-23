@@ -1609,6 +1609,67 @@ export async function lineageArtifactsForTable(args: {
   );
 }
 
+/** Row shape returned by ``GET /api/assets/by-table``. The endpoint
+ *  groups assets into ``reads`` and ``writes`` lists; legacy edges
+ *  with NULL direction (or an unrecognised edge_type) surface in
+ *  both lists tagged with ``direction='unknown'`` so the UI can
+ *  render them neutrally. */
+export interface LinkedAssetRow {
+  kind: "notebook" | "job" | "pipeline" | "streamlit" | "stream" | "query";
+  id: number;
+  name: string;
+  path: string;
+  edge_type: string;
+  direction: "read" | "write" | "unknown";
+  last_used_at: number | null;
+  last_user: string | null;
+  discovered_at: number | null;
+  raw_ref: unknown;
+}
+
+export interface AssetsForTableResponse {
+  table: {
+    id: number;
+    fqn: string;
+    database: string;
+    schema: string;
+    name: string;
+  };
+  profile: string;
+  since_days: number;
+  direction: "all" | "read" | "write";
+  reads: LinkedAssetRow[];
+  writes: LinkedAssetRow[];
+  counts: Record<string, number>;
+}
+
+/** Reverse lookup: every notebook / query / job / pipeline / stream /
+ *  streamlit app that reads or writes the given table, with last-used
+ *  timestamps and the platform user when system-table usage signals
+ *  have been ingested. Powers the "Linked assets" card on the table
+ *  page — the AMX equivalent of Unity Catalog's table-detail
+ *  lineage tab. */
+export async function assetsForTable(args: {
+  profile: string;
+  schema: string;
+  table: string;
+  database?: string;
+  sinceDays?: number;
+  direction?: "all" | "read" | "write";
+}): Promise<AssetsForTableResponse> {
+  const params = new URLSearchParams({
+    profile: args.profile,
+    schema: args.schema,
+    table: args.table,
+    database: args.database ?? "",
+    since_days: String(args.sinceDays ?? 90),
+    direction: args.direction ?? "all",
+  });
+  return apiFetch<AssetsForTableResponse>(
+    `/api/assets/by-table?${params.toString()}`,
+  );
+}
+
 /** Hard-delete a saved lineage artifact (cascades to its nodes,
  *  logo-nodes and comments; shared catalog_relationships rows are
  *  intentionally preserved so other artifacts that surface the
