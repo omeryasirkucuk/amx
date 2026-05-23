@@ -901,11 +901,13 @@ interface AssetContextPanelProps {
   onChange: (next: AssetContextItem[]) => void;
 }
 
-const ASSET_KINDS: Array<{ kind: string; label: string }> = [
-  { kind: "asset_notebook", label: "Notebooks" },
-  { kind: "asset_query", label: "Queries" },
-  { kind: "asset_stream", label: "Streams" },
-  { kind: "asset_pipeline", label: "Pipelines" },
+const ASSET_KINDS: Array<{ kind: string; label: string; short: string }> = [
+  { kind: "asset_notebook", label: "Notebooks", short: "notebook" },
+  { kind: "asset_query", label: "Queries", short: "query" },
+  { kind: "asset_stream", label: "Streams", short: "stream" },
+  { kind: "asset_pipeline", label: "Pipelines", short: "pipeline" },
+  { kind: "asset_job", label: "Jobs", short: "job" },
+  { kind: "asset_streamlit", label: "Streamlit apps", short: "streamlit" },
 ];
 
 interface AssetOption {
@@ -916,28 +918,40 @@ interface AssetOption {
   ingested_at: string;
 }
 
-function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps) {
-  const [pickerProfile, setPickerProfile] = useState<string>("");
-  const [pickerKind, setPickerKind] = useState<string>(ASSET_KINDS[0].kind);
+interface AssetOptionRow extends AssetOption {
+  profile: string;
+}
 
-  const effectiveProfile = pickerProfile || profiles[0] || "";
+function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps) {
+  const profilesKey = profiles.join("|");
 
   const optionsQ = useQuery({
-    queryKey: [
-      "run-new",
-      "asset-context-options",
-      effectiveProfile,
-      pickerKind,
-    ],
-    queryFn: () =>
-      apiFetch<AssetOption[]>(
-        `/api/pages/asset-options?kind=${encodeURIComponent(pickerKind)}&profile=${encodeURIComponent(effectiveProfile)}`,
-      ),
-    enabled: Boolean(effectiveProfile),
+    queryKey: ["run-new", "asset-context-options", profilesKey],
+    queryFn: async () => {
+      const perProfile = await Promise.all(
+        profiles.map((profile) =>
+          Promise.all(
+            ASSET_KINDS.map((k) =>
+              apiFetch<AssetOption[]>(
+                `/api/pages/asset-options?kind=${encodeURIComponent(k.kind)}&profile=${encodeURIComponent(profile)}`,
+              ).then((rows) =>
+                rows.map<AssetOptionRow>((r) => ({
+                  ...r,
+                  kind: k.kind,
+                  profile,
+                })),
+              ),
+            ),
+          ).then((arrays) => arrays.flat()),
+        ),
+      );
+      return perProfile.flat();
+    },
+    enabled: profiles.length > 0,
     staleTime: 15_000,
   });
 
-  function add(option: AssetOption) {
+  function add(option: AssetOptionRow) {
     if (value.some((a) => a.kind === option.kind && a.ref === option.ref)) {
       return;
     }
@@ -947,7 +961,7 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
         kind: option.kind,
         ref: option.ref,
         label: option.name,
-        profile: effectiveProfile,
+        profile: option.profile,
       },
     ]);
   }
@@ -983,37 +997,11 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
               <span className="truncate" style={{ maxWidth: 140 }}>
                 {item.label}
               </span>
-              <span className="text-[10px] text-ink-dim">({item.profile})</span>
               <span>×</span>
             </button>
           ))}
         </div>
       )}
-
-      <div className="grid grid-cols-2 gap-2">
-        <select
-          value={effectiveProfile}
-          onChange={(e) => setPickerProfile(e.target.value)}
-          className="min-w-0 rounded border border-surface-border bg-surface px-2 py-1 text-xs text-ink"
-        >
-          {profiles.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
-        <select
-          value={pickerKind}
-          onChange={(e) => setPickerKind(e.target.value)}
-          className="min-w-0 rounded border border-surface-border bg-surface px-2 py-1 text-xs text-ink"
-        >
-          {ASSET_KINDS.map((k) => (
-            <option key={k.kind} value={k.kind}>
-              {k.label}
-            </option>
-          ))}
-        </select>
-      </div>
 
       {optionsQ.isLoading && (
         <div className="text-[11px] text-ink-dim">Loading…</div>
@@ -1025,20 +1013,20 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
       )}
       {optionsQ.data && optionsQ.data.length === 0 && (
         <div className="text-[11px] text-ink-dim">
-          No ingested{" "}
-          {ASSET_KINDS.find((k) => k.kind === pickerKind)?.label.toLowerCase() ??
-            pickerKind}{" "}
-          for <span className="font-mono">{effectiveProfile}</span>. Run{" "}
+          No ingested assets for the selected profile. Run{" "}
           <code className="rounded bg-surface px-1">/db ingest-assets</code>{" "}
           first.
         </div>
       )}
       {optionsQ.data && optionsQ.data.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          {optionsQ.data.slice(0, 25).map((row) => {
+          {optionsQ.data.slice(0, 50).map((row) => {
             const isSelected = value.some(
               (a) => a.kind === row.kind && a.ref === row.ref,
             );
+            const kindShort =
+              ASSET_KINDS.find((k) => k.kind === row.kind)?.short ??
+              row.kind.replace("asset_", "");
             return (
               <button
                 key={`${row.kind}::${row.ref}`}
@@ -1046,15 +1034,19 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
                 disabled={isSelected}
                 onClick={() => add(row)}
                 className={clsx(
-                  "rounded-md border px-2 py-0.5 text-[11px]",
+                  "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px]",
                   isSelected
                     ? "cursor-not-allowed border-surface-border bg-surface text-ink-dim"
                     : "border-surface-border bg-surface text-ink hover:border-accent hover:bg-accent-soft",
                 )}
                 title={row.location || row.ref}
               >
-                {row.name}
-                {isSelected && " ✓"}
+                <span className="font-mono text-[10px] text-ink-dim">
+                  {kindShort}
+                </span>
+                <span>·</span>
+                <span>{row.name}</span>
+                {isSelected && <span>✓</span>}
               </button>
             );
           })}
