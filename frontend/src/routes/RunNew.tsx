@@ -923,26 +923,24 @@ interface AssetOptionRow extends AssetOption {
 }
 
 function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps) {
+  const [pickerKind, setPickerKind] = useState<string>(ASSET_KINDS[0].kind);
   const profilesKey = profiles.join("|");
+  const showProfileTag = profiles.length > 1;
 
   const optionsQ = useQuery({
-    queryKey: ["run-new", "asset-context-options", profilesKey],
+    queryKey: ["run-new", "asset-context-options", profilesKey, pickerKind],
     queryFn: async () => {
       const perProfile = await Promise.all(
         profiles.map((profile) =>
-          Promise.all(
-            ASSET_KINDS.map((k) =>
-              apiFetch<AssetOption[]>(
-                `/api/pages/asset-options?kind=${encodeURIComponent(k.kind)}&profile=${encodeURIComponent(profile)}`,
-              ).then((rows) =>
-                rows.map<AssetOptionRow>((r) => ({
-                  ...r,
-                  kind: k.kind,
-                  profile,
-                })),
-              ),
-            ),
-          ).then((arrays) => arrays.flat()),
+          apiFetch<AssetOption[]>(
+            `/api/pages/asset-options?kind=${encodeURIComponent(pickerKind)}&profile=${encodeURIComponent(profile)}`,
+          ).then((rows) =>
+            rows.map<AssetOptionRow>((r) => ({
+              ...r,
+              kind: pickerKind,
+              profile,
+            })),
+          ),
         ),
       );
       return perProfile.flat();
@@ -976,6 +974,10 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
     return null;
   }
 
+  const currentLabel =
+    ASSET_KINDS.find((k) => k.kind === pickerKind)?.label.toLowerCase() ??
+    pickerKind;
+
   return (
     <div className="space-y-2 rounded-md border border-surface-border bg-surface-subtle p-3">
       <div className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
@@ -997,11 +999,28 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
               <span className="truncate" style={{ maxWidth: 140 }}>
                 {item.label}
               </span>
+              {showProfileTag && (
+                <span className="text-[10px] text-ink-dim">
+                  ({item.profile})
+                </span>
+              )}
               <span>×</span>
             </button>
           ))}
         </div>
       )}
+
+      <select
+        value={pickerKind}
+        onChange={(e) => setPickerKind(e.target.value)}
+        className="w-full rounded border border-surface-border bg-surface px-2 py-1 text-xs text-ink"
+      >
+        {ASSET_KINDS.map((k) => (
+          <option key={k.kind} value={k.kind}>
+            {k.label}
+          </option>
+        ))}
+      </select>
 
       {optionsQ.isLoading && (
         <div className="text-[11px] text-ink-dim">Loading…</div>
@@ -1013,40 +1032,38 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
       )}
       {optionsQ.data && optionsQ.data.length === 0 && (
         <div className="text-[11px] text-ink-dim">
-          No ingested assets for the selected profile. Run{" "}
+          No ingested {currentLabel}. Run{" "}
           <code className="rounded bg-surface px-1">/db ingest-assets</code>{" "}
           first.
         </div>
       )}
       {optionsQ.data && optionsQ.data.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          {optionsQ.data.slice(0, 50).map((row) => {
+          {optionsQ.data.slice(0, 25).map((row) => {
             const isSelected = value.some(
               (a) => a.kind === row.kind && a.ref === row.ref,
             );
-            const kindShort =
-              ASSET_KINDS.find((k) => k.kind === row.kind)?.short ??
-              row.kind.replace("asset_", "");
             return (
               <button
-                key={`${row.kind}::${row.ref}`}
+                key={`${row.kind}::${row.ref}::${row.profile}`}
                 type="button"
                 disabled={isSelected}
                 onClick={() => add(row)}
                 className={clsx(
-                  "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px]",
+                  "rounded-md border px-2 py-0.5 text-[11px]",
                   isSelected
                     ? "cursor-not-allowed border-surface-border bg-surface text-ink-dim"
                     : "border-surface-border bg-surface text-ink hover:border-accent hover:bg-accent-soft",
                 )}
                 title={row.location || row.ref}
               >
-                <span className="font-mono text-[10px] text-ink-dim">
-                  {kindShort}
-                </span>
-                <span>·</span>
-                <span>{row.name}</span>
-                {isSelected && <span>✓</span>}
+                {row.name}
+                {showProfileTag && (
+                  <span className="ml-1 text-[10px] text-ink-dim">
+                    ({row.profile})
+                  </span>
+                )}
+                {isSelected && " ✓"}
               </button>
             );
           })}
