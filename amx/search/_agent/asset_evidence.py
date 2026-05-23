@@ -25,7 +25,7 @@ from typing import Any
 
 _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 
-_ASSET_KINDS = ("notebook", "query", "stream", "pipeline")
+_ASSET_KINDS = ("notebook", "query", "job", "pipeline", "stream", "streamlit_app")
 
 _ASSET_KIND_TO_TABLE: dict[str, tuple[str, tuple[str, ...]]] = {
     "notebook": (
@@ -33,11 +33,18 @@ _ASSET_KIND_TO_TABLE: dict[str, tuple[str, tuple[str, ...]]] = {
         ("name", "workspace_path", "qualified_name", "source_text"),
     ),
     "query": ("remote_queries", ("name", "sql_text")),
+    # Jobs carry no body text; surface the name + creator + tags JSON
+    # blob so the LLM can still see what the workflow is about.
+    "job": ("remote_jobs", ("name", "creator_user_name", "tags_json")),
+    "pipeline": ("remote_pipelines", ("name", "target_schema")),
     "stream": (
         "remote_streams",
         ("qualified_name", "source_table_fqn"),
     ),
-    "pipeline": ("remote_pipelines", ("name", "target_schema")),
+    "streamlit_app": (
+        "remote_streamlit_apps",
+        ("qualified_name", "main_file", "root_location"),
+    ),
 }
 
 

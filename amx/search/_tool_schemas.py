@@ -1496,6 +1496,224 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "search_assets",
+            "description": (
+                "Search the user's ingested remote assets — Databricks / "
+                "Snowflake notebooks, queries, jobs, pipelines, streams, "
+                "Streamlit apps — by free-form query. Hybrid keyword "
+                "(FTS5) + semantic (chunked embeddings) ranking. Use this "
+                "for 'which notebook loads orders', 'do we have a job "
+                "that refreshes sales_summary', 'find queries about "
+                "customer churn', 'show pipelines targeting raw_events'. "
+                "Each hit carries (kind, profile, name, location, "
+                "remote_id, snippet); pass the triple to describe_asset "
+                "to read the full body. Returns reason='no_matching_assets' "
+                "when the query has no hits — surface that plainly rather "
+                "than inventing notebook names. Scope is automatic across "
+                "every DB profile in the current /ask scope."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Natural-language phrase. Pass the user's "
+                            "words (translated if helpful); FTS5 splits "
+                            "into prefix tokens."
+                        ),
+                    },
+                    "kinds": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "notebook",
+                                "query",
+                                "job",
+                                "pipeline",
+                                "stream",
+                                "streamlit_app",
+                            ],
+                        },
+                        "description": (
+                            "Optional kind filter. Omit to search every "
+                            "kind. Plurals (notebooks/queries/jobs/...) "
+                            "are accepted and normalised."
+                        ),
+                    },
+                    "n_results": {
+                        "type": "integer",
+                        "description": "Top-N hits across kinds (default 5, max 10).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "describe_asset",
+            "description": (
+                "Return the full ingested row for one remote asset — "
+                "notebook source text, query SQL body, pipeline target "
+                "schema + libraries, job task graph + recent runs, etc. "
+                "Pass either remote_id (preferred — from search_assets) "
+                "OR name. The name fallback exists because re-ingest "
+                "rotates remote_id, so a stale id from earlier in the "
+                "chat may miss while the display name is stable. "
+                "Notebook/query bodies are capped at 8000 chars with a "
+                "truncation marker so the tool result fits the input-"
+                "token budget. For jobs, the result includes a "
+                "job_details block with the full task list (key, type, "
+                "notebook_path) and the 3 most recent runs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "notebook",
+                            "query",
+                            "job",
+                            "pipeline",
+                            "stream",
+                            "streamlit_app",
+                        ],
+                        "description": "Asset kind (singular).",
+                    },
+                    "remote_id": {
+                        "type": "integer",
+                        "description": (
+                            "remote_<kind>s.id from search_assets. "
+                            "Either this OR name is required."
+                        ),
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Asset display name. Use when remote_id is "
+                            "unknown or has been rotated by re-ingest."
+                        ),
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": (
+                            "Optional profile guard — when set, the tool "
+                            "errors if the remote_id belongs to a "
+                            "different profile (catches LLM mixups). "
+                            "Also scopes the name fallback."
+                        ),
+                    },
+                },
+                "required": ["kind"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "lineage_for_table",
+            "description": (
+                "Return lineage edges anchored on one table. Walks "
+                "catalog_relationships for asset_references_table, "
+                "foreign_key, view_depends_on, and column_lineage "
+                "edge types and returns the other side's "
+                "(profile, schema, name, kind). Asset-side edges also "
+                "carry the source_remote_id so you can chain "
+                "describe_asset for the body. Use for 'what feeds "
+                "customer_dim', 'show upstream of fact_sales', 'which "
+                "notebooks reference orders'. Pass include_inferred=true "
+                "to widen with speculative join-inference edges (off by "
+                "default — they are noisy)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schema": {
+                        "type": "string",
+                        "description": "Schema name of the anchor table.",
+                    },
+                    "table": {
+                        "type": "string",
+                        "description": "Table name of the anchor.",
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": (
+                            "DB profile. Required when 2+ profiles are "
+                            "in scope; defaults to the single in-scope "
+                            "profile otherwise."
+                        ),
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["upstream", "downstream", "both"],
+                        "description": "Edge direction relative to the anchor (default both).",
+                    },
+                    "include_inferred": {
+                        "type": "boolean",
+                        "description": "Include join_inference edges (default false).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max edges per direction (default 30, max 100).",
+                    },
+                },
+                "required": ["schema", "table"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "lineage_for_column",
+            "description": (
+                "Column-grain lineage edges using the v4 "
+                "from_column / to_column schema columns plus any "
+                "operator-node intermediaries (entity_kind='operator'). "
+                "Surfaces the transform logic between source and target "
+                "columns. Use for 'where does customer_id come from in "
+                "fact_sales', 'which source column feeds "
+                "customer_dim.email'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schema": {"type": "string", "description": "Schema of the anchor column."},
+                    "table": {"type": "string", "description": "Table of the anchor column."},
+                    "column": {"type": "string", "description": "Column name."},
+                    "profile": {
+                        "type": "string",
+                        "description": "DB profile (see lineage_for_table for the same rule).",
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["upstream", "downstream", "both"],
+                        "description": "Edge direction (default both).",
+                    },
+                    "include_inferred": {
+                        "type": "boolean",
+                        "description": "Include join_inference edges (default false).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max edges per direction (default 30, max 100).",
+                    },
+                },
+                "required": ["schema", "table", "column"],
+            },
+        },
+    },
 ]
 
 

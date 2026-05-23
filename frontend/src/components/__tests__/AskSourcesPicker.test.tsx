@@ -42,7 +42,7 @@ describe("AskSourcesPicker", () => {
     renderWithProviders(
       <AskSourcesPicker {...baseProps} onAssetsChange={onAssetsChange} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /assets:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^assets/i }));
     fireEvent.click(screen.getByLabelText(/notebooks/i));
     expect(onAssetsChange).toHaveBeenCalledWith(["notebooks"]);
   });
@@ -54,7 +54,7 @@ describe("AskSourcesPicker", () => {
     );
     // Open the Lineage panel popover first; the canvas checkboxes
     // are rendered inside the popover, not on the trigger pill.
-    fireEvent.click(screen.getByRole("button", { name: /lineage:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^lineage/i }));
     fireEvent.click(screen.getByLabelText(/canvas-a/i));
     expect(onLineageChange).toHaveBeenCalledWith(["canvas-a"]);
   });
@@ -64,7 +64,7 @@ describe("AskSourcesPicker", () => {
     renderWithProviders(
       <AskSourcesPicker {...baseProps} onPagesChange={onPagesChange} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /pages:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^pages/i }));
     fireEvent.click(screen.getByRole("button", { name: /^off$/i }));
     expect(onPagesChange).toHaveBeenCalledWith(false);
   });

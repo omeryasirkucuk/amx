@@ -105,11 +105,12 @@ class AskRequest(BaseModel):
         default=None,
         description=(
             "Ingested-asset selection for THIS question. ``None`` (default) "
-            "means Auto — include every kind (notebooks, queries, streams, "
-            "pipelines) when assets reference a resolved entity. An empty "
-            "list disables asset evidence entirely; a non-empty list "
-            "restricts retrieval to the listed kinds (subset of "
-            "``notebooks``, ``queries``, ``streams``, ``pipelines``)."
+            "means Auto — include every kind (notebooks, queries, jobs, "
+            "pipelines, streams, streamlit_apps) when assets reference a "
+            "resolved entity. An empty list disables asset evidence "
+            "entirely; a non-empty list restricts retrieval to the listed "
+            "kinds (subset of ``notebooks``, ``queries``, ``jobs``, "
+            "``pipelines``, ``streams``, ``streamlit_apps``)."
         ),
     )
     allow_live_refresh: bool = Field(
@@ -435,8 +436,10 @@ def ask_context(
     ASSET_KIND_TABLES = (
         ("notebooks", "remote_notebooks"),
         ("queries", "remote_queries"),
-        ("streams", "remote_streams"),
+        ("jobs", "remote_jobs"),
         ("pipelines", "remote_pipelines"),
+        ("streams", "remote_streams"),
+        ("streamlit_apps", "remote_streamlit_apps"),
     )
     asset_kind_counts: dict[str, int] = {kind: 0 for kind, _ in ASSET_KIND_TABLES}
     if _store is not None and scope_dbs:
