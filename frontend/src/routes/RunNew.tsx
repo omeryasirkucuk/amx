@@ -901,11 +901,13 @@ interface AssetContextPanelProps {
   onChange: (next: AssetContextItem[]) => void;
 }
 
-const ASSET_KINDS: Array<{ kind: string; label: string }> = [
-  { kind: "asset_notebook", label: "Notebooks" },
-  { kind: "asset_query", label: "Queries" },
-  { kind: "asset_stream", label: "Streams" },
-  { kind: "asset_pipeline", label: "Pipelines" },
+const ASSET_KINDS: Array<{ kind: string; label: string; short: string }> = [
+  { kind: "asset_notebook", label: "Notebooks", short: "notebook" },
+  { kind: "asset_query", label: "Queries", short: "query" },
+  { kind: "asset_stream", label: "Streams", short: "stream" },
+  { kind: "asset_pipeline", label: "Pipelines", short: "pipeline" },
+  { kind: "asset_job", label: "Jobs", short: "job" },
+  { kind: "asset_streamlit", label: "Streamlit apps", short: "streamlit" },
 ];
 
 interface AssetOption {
@@ -916,28 +918,38 @@ interface AssetOption {
   ingested_at: string;
 }
 
-function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps) {
-  const [pickerProfile, setPickerProfile] = useState<string>("");
-  const [pickerKind, setPickerKind] = useState<string>(ASSET_KINDS[0].kind);
+interface AssetOptionRow extends AssetOption {
+  profile: string;
+}
 
-  const effectiveProfile = pickerProfile || profiles[0] || "";
+function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps) {
+  const [pickerKind, setPickerKind] = useState<string>(ASSET_KINDS[0].kind);
+  const profilesKey = profiles.join("|");
+  const showProfileTag = profiles.length > 1;
 
   const optionsQ = useQuery({
-    queryKey: [
-      "run-new",
-      "asset-context-options",
-      effectiveProfile,
-      pickerKind,
-    ],
-    queryFn: () =>
-      apiFetch<AssetOption[]>(
-        `/api/pages/asset-options?kind=${encodeURIComponent(pickerKind)}&profile=${encodeURIComponent(effectiveProfile)}`,
-      ),
-    enabled: Boolean(effectiveProfile),
+    queryKey: ["run-new", "asset-context-options", profilesKey, pickerKind],
+    queryFn: async () => {
+      const perProfile = await Promise.all(
+        profiles.map((profile) =>
+          apiFetch<AssetOption[]>(
+            `/api/pages/asset-options?kind=${encodeURIComponent(pickerKind)}&profile=${encodeURIComponent(profile)}`,
+          ).then((rows) =>
+            rows.map<AssetOptionRow>((r) => ({
+              ...r,
+              kind: pickerKind,
+              profile,
+            })),
+          ),
+        ),
+      );
+      return perProfile.flat();
+    },
+    enabled: profiles.length > 0,
     staleTime: 15_000,
   });
 
-  function add(option: AssetOption) {
+  function add(option: AssetOptionRow) {
     if (value.some((a) => a.kind === option.kind && a.ref === option.ref)) {
       return;
     }
@@ -947,7 +959,7 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
         kind: option.kind,
         ref: option.ref,
         label: option.name,
-        profile: effectiveProfile,
+        profile: option.profile,
       },
     ]);
   }
@@ -962,19 +974,14 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
     return null;
   }
 
+  const currentLabel =
+    ASSET_KINDS.find((k) => k.kind === pickerKind)?.label.toLowerCase() ??
+    pickerKind;
+
   return (
     <div className="space-y-2 rounded-md border border-surface-border bg-surface-subtle p-3">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Ingested asset context
-          </div>
-          <div className="text-[11px] text-ink-dim">
-            Attach notebooks, queries, streams, or pipelines so the LLM
-            grounds descriptions in actual usage patterns. Only tables the
-            asset references will receive the extra context block.
-          </div>
-        </div>
+      <div className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
+        Ingested asset context
       </div>
 
       {value.length > 0 && (
@@ -992,46 +999,28 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
               <span className="truncate" style={{ maxWidth: 140 }}>
                 {item.label}
               </span>
-              <span className="text-[10px] text-ink-dim">({item.profile})</span>
+              {showProfileTag && (
+                <span className="text-[10px] text-ink-dim">
+                  ({item.profile})
+                </span>
+              )}
               <span>×</span>
             </button>
           ))}
         </div>
       )}
 
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <select
-          value={effectiveProfile}
-          onChange={(e) => setPickerProfile(e.target.value)}
-          className="rounded border border-surface-border bg-surface px-2 py-1 text-xs text-ink"
-        >
-          {profiles.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
-        <div className="flex flex-wrap gap-1">
-          {ASSET_KINDS.map((k) => {
-            const isActive = pickerKind === k.kind;
-            return (
-              <button
-                key={k.kind}
-                type="button"
-                onClick={() => setPickerKind(k.kind)}
-                className={clsx(
-                  "rounded-md border px-2 py-1 text-[11px] font-medium",
-                  isActive
-                    ? "border-accent bg-accent-soft text-accent-ink"
-                    : "border-surface-border bg-surface text-ink-dim hover:border-accent/40 hover:text-ink",
-                )}
-              >
-                {k.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <select
+        value={pickerKind}
+        onChange={(e) => setPickerKind(e.target.value)}
+        className="w-full rounded border border-surface-border bg-surface px-2 py-1 text-xs text-ink"
+      >
+        {ASSET_KINDS.map((k) => (
+          <option key={k.kind} value={k.kind}>
+            {k.label}
+          </option>
+        ))}
+      </select>
 
       {optionsQ.isLoading && (
         <div className="text-[11px] text-ink-dim">Loading…</div>
@@ -1043,10 +1032,7 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
       )}
       {optionsQ.data && optionsQ.data.length === 0 && (
         <div className="text-[11px] text-ink-dim">
-          No ingested{" "}
-          {ASSET_KINDS.find((k) => k.kind === pickerKind)?.label.toLowerCase() ??
-            pickerKind}{" "}
-          for <span className="font-mono">{effectiveProfile}</span>. Run{" "}
+          No ingested {currentLabel}. Run{" "}
           <code className="rounded bg-surface px-1">/db ingest-assets</code>{" "}
           first.
         </div>
@@ -1059,7 +1045,7 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
             );
             return (
               <button
-                key={`${row.kind}::${row.ref}`}
+                key={`${row.kind}::${row.ref}::${row.profile}`}
                 type="button"
                 disabled={isSelected}
                 onClick={() => add(row)}
@@ -1072,6 +1058,11 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
                 title={row.location || row.ref}
               >
                 {row.name}
+                {showProfileTag && (
+                  <span className="ml-1 text-[10px] text-ink-dim">
+                    ({row.profile})
+                  </span>
+                )}
                 {isSelected && " ✓"}
               </button>
             );

@@ -2058,15 +2058,19 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "asset_lineage_edges": {
         "__table__": (
             "Asset-to-asset lineage relationships. One row per directed "
-            "edge linking a source asset (job/pipeline) to a target "
-            "asset (notebook/pipeline/query) or table. Populated by "
-            "``amx.assets.lineage.LineageExtractor`` on every refresh "
-            "and consumed by the Studio Lineage panel rendered inside "
-            "the asset detail drawer. Edges are extracted from "
-            "platform metadata only (job tasks_json, pipeline "
-            "libraries_json, DLT target schema) — never by parsing "
-            "notebook source. The UNIQUE constraint makes extraction "
-            "idempotent across refreshes."
+            "edge linking a source asset (job/pipeline/query/notebook) "
+            "to a target asset (notebook/pipeline/query) or table. "
+            "Populated by ``amx.assets.lineage.LineageExtractor`` from "
+            "platform metadata (job tasks_json, pipeline libraries_json, "
+            "DLT target schema), by ``amx.lineage.extractors.sql_parse`` "
+            "from the SQL stored on queries and inside notebook cells, "
+            "and refreshed by ``amx.lineage.extractors.system_tables.*`` "
+            "with usage signals (``last_used_at`` / ``last_user``) from "
+            "platform system tables such as Databricks "
+            "``system.query.history``. Consumed by the Studio Lineage "
+            "panel inside the asset detail drawer and by the inline "
+            "Lineage tab on the table page. The UNIQUE constraint makes "
+            "extraction idempotent across refreshes."
         ),
         "id": "AMX-internal autoincrement integer primary key.",
         "profile_name": (
@@ -2076,8 +2080,8 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
         "from_kind": (
             "Kind discriminator for the source asset: 'job' | "
-            "'pipeline'. Identifies which ``remote_<kind>s`` table "
-            "``from_id`` references."
+            "'pipeline' | 'query' | 'notebook'. Identifies which "
+            "``remote_<kind>s`` table ``from_id`` references."
         ),
         "from_id": (
             "Primary key of the source asset row in its "
@@ -2099,8 +2103,11 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "Semantic label for the relationship: "
             "'task_runs_notebook' | 'task_runs_pipeline' | "
             "'task_runs_query' | 'task_depends_on' | "
-            "'pipeline_includes_notebook' | 'pipeline_writes_table'. "
-            "Drives the UI badge and grouping in the Lineage panel."
+            "'pipeline_includes_notebook' | 'pipeline_writes_table' | "
+            "'query_reads_table' | 'query_writes_table' | "
+            "'notebook_reads_table' | 'notebook_writes_table'. Drives "
+            "the UI badge and grouping in the Lineage panel and the "
+            "read/write split on the table-detail Lineage tab."
         ),
         "raw_ref": (
             "Platform-native pointer kept for forensic debugging when "
@@ -2113,6 +2120,32 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "UTC epoch seconds when this edge was written. Refresh "
             "wipes and rewrites edges per profile, so this is also "
             "the timestamp of the most recent extraction pass."
+        ),
+        "direction": (
+            "Read/write direction the source exercises on the target: "
+            "'read' (source consumes target's data), 'write' (source "
+            "produces target's data), 'both' (mixed within a single "
+            "statement). NULL on legacy edges written before the SQL-"
+            "parse and system-tables extractors started populating "
+            "this column; the table-detail Lineage tab treats NULL as "
+            "'direction unknown' and groups those rows under both "
+            "Reads and Writes."
+        ),
+        "last_used_at": (
+            "UTC epoch seconds of the most recent observed execution "
+            "that exercised this edge, as reported by a platform "
+            "system table (e.g. Databricks ``system.query.history``). "
+            "NULL when no system-table signal has yet been ingested "
+            "for the edge; ``discovered_at`` remains the only "
+            "available timestamp in that case."
+        ),
+        "last_user": (
+            "User principal recorded by the platform on the most "
+            "recent execution that exercised this edge (paired with "
+            "``last_used_at``). NULL when no system-table signal has "
+            "been ingested. The value is the raw platform identifier "
+            "(email, service-principal name, or workspace user id) "
+            "without further normalisation."
         ),
     },
     "fts_notebooks": {
