@@ -1683,7 +1683,7 @@ def cmd_cache_stats(cfg: AMXConfig, rest: list[str]) -> None:
     """/db cache-stats — aggregate metrics per cache table."""
     if rest:
         warn("/db cache-stats takes no arguments; ignoring extras.")
-    from amx.storage.cache_ops import cache_stats
+    from amx.storage.cache_ops import cache_runtime_counters, cache_stats
 
     stats = cache_stats()
     if not stats:
@@ -1706,6 +1706,34 @@ def cmd_cache_stats(cfg: AMXConfig, rest: list[str]) -> None:
         else:
             rows.append(["TTL", "none — rewritten by /sync"])
         render_table(f"Cache: {key}", ["Metric", "Value"], rows)
+
+    # In-process counters: wizard picker memo + drift-probe gate. These
+    # complement the persistent stats above — they show whether the
+    # session-local caches are actually serving repeat requests.
+    runtime = cache_runtime_counters()
+    listing_memo = runtime.get("listing_memo") or {}
+    if listing_memo:
+        memo_rows: list[list[str]] = []
+        for kind in ("catalogs", "databases"):
+            counts = listing_memo.get(kind) or {}
+            hits = int(counts.get("hit", 0))
+            misses = int(counts.get("miss", 0))
+            memo_rows.append([kind, str(hits), str(misses)])
+        render_table(
+            "Wizard listing memo (in-process)",
+            ["Kind", "Hits", "Misses"],
+            memo_rows,
+        )
+    drift = runtime.get("drift_probe") or {}
+    if drift:
+        render_table(
+            "Drift probe (in-process)",
+            ["Metric", "Value"],
+            [
+                ["Skipped (cache fresh)", str(int(drift.get("skipped_cache_fresh", 0)))],
+                ["Ran", str(int(drift.get("ran", 0)))],
+            ],
+        )
 
 
 def cmd_cache_clear(cfg: AMXConfig, rest: list[str]) -> None:

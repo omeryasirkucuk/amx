@@ -53,6 +53,40 @@ from amx.utils.logging import get_logger
 log = get_logger("db.connector")
 
 
+# Process-wide hit / miss tallies for the in-memory wizard memo. Exposed
+# through ``/db cache stats`` so the user can verify the wizard fix is
+# serving repeat picker invocations from memo rather than the live DB.
+# Counters reset on process restart (no persistence).
+_LISTING_MEMO_COUNTERS: dict[str, dict[str, int]] = {
+    "catalogs": {"hit": 0, "miss": 0},
+    "databases": {"hit": 0, "miss": 0},
+}
+
+
+def _bump_listing_memo_counter(kind: str, outcome: str) -> None:
+    """Increment the wizard-memo counter for ``kind`` / ``outcome``.
+
+    ``kind`` is ``"catalogs"`` or ``"databases"``; ``outcome`` is
+    ``"hit"`` or ``"miss"``. The dict is initialized with both keys so
+    no thread-safety dance is needed for simple incremements — the GIL
+    serializes the read-modify-write of the int.
+    """
+    try:
+        _LISTING_MEMO_COUNTERS[kind][outcome] += 1
+    except KeyError:
+        pass
+
+
+def get_listing_memo_counters() -> dict[str, dict[str, int]]:
+    """Snapshot the wizard-memo hit / miss tallies.
+
+    Consumed by ``amx.storage.cache_ops.cache_stats`` so ``/db cache
+    stats`` can surface wizard cache effectiveness alongside the
+    persistent cache counters.
+    """
+    return {kind: dict(counts) for kind, counts in _LISTING_MEMO_COUNTERS.items()}
+
+
 class DatabaseConnector:
     """Unified database connector that delegates backend-specific work to adapters."""
 
@@ -110,6 +144,17 @@ class DatabaseConnector:
         from amx.db.adapters import get_adapter
 
         self._adapter = get_adapter(self.cfg)
+
+        # In-process memo for wizard-driven catalog / database pickers.
+        # These two listings have no persistent cache table (unlike
+        # schemas_cache / column_comments_cache) so without a memo the
+        # wizard fires a fresh ``SHOW CATALOGS`` / ``SHOW DATABASES`` on
+        # every /run, /edit, /search sync invocation. The memo lasts for
+        # ``_listing_memo_ttl_seconds`` and is cleared on ``reconnect()``
+        # and on explicit ``invalidate_listing_memo()`` calls.
+        self._catalogs_memo: tuple[float, list[str]] | None = None
+        self._databases_memo: tuple[float, list[str]] | None = None
+        self._listing_memo_ttl_seconds: float = 300.0
 
     @property
     def engine(self) -> Engine:
@@ -208,13 +253,28 @@ class DatabaseConnector:
         ran ``pip install amx-cli`` without ``[databricks]``) reaches
         the catalog picker as an actionable hint instead of
         masquerading as "empty workspace".
+
+        Reads from the in-process memo when fresh — wizards that fire
+        catalog pickers on every /run / /edit / /search sync used to
+        re-issue ``SHOW CATALOGS`` each time. The memo is cleared by
+        ``reconnect()`` and ``invalidate_listing_memo()``.
         """
+        now = time.time()
+        if self._catalogs_memo is not None:
+            ts, cached = self._catalogs_memo
+            if (now - ts) < self._listing_memo_ttl_seconds:
+                _bump_listing_memo_counter("catalogs", "hit")
+                return list(cached)
         try:
-            return list(self._adapter.list_catalogs(self.engine))
+            result = list(self._adapter.list_catalogs(self.engine))
         except ImportError:
             raise
         except Exception:
+            _bump_listing_memo_counter("catalogs", "miss")
             return []
+        self._catalogs_memo = (now, result)
+        _bump_listing_memo_counter("catalogs", "miss")
+        return result
 
     def supports_catalogs(self) -> bool:
         """True when ``list_catalogs`` is meaningful for this adapter."""
@@ -235,15 +295,37 @@ class DatabaseConnector:
         ``pip install amx-cli`` without the right extra) reaches the
         runtime database picker as an actionable hint instead of
         masquerading as "no databases visible". Mirrors the symmetric
-        behaviour of :meth:`list_catalogs`.
+        behaviour of :meth:`list_catalogs`, including the in-process
+        memo so picker re-prompts don't hit the server.
         """
+        now = time.time()
+        if self._databases_memo is not None:
+            ts, cached = self._databases_memo
+            if (now - ts) < self._listing_memo_ttl_seconds:
+                _bump_listing_memo_counter("databases", "hit")
+                return list(cached)
         try:
-            return list(self._adapter.list_databases(self.engine))
+            result = list(self._adapter.list_databases(self.engine))
         except ImportError:
             raise
         except Exception as exc:
             log.debug("list_databases failed: %s", exc)
+            _bump_listing_memo_counter("databases", "miss")
             return []
+        self._databases_memo = (now, result)
+        _bump_listing_memo_counter("databases", "miss")
+        return result
+
+    def invalidate_listing_memo(self) -> None:
+        """Drop the in-process catalog/database memo.
+
+        Called by reconnect-aware paths after a config edit so the next
+        picker sees the live server state. The persistent caches
+        (``schemas_cache``, ``column_comments_cache``) are unaffected —
+        their invalidations happen via the storage-layer helpers.
+        """
+        self._catalogs_memo = None
+        self._databases_memo = None
 
     def reconnect(self) -> None:
         """Dispose the active engine so the next ``self.engine`` access
@@ -253,6 +335,9 @@ class DatabaseConnector:
         in-memory; without a reconnect, ``self._engine`` would still be
         bound to the old database and every subsequent listing query
         would target the wrong DB.
+
+        Also drops the catalogs/databases memo — the picker just changed
+        the active scope, so the cached listing may not apply any more.
         """
         if self._engine is not None:
             try:
@@ -260,6 +345,7 @@ class DatabaseConnector:
             except Exception as exc:
                 log.debug("engine.dispose() raised during reconnect: %s", exc)
         self._engine = None
+        self.invalidate_listing_memo()
 
     def list_schemas(self) -> list[str]:
         # Cache fast path: the schemas_cache holds (schema, comment)

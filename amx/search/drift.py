@@ -50,9 +50,21 @@ log = get_logger("search.drift")
 #: quick succession. Memo lives in-process only.
 _PROBE_COOLDOWN_SEC = 60.0
 
+#: Skip the probe entirely when the persistent ``schemas_cache`` for
+#: the profile was refreshed within this many seconds. Rationale: the
+#: probe's `_live_table_count` reads through the connector's cache-first
+#: path, so a recently filled cache gives the same answer as a fresh
+#: round-trip. Override via ``AMX_DRIFT_PROBE_MIN_AGE_SEC``.
+_SCHEMAS_CACHE_FRESH_SEC = 300.0
+
 #: Last probe timestamp per profile.
 _LAST_PROBE: dict[str, float] = {}
 _LAST_PROBE_LOCK = threading.Lock()
+
+#: Per-process counters surfaced via ``/db cache stats`` so the user
+#: can verify the cache-age gate is doing its job. Keys: ``skipped``
+#: (cache fresh, no probe), ``ran`` (probe actually ran).
+_DRIFT_PROBE_COUNTERS: dict[str, int] = {"skipped_cache_fresh": 0, "ran": 0}
 
 
 @dataclass
@@ -92,6 +104,61 @@ def _cooldown_blocks(profile: str, now: float) -> bool:
             return True
         _LAST_PROBE[profile] = now
         return False
+
+
+def _resolve_min_age_seconds() -> float:
+    """Read ``AMX_DRIFT_PROBE_MIN_AGE_SEC`` if set, else return the default.
+
+    Invalid values (non-numeric, negative) fall back to the default so a
+    typo in the env never wedges the probe.
+    """
+    raw = os.environ.get("AMX_DRIFT_PROBE_MIN_AGE_SEC", "").strip()
+    if not raw:
+        return _SCHEMAS_CACHE_FRESH_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        return _SCHEMAS_CACHE_FRESH_SEC
+    return value if value >= 0 else _SCHEMAS_CACHE_FRESH_SEC
+
+
+def _schemas_cache_recently_refreshed(
+    hs: Any,
+    profile: str,
+    max_age_seconds: float,
+    now: float,
+) -> bool:
+    """``True`` when this profile's ``schemas_cache`` was refreshed within
+    ``max_age_seconds``.
+
+    The drift probe's live count is itself served through the connector's
+    cache-first ``list_schemas`` / ``list_assets`` path, so a hot cache
+    yields the same answer as a fresh round-trip. Skipping the probe in
+    that window cuts the every-/ask DB hit without losing freshness: an
+    older cache (or an explicit ``/refresh``) still falls through.
+    """
+    if max_age_seconds <= 0:
+        return False
+    try:
+        with hs._connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(fetched_at) AS ts FROM schemas_cache WHERE db_profile = ?",
+                (profile,),
+            ).fetchone()
+    except Exception as exc:
+        log.debug("schemas_cache freshness lookup failed for %s: %s", profile, exc)
+        return False
+    if row is None:
+        return False
+    ts = row["ts"] if hasattr(row, "keys") else (row[0] if row else None)
+    if ts is None:
+        return False
+    return (now - float(ts)) < max_age_seconds
+
+
+def get_drift_probe_counters() -> dict[str, int]:
+    """Snapshot the drift-probe skipped / ran tallies for ``/db cache stats``."""
+    return dict(_DRIFT_PROBE_COUNTERS)
 
 
 def _catalog_table_count(catalog_db_path: str, profile: str) -> int:
@@ -631,11 +698,27 @@ def fire_drift_probe(cfg, profiles: Iterable[str], *, force: bool = False) -> No
         fresh = list(profile_list)
     else:
         fresh = [p for p in profile_list if not _cooldown_blocks(p, now)]
+        # Second gate: even outside the 60s cooldown, skip when the
+        # persistent schemas_cache for this profile was filled in the
+        # last ``min_age`` seconds. The probe reads through the same
+        # cache, so a hot row would yield the same result as a fresh
+        # round-trip. An explicit /refresh invalidates the cache row
+        # (see ``invalidate_schemas_cache``) and naturally falls through.
+        min_age = _resolve_min_age_seconds()
+        if min_age > 0 and fresh:
+            kept: list[str] = []
+            for p in fresh:
+                if _schemas_cache_recently_refreshed(hs, p, min_age, now):
+                    _DRIFT_PROBE_COUNTERS["skipped_cache_fresh"] += 1
+                else:
+                    kept.append(p)
+            fresh = kept
     if not fresh:
         return
 
     def _worker() -> None:
         for profile in fresh:
+            _DRIFT_PROBE_COUNTERS["ran"] += 1
             result = _probe_one(cfg, profile, catalog_db_path)
             if force or result.drifted:
                 _enqueue_sync(cfg, profile)
@@ -648,4 +731,4 @@ def fire_drift_probe(cfg, profiles: Iterable[str], *, force: bool = False) -> No
     thread.start()
 
 
-__all__ = ["fire_drift_probe", "DriftResult"]
+__all__ = ["fire_drift_probe", "DriftResult", "get_drift_probe_counters"]
