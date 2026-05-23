@@ -40,6 +40,13 @@ interface AskContextResponse {
    *  active DB scope. Pages are entity-anchored so there is no
    *  multi-select list — only the gate. */
   anchored_pages?: { count: number };
+  /** Per-kind breakdown of ingested assets (remote notebooks, queries,
+   *  streams, pipelines) for the active DB scope. ``count`` is the
+   *  legacy total; ``kinds`` powers the Assets pill's checkbox list. */
+  ingested_assets?: {
+    count: number;
+    kinds?: Array<{ kind: string; count: number }>;
+  };
 }
 
 /** PR E: structured citation pulled from a ``search_docs`` tool call.
@@ -218,14 +225,19 @@ export default function AskChat({
   // saved profile, so opting in is one click away.
   const [docProfilesOverride, setDocProfilesOverride] = useState<string[] | null>([]);
   const [codeProfilesOverride, setCodeProfilesOverride] = useState<string[] | null>([]);
-  // Task 9 — lineage canvases and anchored doc-Pages join docs/code as
-  // optional retrieval sources. ``null`` = Auto (backend picks based on
-  // the DB scope link map), ``[]`` / ``false`` = explicit Off, list or
-  // ``true`` = explicit pick. Per-question, not sticky.
+  // Task 9 — lineage canvases, anchored doc-Pages, and ingested assets
+  // join docs/code as optional retrieval sources. ``null`` = Auto
+  // (backend picks based on the DB scope link map), ``[]`` / ``false`` =
+  // explicit Off, list or ``true`` = explicit pick. Per-question, not
+  // sticky. Defaults to explicit Off (``[]`` / ``false``) for the same
+  // reason docs/code default to Off: surfacing auto-picked results when
+  // the user didn't ask for them was the #1 source of slow turns. Auto
+  // and explicit pick stay one click away inside each pill's popover.
   const [lineageProfilesOverride, setLineageProfilesOverride] = useState<
     string[] | null
-  >(null);
-  const [pagesEnabled, setPagesEnabled] = useState<boolean | null>(null);
+  >([]);
+  const [pagesEnabled, setPagesEnabled] = useState<boolean | null>(false);
+  const [assetsOverride, setAssetsOverride] = useState<string[] | null>([]);
 
   // "Live refresh" toggle — default OFF means Ask serves cached
   // catalog metadata only and never hits the live DB. Flipping it
@@ -729,6 +741,9 @@ export default function AskChat({
       if (pagesEnabled !== null) {
         body.pages_enabled = pagesEnabled;
       }
+      if (assetsOverride !== null) {
+        body.asset_kinds = assetsOverride;
+      }
       // Cache-only by default; only opt in to live-DB reads when the
       // user has flipped the toggle below the composer for this turn.
       body.allow_live_refresh = allowLiveRefresh;
@@ -1005,7 +1020,7 @@ export default function AskChat({
       </div>
 
       <Card className="p-3">
-        <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="mb-2 flex flex-col gap-2">
           <AskSourcesPicker
             docProfiles={(contextPayload?.doc_profiles ?? []).map((d) => ({
               name: d.name,
@@ -1019,17 +1034,22 @@ export default function AskChat({
               (a) => ({ name: a.name }),
             )}
             anchoredPagesCount={contextPayload?.anchored_pages?.count ?? 0}
+            assetKinds={(contextPayload?.ingested_assets?.kinds ?? []).map(
+              (k) => ({ kind: k.kind, count: k.count }),
+            )}
             docOverride={docProfilesOverride}
             codeOverride={codeProfilesOverride}
             lineageOverride={lineageProfilesOverride}
             pagesEnabled={pagesEnabled}
+            assetsOverride={assetsOverride}
             onDocChange={setDocProfilesOverride}
             onCodeChange={setCodeProfilesOverride}
             onLineageChange={setLineageProfilesOverride}
             onPagesChange={setPagesEnabled}
+            onAssetsChange={setAssetsOverride}
             disabled={!!activeJob}
           />
-          <div className="ml-auto flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {/* Cache-only Ask is the default — this toggle is the
                 single per-question opt-in for live-DB reads. When OFF
                 (default) the backend skips the background drift probe
@@ -1061,7 +1081,7 @@ export default function AskChat({
                   allowLiveRefresh ? "bg-accent" : "bg-ink-dim/60",
                 )}
               />
-              <span>Live refresh: {allowLiveRefresh ? "on" : "off"}</span>
+              <span>Live: {allowLiveRefresh ? "on" : "off"}</span>
             </button>
             {/* The sidebar already exposes the LLM profile, but users
                 landing on /ask via a deep link or working full-width
@@ -1072,26 +1092,28 @@ export default function AskChat({
                 "llm"]``, which both this trigger and the sidebar read
                 from — so flipping it on one surface immediately
                 refreshes the other without any extra wiring. */}
-            <ProfilePicker
-              kind="llm"
-              label="LLM"
-              variant="pill"
-              placement="top"
-              activeName={activeLlmProfile}
-              tooltip={activeLlmModel ?? undefined}
-            />
-            <div className="relative">
-              <AskScopeDropdown
-                scope={scopeForSession}
-                onChange={handleScopeChange}
-                disabled={!!activeJob}
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <ProfilePicker
+                kind="llm"
+                label="LLM"
+                variant="pill"
+                placement="top"
+                activeName={activeLlmProfile}
+                tooltip={activeLlmModel ?? undefined}
               />
-              {scopePatch.isPending && (
-                <span
-                  aria-label="Saving scope"
-                  className="pointer-events-none absolute -right-1 -top-1 inline-block h-2 w-2 animate-pulse rounded-full bg-accent"
+              <div className="relative">
+                <AskScopeDropdown
+                  scope={scopeForSession}
+                  onChange={handleScopeChange}
+                  disabled={!!activeJob}
                 />
-              )}
+                {scopePatch.isPending && (
+                  <span
+                    aria-label="Saving scope"
+                    className="pointer-events-none absolute -right-1 -top-1 inline-block h-2 w-2 animate-pulse rounded-full bg-accent"
+                  />
+                )}
+              </div>
             </div>
           </div>
         </div>

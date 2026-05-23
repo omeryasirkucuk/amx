@@ -87,6 +87,7 @@ def build_assets_evidence(
     max_excerpt_chars: int = 400,
     enabled: bool = True,
     rag_store: Any | None = None,
+    kinds: list[str] | None = None,
 ) -> AssetsEvidence:
     """Return up to ``max_assets`` ingested assets that reference any of
     ``entity_ids``. Skips silently when no edges or no assets exist.
@@ -97,6 +98,12 @@ def build_assets_evidence(
     the raw asset text when the store is unavailable (Chroma not
     installed, collection empty, ``CollectionIdentityMismatch`` after
     an embedding swap).
+
+    ``kinds`` (when not ``None``) restricts the SQL ``from_entity_kind``
+    IN clause to the given singulars (subset of
+    :data:`_ASSET_KINDS`). The default (``None``) keeps the legacy
+    behaviour of considering every kind. An empty list returns an
+    empty payload — callers gate ``enabled=False`` for that case.
     """
     if not enabled:
         return AssetsEvidence()
@@ -105,7 +112,14 @@ def build_assets_evidence(
         return AssetsEvidence()
     terms = [t.lower() for t in question_terms if t and len(t) > 2]
     question_text = " ".join(terms)
-    kinds_placeholder = ",".join("?" for _ in _ASSET_KINDS)
+    effective_kinds: tuple[str, ...]
+    if kinds is None:
+        effective_kinds = _ASSET_KINDS
+    else:
+        effective_kinds = tuple(k for k in kinds if k in _ASSET_KINDS)
+        if not effective_kinds:
+            return AssetsEvidence()
+    kinds_placeholder = ",".join("?" for _ in effective_kinds)
     ids_placeholder = ",".join("?" for _ in ids)
     with store._connect() as conn:  # noqa: SLF001
         # ``from_entity_id`` points at a catalog_entities bridge row
@@ -124,7 +138,7 @@ def build_assets_evidence(
               AND r.to_entity_id IN ({ids_placeholder})
               AND ce.source_remote_id IS NOT NULL
             """,
-            (*_ASSET_KINDS, *ids),
+            (*effective_kinds, *ids),
         ).fetchall()
         scoped: list[tuple[str, int, str]] = []
         for from_kind, remote_id, profile in rows:

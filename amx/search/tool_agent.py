@@ -422,6 +422,7 @@ def run_tool_agent(
     allow_live_refresh: bool = False,
     lineage_profiles: list[str] | None = None,
     pages_enabled: bool | None = None,
+    asset_kinds: list[str] | None = None,
 ) -> ToolAgentResult:
     """Run the tool-calling loop and return the final synthesised answer.
 
@@ -507,6 +508,7 @@ def run_tool_agent(
             cancel_token=cancel_token,
             lineage_profiles=lineage_profiles,
             pages_enabled=pages_enabled,
+            asset_kinds=asset_kinds,
         )
 
 
@@ -643,6 +645,7 @@ def _run_tool_loop(
     cancel_token: threading.Event | None = None,
     lineage_profiles: list[str] | None = None,
     pages_enabled: bool | None = None,
+    asset_kinds: list[str] | None = None,
 ) -> ToolAgentResult:
     # Pre-fetch the schema list once; if it succeeds we put it into the
     # system prompt so the LLM doesn't have to spend a tool call discovering
@@ -973,6 +976,7 @@ def _run_tool_loop(
                             plan=None,
                             lineage_profiles=lineage_profiles,
                             pages_enabled=pages_enabled,
+                            asset_kinds=asset_kinds,
                         )
                         lineage_block = enrich_details.get("lineage")
                         pages_block = enrich_details.get("pages")
