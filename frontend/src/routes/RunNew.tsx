@@ -964,17 +964,8 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
 
   return (
     <div className="space-y-2 rounded-md border border-surface-border bg-surface-subtle p-3">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            Ingested asset context
-          </div>
-          <div className="text-[11px] text-ink-dim">
-            Attach notebooks, queries, streams, or pipelines so the LLM
-            grounds descriptions in actual usage patterns. Only tables the
-            asset references will receive the extra context block.
-          </div>
-        </div>
+      <div className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
+        Ingested asset context
       </div>
 
       {value.length > 0 && (
@@ -999,11 +990,11 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
         </div>
       )}
 
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <div className="grid grid-cols-2 gap-2">
         <select
           value={effectiveProfile}
           onChange={(e) => setPickerProfile(e.target.value)}
-          className="rounded border border-surface-border bg-surface px-2 py-1 text-xs text-ink"
+          className="min-w-0 rounded border border-surface-border bg-surface px-2 py-1 text-xs text-ink"
         >
           {profiles.map((p) => (
             <option key={p} value={p}>
@@ -1011,26 +1002,17 @@ function AssetContextPanel({ profiles, value, onChange }: AssetContextPanelProps
             </option>
           ))}
         </select>
-        <div className="flex flex-wrap gap-1">
-          {ASSET_KINDS.map((k) => {
-            const isActive = pickerKind === k.kind;
-            return (
-              <button
-                key={k.kind}
-                type="button"
-                onClick={() => setPickerKind(k.kind)}
-                className={clsx(
-                  "rounded-md border px-2 py-1 text-[11px] font-medium",
-                  isActive
-                    ? "border-accent bg-accent-soft text-accent-ink"
-                    : "border-surface-border bg-surface text-ink-dim hover:border-accent/40 hover:text-ink",
-                )}
-              >
-                {k.label}
-              </button>
-            );
-          })}
-        </div>
+        <select
+          value={pickerKind}
+          onChange={(e) => setPickerKind(e.target.value)}
+          className="min-w-0 rounded border border-surface-border bg-surface px-2 py-1 text-xs text-ink"
+        >
+          {ASSET_KINDS.map((k) => (
+            <option key={k.kind} value={k.kind}>
+              {k.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       {optionsQ.isLoading && (
