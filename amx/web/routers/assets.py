@@ -799,6 +799,181 @@ _LINEAGE_PATH_EXPR: dict[str, str] = {
 }
 
 
+# Edge types that this endpoint treats as the source asset
+# *reading* the target table. Anything else is treated as a write.
+# NULL direction (legacy edges from extractors that don't carry the
+# column yet) is grouped under both sides — the UI labels those rows
+# as "direction unknown".
+_READ_EDGE_TYPES = frozenset(
+    {
+        "task_runs_notebook",
+        "task_runs_query",
+        "query_reads_table",
+        "notebook_reads_table",
+    }
+)
+_WRITE_EDGE_TYPES = frozenset(
+    {
+        "pipeline_writes_table",
+        "task_runs_pipeline",
+        "query_writes_table",
+        "notebook_writes_table",
+    }
+)
+
+
+@router.get("/by-table/{table_id}")
+def list_assets_for_table(
+    table_id: int,
+    profile: str = Query(...),
+    since_days: int = Query(default=90, ge=0, le=3650),
+    direction: str = Query(default="all", pattern="^(all|read|write)$"),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Return every ingested asset that reads or writes ``table_id``.
+
+    Powers the inline Lineage tab on the Studio table page (the
+    "what touched this table?" view that Unity Catalog leads with
+    on every table). Rows come from ``asset_lineage_edges`` joined
+    to the matching ``remote_*`` table for display names; the read
+    versus write split is derived from the edge's ``direction``
+    column with ``edge_type`` as a fallback for legacy rows that
+    pre-date the column.
+
+    Parameters
+    ----------
+    profile
+        Required. Scopes the lookup to one ingested DB profile.
+    since_days
+        Recent-activity window. ``0`` returns the full history;
+        any positive value filters by ``last_used_at`` (when
+        present) or ``discovered_at`` (fallback for edges that
+        platform usage signals have not yet refreshed).
+    direction
+        ``all`` (default), ``read``, or ``write``. Filters the
+        returned lists without changing the per-kind counts.
+    """
+    db_path = _history_db_path(cfg)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        table_row = conn.execute(
+            """
+            SELECT database_name, schema_name, table_name
+            FROM catalog_entities
+            WHERE id = ? AND db_profile = ?
+            """,
+            (int(table_id), profile),
+        ).fetchone()
+        if table_row is None:
+            raise HTTPException(404, "Table not found in this profile")
+        fqn = ".".join(filter(None, (table_row[0], table_row[1], table_row[2])))
+
+        window_clause = ""
+        params: list[Any] = [profile, int(table_id)]
+        if since_days > 0:
+            window_clause = (
+                " AND COALESCE(last_used_at, discovered_at) >= ?"
+            )
+            cutoff = _epoch_now() - float(since_days) * 86400.0
+            params.append(cutoff)
+
+        rows = conn.execute(
+            f"""
+            SELECT id, from_kind, from_id, edge_type, raw_ref,
+                   discovered_at, direction, last_used_at, last_user
+            FROM asset_lineage_edges
+            WHERE profile_name = ?
+              AND to_kind = 'table'
+              AND to_id = ?
+              {window_clause}
+            ORDER BY COALESCE(last_used_at, discovered_at) DESC,
+                     edge_type, from_kind, from_id
+            """,  # noqa: S608 — window_clause is fixed literal above
+            params,
+        ).fetchall()
+
+        reads: list[dict[str, Any]] = []
+        writes: list[dict[str, Any]] = []
+        counts: dict[str, int] = {k: 0 for k in ASSET_KINDS}
+        for r in rows:
+            endpoint = _describe_edge_endpoint(
+                conn, str(r["from_kind"]), int(r["from_id"]), profile
+            )
+            row_dir = _resolve_direction(
+                str(r["direction"] or ""), str(r["edge_type"] or "")
+            )
+            payload = {
+                "kind": str(r["from_kind"]),
+                "id": int(r["from_id"]),
+                "name": endpoint.get("to_name", ""),
+                "path": endpoint.get("to_path", ""),
+                "edge_type": str(r["edge_type"] or ""),
+                "direction": row_dir,
+                "last_used_at": (
+                    float(r["last_used_at"]) if r["last_used_at"] is not None else None
+                ),
+                "last_user": str(r["last_user"] or "") or None,
+                "discovered_at": (
+                    float(r["discovered_at"]) if r["discovered_at"] is not None else None
+                ),
+                "raw_ref": _decode_raw_ref(r["raw_ref"]),
+            }
+            if r["from_kind"] in counts:
+                counts[str(r["from_kind"])] += 1
+            if row_dir in ("read", "unknown"):
+                reads.append(payload)
+            if row_dir in ("write", "unknown"):
+                writes.append(payload)
+
+        if direction == "read":
+            writes = []
+        elif direction == "write":
+            reads = []
+
+    return {
+        "table": {
+            "id": int(table_id),
+            "fqn": fqn,
+            "database": table_row[0] or "",
+            "schema": table_row[1] or "",
+            "name": table_row[2] or "",
+        },
+        "profile": profile,
+        "since_days": since_days,
+        "direction": direction,
+        "reads": reads,
+        "writes": writes,
+        "counts": counts,
+    }
+
+
+def _resolve_direction(stored: str, edge_type: str) -> str:
+    """Return ``'read'`` / ``'write'`` / ``'unknown'`` for a row.
+
+    Prefers the explicit ``direction`` column. Falls back to the
+    legacy ``edge_type`` mapping so rows written before the column
+    existed still classify correctly. Anything unrecognised lands
+    in ``'unknown'`` so the UI can surface it under both sides.
+    """
+    stored = (stored or "").strip().lower()
+    if stored in {"read", "write"}:
+        return stored
+    if stored == "both":
+        return "unknown"
+    if edge_type in _READ_EDGE_TYPES:
+        return "read"
+    if edge_type in _WRITE_EDGE_TYPES:
+        return "write"
+    return "unknown"
+
+
+def _epoch_now() -> float:
+    """Indirection seam so tests can monkey-patch the clock."""
+    import time as _time
+
+    return _time.time()
+
+
 def _decode_raw_ref(raw: Any) -> Any:
     """Decode the ``raw_ref`` payload as JSON, return raw string on failure."""
     if not raw:
