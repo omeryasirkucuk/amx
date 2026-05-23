@@ -23,6 +23,7 @@ from amx.storage.cache_ops import (
     CACHE_TYPES,
     cache_clear,
     cache_inventory,
+    cache_runtime_counters,
     cache_stats,
 )
 
@@ -64,9 +65,14 @@ def show(
 
 @router.get("/stats")
 def stats() -> dict[str, Any]:
-    """Aggregate metrics per cache table."""
+    """Aggregate metrics per cache table.
+
+    Includes a ``runtime`` section that surfaces the in-process
+    counters added alongside the wizard memo and the cache-age-aware
+    drift probe so Studio can show how often each gate fired.
+    """
     raw = cache_stats()
-    return {
+    payload: dict[str, Any] = {
         key: {
             "table": stat.table,
             "total_rows": stat.total_rows,
@@ -79,6 +85,8 @@ def stats() -> dict[str, Any]:
         }
         for key, stat in raw.items()
     }
+    payload["runtime"] = cache_runtime_counters()
+    return payload
 
 
 @router.post("/clear")
