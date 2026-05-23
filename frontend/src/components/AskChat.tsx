@@ -212,32 +212,24 @@ export default function AskChat({
   const scopeForSession =
     sessionKey in askScopeBySession ? askScopeBySession[sessionKey] : null;
 
-  // Doc / code profile override for the NEXT question. ``null`` =
-  // auto-derive from the DB scope via the link map. ``[]`` = opt OUT
-  // of retrieval entirely. ``string[]`` = explicit pick that bypasses
-  // the link map. Per-question, not sticky — the user often wants
-  // different sources on consecutive questions.
+  // Doc / code / lineage / pages / assets overrides for the NEXT
+  // question. ``null`` = Auto (backend picks based on the DB-scope
+  // link map / planner intent). ``[]`` / ``false`` = explicit Off.
+  // ``string[]`` / ``true`` = explicit pick that bypasses the link
+  // map. Per-question, not sticky — the user often wants different
+  // sources on consecutive questions.
   //
-  // Default is ``[]`` (None) on both knobs: most catalog questions
-  // don't need docs or codebase retrieval and surfacing auto-picked
-  // results when the user didn't ask for them was the #1 source of
-  // unexpected slow turns. The dropdown still exposes Auto + every
-  // saved profile, so opting in is one click away.
-  const [docProfilesOverride, setDocProfilesOverride] = useState<string[] | null>([]);
-  const [codeProfilesOverride, setCodeProfilesOverride] = useState<string[] | null>([]);
-  // Task 9 — lineage canvases, anchored doc-Pages, and ingested assets
-  // join docs/code as optional retrieval sources. ``null`` = Auto
-  // (backend picks based on the DB scope link map), ``[]`` / ``false`` =
-  // explicit Off, list or ``true`` = explicit pick. Per-question, not
-  // sticky. Defaults to explicit Off (``[]`` / ``false``) for the same
-  // reason docs/code default to Off: surfacing auto-picked results when
-  // the user didn't ask for them was the #1 source of slow turns. Auto
-  // and explicit pick stay one click away inside each pill's popover.
+  // All five default to ``null`` (Auto). The backend's planner /
+  // tool-agent now decides per question whether to pull each side
+  // channel, and the picker is still one click away when the user
+  // wants to force a specific pick or turn a channel off.
+  const [docProfilesOverride, setDocProfilesOverride] = useState<string[] | null>(null);
+  const [codeProfilesOverride, setCodeProfilesOverride] = useState<string[] | null>(null);
   const [lineageProfilesOverride, setLineageProfilesOverride] = useState<
     string[] | null
-  >([]);
-  const [pagesEnabled, setPagesEnabled] = useState<boolean | null>(false);
-  const [assetsOverride, setAssetsOverride] = useState<string[] | null>([]);
+  >(null);
+  const [pagesEnabled, setPagesEnabled] = useState<boolean | null>(null);
+  const [assetsOverride, setAssetsOverride] = useState<string[] | null>(null);
 
   // "Live refresh" toggle — default OFF means Ask serves cached
   // catalog metadata only and never hits the live DB. Flipping it
@@ -1020,7 +1012,15 @@ export default function AskChat({
       </div>
 
       <Card className="p-3">
-        <div className="mb-2 flex flex-col gap-2">
+        {/* Single-row composer footer. Order, left → right: the five
+            source pills (compact triggers — popovers expand on
+            open), the LLM picker (full size to surface the model
+            name), the DB-scope picker, then the Live toggle pinned
+            to the far right via ``ml-auto``. ``flex-wrap`` lets the
+            row wrap on extra-narrow viewports instead of clipping,
+            but the natural-width compact pills mean a typical
+            desktop / Studio surface fits everything on one line. */}
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
           <AskSourcesPicker
             docProfiles={(contextPayload?.doc_profiles ?? []).map((d) => ({
               name: d.name,
@@ -1049,73 +1049,68 @@ export default function AskChat({
             onAssetsChange={setAssetsOverride}
             disabled={!!activeJob}
           />
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Cache-only Ask is the default — this toggle is the
-                single per-question opt-in for live-DB reads. When OFF
-                (default) the backend skips the background drift probe
-                AND suppresses any tool-level ``force_fresh`` the LLM
-                might pass. When ON, the next question is allowed to
-                refresh against the live database. */}
-            <button
-              type="button"
-              onClick={() => setAllowLiveRefresh((prev) => !prev)}
+          {/* The sidebar already exposes the LLM profile, but users
+              landing on /ask via a deep link or working full-width
+              often miss it. Mirroring the picker here keeps the
+              model switcher under the question input, exactly where
+              the user is about to type. ``ProfilePicker``'s activate
+              mutation invalidates ``["context"]`` and ``["profiles",
+              "llm"]``, which both this trigger and the sidebar read
+              from — so flipping it on one surface immediately
+              refreshes the other without any extra wiring. */}
+          <ProfilePicker
+            kind="llm"
+            label="LLM"
+            variant="pill"
+            placement="top"
+            activeName={activeLlmProfile}
+            tooltip={activeLlmModel ?? undefined}
+          />
+          <div className="relative">
+            <AskScopeDropdown
+              scope={scopeForSession}
+              onChange={handleScopeChange}
               disabled={!!activeJob}
-              aria-pressed={allowLiveRefresh}
-              title={
-                allowLiveRefresh
-                  ? "Live refresh ON — this question may read the live DB."
-                  : "Live refresh OFF — answers come from cached catalog metadata only."
-              }
-              className={cn(
-                "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors",
-                allowLiveRefresh
-                  ? "border-accent/60 bg-accent/15 text-accent hover:bg-accent/25"
-                  : "border-border bg-surface-raised text-ink-dim hover:bg-surface-raised/80",
-                !!activeJob && "cursor-not-allowed opacity-60",
-              )}
-            >
+            />
+            {scopePatch.isPending && (
               <span
-                aria-hidden
-                className={cn(
-                  "inline-block h-1.5 w-1.5 rounded-full",
-                  allowLiveRefresh ? "bg-accent" : "bg-ink-dim/60",
-                )}
+                aria-label="Saving scope"
+                className="pointer-events-none absolute -right-1 -top-1 inline-block h-2 w-2 animate-pulse rounded-full bg-accent"
               />
-              <span>Live: {allowLiveRefresh ? "on" : "off"}</span>
-            </button>
-            {/* The sidebar already exposes the LLM profile, but users
-                landing on /ask via a deep link or working full-width
-                often miss it. Mirroring the picker here keeps the
-                model switcher under the question input, exactly where
-                the user is about to type. ``ProfilePicker``'s activate
-                mutation invalidates ``["context"]`` and ``["profiles",
-                "llm"]``, which both this trigger and the sidebar read
-                from — so flipping it on one surface immediately
-                refreshes the other without any extra wiring. */}
-            <div className="ml-auto flex flex-wrap items-center gap-2">
-              <ProfilePicker
-                kind="llm"
-                label="LLM"
-                variant="pill"
-                placement="top"
-                activeName={activeLlmProfile}
-                tooltip={activeLlmModel ?? undefined}
-              />
-              <div className="relative">
-                <AskScopeDropdown
-                  scope={scopeForSession}
-                  onChange={handleScopeChange}
-                  disabled={!!activeJob}
-                />
-                {scopePatch.isPending && (
-                  <span
-                    aria-label="Saving scope"
-                    className="pointer-events-none absolute -right-1 -top-1 inline-block h-2 w-2 animate-pulse rounded-full bg-accent"
-                  />
-                )}
-              </div>
-            </div>
+            )}
           </div>
+          {/* Cache-only Ask is the default — this toggle is the
+              single per-question opt-in for live-DB reads. Pinned
+              to the far right via ``ml-auto`` so the "is this
+              going to hit the live DB" status is always anchored
+              to the corner of the composer. */}
+          <button
+            type="button"
+            onClick={() => setAllowLiveRefresh((prev) => !prev)}
+            disabled={!!activeJob}
+            aria-pressed={allowLiveRefresh}
+            title={
+              allowLiveRefresh
+                ? "Live refresh ON — this question may read the live DB."
+                : "Live refresh OFF — answers come from cached catalog metadata only."
+            }
+            className={cn(
+              "ml-auto inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors",
+              allowLiveRefresh
+                ? "border-accent/60 bg-accent/15 text-accent hover:bg-accent/25"
+                : "border-border bg-surface-raised text-ink-dim hover:bg-surface-raised/80",
+              !!activeJob && "cursor-not-allowed opacity-60",
+            )}
+          >
+            <span
+              aria-hidden
+              className={cn(
+                "inline-block h-1.5 w-1.5 rounded-full",
+                allowLiveRefresh ? "bg-accent" : "bg-ink-dim/60",
+              )}
+            />
+            <span>Live: {allowLiveRefresh ? "on" : "off"}</span>
+          </button>
         </div>
         {activeJob && sseError && !closed && (
           <div

@@ -92,14 +92,29 @@ class SearchService:
         question: str,
         *,
         cancel_token: threading.Event | None = None,
+        asset_kinds: list[str] | None = None,
+        lineage_profiles: list[str] | None = None,
+        pages_enabled: bool | None = None,
     ) -> SearchAnswer:
         """Run one /ask turn.
 
         ``cancel_token`` lets the CLI's Ctrl-C handler signal a clean
-        cancellation between agent-loop iterations. Forwarded to
+        cancellation between agent-loop iterations.
+
+        ``asset_kinds`` / ``lineage_profiles`` / ``pages_enabled`` are
+        the per-question overrides for ingested-asset, lineage, and
+        docs-pages retrieval. ``None`` means auto (the agent decides);
+        an empty list / ``False`` means explicitly off; a non-empty
+        list / ``True`` restricts or enables the channel. Forwarded to
         :meth:`SearchAgent.ask`.
         """
-        return self._agent.ask(question, cancel_token=cancel_token)
+        return self._agent.ask(
+            question,
+            cancel_token=cancel_token,
+            asset_kinds=asset_kinds,
+            lineage_profiles=lineage_profiles,
+            pages_enabled=pages_enabled,
+        )
 
     def explain(self, question: str) -> dict[str, Any]:
         answer = self.ask(question)

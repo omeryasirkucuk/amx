@@ -81,6 +81,15 @@ class AnsweringMixin:
         # how many were trimmed so the user can correlate with the
         # `evidence_sources` count in the answer.
         prompt_rows = self._rows_for_prompt(rows, policy)
+        # ``retrieval_details["visible_rows"]`` carries the FULL row list
+        # for diagnostic purposes — the actual rows the LLM sees come
+        # through ``prompt_rows`` (capped to 40). Including both in the
+        # JSON payload doubles the row footprint and forces the token-
+        # budget trim to discard more rows than necessary. Drop the
+        # duplicate before estimating the prompt size; the answer panel
+        # already renders rows from the ``rows=`` field below.
+        payload_details = dict(retrieval_details)
+        payload_details.pop("visible_rows", None)
         base_payload = {
             "question": question,
             "answer_shape": target_shape,
@@ -91,7 +100,7 @@ class AnsweringMixin:
                 if self._context_detail() in {"rich", "deep"}
                 else self._memory_summary()[-2:]
             ),
-            "retrieval_details": retrieval_details,
+            "retrieval_details": payload_details,
             "verification": verification,
             "actions": [asdict(item) for item in actions],
         }

@@ -1,5 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleStop, Plus, Settings as SettingsIcon, Sparkles, Trash2 } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  CircleStop,
+  Plus,
+  Settings as SettingsIcon,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
@@ -81,6 +89,27 @@ export default function Ask() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingSessionId, setLoadingSessionId] = useState<number | null>(null);
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<number | null>(null);
+
+  // Sessions sidebar collapse state. Persisted to localStorage so a
+  // collapse stays collapsed across reloads (the user opts into the
+  // sidebar's footprint deliberately). Default open so first-time
+  // users see the history list without having to discover the
+  // toggle.
+  const SESSIONS_COLLAPSED_KEY = "amx.ask.sessionsCollapsed";
+  const [sessionsCollapsed, setSessionsCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SESSIONS_COLLAPSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(SESSIONS_COLLAPSED_KEY, sessionsCollapsed ? "1" : "0");
+    } catch {
+      /* ignore quota / private-mode errors */
+    }
+  }, [sessionsCollapsed]);
 
   // Cross-page hand-off: when /runs/compare's "Ask AMX" button (or any
   // other deep link) navigates to /ask with state.seedPrompt, fire the
@@ -265,33 +294,73 @@ export default function Ask() {
     <>
       <PageHeader title="Ask" breadcrumbs={[{ label: "Ask" }]} />
 
-      <div className="grid gap-4 md:grid-cols-[18rem_minmax(0,1fr)] [&>*]:min-w-0">
+      <div
+        className={cn(
+          "grid gap-4 [&>*]:min-w-0",
+          // Collapsed: a thin rail wide enough for the expand button.
+          // Expanded: the historical 18rem session column.
+          sessionsCollapsed
+            ? "md:grid-cols-[2.25rem_minmax(0,1fr)]"
+            : "md:grid-cols-[18rem_minmax(0,1fr)]",
+        )}
+      >
+        {sessionsCollapsed ? (
+          /* Collapsed rail — just the expand toggle. Sticks to the
+             top of the viewport so the user can re-open the sidebar
+             without scrolling back up in long answer threads. */
+          <div className="hidden md:flex md:flex-col md:items-center md:pt-2">
+            <Tooltip content="Show sessions">
+              <button
+                type="button"
+                onClick={() => setSessionsCollapsed(false)}
+                aria-label="Expand sessions sidebar"
+                aria-expanded={false}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-muted transition-colors duration-fast hover:border-accent/40 hover:text-ink"
+              >
+                <ChevronRight size={14} />
+              </button>
+            </Tooltip>
+          </div>
+        ) : (
         <Card>
           <CardHeader
             title="Sessions"
             actions={
-              <button
-                type="button"
-                onClick={startNewSession}
-                disabled={chatIsEmpty}
-                aria-disabled={chatIsEmpty}
-                title={
-                  chatIsEmpty
-                    ? "You're already on a new session"
-                    : "Start a fresh session"
-                }
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors duration-fast",
-                  chatIsEmpty
-                    ? "cursor-default border-transparent bg-transparent text-ink-dim/60"
-                    : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-ink",
-                )}
-              >
-                <Plus size={12} /> New
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={startNewSession}
+                  disabled={chatIsEmpty}
+                  aria-disabled={chatIsEmpty}
+                  title={
+                    chatIsEmpty
+                      ? "You're already on a new session"
+                      : "Start a fresh session"
+                  }
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors duration-fast",
+                    chatIsEmpty
+                      ? "cursor-default border-transparent bg-transparent text-ink-dim/60"
+                      : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-ink",
+                  )}
+                >
+                  <Plus size={12} /> New
+                </button>
+                <Tooltip content="Hide sessions">
+                  <button
+                    type="button"
+                    onClick={() => setSessionsCollapsed(true)}
+                    aria-label="Collapse sessions sidebar"
+                    aria-expanded={true}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface text-ink-muted transition-colors duration-fast hover:border-accent/40 hover:text-ink"
+                  >
+                    <ChevronLeft size={12} />
+                  </button>
+                </Tooltip>
+              </div>
             }
           />
-          <CardBody className="max-h-[60vh] overflow-y-auto p-0">
+          <CardBody className="max-h-[60vh] overflow-x-hidden overflow-y-auto p-0">
             {sessions.isLoading ? (
               <ul className="divide-y divide-border">
                 {Array.from({ length: 4 }).map((_, i) => (
@@ -312,7 +381,14 @@ export default function Ask() {
                       key={session.id}
                       aria-current={isActive ? "true" : undefined}
                       className={cn(
-                        "group flex items-stretch transition hover:bg-surface-subtle/60",
+                        // ``min-w-0`` lets the inner ``truncate`` work
+                        // (a flex child defaults to ``min-width: auto``
+                        // which expands to fit content and breaks
+                        // ellipsis); ``overflow-hidden`` clamps the
+                        // hover action buttons inside the row so a
+                        // long title can never push the sidebar wider
+                        // than its column.
+                        "group flex min-w-0 items-stretch overflow-hidden transition hover:bg-surface-subtle/60",
                         isActive && "bg-surface-subtle",
                         isOpen && "border-l-2 border-positive",
                         isActive && "border-l-2 border-accent",
@@ -323,15 +399,15 @@ export default function Ask() {
                         onClick={() => openSession(session.id)}
                         disabled={isLoading}
                         className={cn(
-                          "flex-1 px-4 py-3 text-left text-sm focus:outline-none",
+                          "min-w-0 flex-1 px-4 py-3 text-left text-sm focus:outline-none",
                           isLoading && "opacity-60",
                         )}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate font-medium">
+                        <div className="flex min-w-0 items-center justify-between gap-2">
+                          <span className="min-w-0 flex-1 truncate font-medium">
                             {session.title || `Session #${session.id}`}
                           </span>
-                          <span className="font-mono text-[10px] text-ink-dim">
+                          <span className="shrink-0 font-mono text-[10px] text-ink-dim">
                             #{session.id}
                           </span>
                         </div>
@@ -391,6 +467,7 @@ export default function Ask() {
             )}
           </CardBody>
         </Card>
+        )}
 
         {ctx.isLoading ? (
           <Card>

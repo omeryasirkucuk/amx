@@ -34,8 +34,10 @@ from amx.search._agent_tools_helpers import (
     _sample_distinct_values,
     _ToolError,
 )
+from amx.search._tool_assets import _AssetsToolsMixin
 from amx.search._tool_history import _HistoryToolsMixin
 from amx.search._tool_join_inference import _JoinInferenceMixin
+from amx.search._tool_lineage import _LineageToolsMixin
 from amx.search._tool_rag import _RagToolsMixin
 from amx.search._tool_scd_and_role import _ScdAndRoleMixin
 from amx.search._tool_schemas import tool_schemas as _tool_schemas
@@ -97,7 +99,14 @@ class _CacheBackedTableProfile:
         self.analytics = None
 
 
-class ToolBox(_HistoryToolsMixin, _JoinInferenceMixin, _RagToolsMixin, _ScdAndRoleMixin):
+class ToolBox(
+    _HistoryToolsMixin,
+    _JoinInferenceMixin,
+    _RagToolsMixin,
+    _ScdAndRoleMixin,
+    _AssetsToolsMixin,
+    _LineageToolsMixin,
+):
     """Concrete tool implementations the agent loop dispatches into."""
 
     # Tools that must never be served from the in-question cache.

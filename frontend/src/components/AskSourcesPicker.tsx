@@ -20,8 +20,8 @@ export interface LineageArtifactSummary {
   name: string;
 }
 
-/** One kind of ingested asset (notebooks, queries, streams, pipelines)
- *  with its count for the active DB scope. */
+/** One kind of ingested asset (notebooks, queries, jobs, pipelines,
+ *  streams, streamlit_apps) with its count for the active DB scope. */
 export interface AssetKindSummary {
   kind: string;
   count: number;
@@ -41,7 +41,8 @@ export interface AskSourcesPickerProps {
    *  entity-anchored so there is no multi-select — only the gate. */
   pagesEnabled: boolean | null;
   /** ``null`` = Auto, ``[]`` = Off, ``string[]`` = explicit kind pick
-   *  (subset of ``notebooks``, ``queries``, ``streams``, ``pipelines``). */
+   *  (subset of ``notebooks``, ``queries``, ``jobs``, ``pipelines``,
+   *  ``streams``, ``streamlit_apps``). */
   assetsOverride: string[] | null;
   onDocChange: (next: string[] | null) => void;
   onCodeChange: (next: string[] | null) => void;
@@ -57,12 +58,21 @@ type PanelKey = "docs" | "code" | "lineage" | "pages" | "assets";
  *  display order in the Assets pill popover; missing kinds (because
  *  none are ingested for the active scope) still render as a dimmed
  *  row so the user can see the full menu. */
-const ASSET_KINDS_ORDER = ["notebooks", "queries", "streams", "pipelines"] as const;
+const ASSET_KINDS_ORDER = [
+  "notebooks",
+  "queries",
+  "jobs",
+  "pipelines",
+  "streams",
+  "streamlit_apps",
+] as const;
 const ASSET_KIND_LABEL: Record<string, string> = {
   notebooks: "Notebooks",
   queries: "Queries",
-  streams: "Streams",
+  jobs: "Jobs",
   pipelines: "Pipelines",
+  streams: "Streams",
+  streamlit_apps: "Streamlit Apps",
 };
 
 /**
@@ -114,7 +124,7 @@ export function AskSourcesPicker({
   const assetsAutoCount = assetItems.reduce((sum, a) => sum + a.count, 0);
 
   return (
-    <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
+    <div className="flex flex-wrap items-center gap-1.5">
       <ListPanel
         label="Docs"
         items={docProfiles.map((p) => ({ name: p.name, count: p.indexedChunks }))}
@@ -269,7 +279,7 @@ function ListPanel({
         aria-haspopup="dialog"
         aria-expanded={open}
         className={cn(
-          "flex h-7 w-full items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors duration-fast",
+          "flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors duration-fast",
           disabled
             ? "cursor-default border-surface-border bg-transparent text-ink-dim"
             : isCustom
@@ -278,7 +288,7 @@ function ListPanel({
         )}
       >
         <FileText size={12} className="opacity-70" />
-        <span className="min-w-0 flex-1 truncate text-left">{triggerLabel}</span>
+        <span className="whitespace-nowrap text-left">{triggerLabel}</span>
         <ChevronDown size={12} className="opacity-70" />
       </button>
       {open && (
@@ -447,7 +457,7 @@ function PagesPanel({
         aria-haspopup="dialog"
         aria-expanded={open}
         className={cn(
-          "flex h-7 w-full items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors duration-fast",
+          "flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors duration-fast",
           disabled
             ? "cursor-default border-surface-border bg-transparent text-ink-dim"
             : isCustom
@@ -456,7 +466,7 @@ function PagesPanel({
         )}
       >
         <FileText size={12} className="opacity-70" />
-        <span className="min-w-0 flex-1 truncate text-left">{triggerLabel}</span>
+        <span className="whitespace-nowrap text-left">{triggerLabel}</span>
         <ChevronDown size={12} className="opacity-70" />
       </button>
       {open && (
@@ -472,30 +482,23 @@ function PagesPanel({
                 ? `${anchoredPagesCount} anchored to this scope.`
                 : "No pages anchored to this scope."}
             </p>
+            {/* Pages are entity-anchored, not picked from a list, so
+                the gate is binary. ``null`` (Auto) and ``true`` (On)
+                produce identical backend behaviour — the enrichment
+                layer treats ``None`` as enabled — so we only expose
+                Auto / Off here to avoid a meaningless distinction. */}
             <div className="flex gap-1 text-[11px]">
               <button
                 type="button"
                 onClick={() => onChange(null)}
                 className={cn(
                   "flex-1 rounded px-2 py-1",
-                  enabled === null
+                  enabled !== false
                     ? "bg-accent-soft/60 text-accent-ink"
                     : "text-ink-dim hover:bg-surface-subtle hover:text-ink",
                 )}
               >
                 Auto
-              </button>
-              <button
-                type="button"
-                onClick={() => onChange(true)}
-                className={cn(
-                  "flex-1 rounded px-2 py-1",
-                  enabled === true
-                    ? "bg-accent-soft/60 text-accent-ink"
-                    : "text-ink-dim hover:bg-surface-subtle hover:text-ink",
-                )}
-              >
-                On
               </button>
               <button
                 type="button"
@@ -522,13 +525,20 @@ function describeListMode(
   mode: string[] | null,
   autoCount: number,
 ): string {
-  if (mode === null) return `${label}: Auto (${autoCount})`;
-  if (mode.length === 0) return `${label}: Off`;
-  return `${label}: ${mode.length}`;
+  // Compact triggers so all five source pills + LLM + Scope + Live
+  // fit on one row. The full mode (Auto/Off/picked count) is still
+  // visible inside the popover and via the trigger's tint:
+  //   * Auto       → ``Docs · N`` (dim text, no badge tint)
+  //   * Off        → ``Docs · off`` (warning tint via isCustom)
+  //   * Picked X   → ``Docs · X`` (accent tint via isCustom)
+  if (mode === null) return `${label} · ${autoCount}`;
+  if (mode.length === 0) return `${label} · off`;
+  return `${label} · ${mode.length}`;
 }
 
 function describePagesMode(enabled: boolean | null, autoCount: number): string {
-  if (enabled === null) return `Pages: Auto (${autoCount})`;
-  if (enabled === false) return "Pages: Off";
-  return "Pages: On";
+  // Two-state gate (see PagesPanel): Off shows explicitly, otherwise
+  // the trigger mirrors the anchored-pages count for the active scope.
+  if (enabled === false) return "Pages · off";
+  return `Pages · ${autoCount}`;
 }
