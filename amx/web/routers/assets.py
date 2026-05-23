@@ -1305,7 +1305,10 @@ async def _run_ingest_job(
         svc = IngestAssetsService(connector=connector, catalog=catalog)
         req = IngestRequest(
             profile_name=body.profile,
-            types=body.types,
+            # body.types is validated by Pydantic to the same literal
+            # set IngestRequest accepts, but mypy can't see the
+            # cross-class narrowing — silence the false positive.
+            types=body.types,  # type: ignore[arg-type]
             history_days=body.history_days,
             runs_per_job=body.runs_per_job,
             query_history_limit=body.query_history_limit,
