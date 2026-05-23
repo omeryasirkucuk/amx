@@ -270,8 +270,10 @@ def enrich_retrieval_details_with_lineage_and_pages(
     _ASSET_KIND_PLURAL_TO_SINGULAR = {
         "notebooks": "notebook",
         "queries": "query",
-        "streams": "stream",
+        "jobs": "job",
         "pipelines": "pipeline",
+        "streams": "stream",
+        "streamlit_apps": "streamlit_app",
     }
     assets_enabled = asset_kinds is None or len(asset_kinds) > 0
     kinds_filter: list[str] | None
@@ -1004,8 +1006,15 @@ class RetrievalMixin:
         *,
         lineage_profiles: list[str] | None = None,
         pages_enabled: bool | None = None,
+        asset_kinds: list[str] | None = None,
     ) -> dict[str, Any]:
         """Resolve the active history store and fold lineage/pages evidence in.
+
+        ``asset_kinds`` mirrors the parameter on
+        :func:`enrich_retrieval_details_with_lineage_and_pages`: ``None``
+        means auto, an empty list disables asset evidence, a non-empty
+        list restricts to those kinds (subset of notebooks/queries/
+        streams/pipelines).
 
         Looked up through the catalog rather than imported eagerly so
         unit tests that pass a hand-rolled catalog (no live history
@@ -1029,6 +1038,7 @@ class RetrievalMixin:
             plan=plan,
             lineage_profiles=lineage_profiles,
             pages_enabled=pages_enabled,
+            asset_kinds=asset_kinds,
         )
 
     def _merge_join_rows(

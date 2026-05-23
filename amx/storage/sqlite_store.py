@@ -772,6 +772,17 @@ class SQLiteHistoryStore:
                     "ON catalog_relationships(from_entity_id, from_column, to_entity_id, to_column) "
                     "WHERE from_column != '' OR to_column != ''"
                 )
+            # Covering index for asset/lineage retrieval queries shaped
+            # like ``WHERE relationship_type = 'asset_references_table'
+            # AND to_entity_id IN (...) AND from_entity_kind IN (...)``.
+            # idx_catalog_relationships_from_to leads on from_entity_id,
+            # so SQLite scans before filtering on relationship_type; this
+            # one lets the planner jump straight to the asset-edge rows.
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_catalog_relationships_kind_to "
+                    "ON catalog_relationships(relationship_type, to_entity_id, from_entity_kind)"
+                )
             # ── lineage_artifacts: registry of rendered lineage diagrams ──
             # Each row binds a focal entity (anchor) to a rendered image
             # on disk plus the edge-set hash that produced it. Drives

@@ -232,6 +232,9 @@ def _run_search_ask(
     log_event: LogEvent,
     take_actions: bool = False,
     debug: bool = False,
+    asset_kinds: list[str] | None = None,
+    lineage_profiles: list[str] | None = None,
+    pages_enabled: bool | None = None,
 ) -> None:
     from amx.utils.logging import clear_request_id, get_logger, set_request_id
 
@@ -253,6 +256,9 @@ def _run_search_ask(
             log_event=log_event,
             take_actions=take_actions,
             debug=debug,
+            asset_kinds=asset_kinds,
+            lineage_profiles=lineage_profiles,
+            pages_enabled=pages_enabled,
         )
     finally:
         clear_request_id()
@@ -266,6 +272,9 @@ def _run_search_ask_body(
     log_event: LogEvent,
     take_actions: bool,
     debug: bool = False,
+    asset_kinds: list[str] | None = None,
+    lineage_profiles: list[str] | None = None,
+    pages_enabled: bool | None = None,
 ) -> None:
     display = get_display()
     started_display = False
@@ -310,7 +319,13 @@ def _run_search_ask_body(
         # Worker threads / Windows compat: fall through to default.
         previous_handler = None
     try:
-        answer = svc.ask(question_text, cancel_token=cancel_token)
+        answer = svc.ask(
+            question_text,
+            cancel_token=cancel_token,
+            asset_kinds=asset_kinds,
+            lineage_profiles=lineage_profiles,
+            pages_enabled=pages_enabled,
+        )
     except KeyboardInterrupt:
         from amx.search.catalog import SearchAnswer
 
@@ -618,6 +633,32 @@ def register_search_commands(
             "When omitted, uses the persisted scope set by /use-db."
         ),
     )
+    @click.option(
+        "--assets",
+        "assets",
+        multiple=True,
+        help=(
+            "Restrict ingested-asset retrieval to the listed kinds "
+            "(notebooks, queries, jobs, pipelines, streams, streamlit_apps). "
+            "Pass `none` to disable assets entirely for this question. "
+            "Omit to let the agent decide."
+        ),
+    )
+    @click.option(
+        "--lineage",
+        "lineage",
+        multiple=True,
+        help=(
+            "Restrict lineage retrieval to the listed canvas/profile names. "
+            "Pass `none` to disable lineage for this question. Omit for auto."
+        ),
+    )
+    @click.option(
+        "--pages/--no-pages",
+        "pages_flag",
+        default=None,
+        help="Toggle ingested-documentation (pages) retrieval. Default: auto.",
+    )
     @click.argument("question", nargs=-1, required=True)
     @pass_config
     def search_ask(
@@ -625,6 +666,9 @@ def register_search_commands(
         take_actions: bool,
         debug: bool,
         db_profile: tuple[str, ...],
+        assets: tuple[str, ...],
+        lineage: tuple[str, ...],
+        pages_flag: bool | None,
         question: tuple[str, ...],
     ) -> None:
         # Pre-flight: bail with a clear, actionable message when no
@@ -677,6 +721,29 @@ def register_search_commands(
         if not question_text:
             error("Usage: /search ask <question>")
             return
+
+        # ``--assets`` / ``--lineage`` / ``--pages`` translate into the
+        # tri-state argument shape the enrichment layer expects:
+        #   * absent     → ``None``  (auto: agent / planner decides)
+        #   * ``none``   → ``[]``    (explicitly off for this question)
+        #   * one+ vals  → list      (restrict to those kinds/profiles)
+        # Studio's per-question overrides take the same shape so the
+        # CLI and web paths stay aligned.
+        asset_kinds: list[str] | None
+        if not assets:
+            asset_kinds = None
+        elif len(assets) == 1 and assets[0].lower() == "none":
+            asset_kinds = []
+        else:
+            asset_kinds = [a for a in assets if a.lower() != "none"]
+        lineage_profiles: list[str] | None
+        if not lineage:
+            lineage_profiles = None
+        elif len(lineage) == 1 and lineage[0].lower() == "none":
+            lineage_profiles = []
+        else:
+            lineage_profiles = [p for p in lineage if p.lower() != "none"]
+
         # Use the context manager so the cached live DB connector
         # (SQLAlchemy engine + connection pool) is disposed when the
         # question finishes, preventing FD leaks across REPL turns.
@@ -688,6 +755,9 @@ def register_search_commands(
                 log_event=log_event,
                 take_actions=take_actions,
                 debug=debug,
+                asset_kinds=asset_kinds,
+                lineage_profiles=lineage_profiles,
+                pages_enabled=pages_flag,
             )
 
     @search.command("status")

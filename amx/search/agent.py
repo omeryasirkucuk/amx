@@ -228,6 +228,7 @@ class SearchAgent(
         cancel_token: threading.Event | None = None,
         lineage_profiles: list[str] | None = None,
         pages_enabled: bool | None = None,
+        asset_kinds: list[str] | None = None,
     ) -> SearchAnswer:
         """Run one /ask turn.
 
@@ -512,6 +513,7 @@ class SearchAgent(
                     retrieval_details,
                     lineage_profiles=lineage_profiles,
                     pages_enabled=pages_enabled,
+                    asset_kinds=asset_kinds,
                 )
             except Exception as exc:
                 log.debug("lineage/pages enrichment failed: %s", exc)
