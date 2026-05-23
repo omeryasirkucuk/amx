@@ -81,6 +81,10 @@ class LineageExtractor:
         idempotency wipe and never collides with the asset edges.
         """
         from amx.lineage.extractors.sql_parse import SQLParseExtractor
+        from amx.lineage.extractors.system_tables.databricks import (
+            DatabricksSystemTablesExtractor,
+            build_query_runner_for_profile,
+        )
 
         now = time.time()
         with self.conn:
@@ -99,13 +103,36 @@ class LineageExtractor:
             jobs_written = self._extract_jobs(profile_name, now)
             pipelines_written = self._extract_pipelines(profile_name, now)
         sql_parse_written = SQLParseExtractor(self.conn).extract_for_profile(profile_name)
-        total = jobs_written + pipelines_written + sql_parse_written
+        # Platform system-tables pass. Returns silently when the
+        # profile is not Databricks, when the workspace has not
+        # enabled system.access.*, or when engine construction
+        # fails — none of which should fail the broader refresh.
+        system_table_counts: dict[str, int] = {
+            "table_lineage": 0,
+            "column_lineage": 0,
+            "usage_backfilled": 0,
+        }
+        try:
+            runner = build_query_runner_for_profile(profile_name)
+            if runner is not None:
+                system_table_counts = DatabricksSystemTablesExtractor(
+                    self.conn, query_runner=runner
+                ).extract_for_profile(profile_name)
+        except Exception as exc:  # noqa: BLE001
+            log.info("Lineage extraction: system-tables pass skipped: %s", exc)
+        system_table_total = sum(system_table_counts.values())
+        total = jobs_written + pipelines_written + sql_parse_written + system_table_total
         log.info(
-            "Lineage extraction for %s: %d job edges, %d pipeline edges, %d SQL-parse edges",
+            "Lineage extraction for %s: %d job edges, %d pipeline edges, "
+            "%d SQL-parse edges, %d system-tables rows (%d table + %d column + %d usage)",
             profile_name,
             jobs_written,
             pipelines_written,
             sql_parse_written,
+            system_table_total,
+            system_table_counts["table_lineage"],
+            system_table_counts["column_lineage"],
+            system_table_counts["usage_backfilled"],
         )
         return total
 
