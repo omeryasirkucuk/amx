@@ -178,14 +178,16 @@ def enrich_retrieval_details_with_lineage_and_pages(
     plan: SearchPlan | None,
     lineage_profiles: list[str] | None,
     pages_enabled: bool | None,
+    asset_kinds: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Fold lineage and pages evidence into ``retrieval_details``.
+    """Fold lineage, pages, and asset evidence into ``retrieval_details``.
 
     Anchor entity ids are derived from ``rows`` (the catalog_entity ids
     surfaced by the catalog search). When supporting data exists the
-    function appends ``"lineage"`` and / or ``"pages"`` to
+    function appends ``"lineage"`` / ``"pages"`` / ``"assets"`` to
     ``retrieval_details["evidence_sources"]`` and stores the structured
-    payload under ``retrieval_details["lineage"]`` / ``["pages"]``.
+    payload under ``retrieval_details["lineage"]`` / ``["pages"]`` /
+    ``["assets"]``.
 
     ``lineage_profiles``:
       * ``None`` — Auto: include every saved canvas touching the anchors.
@@ -196,6 +198,13 @@ def enrich_retrieval_details_with_lineage_and_pages(
       * ``None`` — Auto (treated as enabled here; gating per-question is
         handled by the policy layer upstream).
       * ``True`` / ``False`` — explicit override.
+
+    ``asset_kinds``:
+      * ``None`` — Auto: include every ingested kind (notebooks,
+        queries, streams, pipelines) that references a resolved entity.
+      * non-empty list — restrict to the listed kinds (subset of
+        ``notebooks``, ``queries``, ``streams``, ``pipelines``).
+      * empty list — asset retrieval off.
     """
     if store is None:
         return retrieval_details
@@ -252,8 +261,32 @@ def enrich_retrieval_details_with_lineage_and_pages(
 
     # Ingested-asset evidence (notebooks, queries, streams, pipelines)
     # that reference the resolved tables via catalog_relationships
-    # edges of type ``asset_references_table``.
+    # edges of type ``asset_references_table``. Studio's Assets pill
+    # forwards the wire-plural kinds (``notebooks`` / ``queries`` / …);
+    # the retriever's SQL uses the singular ``from_entity_kind`` values
+    # (``notebook`` / ``query`` / …), so translate before calling.
     from amx.search._agent.asset_evidence import build_assets_evidence
+
+    _ASSET_KIND_PLURAL_TO_SINGULAR = {
+        "notebooks": "notebook",
+        "queries": "query",
+        "streams": "stream",
+        "pipelines": "pipeline",
+    }
+    assets_enabled = asset_kinds is None or len(asset_kinds) > 0
+    kinds_filter: list[str] | None
+    if asset_kinds is None:
+        kinds_filter = None
+    else:
+        kinds_filter = [
+            _ASSET_KIND_PLURAL_TO_SINGULAR[k]
+            for k in asset_kinds
+            if k in _ASSET_KIND_PLURAL_TO_SINGULAR
+        ]
+        if not kinds_filter:
+            # Empty override (Off) OR a list that mapped to nothing
+            # known — either way skip the evidence step.
+            assets_enabled = False
 
     assets_payload = build_assets_evidence(
         store=store,
@@ -261,7 +294,8 @@ def enrich_retrieval_details_with_lineage_and_pages(
         question_terms=_question_terms_for_pages(question, plan),
         max_assets=3,
         max_excerpt_chars=400,
-        enabled=True,
+        enabled=assets_enabled,
+        kinds=kinds_filter,
     )
     if not assets_payload.is_empty:
         retrieval_details.setdefault("evidence_sources", [])

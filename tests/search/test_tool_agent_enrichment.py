@@ -141,11 +141,13 @@ def test_run_tool_agent_invokes_enrichment_with_forwarded_kwargs(
         plan: Any,
         lineage_profiles: list[str] | None,
         pages_enabled: bool | None,
+        asset_kinds: list[str] | None = None,
     ) -> dict[str, Any]:
         captured["entity_ids"] = [r["id"] for r in rows]
         captured["question"] = question
         captured["lineage_profiles"] = lineage_profiles
         captured["pages_enabled"] = pages_enabled
+        captured["asset_kinds"] = asset_kinds
         retrieval_details.setdefault("evidence_sources", [])
         retrieval_details["evidence_sources"].extend(["lineage", "pages"])
         retrieval_details["lineage"] = {

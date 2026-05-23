@@ -101,6 +101,17 @@ class AskRequest(BaseModel):
             "force the behaviour explicitly."
         ),
     )
+    asset_kinds: list[str] | None = Field(
+        default=None,
+        description=(
+            "Ingested-asset selection for THIS question. ``None`` (default) "
+            "means Auto — include every kind (notebooks, queries, streams, "
+            "pipelines) when assets reference a resolved entity. An empty "
+            "list disables asset evidence entirely; a non-empty list "
+            "restricts retrieval to the listed kinds (subset of "
+            "``notebooks``, ``queries``, ``streams``, ``pipelines``)."
+        ),
+    )
     allow_live_refresh: bool = Field(
         default=False,
         description=(
@@ -269,6 +280,7 @@ def submit_ask(
             body.allow_live_refresh,
             body.lineage_profiles,
             body.pages_enabled,
+            body.asset_kinds,
         ),
         name=f"amx-studio-ask-{job.id}",
         daemon=True,
@@ -415,7 +427,18 @@ def ask_context(
     ]
 
     anchored_pages_count = 0
-    ingested_assets_count = 0
+    # ``ASSET_KIND_TABLES`` is the wire-contract order for the Assets pill
+    # popover. The keys are plural (matching the source table names) so
+    # the SPA can render them directly; ``submit_ask`` translates the
+    # ``asset_kinds`` request field into the singular kinds the
+    # retriever's SQL filter expects.
+    ASSET_KIND_TABLES = (
+        ("notebooks", "remote_notebooks"),
+        ("queries", "remote_queries"),
+        ("streams", "remote_streams"),
+        ("pipelines", "remote_pipelines"),
+    )
+    asset_kind_counts: dict[str, int] = {kind: 0 for kind, _ in ASSET_KIND_TABLES}
     if _store is not None and scope_dbs:
         with _store._connect() as conn:  # noqa: SLF001
             for profile in scope_dbs:
@@ -428,21 +451,17 @@ def ask_context(
                     (f"{profile}:%",),
                 ).fetchone()
                 anchored_pages_count += int(n or 0)
-            for table_name in (
-                "remote_notebooks",
-                "remote_queries",
-                "remote_streams",
-                "remote_pipelines",
-            ):
+            placeholders = ",".join("?" for _ in scope_dbs)
+            for kind, table_name in ASSET_KIND_TABLES:
                 try:
-                    placeholders = ",".join("?" for _ in scope_dbs)
                     (n,) = conn.execute(
                         f"SELECT COUNT(*) FROM {table_name} WHERE profile_name IN ({placeholders})",
                         tuple(scope_dbs),
                     ).fetchone()
-                    ingested_assets_count += int(n or 0)
+                    asset_kind_counts[kind] = int(n or 0)
                 except Exception:  # noqa: BLE001
                     continue
+    ingested_assets_count = sum(asset_kind_counts.values())
 
     return {
         "scope_db_profiles": scope_dbs,
@@ -450,7 +469,15 @@ def ask_context(
         "code_profiles": code_payload,
         "lineage_artifacts": lineage_payload,
         "anchored_pages": {"count": anchored_pages_count},
-        "ingested_assets": {"count": ingested_assets_count},
+        "ingested_assets": {
+            # Top-level ``count`` is retained for clients written before
+            # the per-kind breakdown landed; new clients render ``kinds``.
+            "count": ingested_assets_count,
+            "kinds": [
+                {"kind": kind, "count": asset_kind_counts[kind]}
+                for kind, _ in ASSET_KIND_TABLES
+            ],
+        },
     }
 
 
@@ -804,6 +831,7 @@ def _ask_worker(
     allow_live_refresh: bool = False,
     lineage_profiles: list[str] | None = None,
     pages_enabled: bool | None = None,
+    asset_kinds: list[str] | None = None,
 ) -> None:
     """Run the tool-calling agent and guarantee a terminal SSE event.
 
@@ -829,6 +857,7 @@ def _ask_worker(
             allow_live_refresh,
             lineage_profiles,
             pages_enabled,
+            asset_kinds,
         )
     except Exception:
         # Last-resort safety net. The two real paths
@@ -884,6 +913,7 @@ def _ask_worker_impl(
     allow_live_refresh: bool = False,
     lineage_profiles: list[str] | None = None,
     pages_enabled: bool | None = None,
+    asset_kinds: list[str] | None = None,
 ) -> None:
     """Run the tool-calling agent + stream every reasoning chunk and
     tool result back to the SSE consumer. Persists the assistant
@@ -1162,6 +1192,7 @@ def _ask_worker_impl(
             allow_live_refresh=allow_live_refresh,
             lineage_profiles=lineage_profiles,
             pages_enabled=pages_enabled,
+            asset_kinds=asset_kinds,
         )
     except RunCancelled:
         job.status = "cancelled"
