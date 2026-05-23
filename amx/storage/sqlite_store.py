@@ -1469,12 +1469,17 @@ class SQLiteHistoryStore:
             )
 
             # ── asset_lineage_edges: asset-to-asset lineage relationships ────
-            # Populated by ``amx.assets.lineage.LineageExtractor`` on every
-            # refresh. Asset-level edges only — never reads into notebook
-            # source. ``from_kind``/``to_kind`` use the same identifiers as
-            # ASSET_KINDS in the assets router. ``raw_ref`` carries the
-            # platform-native pointer (notebook path, pipeline_id, ...)
-            # for forensic debugging when resolution fails. UNIQUE forbids
+            # Populated by ``amx.assets.lineage.LineageExtractor`` from
+            # platform metadata, ``amx.lineage.extractors.sql_parse`` from
+            # stored SQL on queries and inside notebook cells, and
+            # refreshed by ``amx.lineage.extractors.system_tables.*`` with
+            # usage signals (``last_used_at`` / ``last_user``) sourced from
+            # platform system tables (e.g. Databricks
+            # ``system.query.history``). ``raw_ref`` carries the platform-
+            # native pointer (notebook path, pipeline_id, statement_id) for
+            # forensic debugging when resolution fails. ``direction``
+            # captures whether the source asset reads, writes, or both
+            # against the target; legacy rows keep it NULL. UNIQUE forbids
             # duplicate edges so extraction is idempotent.
             conn.execute(
                 """
@@ -1488,10 +1493,25 @@ class SQLiteHistoryStore:
                     edge_type TEXT NOT NULL,
                     raw_ref TEXT,
                     discovered_at REAL NOT NULL,
+                    direction TEXT,
+                    last_used_at REAL,
+                    last_user TEXT,
                     UNIQUE(profile_name, from_kind, from_id, to_kind, to_id, edge_type)
                 )
                 """
             )
+            # Backward-compatible migration for DBs that were created before
+            # the read/write direction and platform-usage columns existed.
+            # NULL on legacy rows; the API treats NULL direction as
+            # "direction unknown" and groups such edges under both reads
+            # and writes on the table-detail Lineage tab.
+            for stmt in (
+                "ALTER TABLE asset_lineage_edges ADD COLUMN direction TEXT",
+                "ALTER TABLE asset_lineage_edges ADD COLUMN last_used_at REAL",
+                "ALTER TABLE asset_lineage_edges ADD COLUMN last_user TEXT",
+            ):
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(stmt)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_asset_lineage_edges_from "
                 "ON asset_lineage_edges(profile_name, from_kind, from_id)"
