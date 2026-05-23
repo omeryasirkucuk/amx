@@ -20,11 +20,19 @@ export interface LineageArtifactSummary {
   name: string;
 }
 
+/** One kind of ingested asset (notebooks, queries, streams, pipelines)
+ *  with its count for the active DB scope. */
+export interface AssetKindSummary {
+  kind: string;
+  count: number;
+}
+
 export interface AskSourcesPickerProps {
   docProfiles: DocProfileSummary[];
   codeProfiles: CodeProfileSummary[];
   lineageArtifacts: LineageArtifactSummary[];
   anchoredPagesCount: number;
+  assetKinds: AssetKindSummary[];
   /** ``null`` = Auto, ``[]`` = Off, ``string[]`` = explicit pick. */
   docOverride: string[] | null;
   codeOverride: string[] | null;
@@ -32,14 +40,30 @@ export interface AskSourcesPickerProps {
   /** ``null`` = Auto, ``true``/``false`` = explicit on/off. Pages are
    *  entity-anchored so there is no multi-select — only the gate. */
   pagesEnabled: boolean | null;
+  /** ``null`` = Auto, ``[]`` = Off, ``string[]`` = explicit kind pick
+   *  (subset of ``notebooks``, ``queries``, ``streams``, ``pipelines``). */
+  assetsOverride: string[] | null;
   onDocChange: (next: string[] | null) => void;
   onCodeChange: (next: string[] | null) => void;
   onLineageChange: (next: string[] | null) => void;
   onPagesChange: (next: boolean | null) => void;
+  onAssetsChange: (next: string[] | null) => void;
   disabled?: boolean;
 }
 
-type PanelKey = "docs" | "code" | "lineage" | "pages";
+type PanelKey = "docs" | "code" | "lineage" | "pages" | "assets";
+
+/** Fixed set of asset kinds the retriever knows about. Order is the
+ *  display order in the Assets pill popover; missing kinds (because
+ *  none are ingested for the active scope) still render as a dimmed
+ *  row so the user can see the full menu. */
+const ASSET_KINDS_ORDER = ["notebooks", "queries", "streams", "pipelines"] as const;
+const ASSET_KIND_LABEL: Record<string, string> = {
+  notebooks: "Notebooks",
+  queries: "Queries",
+  streams: "Streams",
+  pipelines: "Pipelines",
+};
 
 /**
  * Four-panel source picker for AskChat. Each panel is a self-contained
@@ -54,14 +78,17 @@ export function AskSourcesPicker({
   codeProfiles,
   lineageArtifacts,
   anchoredPagesCount,
+  assetKinds,
   docOverride,
   codeOverride,
   lineageOverride,
   pagesEnabled,
+  assetsOverride,
   onDocChange,
   onCodeChange,
   onLineageChange,
   onPagesChange,
+  onAssetsChange,
   disabled,
 }: AskSourcesPickerProps) {
   const [openPanel, setOpenPanel] = useState<PanelKey | null>(null);
@@ -73,8 +100,21 @@ export function AskSourcesPicker({
     setOpenPanel(null);
   }
 
+  // Build the asset list in a fixed order so the popover doesn't
+  // reshuffle as the backend reports counts; kinds with no ingested
+  // rows still appear (count 0) so the user sees the full menu.
+  const assetCountByKind = new Map<string, number>(
+    assetKinds.map((a) => [a.kind, a.count]),
+  );
+  const assetItems = ASSET_KINDS_ORDER.map((kind) => ({
+    name: kind,
+    label: ASSET_KIND_LABEL[kind] ?? kind,
+    count: assetCountByKind.get(kind) ?? 0,
+  }));
+  const assetsAutoCount = assetItems.reduce((sum, a) => sum + a.count, 0);
+
   return (
-    <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
       <ListPanel
         label="Docs"
         items={docProfiles.map((p) => ({ name: p.name, count: p.indexedChunks }))}
@@ -124,6 +164,20 @@ export function AskSourcesPicker({
         onChange={onPagesChange}
         disabled={disabled}
       />
+      <ListPanel
+        label="Assets"
+        items={assetItems}
+        mode={assetsOverride}
+        autoCount={assetsAutoCount}
+        emptyHint="No ingested assets in this scope."
+        open={openPanel === "assets"}
+        onToggleOpen={() => togglePanel("assets")}
+        onClose={closePanel}
+        onChange={onAssetsChange}
+        countSuffix="items"
+        disabled={disabled}
+        useCheckboxLabels
+      />
     </div>
   );
 }
@@ -131,6 +185,12 @@ export function AskSourcesPicker({
 interface ListItem {
   name: string;
   count: number;
+  /** Optional display label. Falls back to ``name`` when omitted, which
+   *  is the existing behavior for Docs / Code / Lineage where the
+   *  profile / canvas name is already user-facing. The Assets panel
+   *  uses this to render "Notebooks" while keeping the slug
+   *  ("notebooks") in the wire payload. */
+  label?: string;
 }
 
 interface ListPanelProps {
@@ -261,6 +321,7 @@ function ListPanel({
               <ul role="listbox" aria-multiselectable className="space-y-0.5">
                 {items.map((p) => {
                   const selected = mode !== null && mode.includes(p.name);
+                  const displayName = p.label ?? p.name;
                   if (useCheckboxLabels) {
                     return (
                       <li key={p.name}>
@@ -277,9 +338,19 @@ function ListPanel({
                             className="h-3 w-3 accent-accent"
                           />
                           <span className="min-w-0 flex-1">
-                            <span className="block truncate font-mono text-ink">
-                              {p.name}
+                            <span
+                              className={cn(
+                                "block truncate text-ink",
+                                p.label ? "" : "font-mono",
+                              )}
+                            >
+                              {displayName}
                             </span>
+                            {p.count > 0 && countSuffix && (
+                              <span className="block truncate text-[10px] text-ink-dim">
+                                {p.count} {countSuffix}
+                              </span>
+                            )}
                           </span>
                         </label>
                       </li>
@@ -298,8 +369,13 @@ function ListPanel({
                         )}
                       >
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate font-mono text-ink">
-                            {p.name}
+                          <span
+                            className={cn(
+                              "block truncate text-ink",
+                              p.label ? "" : "font-mono",
+                            )}
+                          >
+                            {displayName}
                           </span>
                           {p.count > 0 && countSuffix && (
                             <span className="block truncate text-[10px] text-ink-dim">

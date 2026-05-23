@@ -10,22 +10,41 @@ describe("AskSourcesPicker", () => {
     codeProfiles: [{ name: "app-src", indexedSnippets: 88 }],
     lineageArtifacts: [{ name: "canvas-a" }, { name: "canvas-b" }],
     anchoredPagesCount: 2,
+    assetKinds: [
+      { kind: "notebooks", count: 3 },
+      { kind: "queries", count: 1 },
+      { kind: "streams", count: 0 },
+      { kind: "pipelines", count: 0 },
+    ],
     docOverride: null,
     codeOverride: null,
     lineageOverride: null,
     pagesEnabled: null,
+    assetsOverride: null,
     onDocChange: vi.fn(),
     onCodeChange: vi.fn(),
     onLineageChange: vi.fn(),
     onPagesChange: vi.fn(),
+    onAssetsChange: vi.fn(),
   };
 
-  it("renders all four panels", () => {
+  it("renders all five panels", () => {
     renderWithProviders(<AskSourcesPicker {...baseProps} />);
     expect(screen.getByText(/docs/i)).toBeInTheDocument();
     expect(screen.getByText(/code/i)).toBeInTheDocument();
     expect(screen.getByText(/lineage/i)).toBeInTheDocument();
     expect(screen.getByText(/pages/i)).toBeInTheDocument();
+    expect(screen.getByText(/assets/i)).toBeInTheDocument();
+  });
+
+  it("invokes onAssetsChange with the wire-plural kind when a checkbox toggles", () => {
+    const onAssetsChange = vi.fn();
+    renderWithProviders(
+      <AskSourcesPicker {...baseProps} onAssetsChange={onAssetsChange} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /assets:/i }));
+    fireEvent.click(screen.getByLabelText(/notebooks/i));
+    expect(onAssetsChange).toHaveBeenCalledWith(["notebooks"]);
   });
 
   it("invokes onLineageChange when a canvas checkbox is toggled", () => {
