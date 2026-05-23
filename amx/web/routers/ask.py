@@ -477,8 +477,7 @@ def ask_context(
             # the per-kind breakdown landed; new clients render ``kinds``.
             "count": ingested_assets_count,
             "kinds": [
-                {"kind": kind, "count": asset_kind_counts[kind]}
-                for kind, _ in ASSET_KIND_TABLES
+                {"kind": kind, "count": asset_kind_counts[kind]} for kind, _ in ASSET_KIND_TABLES
             ],
         },
     }

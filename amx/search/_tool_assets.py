@@ -366,9 +366,7 @@ class _AssetsToolsMixin:
                             hits = []
                         for h in hits:
                             text = (h.text or "").strip()
-                            match_type = str(
-                                h.metadata.get("match_type") or "keyword_strict"
-                            )
+                            match_type = str(h.metadata.get("match_type") or "keyword_strict")
                             # ``_minimal_hits_from_fts`` returns ``text=""``
                             # for FTS hits whose chunks are not yet embedded
                             # in Chroma. Without an excerpt the LLM cannot
@@ -578,9 +576,7 @@ class _AssetsToolsMixin:
                 payload_extra = {}
 
             if row is None:
-                lookup = (
-                    f"remote_id={rid}" if rid is not None else f"name={clean_name!r}"
-                )
+                lookup = f"remote_id={rid}" if rid is not None else f"name={clean_name!r}"
                 return {
                     "error": f"No {kind_key} matching {lookup}",
                     "kind": kind_key,

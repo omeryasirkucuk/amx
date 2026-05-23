@@ -1592,8 +1592,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "remote_id": {
                         "type": "integer",
                         "description": (
-                            "remote_<kind>s.id from search_assets. "
-                            "Either this OR name is required."
+                            "remote_<kind>s.id from search_assets. Either this OR name is required."
                         ),
                     },
                     "name": {
