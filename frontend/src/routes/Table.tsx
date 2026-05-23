@@ -3,8 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { AlignLeft, Columns, Sparkles, Database, Workflow } from "lucide-react";
 
-import { api, lineageArtifactsForTable } from "../lib/api";
-import type { LineageArtifact } from "../lib/api";
+import { api, assetsForTable, lineageArtifactsForTable } from "../lib/api";
+import type { LineageArtifact, LinkedAssetRow } from "../lib/api";
 import { useScope, scopePath } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
@@ -480,6 +480,13 @@ export default function Table() {
         </CardBody>
       </Card>
 
+      <LinkedAssetsCard
+        profile={scope.profile}
+        database={scope.database || scope.catalog || ""}
+        schema={schema}
+        table={table}
+      />
+
       <div className="mt-4">
         <Link
           to={scopePath(scope, schema)}
@@ -643,6 +650,180 @@ function SummaryCard({
  * into the existing /pending workflow so the explicit
  * review-before-apply contract stays in place.
  */
+/** "What touched this table?" card.
+ *
+ * Fed by ``GET /api/assets/by-table``. Groups results into Reads
+ * and Writes with a small filter chip-row so the user can flip
+ * between them without paginating; legacy rows that don't carry a
+ * direction surface in both groups tagged ``unknown``. Empty state
+ * tells the user how to ingest assets so the panel populates.
+ */
+function LinkedAssetsCard({
+  profile,
+  database,
+  schema,
+  table,
+}: {
+  profile: string;
+  database: string;
+  schema: string;
+  table: string;
+}) {
+  const [direction, setDirection] = useState<"all" | "read" | "write">("all");
+  const query = useQuery({
+    queryKey: ["assets-for-table", profile, database, schema, table],
+    queryFn: () =>
+      assetsForTable({ profile, schema, table, database, sinceDays: 90 }),
+    enabled: !!profile && !!schema && !!table,
+  });
+
+  const counts = query.data?.counts ?? {};
+  const totalLinked = Object.values(counts).reduce((sum, n) => sum + n, 0);
+
+  const reads = query.data?.reads ?? [];
+  const writes = query.data?.writes ?? [];
+  const visibleReads = direction === "write" ? [] : reads;
+  const visibleWrites = direction === "read" ? [] : writes;
+
+  return (
+    <Card className="mt-6">
+      <CardHeader
+        title="Linked assets"
+        description="Notebooks, queries, jobs, pipelines, streams, and Streamlit apps that read or write this table."
+        actions={
+          <div className="flex items-center gap-1 text-[11px]">
+            {(["all", "read", "write"] as const).map((d) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => setDirection(d)}
+                className={
+                  d === direction
+                    ? "rounded-md border border-accent bg-accent-soft px-2 py-1 font-medium text-accent-ink"
+                    : "rounded-md border border-surface-border bg-surface px-2 py-1 text-ink-dim hover:text-ink"
+                }
+              >
+                {d === "all" ? "All" : d === "read" ? "Reads" : "Writes"}
+              </button>
+            ))}
+          </div>
+        }
+      />
+      <CardBody className="space-y-3">
+        {query.isLoading ? (
+          <div className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-4 w-full" />
+            ))}
+          </div>
+        ) : query.error ? (
+          <div className="text-sm text-critical">
+            {(query.error as Error).message}
+          </div>
+        ) : totalLinked === 0 ? (
+          <div className="text-sm text-ink-dim">
+            No ingested asset references this table yet. Run{" "}
+            <code className="rounded bg-surface px-1 font-mono text-[12px]">
+              /db ingest-assets
+            </code>{" "}
+            so notebooks, queries, jobs, and pipelines feed into the
+            asset graph, then come back here.
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-1.5 text-[11px] text-ink-dim">
+              {Object.entries(counts)
+                .filter(([, n]) => n > 0)
+                .map(([kind, n]) => (
+                  <span
+                    key={kind}
+                    className="rounded-md border border-surface-border bg-surface px-2 py-0.5"
+                  >
+                    <span className="font-mono">{kind}</span>{" "}
+                    <span className="font-semibold text-ink">{n}</span>
+                  </span>
+                ))}
+            </div>
+            <LinkedAssetGroup
+              label="Reads"
+              rows={visibleReads}
+              hidden={direction === "write"}
+            />
+            <LinkedAssetGroup
+              label="Writes"
+              rows={visibleWrites}
+              hidden={direction === "read"}
+            />
+          </>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+function LinkedAssetGroup({
+  label,
+  rows,
+  hidden,
+}: {
+  label: string;
+  rows: LinkedAssetRow[];
+  hidden: boolean;
+}) {
+  if (hidden) return null;
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-dim">
+        {label} ({rows.length})
+      </div>
+      {rows.length === 0 ? (
+        <div className="text-[12px] italic text-ink-dim">
+          No {label.toLowerCase()} in the last 90 days.
+        </div>
+      ) : (
+        <ul className="divide-y divide-surface-border rounded-md border border-surface-border">
+          {rows.map((r) => (
+            <li
+              key={`${r.kind}::${r.id}::${r.edge_type}`}
+              className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2 text-[12.5px]"
+            >
+              <span className="rounded-sm bg-surface px-1.5 py-0.5 font-mono text-[10.5px] text-ink-dim">
+                {r.kind}
+              </span>
+              <span className="font-medium text-ink">{r.name || "(unnamed)"}</span>
+              {r.path ? (
+                <span className="font-mono text-[11px] text-ink-dim">
+                  {r.path}
+                </span>
+              ) : null}
+              <span className="ml-auto flex flex-wrap items-baseline gap-x-2 text-[11px] text-ink-dim">
+                {r.last_user ? <span>{r.last_user}</span> : null}
+                {r.last_used_at ? (
+                  <span title={new Date(r.last_used_at * 1000).toISOString()}>
+                    {formatRelative(r.last_used_at)}
+                  </span>
+                ) : null}
+                {r.direction === "unknown" ? (
+                  <span className="italic">direction unknown</span>
+                ) : null}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function formatRelative(epoch: number): string {
+  const seconds = Math.max(0, Date.now() / 1000 - epoch);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`;
+  if (seconds < 86400 * 30) return `${Math.round(seconds / 86400)}d ago`;
+  return `${Math.round(seconds / (86400 * 30))}mo ago`;
+}
+
 function PendingDescriptionBlock({
   text,
   runId,

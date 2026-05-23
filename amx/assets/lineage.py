@@ -43,6 +43,21 @@ EDGE_PIPELINE_INCLUDES_NOTEBOOK = "pipeline_includes_notebook"
 EDGE_PIPELINE_WRITES_TABLE = "pipeline_writes_table"
 
 
+# The set of edge_types this extractor owns. The idempotency wipe in
+# :meth:`LineageExtractor.extract_for_profile` restricts itself to
+# these labels so it never destroys rows written by the SQL-parse
+# extractor (``query_*``, ``notebook_*``) or any future asset_edge
+# producer that lives outside this module.
+_ASSET_EDGE_TYPES: tuple[str, ...] = (
+    EDGE_TASK_RUNS_NOTEBOOK,
+    EDGE_TASK_RUNS_PIPELINE,
+    EDGE_TASK_RUNS_QUERY,
+    EDGE_TASK_DEPENDS_ON,
+    EDGE_PIPELINE_INCLUDES_NOTEBOOK,
+    EDGE_PIPELINE_WRITES_TABLE,
+)
+
+
 class LineageExtractor:
     """Compute and persist asset-to-asset lineage edges for one profile.
 
@@ -57,25 +72,67 @@ class LineageExtractor:
     def extract_for_profile(self, profile_name: str) -> int:
         """Re-derive every edge for ``profile_name``.
 
-        Returns the total number of edges written. ``DELETE`` then
-        ``INSERT`` runs in a single transaction so a partial failure
-        rolls back cleanly and the profile keeps its previous edge
-        set.
+        Returns the total number of edges written. The job and
+        pipeline passes wipe their own slice of the table inside a
+        single transaction, so a partial failure rolls back cleanly
+        and the profile keeps its previous edge set. The SQL-parse
+        extractor runs next and owns a disjoint set of edge_types
+        (``query_*`` and ``notebook_*``), so it manages its own
+        idempotency wipe and never collides with the asset edges.
         """
+        from amx.lineage.extractors.sql_parse import SQLParseExtractor
+        from amx.lineage.extractors.system_tables.databricks import (
+            DatabricksSystemTablesExtractor,
+            build_query_runner_for_profile,
+        )
+
         now = time.time()
         with self.conn:
+            # The asset-side wipe must restrict by edge_type so the
+            # SQL-parse rows live outside its blast radius. Earlier
+            # versions truncated the entire profile_name slice; that
+            # destroyed any SQL-parse rows on every refresh.
+            placeholders = ",".join("?" for _ in _ASSET_EDGE_TYPES)
             self.conn.execute(
-                "DELETE FROM asset_lineage_edges WHERE profile_name = ?",
-                (profile_name,),
+                f"""
+                DELETE FROM asset_lineage_edges
+                WHERE profile_name = ? AND edge_type IN ({placeholders})
+                """,  # noqa: S608 — placeholders bound below
+                (profile_name, *_ASSET_EDGE_TYPES),
             )
             jobs_written = self._extract_jobs(profile_name, now)
             pipelines_written = self._extract_pipelines(profile_name, now)
-        total = jobs_written + pipelines_written
+        sql_parse_written = SQLParseExtractor(self.conn).extract_for_profile(profile_name)
+        # Platform system-tables pass. Returns silently when the
+        # profile is not Databricks, when the workspace has not
+        # enabled system.access.*, or when engine construction
+        # fails — none of which should fail the broader refresh.
+        system_table_counts: dict[str, int] = {
+            "table_lineage": 0,
+            "column_lineage": 0,
+            "usage_backfilled": 0,
+        }
+        try:
+            runner = build_query_runner_for_profile(profile_name)
+            if runner is not None:
+                system_table_counts = DatabricksSystemTablesExtractor(
+                    self.conn, query_runner=runner
+                ).extract_for_profile(profile_name)
+        except Exception as exc:  # noqa: BLE001
+            log.info("Lineage extraction: system-tables pass skipped: %s", exc)
+        system_table_total = sum(system_table_counts.values())
+        total = jobs_written + pipelines_written + sql_parse_written + system_table_total
         log.info(
-            "Lineage extraction for %s: %d job edges, %d pipeline edges",
+            "Lineage extraction for %s: %d job edges, %d pipeline edges, "
+            "%d SQL-parse edges, %d system-tables rows (%d table + %d column + %d usage)",
             profile_name,
             jobs_written,
             pipelines_written,
+            sql_parse_written,
+            system_table_total,
+            system_table_counts["table_lineage"],
+            system_table_counts["column_lineage"],
+            system_table_counts["usage_backfilled"],
         )
         return total
 
