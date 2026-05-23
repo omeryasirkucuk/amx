@@ -169,12 +169,21 @@ class DatabricksSystemTablesExtractor:
                 "event_time": _iso(r.get("event_time")),
                 "created_by": r.get("created_by") or "",
             }
-            prepared.append((src_id, tgt_id, REL_TABLE, json.dumps(details, sort_keys=True), now, r.get("created_by") or ""))
+            prepared.append(
+                (
+                    src_id,
+                    tgt_id,
+                    REL_TABLE,
+                    json.dumps(details, sort_keys=True),
+                    now,
+                    r.get("created_by") or "",
+                )
+            )
         if not prepared:
             return 0
         with self.conn:
             self.conn.execute(
-                f"""
+                """
                 DELETE FROM catalog_relationships
                 WHERE relationship_type = ?
                   AND source = ?

@@ -83,8 +83,7 @@ from .conftest import seed_table_entity
             set(),
         ),
         (
-            "WITH a AS (SELECT * FROM x), b AS (SELECT * FROM a JOIN y ON 1=1) "
-            "SELECT * FROM b",
+            "WITH a AS (SELECT * FROM x), b AS (SELECT * FROM a JOIN y ON 1=1) SELECT * FROM b",
             "postgres",
             {"x", "y"},
             set(),

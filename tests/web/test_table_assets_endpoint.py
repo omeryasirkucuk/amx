@@ -1,4 +1,4 @@
-"""GET /api/assets/by-table/{table_id} — reverse asset lookup."""
+"""GET /api/assets/by-table?profile=...&schema=...&table=... — reverse asset lookup."""
 
 from __future__ import annotations
 
@@ -120,7 +120,10 @@ def _seed_edge(
 
 def test_returns_404_for_missing_table(tmp_path):
     client, _db = _make_client(tmp_path)
-    resp = client.get("/api/assets/by-table/9999?profile=prod", headers=_AUTH)
+    resp = client.get(
+        "/api/assets/by-table?profile=prod&schema=sales&table=ghost",
+        headers=_AUTH,
+    )
     assert resp.status_code == 404
 
 
@@ -151,7 +154,7 @@ def test_groups_reads_and_writes_by_direction(tmp_path):
     )
 
     resp = client.get(
-        f"/api/assets/by-table/{table_id}?profile=prod",
+        "/api/assets/by-table?profile=prod&schema=sales&table=orders&database=prod",
         headers=_AUTH,
     )
     assert resp.status_code == 200, resp.text
@@ -180,7 +183,7 @@ def test_legacy_edge_without_direction_falls_back_to_edge_type(tmp_path):
         direction=None,
     )
     resp = client.get(
-        f"/api/assets/by-table/{table_id}?profile=prod",
+        "/api/assets/by-table?profile=prod&schema=sales&table=orders&database=prod",
         headers=_AUTH,
     )
     assert resp.status_code == 200, resp.text
@@ -206,7 +209,7 @@ def test_unknown_direction_surfaces_on_both_sides(tmp_path):
         direction="both",
     )
     body = client.get(
-        f"/api/assets/by-table/{table_id}?profile=prod",
+        "/api/assets/by-table?profile=prod&schema=sales&table=orders&database=prod",
         headers=_AUTH,
     ).json()
     assert len(body["reads"]) == 1 and body["reads"][0]["direction"] == "unknown"
@@ -238,7 +241,7 @@ def test_direction_filter_narrows_lists_without_changing_counts(tmp_path):
     )
 
     reads_only = client.get(
-        f"/api/assets/by-table/{table_id}?profile=prod&direction=read",
+        "/api/assets/by-table?profile=prod&schema=sales&table=orders&database=prod&direction=read",
         headers=_AUTH,
     ).json()
     assert reads_only["reads"] and not reads_only["writes"]
@@ -266,13 +269,13 @@ def test_since_days_window_drops_stale_edges(tmp_path):
         discovered_at=old,
     )
     body = client.get(
-        f"/api/assets/by-table/{table_id}?profile=prod&since_days=30",
+        "/api/assets/by-table?profile=prod&schema=sales&table=orders&database=prod&since_days=30",
         headers=_AUTH,
     ).json()
     assert body["reads"] == []
     # Setting since_days=0 disables the window and the edge resurfaces.
     body_all = client.get(
-        f"/api/assets/by-table/{table_id}?profile=prod&since_days=0",
+        "/api/assets/by-table?profile=prod&schema=sales&table=orders&database=prod&since_days=0",
         headers=_AUTH,
     ).json()
     assert len(body_all["reads"]) == 1

@@ -822,28 +822,42 @@ _WRITE_EDGE_TYPES = frozenset(
 )
 
 
-@router.get("/by-table/{table_id}")
+@router.get("/by-table")
 def list_assets_for_table(
-    table_id: int,
     profile: str = Query(...),
+    schema: str = Query(...),
+    table: str = Query(...),
+    database: str = Query(default=""),
     since_days: int = Query(default=90, ge=0, le=3650),
     direction: str = Query(default="all", pattern="^(all|read|write)$"),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """Return every ingested asset that reads or writes ``table_id``.
+    """Return every ingested asset that reads or writes a given table.
 
-    Powers the inline Lineage tab on the Studio table page (the
-    "what touched this table?" view that Unity Catalog leads with
-    on every table). Rows come from ``asset_lineage_edges`` joined
-    to the matching ``remote_*`` table for display names; the read
-    versus write split is derived from the edge's ``direction``
+    Powers the inline "Linked assets" surface on the Studio table
+    page (the "what touched this table?" view that Unity Catalog
+    leads with on every table). Rows come from ``asset_lineage_edges``
+    joined to the matching ``remote_*`` table for display names; the
+    read versus write split is derived from the edge's ``direction``
     column with ``edge_type`` as a fallback for legacy rows that
     pre-date the column.
+
+    The endpoint accepts the same ``(profile, database, schema,
+    table)`` shape the rest of the table routes use so callers don't
+    need to know the catalog_entities row id. The matching row is
+    resolved internally; the ``database`` param is optional because
+    single-database profiles often leave it empty in catalog_entities.
 
     Parameters
     ----------
     profile
         Required. Scopes the lookup to one ingested DB profile.
+    schema, table
+        Required. Identify the catalog row.
+    database
+        Optional. When empty, the lookup falls back to a row whose
+        ``database_name`` is empty so single-database profiles work
+        out of the box.
     since_days
         Recent-activity window. ``0`` returns the full history;
         any positive value filters by ``last_used_at`` (when
@@ -858,22 +872,36 @@ def list_assets_for_table(
         conn.row_factory = sqlite3.Row
         table_row = conn.execute(
             """
-            SELECT database_name, schema_name, table_name
+            SELECT id, database_name, schema_name, table_name
             FROM catalog_entities
-            WHERE id = ? AND db_profile = ?
+            WHERE db_profile = ?
+              AND entity_kind = 'table'
+              AND LOWER(schema_name) = LOWER(?)
+              AND LOWER(table_name) = LOWER(?)
+              AND (? = '' OR LOWER(database_name) = LOWER(?))
+            ORDER BY CASE WHEN database_name = ? THEN 0 ELSE 1 END
+            LIMIT 1
             """,
-            (int(table_id), profile),
+            (profile, schema, table, database, database, database),
         ).fetchone()
         if table_row is None:
             raise HTTPException(404, "Table not found in this profile")
-        fqn = ".".join(filter(None, (table_row[0], table_row[1], table_row[2])))
+        table_id = int(table_row["id"])
+        fqn = ".".join(
+            filter(
+                None,
+                (
+                    table_row["database_name"],
+                    table_row["schema_name"],
+                    table_row["table_name"],
+                ),
+            )
+        )
 
         window_clause = ""
         params: list[Any] = [profile, int(table_id)]
         if since_days > 0:
-            window_clause = (
-                " AND COALESCE(last_used_at, discovered_at) >= ?"
-            )
+            window_clause = " AND COALESCE(last_used_at, discovered_at) >= ?"
             cutoff = _epoch_now() - float(since_days) * 86400.0
             params.append(cutoff)
 
@@ -894,14 +922,12 @@ def list_assets_for_table(
 
         reads: list[dict[str, Any]] = []
         writes: list[dict[str, Any]] = []
-        counts: dict[str, int] = {k: 0 for k in ASSET_KINDS}
+        counts: dict[str, int] = dict.fromkeys(ASSET_KINDS, 0)
         for r in rows:
             endpoint = _describe_edge_endpoint(
                 conn, str(r["from_kind"]), int(r["from_id"]), profile
             )
-            row_dir = _resolve_direction(
-                str(r["direction"] or ""), str(r["edge_type"] or "")
-            )
+            row_dir = _resolve_direction(str(r["direction"] or ""), str(r["edge_type"] or ""))
             payload = {
                 "kind": str(r["from_kind"]),
                 "id": int(r["from_id"]),
@@ -934,9 +960,9 @@ def list_assets_for_table(
         "table": {
             "id": int(table_id),
             "fqn": fqn,
-            "database": table_row[0] or "",
-            "schema": table_row[1] or "",
-            "name": table_row[2] or "",
+            "database": table_row["database_name"] or "",
+            "schema": table_row["schema_name"] or "",
+            "name": table_row["table_name"] or "",
         },
         "profile": profile,
         "since_days": since_days,

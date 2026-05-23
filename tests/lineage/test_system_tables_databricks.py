@@ -258,9 +258,7 @@ def test_query_history_backfills_last_used_on_asset_lineage_edges(hs) -> None:
                     {
                         "statement_id": "stmt-123",
                         "executed_by": "bob@example.com",
-                        "start_time": datetime(
-                            2026, 5, 22, 14, 30, tzinfo=timezone.utc
-                        ),
+                        "start_time": datetime(2026, 5, 22, 14, 30, tzinfo=timezone.utc),
                     },
                     {
                         "statement_id": "stmt-123",
@@ -285,9 +283,7 @@ def test_query_history_backfills_last_used_on_asset_lineage_edges(hs) -> None:
         ).fetchone()
     assert row[0] == "bob@example.com"
     # The more-recent observation's epoch should be in the column.
-    assert row[1] == pytest.approx(
-        datetime(2026, 5, 22, 14, 30, tzinfo=timezone.utc).timestamp()
-    )
+    assert row[1] == pytest.approx(datetime(2026, 5, 22, 14, 30, tzinfo=timezone.utc).timestamp())
 
 
 def test_query_runner_failure_does_not_break_the_pass(hs) -> None:
@@ -305,9 +301,9 @@ def test_query_runner_failure_does_not_break_the_pass(hs) -> None:
     def boom(sql: str) -> list[dict[str, Any]]:
         raise PermissionError("requires CAN_ACCESS_METASTORE")
 
-    counts = DatabricksSystemTablesExtractor(
-        hs._connect(), query_runner=boom
-    ).extract_for_profile("dbr")
+    counts = DatabricksSystemTablesExtractor(hs._connect(), query_runner=boom).extract_for_profile(
+        "dbr"
+    )
     assert counts == {
         "table_lineage": 0,
         "column_lineage": 0,
