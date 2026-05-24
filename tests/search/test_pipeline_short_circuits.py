@@ -124,3 +124,58 @@ def test_meta_query_summary_strips_whitespace_around_prior() -> None:
     cleaned before quoting."""
     s = meta_query_summary("   list schemas   ")
     assert 'Your previous question was: "list schemas"' == s
+
+
+# --------------------------------------------------------------------- followup_reaffirmation
+
+from amx.search.pipeline.short_circuits import (  # noqa: E402
+    is_followup_reaffirmation,
+    reaffirmation_summary,
+)
+
+
+def test_reaffirmation_recognises_short_pushbacks() -> None:
+    """Each legacy pattern matches at least one natural pushback."""
+    for q in (
+        "are you sure",
+        "are you sure?",
+        "you sure?",
+        "really",
+        "seriously",
+        "sure?",
+        "is that right",
+        "is that correct?",
+        "is that true",
+        "you positive",
+        "positive?",
+        "why",
+        "why?",
+        "how come",
+        "how",
+    ):
+        assert is_followup_reaffirmation(q) is True, q
+
+
+def test_reaffirmation_rejects_fresh_questions_containing_trigger_words() -> None:
+    """Patterns are anchored with ^/$ — a fresh question that
+    happens to contain 'sure' or 'why' must NOT short-circuit."""
+    for q in (
+        "are you sure the customers table exists",
+        "why does this table have no rows",
+        "is that correct in the schema",
+        "what was the reason",
+        "",
+    ):
+        assert is_followup_reaffirmation(q) is False, q
+
+
+def test_reaffirmation_summary_quotes_prior_assistant_verbatim() -> None:
+    s = reaffirmation_summary("The customers table has 42 rows.")
+    assert "Yes, I'm sure" in s
+    assert "live database metadata" in s
+    assert "The customers table has 42 rows." in s
+
+
+def test_reaffirmation_summary_strips_whitespace_around_prior() -> None:
+    s = reaffirmation_summary("   42 rows.   ")
+    assert s.endswith("To restate: 42 rows.")
