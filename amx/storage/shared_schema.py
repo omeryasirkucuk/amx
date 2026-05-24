@@ -130,7 +130,7 @@ DEFAULT_HISTORY_SCHEMA_COMMENT = SHARED_SCHEMA_COMMENT
 # All client versions writing into a shared store record this as their
 # ``schema_version`` so an older client refuses to write into a schema
 # bumped by a newer client (avoids losing columns the new client added).
-SHARED_SCHEMA_VERSION = 5
+SHARED_SCHEMA_VERSION = 6
 
 
 def _desc(table: str, column: str | None = None) -> str:
@@ -1866,6 +1866,90 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
         Index("idx_remote_queries_profile_platform", "profile_name", "platform"),
         comment=_desc("remote_queries"),
+    )
+
+    # ── catalog_entities: shared structural table/column metadata ─────────
+    # Mirrors the LOCAL catalog_entities structural columns so a deep
+    # sync's expensive COUNT(*) pass runs once per team and propagates.
+    # Descriptions are NOT shared here — they flow via run_results /
+    # analysis_runs; only structure (columns, dtypes, row counts, key
+    # flags) lives in this table. The natural key
+    # (db_profile, database_name, schema_name, table_name, column_name)
+    # plus last_synced_at drives last-write-wins upserts in both
+    # directions (push + pull).
+    Table(
+        "catalog_entities",
+        md,
+        Column("id", String(36), primary_key=True, comment=_desc("catalog_entities", "id")),
+        Column(
+            "db_profile",
+            String(120),
+            nullable=False,
+            comment=_desc("catalog_entities", "db_profile"),
+        ),
+        Column("db_backend", String(40), comment=_desc("catalog_entities", "db_backend")),
+        Column(
+            "database_name",
+            String(255),
+            nullable=False,
+            default="",
+            comment=_desc("catalog_entities", "database_name"),
+        ),
+        Column(
+            "schema_name",
+            String(255),
+            nullable=False,
+            comment=_desc("catalog_entities", "schema_name"),
+        ),
+        Column(
+            "table_name",
+            String(255),
+            nullable=False,
+            comment=_desc("catalog_entities", "table_name"),
+        ),
+        Column(
+            "column_name",
+            String(255),
+            nullable=False,
+            default="",
+            comment=_desc("catalog_entities", "column_name"),
+        ),
+        Column(
+            "entity_kind",
+            String(20),
+            nullable=False,
+            comment=_desc("catalog_entities", "entity_kind"),
+        ),
+        Column("asset_kind", String(40), comment=_desc("catalog_entities", "asset_kind")),
+        Column("dtype", String(255), comment=_desc("catalog_entities", "dtype")),
+        Column("nullable", Integer, comment=_desc("catalog_entities", "nullable")),
+        Column("pk_flag", Integer, comment=_desc("catalog_entities", "pk_flag")),
+        Column("fk_flag", Integer, comment=_desc("catalog_entities", "fk_flag")),
+        Column("row_count", BigInteger, comment=_desc("catalog_entities", "row_count")),
+        Column(
+            "last_synced_at",
+            DateTime(timezone=True),
+            index=True,
+            comment=_desc("catalog_entities", "last_synced_at"),
+        ),
+        Column("created_by", String(120), comment=_desc("catalog_entities", "created_by")),
+        Column("hostname", String(255), comment=_desc("catalog_entities", "hostname")),
+        Column("client_version", String(40), comment=_desc("catalog_entities", "client_version")),
+        UniqueConstraint(
+            "db_profile",
+            "database_name",
+            "schema_name",
+            "table_name",
+            "column_name",
+            name="uq_catalog_entities_natural_key",
+        ),
+        Index(
+            "ix_catalog_entities_profile_schema",
+            "db_profile",
+            "database_name",
+            "schema_name",
+        ),
+        comment=_desc("catalog_entities"),
     )
 
     return md
