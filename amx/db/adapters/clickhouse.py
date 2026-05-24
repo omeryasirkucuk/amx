@@ -52,6 +52,9 @@ class ClickHouseAdapter(DatabaseAdapter):
         functions=True,
         dictionaries=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
+        # ClickHouse has no SAVEPOINT primitive — writeback uses per-row
+        # separate transactions on this backend.
+        supports_savepoints=False,
     )
 
     def create_engine(self) -> Engine:

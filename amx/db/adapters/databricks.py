@@ -66,6 +66,11 @@ class DatabricksAdapter(DatabaseAdapter):
         remote_jobs=True,
         remote_pipelines=True,
         remote_queries=True,
+        # Databricks SQL has no SAVEPOINT statement; SQLAlchemy's
+        # nested-tx path emits ``SAVEPOINT sa_savepoint_N`` which the
+        # server rejects. Flip the capability off so the writeback
+        # path uses per-row separate transactions instead.
+        supports_savepoints=False,
     )
 
     def create_history_schema_ddl(self, schema_name: str) -> str:

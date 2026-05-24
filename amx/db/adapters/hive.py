@@ -84,6 +84,9 @@ class HiveAdapter(DatabaseAdapter):
         # so it cannot safely host AMX's run-history schema.
         supports_shared_history=False,
         comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
+        # Hive (and the matching Spark Thrift servers) do not implement
+        # SAVEPOINT. Writeback uses per-row separate transactions.
+        supports_savepoints=False,
     )
 
     # ── Engine / connection ───────────────────────────────────────────────

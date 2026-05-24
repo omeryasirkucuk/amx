@@ -73,6 +73,56 @@ def clear_pending() -> None:
         PENDING_FILE.unlink()
 
 
+def clear_pending_for(result_ids: list[int] | set[int]) -> int:
+    """Drop only the pending entries whose ``result_id`` is in
+    *result_ids*. Returns the number of rows removed.
+
+    The Studio apply worker calls this with the ids of rows whose
+    live DB write actually committed (``status='applied'`` in the
+    :class:`amx.agents._orchestrator.writeback.RowApplyOutcome`
+    list). Entries for failed rows stay in the queue so the user can
+    review the classified error, fix the underlying issue (typically
+    a missing ALTER privilege), and re-trigger Apply pending queue
+    without re-accepting every suggestion.
+
+    An empty / falsy ``result_ids`` is a no-op — the queue is left
+    intact and the function returns 0. That's the "every row failed,
+    don't touch anything" outcome and matches the user's contract:
+    pending selections never reset on failure.
+    """
+    if not result_ids:
+        return 0
+    if not PENDING_FILE.is_file():
+        return 0
+    try:
+        raw = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(raw, list):
+        return 0
+    targets = {int(rid) for rid in result_ids if rid is not None}
+    kept: list[Any] = []
+    removed = 0
+    for row in raw:
+        if not isinstance(row, dict):
+            kept.append(row)
+            continue
+        rid = row.get("result_id")
+        if rid is not None and int(rid) in targets:
+            removed += 1
+            continue
+        kept.append(row)
+    if removed == 0:
+        return 0
+    if kept:
+        PENDING_FILE.write_text(json.dumps(kept, indent=2), encoding="utf-8")
+    else:
+        # No rows left — drop the file so ``list_pending`` returns []
+        # cleanly instead of carrying an empty JSON array.
+        PENDING_FILE.unlink()
+    return removed
+
+
 def _resolve_run_id_for_result(result_id: int | None) -> int | None:
     """Look up the ``analysis_runs.id`` that owns ``result_id`` in run_results.
 

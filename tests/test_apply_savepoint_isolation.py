@@ -60,6 +60,11 @@ def _make_db(apply_side_effect):
 
     db.engine.begin.side_effect = _begin_outer
     db.apply_comment.side_effect = apply_side_effect
+    # Default mock backend is "savepoint-capable" — Postgres-like. The
+    # no-savepoint variant lives in
+    # tests/test_apply_per_row_tx_no_savepoint.py and pins the
+    # Databricks/BigQuery/Hive/Trino/ClickHouse path.
+    db.capabilities.supports_savepoints = True
     return db, conn
 
 

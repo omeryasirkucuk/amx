@@ -24,6 +24,10 @@ class BigQueryAdapter(DatabaseAdapter):
         external_tables=True,
         supports_shared_history=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
+        # BigQuery has no SAVEPOINT primitive. The writeback path runs
+        # each row in its own transaction instead of one shared
+        # ``engine.begin()`` with nested savepoints.
+        supports_savepoints=False,
     )
 
     def create_history_schema_ddl(self, schema_name: str) -> str:

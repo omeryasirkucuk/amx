@@ -68,22 +68,37 @@ def _make_db_mock() -> MagicMock:
 
 
 def test_reader_returns_table_comment_when_column_is_none() -> None:
+    """Table-grain audit read pulls from the column-comments cache
+    (table_comment field), never from the live-DB fallback. The
+    reader was refactored to be cache-only so it stops issuing
+    bulk information_schema SELECTs on every apply."""
     db = MagicMock()
-    db.get_table_comment.return_value = "Order header (DBA)."
+    db._lookup_column_comments_cache.return_value = {
+        "table_comment": "Order header (DBA).",
+        "columns": {},
+        "kind": "TABLE",
+    }
     reader = _OldCommentReader(db)
 
     rr = _result("public", "orders", None)
     assert reader.read(rr, AssetKind.TABLE) == "Order header (DBA)."
-    db.get_table_comment.assert_called_once_with("public", "orders")
+    db._lookup_column_comments_cache.assert_called_once_with("public", "orders")
+    # Live-DB fallback must NOT be hit.
+    db.get_table_comment.assert_not_called()
 
 
 def test_reader_caches_column_comments_per_table() -> None:
-    """200-row apply against one table → exactly one
-    get_column_comments call."""
+    """Repeated column reads on the same (schema, table) hit the
+    cache lookup once per apply — important for column-grained
+    queues where one table holds many rows."""
     db = MagicMock()
-    db.get_column_comments.return_value = {
-        "id": "Customer id (DBA).",
-        "name": "Customer name.",
+    db._lookup_column_comments_cache.return_value = {
+        "table_comment": None,
+        "columns": {
+            "id": "Customer id (DBA).",
+            "name": "Customer name.",
+        },
+        "kind": "TABLE",
     }
     reader = _OldCommentReader(db)
 
@@ -92,23 +107,28 @@ def test_reader_caches_column_comments_per_table() -> None:
 
     assert reader.read(rr_id, AssetKind.TABLE) == "Customer id (DBA)."
     assert reader.read(rr_name, AssetKind.TABLE) == "Customer name."
-    # Single bulk read served both column lookups.
-    db.get_column_comments.assert_called_once_with("public", "customers")
+    # Single cache lookup served both column reads.
+    db._lookup_column_comments_cache.assert_called_once_with("public", "customers")
+    db.get_column_comments.assert_not_called()
 
 
 def test_reader_returns_none_for_unknown_column() -> None:
     db = MagicMock()
-    db.get_column_comments.return_value = {"id": "known"}
+    db._lookup_column_comments_cache.return_value = {
+        "table_comment": None,
+        "columns": {"id": "known"},
+        "kind": "TABLE",
+    }
     reader = _OldCommentReader(db)
     rr = _result("s", "t", "missing")
     assert reader.read(rr, AssetKind.TABLE) is None
 
 
-def test_reader_swallows_get_column_comments_failure() -> None:
-    """A misbehaving adapter must not break apply — return None and
-    let the audit row record 'original unknown'."""
+def test_reader_swallows_cache_lookup_failure() -> None:
+    """A misbehaving cache lookup must not break apply — return None
+    and let the audit row record 'original unknown'."""
     db = MagicMock()
-    db.get_column_comments.side_effect = RuntimeError("driver blew up")
+    db._lookup_column_comments_cache.side_effect = RuntimeError("cache blew up")
     reader = _OldCommentReader(db)
     assert reader.read(_result("s", "t", "c"), AssetKind.TABLE) is None
 
@@ -127,9 +147,15 @@ def test_reader_consults_schema_comment_for_schema_kind() -> None:
 
 def test_apply_threads_old_comment_into_audit_record() -> None:
     """Per-row path: read happens before overwrite, audit gets the
-    prior text — DBA-written or otherwise."""
+    prior text — DBA-written or otherwise. Cache must be warm
+    (Sync all has run) for the prior text to land; cold-cache
+    behaviour is covered by ``test_apply_records_none_when_cache_cold``."""
     db = _make_db_mock()
-    db.get_column_comments.return_value = {"id": "DBA-written id comment."}
+    db._lookup_column_comments_cache.return_value = {
+        "table_comment": None,
+        "columns": {"id": "DBA-written id comment."},
+        "kind": "TABLE",
+    }
     audit = MagicMock()
 
     apply_review_results_to_db(
@@ -146,10 +172,14 @@ def test_apply_threads_old_comment_into_audit_record() -> None:
 
 
 def test_apply_records_none_when_no_prior_comment() -> None:
-    """Column with no comment in the DB → audit records None
-    (distinct from 'we couldn't read it')."""
+    """Column with no comment in the (warm) cache → audit records
+    None (distinct from 'we couldn't read it')."""
     db = _make_db_mock()
-    db.get_column_comments.return_value = {"id": None}
+    db._lookup_column_comments_cache.return_value = {
+        "table_comment": None,
+        "columns": {"id": None},
+        "kind": "TABLE",
+    }
     audit = MagicMock()
 
     apply_review_results_to_db(
@@ -162,20 +192,39 @@ def test_apply_records_none_when_no_prior_comment() -> None:
     assert kwargs["old_comment"] is None
 
 
+def test_apply_records_none_when_cache_cold() -> None:
+    """Cold cache (lookup returns None) → audit records old_comment=None
+    rather than triggering a heavyweight live-DB read. This is the
+    whole point of the cache-only refactor."""
+    db = _make_db_mock()
+    db._lookup_column_comments_cache.return_value = None
+    audit = MagicMock()
+
+    apply_review_results_to_db(
+        db,
+        [_result("public", "orders", "id")],
+        audit_log=audit,
+    )
+
+    kwargs = audit.record_apply_event.call_args.kwargs
+    assert kwargs["old_comment"] is None
+    db.get_column_comments.assert_not_called()
+
+
 def test_apply_skips_old_comment_read_when_audit_log_none() -> None:
-    """Legacy callers (no audit) must not pay the get_*_comments
-    round-trip cost."""
+    """Legacy callers (no audit) must not pay any read cost."""
     db = _make_db_mock()
     apply_review_results_to_db(db, [_result("public", "orders", "id")])
+    db._lookup_column_comments_cache.assert_not_called()
     db.get_column_comments.assert_not_called()
     db.get_table_comment.assert_not_called()
 
 
 def test_apply_continues_when_pre_read_raises() -> None:
-    """A bug in get_column_comments must not abort the apply — the
-    audit row just lands with old_comment=None."""
+    """A buggy cache lookup must not abort the apply — the audit
+    row just lands with old_comment=None."""
     db = _make_db_mock()
-    db.get_column_comments.side_effect = RuntimeError("read failed")
+    db._lookup_column_comments_cache.side_effect = RuntimeError("cache blew up")
     audit = MagicMock()
 
     n_applied = apply_review_results_to_db(
