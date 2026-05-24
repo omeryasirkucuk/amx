@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from amx.db.connector import AssetKind, DatabaseConnector
@@ -25,6 +26,46 @@ if TYPE_CHECKING:
     from amx.agents.orchestrator import ReviewResult
 
 log = get_logger("agents.orchestrator.writeback")
+
+
+@dataclass(frozen=True)
+class RowApplyOutcome:
+    """Per-row result from :func:`apply_review_results_to_db`.
+
+    The function used to return only an ``int`` — the count of rows
+    it claimed to apply. That shape hid which rows failed and what
+    went wrong, so callers (the Studio worker, the SPA's queue
+    counter) couldn't preserve a partial-failure queue or render a
+    user-friendly error. ``RowApplyOutcome`` is the truth source the
+    worker uses to:
+
+    * drain the pending queue only for rows whose live DB write
+      actually committed,
+    * report a per-row breakdown to the SPA so failed rows can stay
+      visible with their classified error chip,
+    * keep CLI / orchestrator callers' existing "applied count"
+      semantics by simply counting ``status == 'applied'`` outcomes.
+
+    Fields mirror the ``ReviewResult`` shape so the SPA can render
+    "missing ALTER privilege on samples.nyctaxi.trips" without
+    chasing extra metadata.
+
+    ``status`` values:
+
+    * ``applied`` — the per-row (or per-batch) transaction committed.
+    * ``failed`` — the connector raised; the row's tx rolled back and
+      the live DB does not hold the new comment.
+    * ``cancelled`` — the cancel-token tripped before the row ran.
+    """
+
+    result_id: int | None
+    schema: str
+    table: str
+    column: str | None
+    asset_kind: str
+    status: str
+    error_kind: str = ""
+    error_text: str = ""
 
 
 # Sentinel descriptions the orchestrator writes when the LLM produced no
@@ -325,6 +366,7 @@ def apply_review_results_to_db(
     audit_user: str = "",
     audit_host: str = "",
     audit_run_id: int | None = None,
+    outcomes_out: list[RowApplyOutcome] | None = None,
 ) -> int:
     """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database.
 
@@ -342,6 +384,15 @@ def apply_review_results_to_db(
     returns ``0`` because nothing was actually applied — callers can
     distinguish "preview" from "applied" by inspecting the progress
     callbacks, not by trusting the return value.
+
+    ``outcomes_out`` (optional): when a list is supplied, every
+    attempted row appends a :class:`RowApplyOutcome` to it. This is
+    the truth source for callers that need to act on partial failure
+    — most importantly the Studio apply worker, which drains the
+    pending queue only for ``status='applied'`` outcomes and surfaces
+    ``status='failed'`` rows with their classified error to the SPA.
+    Backwards compatible: legacy callers that ignore the parameter
+    still get the int count via the return value.
     """
     applied = 0
     # Filter out fallback placeholders BEFORE we hit the DB. They're a UI
@@ -492,6 +543,17 @@ def apply_review_results_to_db(
                                     )
                                 if on_applied is not None:
                                     on_applied(item)
+                                if outcomes_out is not None:
+                                    outcomes_out.append(
+                                        RowApplyOutcome(
+                                            result_id=getattr(item, "result_id", None),
+                                            schema=item.schema,
+                                            table=item.table or "",
+                                            column=item.column,
+                                            asset_kind=str(item.asset_kind or "table"),
+                                            status="applied",
+                                        )
+                                    )
                                 _record_audit(
                                     audit_log,
                                     item,
@@ -590,6 +652,17 @@ def apply_review_results_to_db(
                     on_progress(r, "applied", index + 1, total, "")
                 if on_applied is not None:
                     on_applied(r)
+                if outcomes_out is not None:
+                    outcomes_out.append(
+                        RowApplyOutcome(
+                            result_id=getattr(r, "result_id", None),
+                            schema=r.schema,
+                            table=r.table or "",
+                            column=r.column,
+                            asset_kind=str(r.asset_kind or "table"),
+                            status="applied",
+                        )
+                    )
                 _record_audit(
                     audit_log,
                     r,
@@ -644,6 +717,18 @@ def apply_review_results_to_db(
                     on_progress(r, "failed", index + 1, total, str(exc))
                 if on_failed is not None:
                     on_failed(r, exc)
+                if outcomes_out is not None:
+                    outcomes_out.append(
+                        RowApplyOutcome(
+                            result_id=getattr(r, "result_id", None),
+                            schema=r.schema,
+                            table=r.table or "",
+                            column=r.column,
+                            asset_kind=str(r.asset_kind or "table"),
+                            status="failed",
+                            error_text=str(exc)[:2000],
+                        )
+                    )
                 # Surface the proximate cause (eg. schema/table not
                 # found) instead of the cascade noise. Postgres
                 # ``InFailedSqlTransaction`` errors used to dominate
