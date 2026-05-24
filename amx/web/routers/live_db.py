@@ -264,6 +264,58 @@ def _cached_column_comments(
     return out
 
 
+def _cached_table_comment(
+    profile: str,
+    schema: str,
+    table: str,
+    *,
+    database_scope: str | None,
+) -> str:
+    """Return the cached table-level comment from ``column_comments_cache``.
+
+    TTL-agnostic and scope-tolerant, mirroring
+    :func:`_cached_column_comments`. Lets the snapshot cache-fallback
+    surface the table description a sync imported even when the live
+    snapshot resolved to the wrong scope and came back empty. Returns
+    ``""`` when nothing is cached.
+    """
+    try:
+        from amx.storage.sqlite_store import history_store as _history_store
+
+        hs = _history_store()
+    except Exception:
+        hs = None
+    if hs is None:
+        return ""
+    row = None
+    try:
+        with hs._connect() as conn:  # noqa: SLF001 — same access as helpers
+            if database_scope:
+                row = conn.execute(
+                    """
+                    SELECT table_comment FROM column_comments_cache
+                    WHERE db_profile = ? AND database_name = ?
+                      AND schema_name = ? AND table_name = ?
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    (profile, database_scope, schema, table),
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT table_comment FROM column_comments_cache
+                    WHERE db_profile = ? AND schema_name = ? AND table_name = ?
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    (profile, schema, table),
+                ).fetchone()
+    except Exception:
+        return ""
+    if row is None:
+        return ""
+    return str(row["table_comment"] or "")
+
+
 def _cached_column_structure(
     profile: str,
     schema: str,
@@ -1217,7 +1269,9 @@ def table_snapshot(
             {
                 "schema": schema,
                 "table": table,
-                "table_comment": "",
+                "table_comment": _cached_table_comment(
+                    name, schema, table, database_scope=cache_scope
+                ),
                 "columns": [
                     {
                         "name": c["name"],
@@ -1241,9 +1295,16 @@ def table_snapshot(
         # + comments instead of an empty list.
         salvage = _columns_from_cache(name, schema, table, database_scope=cache_scope)
         if salvage:
+            # Prefer the live snapshot's table_comment, but when it came
+            # back empty (e.g. the live read resolved to the wrong scope)
+            # fall back to the cached table description a sync imported.
+            table_comment = (snapshot.get("table_comment") or "") or _cached_table_comment(
+                name, schema, table, database_scope=cache_scope
+            )
             return _merge_pending(
                 {
                     **snapshot,
+                    "table_comment": table_comment,
                     "columns": [
                         {
                             "name": c["name"],

@@ -397,6 +397,50 @@ def test_snapshot_endpoint_falls_back_when_live_returns_zero_columns(
     assert {c["name"] for c in payload["columns"]} == {"order_id"}
 
 
+def test_snapshot_surfaces_cached_table_comment_on_fallback(
+    client, auth_headers, monkeypatch, history
+) -> None:
+    """When the live snapshot returns zero columns and an empty table
+    comment (wrong-scope live read), the cache-fallback surfaces both
+    the column comments AND the cached table-level comment a sync
+    imported — not just the columns."""
+    save_column_comments_cache(
+        history,
+        db_profile=PROFILE,
+        database="appdb",
+        schema="sales",
+        entries={
+            "orders": {
+                "table_comment": "Customer purchase orders header table.",
+                "columns": {"order_id": "Primary key"},
+                "kind": "TABLE",
+            }
+        },
+    )
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(
+            get_table_metadata_snapshot=MagicMock(
+                return_value={
+                    "schema": "sales",
+                    "table": "orders",
+                    "table_comment": "",
+                    "columns": [],
+                }
+            )
+        ),
+    )
+    response = client.get(
+        f"/api/live/schemas/sales/tables/orders/snapshot{_q('database=appdb')}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "cache-fallback"
+    assert payload["table_comment"] == "Customer purchase orders header table."
+    assert {c["name"] for c in payload["columns"]} == {"order_id"}
+
+
 def test_snapshot_endpoint_salvages_on_connector_exception(
     client, auth_headers, monkeypatch, history
 ) -> None:
