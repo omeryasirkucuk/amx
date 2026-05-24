@@ -66,6 +66,8 @@ class RowApplyOutcome:
     status: str
     error_kind: str = ""
     error_text: str = ""
+    error_title: str = ""
+    error_action: str = ""
 
 
 # Sentinel descriptions the orchestrator writes when the LLM produced no
@@ -718,6 +720,17 @@ def apply_review_results_to_db(
                 if on_failed is not None:
                     on_failed(r, exc)
                 if outcomes_out is not None:
+                    # Classify so the SPA banner can render an
+                    # actionable hint instead of the raw driver text.
+                    from amx.core.errors import classify_write_error
+
+                    cls = classify_write_error(
+                        exc,
+                        backend=str(getattr(db, "backend", "") or ""),
+                        schema=r.schema,
+                        table=r.table or "",
+                        column=r.column,
+                    )
                     outcomes_out.append(
                         RowApplyOutcome(
                             result_id=getattr(r, "result_id", None),
@@ -726,7 +739,10 @@ def apply_review_results_to_db(
                             column=r.column,
                             asset_kind=str(r.asset_kind or "table"),
                             status="failed",
-                            error_text=str(exc)[:2000],
+                            error_kind=cls.kind,
+                            error_text=cls.body,
+                            error_title=cls.title,
+                            error_action=cls.suggested_action,
                         )
                     )
                 # Surface the proximate cause (eg. schema/table not

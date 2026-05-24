@@ -1989,7 +1989,9 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
                 "column": o.column,
                 "asset_kind": o.asset_kind,
                 "error_kind": o.error_kind,
+                "error_title": o.error_title,
                 "error_text": o.error_text,
+                "error_action": o.error_action,
             }
             for o in failed_outcomes
         ],

@@ -99,7 +99,14 @@ def test_outcomes_out_collects_per_row_status() -> None:
     assert applied == 2
     assert {o.result_id: o.status for o in outcomes} == {11: "applied", 12: "failed", 13: "applied"}
     failed = next(o for o in outcomes if o.status == "failed")
-    assert "INSUFFICIENT_PERMISSIONS" in failed.error_text
+    # After the classifier hook, error_kind carries the stable slug
+    # the SPA pivots on and error_title carries the user-facing
+    # banner string. The raw driver message is captured by the
+    # classifier and reflected via error_text/title — we assert on
+    # the slug + asset reference rather than the raw substring so
+    # the test doesn't break if the classifier wording changes.
+    assert failed.error_kind == "alter_privilege_denied"
+    assert "missing_schema.ghost" in failed.error_title
     assert failed.schema == "missing_schema"
     assert failed.table == "ghost"
 

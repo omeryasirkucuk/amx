@@ -103,13 +103,7 @@ export default function JobProgress({ jobId, kind, onCancel, onTerminal }: Props
       {terminal && (
         <div className="mt-2 space-y-1 text-xs text-ink-muted">
           {terminal.type === "job.done" && (
-            <span>
-              Applied{" "}
-              <span className="font-medium text-ink">
-                {(terminal.summary as { applied?: number } | undefined)?.applied ?? 0}
-              </span>{" "}
-              row(s).
-            </span>
+            <ApplyDoneSummary summary={terminal.summary as ApplySummary | undefined} />
           )}
           {terminal.type === "job.cancelled" && (
             <span>
@@ -128,5 +122,92 @@ export default function JobProgress({ jobId, kind, onCancel, onTerminal }: Props
         </div>
       )}
     </section>
+  );
+}
+
+// Apply path's job.done summary shape — emitted by
+// amx/web/routers/runs.py::_apply_worker. ``failed`` is empty on the
+// all-applied happy path; non-empty means the queue was preserved
+// for those rows so the user can retry, edit, or skip.
+interface ApplyFailedEntry {
+  result_id: number | null;
+  schema: string;
+  table: string;
+  column: string | null;
+  asset_kind: string;
+  error_kind: string;
+  error_title: string;
+  error_text: string;
+  error_action: string;
+}
+
+interface ApplySummary {
+  applied?: number;
+  total?: number;
+  failed_count?: number;
+  failed?: ApplyFailedEntry[];
+}
+
+function ApplyDoneSummary({ summary }: { summary: ApplySummary | undefined }) {
+  const applied = summary?.applied ?? 0;
+  const failedCount = summary?.failed_count ?? 0;
+  const failed = summary?.failed ?? [];
+
+  if (failedCount === 0) {
+    return (
+      <span>
+        Applied{" "}
+        <span className="font-medium text-ink">{applied}</span> row(s).
+      </span>
+    );
+  }
+
+  // Aggregate banner: the user's pending queue still holds the failed
+  // rows (the worker called clear_pending_for() only for the applied
+  // ids). Show one consolidated headline + a disclosure listing each
+  // failing asset with its classified suggested_action — no per-row
+  // chips on the table itself, per the user's UX call.
+  const primaryKind = failed[0]?.error_kind || "unknown";
+  const sameKind = failed.every((f) => f.error_kind === primaryKind);
+  const headline =
+    sameKind && failed[0]?.error_title
+      ? failed[0].error_title
+      : `${failedCount} row(s) could not be written`;
+  const action = sameKind ? failed[0]?.error_action : "";
+
+  return (
+    <div className="space-y-2">
+      <div className="rounded-md border border-critical/30 bg-critical/5 px-3 py-2">
+        <div className="text-sm font-medium text-critical">
+          {applied} applied, {failedCount} failed — queue preserved
+        </div>
+        <div className="mt-1 text-xs text-ink-muted">{headline}</div>
+        {action && (
+          <div className="mt-1 text-xs text-ink-muted">
+            <span className="text-ink-dim">Suggested:</span> {action}
+          </div>
+        )}
+        <details className="mt-2">
+          <summary className="cursor-pointer text-xs text-ink-dim hover:text-ink-muted">
+            Show failing rows ({failedCount})
+          </summary>
+          <ul className="mt-1 space-y-0.5 pl-3 text-[11px] text-ink-muted">
+            {failed.map((f, i) => {
+              const path = [f.schema, f.table, f.column ?? ""]
+                .filter(Boolean)
+                .join(".");
+              return (
+                <li key={i} className="font-mono">
+                  {path}
+                  {!sameKind && f.error_title && (
+                    <span className="ml-2 text-ink-dim">— {f.error_title}</span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </details>
+      </div>
+    </div>
   );
 }
