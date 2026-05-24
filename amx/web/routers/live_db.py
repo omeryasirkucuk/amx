@@ -1293,26 +1293,62 @@ def table_snapshot(
     profile: str = Query(...),
     database: str | None = Query(default=None),
     catalog: str | None = Query(default=None),
+    force_live: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Return the lightweight metadata snapshot the orchestrator uses:
-    column names + dtypes + comments + table comment. No profiling.
+    column names + dtypes + comments + table comment + cached row count.
 
-    Resilient against partial introspection: when the live snapshot
-    comes back with zero columns (the table was removed from the live
-    DB after a code-RAG ingest, the user lacks ``USAGE`` on the
-    schema, or the connector swallowed a ``NoSuchTableError``), we
-    fall back to the cached column list so the Studio Table page
-    still renders something useful instead of an empty card.
+    **Cache-first.** When the catalog already has this table's columns
+    (from a deep sync or /search sync), the snapshot is served straight
+    from the local cache with NO live database round-trip — the whole
+    point of syncing is to avoid slow live metadata reads (especially on
+    Databricks). ``?force_live=true`` bypasses the cache for an explicit
+    refresh.
 
-    Pending-review entries for the asset (Browse → AI Generate output
-    that has not been approved yet) are merged onto the response under
+    On a cache miss the live snapshot is read, and that path is itself
+    resilient: when the live read comes back with zero columns (table
+    dropped, missing ``USAGE``, a swallowed ``NoSuchTableError``) it
+    falls back to whatever the caches hold so the Table page still
+    renders something useful.
+
+    Pending-review entries for the asset are merged under
     ``pending_description`` / ``pending_column_descriptions`` /
-    ``pending_run_id`` so the Table page can surface them with a pill
-    instead of losing them on refresh.
+    ``pending_run_id`` so the Table page can surface them with a pill.
     """
     name = _require_profile(profile)
     cache_scope = database or catalog
+
+    # ── Cache-first read ──────────────────────────────────────────────
+    if not force_live:
+        cached_cols = _columns_from_cache(name, schema, table, database_scope=cache_scope)
+        if cached_cols:
+            comments = _cached_column_comments(name, schema, table, database_scope=cache_scope)
+            return _merge_pending(
+                {
+                    "schema": schema,
+                    "table": table,
+                    "table_comment": _cached_table_comment(
+                        name, schema, table, database_scope=cache_scope
+                    ),
+                    "columns": [
+                        {
+                            "name": c["name"],
+                            "dtype": c.get("dtype") or "",
+                            "nullable": bool(c.get("nullable", True)),
+                            "comment": comments.get(c["name"], ""),
+                        }
+                        for c in cached_cols
+                    ],
+                    "source": "cache",
+                    "row_count": _cached_row_count(
+                        name, schema, table, database_scope=cache_scope
+                    ),
+                },
+                schema,
+                table,
+            )
+
     db = _connector_for_scope(cfg, name, database=database, catalog=catalog)
     try:
         snapshot = db.get_table_metadata_snapshot(schema, table)
