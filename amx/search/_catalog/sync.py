@@ -153,21 +153,31 @@ class SyncMixin:
 
     def finish_skeleton_sync(self, db_profile: str, *, ok: bool, error: str = "") -> None:
         """Terminal state for a skeleton sync. ``ok=True`` flips
-        ``state='done'`` and stamps ``last_full_sync_at`` so the
-        cache-first gate trusts the catalog. ``ok=False`` flips to
-        ``state='failed'`` and records ``last_error`` for the
-        freshness pill's Retry surface — the catalog stays usable as
-        a fallback but readers know to treat it as partial."""
+        ``state='done'`` and stamps ``last_full_sync_at`` /
+        ``last_skeleton_sync_at`` so the cache-first gate trusts the
+        catalog. ``ok=False`` flips to ``state='failed'`` and records
+        ``last_error`` for the freshness pill's Retry surface — the
+        catalog stays usable as a fallback but readers know to treat
+        it as partial.
+
+        ``last_schemas_sync_at`` and ``last_columns_sync_at`` are not
+        touched here — they're stamped by
+        :meth:`mark_schemas_sync_done` /
+        :meth:`mark_columns_sync_done` as each cache surface is warmed
+        so the cache-only read gate can require all three to be
+        non-null before it suppresses the live-DB fallback.
+        """
         now = time.time()
         if ok:
             with self._connect() as conn:
                 conn.execute(
                     """
                     UPDATE catalog_profile_state
-                    SET state='done', finished_at=?, last_full_sync_at=?, last_error=''
+                    SET state='done', finished_at=?, last_full_sync_at=?,
+                        last_skeleton_sync_at=?, last_error=''
                     WHERE db_profile = ?
                     """,
-                    (now, now, db_profile),
+                    (now, now, now, db_profile),
                 )
         else:
             with self._connect() as conn:
@@ -180,6 +190,38 @@ class SyncMixin:
                     (now, str(error)[:4000], db_profile),
                 )
 
+    def mark_schemas_sync_done(self, db_profile: str) -> None:
+        """Stamp ``last_schemas_sync_at`` after a successful warm pass
+        through ``schemas_cache``. Caller's responsibility to ensure
+        the cache has actually been populated for the profile's
+        databases — this method just records the timestamp.
+        """
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO catalog_profile_state (db_profile, last_schemas_sync_at)
+                VALUES (?, ?)
+                ON CONFLICT(db_profile) DO UPDATE SET last_schemas_sync_at = excluded.last_schemas_sync_at
+                """,
+                (db_profile, now),
+            )
+
+    def mark_columns_sync_done(self, db_profile: str) -> None:
+        """Stamp ``last_columns_sync_at`` after a successful warm pass
+        through ``column_comments_cache``. Mirror of
+        :meth:`mark_schemas_sync_done`."""
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO catalog_profile_state (db_profile, last_columns_sync_at)
+                VALUES (?, ?)
+                ON CONFLICT(db_profile) DO UPDATE SET last_columns_sync_at = excluded.last_columns_sync_at
+                """,
+                (db_profile, now),
+            )
+
     def get_profile_state(self, db_profile: str) -> dict[str, Any]:
         """Read the current state row. Returns the default ``none``
         shape when the profile has never been synced."""
@@ -187,7 +229,9 @@ class SyncMixin:
             row = conn.execute(
                 """
                 SELECT state, total_tables, processed_tables,
-                       started_at, finished_at, last_full_sync_at, last_error
+                       started_at, finished_at, last_full_sync_at,
+                       last_skeleton_sync_at, last_schemas_sync_at,
+                       last_columns_sync_at, last_error
                 FROM catalog_profile_state
                 WHERE db_profile = ?
                 """,
@@ -201,6 +245,9 @@ class SyncMixin:
                 "started_at": None,
                 "finished_at": None,
                 "last_full_sync_at": None,
+                "last_skeleton_sync_at": None,
+                "last_schemas_sync_at": None,
+                "last_columns_sync_at": None,
                 "last_error": "",
             }
         return {
@@ -211,6 +258,21 @@ class SyncMixin:
             "finished_at": float(row["finished_at"]) if row["finished_at"] else None,
             "last_full_sync_at": (
                 float(row["last_full_sync_at"]) if row["last_full_sync_at"] else None
+            ),
+            "last_skeleton_sync_at": (
+                float(row["last_skeleton_sync_at"])
+                if row["last_skeleton_sync_at"]
+                else None
+            ),
+            "last_schemas_sync_at": (
+                float(row["last_schemas_sync_at"])
+                if row["last_schemas_sync_at"]
+                else None
+            ),
+            "last_columns_sync_at": (
+                float(row["last_columns_sync_at"])
+                if row["last_columns_sync_at"]
+                else None
             ),
             "last_error": str(row["last_error"] or ""),
         }
