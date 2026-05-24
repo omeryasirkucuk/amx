@@ -568,6 +568,46 @@ def trigger_deep_sync(
     }
 
 
+@router.post("/deep-sync-table")
+def trigger_deep_sync_table(
+    schema: str = Query(...),
+    table: str = Query(...),
+    profile: str | None = Query(default=None),
+    database: str | None = Query(default=None),
+    catalog: str | None = Query(default=None),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Deep-sync a SINGLE table: profile its columns + exact row count
+    and write them to the catalog (and shared store when active).
+
+    Powers the per-asset "Deep sync" button on the Table page so a user
+    can refresh one table without re-profiling the whole profile. Runs
+    synchronously (one table) and returns the row/column counts so the
+    SPA can refresh the Table card immediately.
+    """
+    from amx.search.drift import deep_sync_one_table
+
+    target = (profile or cfg.active_db_profile or "").strip()
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No DB profile resolved for deep-sync-table.",
+        )
+    result = deep_sync_one_table(
+        cfg,
+        target,
+        schema=schema,
+        table=table,
+        database=database or catalog,
+    )
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Deep sync of {schema}.{table} failed: {result.get('error', 'unknown')}",
+        )
+    return result
+
+
 @router.post("/sync/cancel")
 def cancel_catalog_sync(body: CatalogSyncCancelRequest) -> dict[str, Any]:
     """Cooperatively cancel an in-flight skeleton sync for ``profile``.

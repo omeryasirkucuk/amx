@@ -168,6 +168,61 @@ def test_deep_sync_fills_row_count_when_profiler_returns_zero(
     assert row_count == 123456
 
 
+def test_deep_sync_one_table_profiles_and_persists(
+    catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-table deep sync (Table-page button) profiles one table
+    and writes its columns + row count to the catalog, without needing
+    a prior skeleton row for it."""
+    import amx.search.catalog as catalog_mod
+
+    monkeypatch.setattr(
+        catalog_mod.SearchCatalog, "from_history_store", classmethod(lambda cls: catalog)
+    )
+    monkeypatch.setattr(drift, "_scoped_connector", lambda *a, **k: _fake_connector(42))
+
+    result = drift.deep_sync_one_table(
+        _cfg_stub(), "p", schema="amx_test_schema", table="adr_6", database="amx_test"
+    )
+
+    assert result["ok"] is True
+    assert result["row_count"] == 42
+    assert result["column_count"] == 2
+    with catalog._connect() as conn:  # noqa: SLF001
+        cols = conn.execute(
+            "SELECT COUNT(*) FROM catalog_entities "
+            "WHERE entity_kind = 'column' AND table_name = 'adr_6'"
+        ).fetchone()[0]
+    assert cols == 2
+
+
+def test_deep_sync_one_table_count_fallback(
+    catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the profiler returns row_count=0 (Databricks), the per-table
+    deep sync fills it with an exact COUNT(*)."""
+    import amx.search.catalog as catalog_mod
+
+    class _ZeroConn:
+        def profile_table(self, schema: str, table: str, sample_size: int = 0) -> TableProfile:
+            return TableProfile(
+                schema=schema, name=table, asset_kind=AssetKind.TABLE, row_count=0,
+                columns=[ColumnProfile(name="c", dtype="int", nullable=True, existing_comment="")],
+            )
+
+    monkeypatch.setattr(
+        catalog_mod.SearchCatalog, "from_history_store", classmethod(lambda cls: catalog)
+    )
+    monkeypatch.setattr(drift, "_scoped_connector", lambda *a, **k: _ZeroConn())
+    monkeypatch.setattr(drift, "_exact_row_count", lambda *a, **k: 98765)
+
+    result = drift.deep_sync_one_table(
+        _cfg_stub(), "p", schema="s", table="t", database="d"
+    )
+    assert result["ok"] is True
+    assert result["row_count"] == 98765
+
+
 def test_deep_sync_continues_past_a_failing_table(
     catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
 ) -> None:

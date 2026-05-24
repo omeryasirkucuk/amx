@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
-import { AlignLeft, Columns, Hash, Sparkles, Database, Workflow } from "lucide-react";
+import {
+  AlignLeft,
+  Columns,
+  Database,
+  Hash,
+  RefreshCw,
+  Sparkles,
+  Workflow,
+} from "lucide-react";
 
 import { api, assetsForTable, lineageArtifactsForTable } from "../lib/api";
 import type { LineageArtifact, LinkedAssetRow } from "../lib/api";
@@ -308,6 +316,29 @@ export default function Table() {
     },
   });
 
+  // Per-table deep sync: profile THIS table (columns + exact row count)
+  // into the catalog without re-profiling the whole profile. On success
+  // the snapshot query is invalidated so the Rows card refreshes.
+  const deepSync = useMutation({
+    mutationFn: () => api.deepSyncTable(scope!, schema, table),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["live-snapshot"] });
+      qc.invalidateQueries({ queryKey: ["live-columns"] });
+      toast.push({
+        title: "Deep sync complete",
+        description: `${table}: ${res.row_count.toLocaleString()} rows, ${res.column_count} columns.`,
+        tone: "success",
+      });
+    },
+    onError: (e: Error) => {
+      toast.push({
+        title: "Deep sync failed",
+        description: e.message,
+        tone: "error",
+      });
+    },
+  });
+
   if (!scope || !schema || !table) {
     return (
       <EmptyState
@@ -355,6 +386,16 @@ export default function Table() {
         }
         actions={
           <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="md"
+              leadingIcon={<RefreshCw size={14} />}
+              loading={deepSync.isPending}
+              onClick={() => deepSync.mutate()}
+              title="Profile this table from the database — fetches columns and the exact row count, then caches them"
+            >
+              Deep sync
+            </Button>
             <Button
               variant="secondary"
               size="md"
