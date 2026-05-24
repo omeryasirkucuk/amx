@@ -668,8 +668,18 @@ def sync_profile_skeleton(
                 break
             try:
                 # Bulk-fill column_comments_cache for the whole schema
-                # in one round-trip when the adapter supports it.
-                connector._populate_schema_metadata_cache(schema)  # noqa: SLF001
+                # in one round-trip when the adapter supports it. Stamp
+                # the durable sync TTL so the imported comments persist
+                # until the next sync rather than expiring after the
+                # 1-hour browse window — otherwise the cache-only read
+                # gate (get_column_comments / get_table_comment) starts
+                # returning empty an hour after every sync and Studio
+                # silently loses every comment this pass just imported.
+                from amx.db.connector import DURABLE_COMMENT_CACHE_TTL_SECONDS
+
+                connector._populate_schema_metadata_cache(  # noqa: SLF001
+                    schema, ttl_seconds=DURABLE_COMMENT_CACHE_TTL_SECONDS
+                )
             except Exception as exc:
                 log.debug(
                     "Cache warm raised for %s/%s/%s: %s",

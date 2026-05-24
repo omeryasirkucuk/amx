@@ -558,6 +558,13 @@ def apply_review_results_to_db(
                     pre_old: list[str | None] = []
                     if old_reader is not None:
                         pre_old = [old_reader.read(item, kind) for item in group]
+                    # Cache-first apply contract (batch): snapshot the
+                    # table's cache entry as a single rollback point, then
+                    # write every new column comment to the durable cache
+                    # before the live batch. A batch failure restores the
+                    # snapshot so the cache never drifts ahead of the DB,
+                    # and the per-row fallback below re-applies cache-first.
+                    cache_pre_batch = db.cache_snapshot_comment_entry(r.schema, r.table or "")
                     # Wrap the batch in a SAVEPOINT so a failed batch
                     # (or a failed individual statement inside the
                     # batch on PostgreSQL, which would otherwise abort
@@ -569,6 +576,14 @@ def apply_review_results_to_db(
                         if on_progress is not None:
                             on_progress(
                                 group[0], "started", index + 1, total, f"batch:{len(group)}"
+                            )
+                        for item in group:
+                            db.cache_write_comment(
+                                schema=r.schema,
+                                table=r.table or "",
+                                column=item.column,
+                                comment=item.final_description,
+                                asset_kind=kind,
                             )
                         with _row_apply_tx(
                             db, conn, supports_savepoints=supports_savepoints
@@ -631,35 +646,27 @@ def apply_review_results_to_db(
                                             item.table,
                                             cache_exc,
                                         )
-                                # Also invalidate the column-comments
-                                # cache for this table so the very next
-                                # sidebar / CLI inspect sees the freshly
-                                # written COMMENT and never the prior
-                                # placeholder. ``match_any_database`` is
-                                # belt-and-braces: the pending file
-                                # doesn't carry the originating database
-                                # scope, so the apply connector's cache
-                                # key can differ from the Studio
-                                # snapshot's cache key on multi-database
-                                # profiles. Wiping every database_name
-                                # row for the same (profile, schema,
-                                # table) closes that gap.
-                                try:
-                                    db.invalidate_column_comments_cache(
-                                        schema=item.schema,
-                                        table=item.table or "",
-                                        match_any_database=True,
-                                    )
-                                except Exception as cache_exc:
-                                    log.debug(
-                                        "invalidate_column_comments_cache (batch) failed for %s.%s: %s",
-                                        item.schema,
-                                        item.table,
-                                        cache_exc,
-                                    )
+                                # No post-apply invalidation: the
+                                # cache-first writes above already hold the
+                                # applied values. Invalidating would leave
+                                # the cache-only read gate empty until the
+                                # next sync.
                             index = next_index
                             continue
                     except Exception as batch_exc:
+                        # Batch live write failed after the cache-first
+                        # writes — restore the snapshot so the cache
+                        # matches the DB, then let the per-row fallback
+                        # re-apply each column cache-first.
+                        try:
+                            db.cache_restore_comment_entry(r.schema, r.table or "", cache_pre_batch)
+                        except Exception as cache_exc:
+                            log.debug(
+                                "cache rollback (batch) failed for %s.%s: %s",
+                                r.schema,
+                                r.table,
+                                cache_exc,
+                            )
                         log.debug(
                             "Falling back to per-column writeback for %s.%s after batch failure: %s",
                             r.schema,
@@ -672,9 +679,23 @@ def apply_review_results_to_db(
             # the apply itself — the audit row just lands with
             # old_comment=None and rollback skips it.
             pre_old_value = old_reader.read(r, kind) if old_reader is not None else None
+            # Cache-first apply contract: snapshot the cache as a rollback
+            # point, write the new comment to the durable cache, THEN write
+            # the live DB. The cache is the read source for Studio + the
+            # generation agents, so it must reflect the intended value
+            # first; if the live write fails we restore the snapshot so the
+            # cache never drifts ahead of the database.
+            cache_pre = db.cache_snapshot_comment_entry(r.schema, r.table or "")
             try:
                 if on_progress is not None:
                     on_progress(r, "started", index + 1, total, "")
+                db.cache_write_comment(
+                    schema=r.schema,
+                    table=r.table or "",
+                    column=r.column,
+                    comment=r.final_description,
+                    asset_kind=kind,
+                )
                 # Per-row transaction context: SAVEPOINT on
                 # savepoint-capable backends (keeps Postgres'
                 # ``InFailedSqlTransaction`` cascade from killing
@@ -736,27 +757,22 @@ def apply_review_results_to_db(
                             r.table,
                             cache_exc,
                         )
-                # Same belt-and-braces invalidation for the column-
-                # comments cache as the batch branch above. Keeps
-                # post-apply reads guaranteed-fresh. ``match_any_database``
-                # is True so Studio's snapshot endpoint sees the wipe
-                # even when its cache row was populated under a
-                # different ``database`` scope than the apply worker's
-                # fallback active-profile default.
+                # No post-apply invalidation here: the cache-first write
+                # above already holds the applied value. Invalidating now
+                # would leave the cache-only read gate (get_column_comments
+                # / get_table_comment) returning empty until the next sync.
+            except Exception as exc:
+                # Live write failed after the cache-first write — roll the
+                # cache back to its snapshot so cache == DB (atomic apply).
                 try:
-                    db.invalidate_column_comments_cache(
-                        schema=r.schema,
-                        table=r.table or "",
-                        match_any_database=True,
-                    )
+                    db.cache_restore_comment_entry(r.schema, r.table or "", cache_pre)
                 except Exception as cache_exc:
                     log.debug(
-                        "invalidate_column_comments_cache failed for %s.%s: %s",
+                        "cache rollback failed for %s.%s: %s",
                         r.schema,
                         r.table,
                         cache_exc,
                     )
-            except Exception as exc:
                 if on_progress is not None:
                     on_progress(r, "failed", index + 1, total, str(exc))
                 if on_failed is not None:

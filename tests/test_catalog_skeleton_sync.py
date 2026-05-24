@@ -40,12 +40,18 @@ class _StubConnector:
     def list_assets(self, schema: str) -> list[tuple[str, str]]:
         return list(self._assets.get(schema, []))
 
-    def _populate_schema_metadata_cache(self, schema: str) -> bool:
+    def _populate_schema_metadata_cache(
+        self, schema: str, *, ttl_seconds: float | None = None
+    ) -> bool:
         """No-op stand-in: the real connector bulk-fills
         ``column_comments_cache`` here. The stub just signals "warm
         pass completed" so the skeleton sync stamps
         ``last_columns_sync_at`` and ``is_profile_fully_synced``
-        returns True under the post-tightening contract."""
+        returns True under the post-tightening contract.
+
+        Records ``ttl_seconds`` because the skeleton sync now stamps the
+        durable comment-cache TTL on this warm pass."""
+        self.last_warm_ttl = ttl_seconds
         return True
 
 
@@ -510,3 +516,19 @@ def test_cache_helpers_fall_through_on_incomplete_sync(
     assets = live_db._cached_assets_for_profile_schema("prof-a", "public")
     assert assets is not None
     assert {a["name"] for a in assets} == {"users"}
+
+
+def test_skeleton_sync_warms_comments_with_durable_ttl(
+    fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warm pass stamps the durable comment-cache TTL so a sync's
+    imported comments don't evaporate after the 1-hour browse window
+    (which would leave the cache-only read gate returning empty)."""
+    from amx.db.connector import DURABLE_COMMENT_CACHE_TTL_SECONDS
+
+    connector = _StubConnector(schemas=["public"], assets={"public": [("users", "table")]})
+    _stub_build_connector(monkeypatch, connector)
+
+    sync_profile_skeleton(_StubCfg(), "prof-a", fresh_catalog)
+
+    assert getattr(connector, "last_warm_ttl", None) == DURABLE_COMMENT_CACHE_TTL_SECONDS

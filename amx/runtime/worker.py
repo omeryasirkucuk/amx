@@ -493,20 +493,43 @@ def cache_refresh_executor(run_id: int, payload: dict[str, Any]) -> None:
                 table,
                 exc,
             )
-        if table is None:
-            try:
-                assets = list(connector.list_assets(schema))
-            except Exception as exc:
-                log.warning(
-                    "cache_refresh_executor: list_assets(%s) failed: %s",
-                    schema,
-                    exc,
-                )
-                assets = []
-            for asset_name, _kind in assets:
+        # Force a fresh read of the existing DB comments for this scope,
+        # bypassing the cache-only read gate. A RUN is a deliberate user
+        # action, so the generation agents MUST see the descriptions that
+        # already exist in the DB — generating without them produces wrong
+        # or duplicate results. The bulk metadata path pulls table +
+        # column comments in one round-trip and caches them durably, so
+        # the gated ``get_*_comment`` reads the agent context relies on
+        # downstream return the real existing values instead of empty.
+        from amx.db.connector import DURABLE_COMMENT_CACHE_TTL_SECONDS
+
+        try:
+            warmed = connector._populate_schema_metadata_cache(  # noqa: SLF001
+                schema, ttl_seconds=DURABLE_COMMENT_CACHE_TTL_SECONDS
+            )
+        except Exception as exc:
+            warmed = False
+            log.debug("cache_refresh_executor: bulk warm %s failed: %s", schema, exc)
+        # Backends without a bulk metadata source fall back to per-table
+        # inspector reads (these cache their results entry-by-entry).
+        if not warmed:
+            targets: list[str] = []
+            if table is None:
+                try:
+                    targets = [name for name, _kind in connector.list_assets(schema)]
+                except Exception as exc:
+                    log.warning(
+                        "cache_refresh_executor: list_assets(%s) failed: %s",
+                        schema,
+                        exc,
+                    )
+            elif table:
+                targets = [table]
+            for asset_name in targets:
                 try:
                     connector.get_table_comment(schema, asset_name)
                     connector.get_column_comments(schema, asset_name)
+                    connector.list_column_profiles(schema, asset_name)
                 except Exception as exc:
                     log.debug(
                         "cache_refresh_executor: warm %s.%s failed: %s",
@@ -514,18 +537,6 @@ def cache_refresh_executor(run_id: int, payload: dict[str, Any]) -> None:
                         asset_name,
                         exc,
                     )
-        else:
-            try:
-                connector.get_table_comment(schema, table)
-                connector.get_column_comments(schema, table)
-                connector.list_column_profiles(schema, table)
-            except Exception as exc:
-                log.debug(
-                    "cache_refresh_executor: warm %s.%s failed: %s",
-                    schema,
-                    table,
-                    exc,
-                )
 
 
 def spawn_scheduled_worker(
