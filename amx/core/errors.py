@@ -270,7 +270,7 @@ _COMMENT_UNSUPPORTED_PATTERNS: tuple[str, ...] = (
     "unsupporteddatabaseoperation",
     "comment is not supported",
     "comments not supported",
-    "syntax error at or near \"comment\"",
+    'syntax error at or near "comment"',
 )
 
 _CONNECTION_LOST_PATTERNS: tuple[str, ...] = (
@@ -306,16 +306,12 @@ def _privilege_hint(backend: str) -> str:
         )
     if b in ("postgresql", "redshift"):
         return (
-            "Run `GRANT ALTER ON TABLE <table> TO <role>;` as the owner "
-            "or a superuser, then retry."
+            "Run `GRANT ALTER ON TABLE <table> TO <role>;` as the owner or a superuser, then retry."
         )
     if b == "mysql":
         return "Grant ALTER on the table or schema to the active user and retry."
     if b == "mssql":
-        return (
-            "Grant ALTER permission on the object (or its schema) to the "
-            "active login and retry."
-        )
+        return "Grant ALTER permission on the object (or its schema) to the active login and retry."
     return (
         "Grant the equivalent of ALTER / MODIFY on the target object to "
         "the active connection's role, then retry."
@@ -353,9 +349,7 @@ def classify_write_error(
     #    should not appear in practice, but we want the classifier to
     #    say so loudly if it ever does).
     if "savepoint" in lower and (
-        "syntax error" in lower
-        or "not supported" in lower
-        or "unsupported" in lower
+        "syntax error" in lower or "not supported" in lower or "unsupported" in lower
     ):
         return WriteErrorClass(
             kind="savepoint_unsupported",

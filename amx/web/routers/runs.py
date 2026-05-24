@@ -2000,8 +2000,7 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
     job.ended_at = time.time()
     if failed_outcomes:
         detail = (
-            f"Applied {applied}/{len(results)} — {len(failed_outcomes)} failed "
-            f"(queue preserved)."
+            f"Applied {applied}/{len(results)} — {len(failed_outcomes)} failed (queue preserved)."
         )
     else:
         detail = f"Applied {applied}/{len(results)}."

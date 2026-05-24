@@ -22,10 +22,10 @@ from amx.agents._orchestrator.writeback import (
     _PLACEHOLDER_MARKERS as _PLACEHOLDER_MARKERS,  # noqa: PLC0414 - re-export for legacy callers
 )
 from amx.agents._orchestrator.writeback import (
-    _OldCommentReader as _OldCommentReader,  # noqa: PLC0414 - re-export for legacy callers
+    RowApplyOutcome as RowApplyOutcome,  # noqa: PLC0414 - re-export for legacy callers
 )
 from amx.agents._orchestrator.writeback import (
-    RowApplyOutcome as RowApplyOutcome,  # noqa: PLC0414 - re-export for legacy callers
+    _OldCommentReader as _OldCommentReader,  # noqa: PLC0414 - re-export for legacy callers
 )
 from amx.agents._orchestrator.writeback import (
     apply_review_results_to_db as apply_review_results_to_db,  # noqa: PLC0414 - re-export for legacy callers

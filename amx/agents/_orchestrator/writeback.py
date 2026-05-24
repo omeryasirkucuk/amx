@@ -506,9 +506,7 @@ def apply_review_results_to_db(
     # ``nullcontext`` in the no-savepoint mode so the same loop body
     # works either way.
     supports_savepoints = bool(getattr(db.capabilities, "supports_savepoints", True))
-    shared_ctx: Any = (
-        db.engine.begin() if supports_savepoints else contextlib.nullcontext(None)
-    )
+    shared_ctx: Any = db.engine.begin() if supports_savepoints else contextlib.nullcontext(None)
 
     with shared_ctx as conn:
         total = len(pending)
@@ -684,9 +682,7 @@ def apply_review_results_to_db(
                 # ``engine.begin()`` on backends that don't support
                 # SAVEPOINT (Databricks et al). See :func:`_row_apply_tx`
                 # for the dispatch contract.
-                with _row_apply_tx(
-                    db, conn, supports_savepoints=supports_savepoints
-                ) as row_conn:
+                with _row_apply_tx(db, conn, supports_savepoints=supports_savepoints) as row_conn:
                     db.apply_comment(
                         schema=r.schema,
                         table=r.table,

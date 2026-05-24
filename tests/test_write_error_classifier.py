@@ -21,8 +21,7 @@ def test_databricks_insufficient_permissions_classifies_as_alter_privilege() -> 
     server-side rejection — must land in the alter_privilege_denied
     bucket so the SPA renders the DBA-grant hint."""
     exc = RuntimeError(
-        "[INSUFFICIENT_PERMISSIONS] User does not have ALTER on table "
-        "`samples`.`nyctaxi`.`trips`"
+        "[INSUFFICIENT_PERMISSIONS] User does not have ALTER on table `samples`.`nyctaxi`.`trips`"
     )
     cls = classify_write_error(
         exc,
@@ -36,9 +35,7 @@ def test_databricks_insufficient_permissions_classifies_as_alter_privilege() -> 
 
 
 def test_postgres_permission_denied_classifies_with_grant_hint() -> None:
-    exc = RuntimeError(
-        'permission denied for table orders (SQLSTATE 42501)'
-    )
+    exc = RuntimeError("permission denied for table orders (SQLSTATE 42501)")
     cls = classify_write_error(
         exc,
         backend="postgresql",
@@ -51,8 +48,7 @@ def test_postgres_permission_denied_classifies_with_grant_hint() -> None:
 
 def test_bigquery_access_denied_classifies_with_role_hint() -> None:
     exc = RuntimeError(
-        "403 accessDenied: Permission bigquery.tables.update denied on "
-        "table proj:ds.trips"
+        "403 accessDenied: Permission bigquery.tables.update denied on table proj:ds.trips"
     )
     cls = classify_write_error(
         exc,
@@ -84,8 +80,7 @@ def test_savepoint_unsupported_surfaces_loudly() -> None:
     SAVEPOINT to a backend that doesn't support it, the classifier
     flags it as a bug rather than a permission issue."""
     exc = RuntimeError(
-        "[PARSE_SYNTAX_ERROR] Syntax error at or near 'SAVEPOINT': "
-        "extra input. line 1 pos 0."
+        "[PARSE_SYNTAX_ERROR] Syntax error at or near 'SAVEPOINT': extra input. line 1 pos 0."
     )
     cls = classify_write_error(exc, backend="databricks")
     assert cls.kind == "savepoint_unsupported"
