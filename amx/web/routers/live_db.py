@@ -196,29 +196,144 @@ def _require_profile(profile: str | None) -> str:
     return name
 
 
-def _columns_from_cache(
+def _cached_column_comments(
+    profile: str,
+    schema: str,
+    table: str,
+    *,
+    database_scope: str | None,
+) -> dict[str, str]:
+    """Return a ``{column_name: comment}`` map from ``column_comments_cache``.
+
+    TTL-agnostic and scope-tolerant. The exact ``(profile, database,
+    schema, table)`` row is preferred; when the SPA omits the database
+    scope on cold navigation, the freshest row for ``(profile, schema,
+    table)`` across any database is used instead. Empty dict when
+    nothing is cached.
+
+    This map carries comment text only — column **structure** (dtype /
+    nullable) comes from :func:`_cached_column_structure`. Serving an
+    expired row is deliberate: the cache-first browse contract is to
+    surface what was cached, never to silently issue a live-DB
+    round-trip the user did not ask for.
+    """
+    try:
+        from amx.storage.sqlite_store import history_store as _history_store
+
+        hs = _history_store()
+    except Exception:
+        hs = None
+    if hs is None:
+        return {}
+    import json as _json
+
+    row = None
+    try:
+        with hs._connect() as conn:  # noqa: SLF001 — same access as helpers
+            if database_scope:
+                row = conn.execute(
+                    """
+                    SELECT columns_json FROM column_comments_cache
+                    WHERE db_profile = ? AND database_name = ?
+                      AND schema_name = ? AND table_name = ?
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    (profile, database_scope, schema, table),
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT columns_json FROM column_comments_cache
+                    WHERE db_profile = ? AND schema_name = ? AND table_name = ?
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    (profile, schema, table),
+                ).fetchone()
+    except Exception:
+        return {}
+    if row is None:
+        return {}
+    try:
+        columns_map = _json.loads(row["columns_json"]) or {}
+    except Exception:
+        columns_map = {}
+    out: dict[str, str] = {}
+    for col_name, comment in columns_map.items():
+        if col_name:
+            out[str(col_name)] = str(comment or "")
+    return out
+
+
+def _cached_table_comment(
+    profile: str,
+    schema: str,
+    table: str,
+    *,
+    database_scope: str | None,
+) -> str:
+    """Return the cached table-level comment from ``column_comments_cache``.
+
+    TTL-agnostic and scope-tolerant, mirroring
+    :func:`_cached_column_comments`. Lets the snapshot cache-fallback
+    surface the table description a sync imported even when the live
+    snapshot resolved to the wrong scope and came back empty. Returns
+    ``""`` when nothing is cached.
+    """
+    try:
+        from amx.storage.sqlite_store import history_store as _history_store
+
+        hs = _history_store()
+    except Exception:
+        hs = None
+    if hs is None:
+        return ""
+    row = None
+    try:
+        with hs._connect() as conn:  # noqa: SLF001 — same access as helpers
+            if database_scope:
+                row = conn.execute(
+                    """
+                    SELECT table_comment FROM column_comments_cache
+                    WHERE db_profile = ? AND database_name = ?
+                      AND schema_name = ? AND table_name = ?
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    (profile, database_scope, schema, table),
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT table_comment FROM column_comments_cache
+                    WHERE db_profile = ? AND schema_name = ? AND table_name = ?
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    (profile, schema, table),
+                ).fetchone()
+    except Exception:
+        return ""
+    if row is None:
+        return ""
+    return str(row["table_comment"] or "")
+
+
+def _cached_column_structure(
     profile: str,
     schema: str,
     table: str,
     *,
     database_scope: str | None,
 ) -> list[dict[str, Any]]:
-    """Return cached column rows for ``(profile, schema, table)`` from the
-    best available source. Two layers, in order:
+    """Return ``[{"name", "dtype", "nullable"}]`` from the structural
+    caches, in order of richness:
 
     1. ``catalog_entities`` via ``SearchCatalog.fetch_columns_for_table``
-       — written by deep syncs and agent runs. Carries dtype + nullable.
-    2. ``column_comments_cache.columns_json`` via the history store
-       lookup — written every time the live introspector ran. Carries
-       column names + comments but no dtype/nullable.
+       — written by ``/search sync`` and the live write-through.
+    2. ``column_profiles_cache`` via ``lookup_column_profiles_cache``
+       — written by historical profiling runs (TTL-agnostic salvage).
 
-    Falling back through both layers means a table that has been seen
-    *at all* (even if it was later dropped from the live DB) still
-    surfaces something in Studio instead of "no introspectable
-    columns". Returned shape is the same as the live path:
-    ``[{"name", "dtype", "nullable", "comment"}]``.
+    Both layers carry dtype + nullable. Empty list when neither knows
+    the table — the caller then falls back to comment-map keys.
     """
-    rows: list[dict[str, Any]] = []
     try:
         from amx.search.catalog import SearchCatalog
 
@@ -241,18 +356,12 @@ def _columns_from_cache(
                     "name": c["name"],
                     "dtype": c.get("dtype") or "",
                     "nullable": bool(c.get("nullable", True)),
-                    "comment": "",
                 }
                 for c in cached
             ]
 
-    # Second-chance fallback: the column_comments_cache row carries the
-    # last live read's column list as a JSON map (name -> comment).
-    # That's enough to render the Studio table page when the catalog
-    # only has a skeleton table-level row and the live DB is currently
-    # returning empty (NoSuchTableError swallowed by list_column_profiles).
     try:
-        from amx.storage._history_caches import lookup_column_comments_cache
+        from amx.storage._history_caches import lookup_column_profiles_cache
         from amx.storage.sqlite_store import history_store as _history_store
 
         hs = _history_store()
@@ -260,7 +369,7 @@ def _columns_from_cache(
         hs = None
     if hs is not None:
         try:
-            entry = lookup_column_comments_cache(
+            rows = lookup_column_profiles_cache(
                 hs,
                 db_profile=profile,
                 database=database_scope or "",
@@ -268,71 +377,56 @@ def _columns_from_cache(
                 table=table,
             )
         except Exception:
-            entry = None
-        columns_map = (entry or {}).get("columns") if entry else None
-        if columns_map:
-            for col_name, comment in columns_map.items():
-                if not col_name:
-                    continue
-                rows.append(
-                    {
-                        "name": str(col_name),
-                        "dtype": "",
-                        "nullable": True,
-                        "comment": str(comment or ""),
-                    }
-                )
+            rows = []
         if rows:
             return rows
+    return []
 
-    # Third-chance fallback: scope-agnostic lookup against
-    # ``column_comments_cache``. The SPA's URL pattern
-    # ``/cat/<profile>/<database>/<schema>/<table>`` *should* pass the
-    # database query parameter, but builds out in the wild have been
-    # observed sending ``database=`` (empty) on cold catalog navigation
-    # — and our second-chance lookup needs an exact ``(db_profile,
-    # database, schema, table)`` match. When the user is clearly
-    # asking about a specific ``(profile, schema, table)`` and there
-    # is exactly one fresh cache row for it (any database), it is
-    # almost always the right one. Return that row so the Studio Table
-    # page stops rendering empty just because the URL didn't carry the
-    # database scope.
-    if hs is not None:
-        import json as _json
-        import time as _time
 
-        try:
-            with hs._connect() as conn:  # noqa: SLF001 — same access as helpers
-                cache_rows = conn.execute(
-                    """
-                    SELECT database_name, columns_json
-                    FROM column_comments_cache
-                    WHERE db_profile = ? AND schema_name = ? AND table_name = ?
-                      AND expires_at >= ?
-                    ORDER BY fetched_at DESC
-                    LIMIT 1
-                    """,
-                    (profile, schema, table, _time.time()),
-                ).fetchall()
-        except Exception:
-            cache_rows = []
-        if cache_rows:
-            try:
-                columns_map = _json.loads(cache_rows[0]["columns_json"]) or {}
-            except Exception:
-                columns_map = {}
-            for col_name, comment in columns_map.items():
-                if not col_name:
-                    continue
-                rows.append(
-                    {
-                        "name": str(col_name),
-                        "dtype": "",
-                        "nullable": True,
-                        "comment": str(comment or ""),
-                    }
-                )
-    return rows
+def _columns_from_cache(
+    profile: str,
+    schema: str,
+    table: str,
+    *,
+    database_scope: str | None,
+) -> list[dict[str, Any]]:
+    """Return cached column rows for ``(profile, schema, table)`` without
+    touching the live DB — the Studio cache-first browse path.
+
+    Column **structure** (name + dtype + nullable) comes from
+    :func:`_cached_column_structure` (``catalog_entities`` →
+    ``column_profiles_cache``). Per-column **comments** are overlaid
+    from :func:`_cached_column_comments` (``column_comments_cache``), so
+    a table that was profiled (names + types) *and* commented surfaces
+    both from cache. When only comments are cached, their keys become
+    the column list (names only, no dtype).
+
+    Every read is TTL-agnostic: surfacing a stale row beats silently
+    issuing a live-DB round-trip the user did not ask for. Returned
+    shape matches the live path:
+    ``[{"name", "dtype", "nullable", "comment"}]``.
+    """
+    comments = _cached_column_comments(profile, schema, table, database_scope=database_scope)
+    structure = _cached_column_structure(profile, schema, table, database_scope=database_scope)
+    if structure:
+        return [
+            {
+                "name": c["name"],
+                "dtype": c.get("dtype") or "",
+                "nullable": bool(c.get("nullable", True)),
+                "comment": comments.get(c["name"], ""),
+            }
+            for c in structure
+        ]
+    # No structural source — fall back to the comment-map keys so a
+    # comments-only cache row (no dtype) still renders column names.
+    if comments:
+        return [
+            {"name": name, "dtype": "", "nullable": True, "comment": comment}
+            for name, comment in comments.items()
+            if name
+        ]
+    return []
 
 
 def _profile_backend(cfg: AMXConfig, profile: str) -> str:
@@ -1175,7 +1269,9 @@ def table_snapshot(
             {
                 "schema": schema,
                 "table": table,
-                "table_comment": "",
+                "table_comment": _cached_table_comment(
+                    name, schema, table, database_scope=cache_scope
+                ),
                 "columns": [
                     {
                         "name": c["name"],
@@ -1199,9 +1295,16 @@ def table_snapshot(
         # + comments instead of an empty list.
         salvage = _columns_from_cache(name, schema, table, database_scope=cache_scope)
         if salvage:
+            # Prefer the live snapshot's table_comment, but when it came
+            # back empty (e.g. the live read resolved to the wrong scope)
+            # fall back to the cached table description a sync imported.
+            table_comment = (snapshot.get("table_comment") or "") or _cached_table_comment(
+                name, schema, table, database_scope=cache_scope
+            )
             return _merge_pending(
                 {
                     **snapshot,
+                    "table_comment": table_comment,
                     "columns": [
                         {
                             "name": c["name"],

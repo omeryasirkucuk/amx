@@ -72,6 +72,154 @@ def _patch_connector(monkeypatch, builder) -> MagicMock:
     return instance
 
 
+def _seed_profiles_cache(
+    history,
+    *,
+    database: str,
+    schema: str,
+    table: str,
+    columns: list[dict],
+    expired: bool = False,
+) -> None:
+    """Insert one ``column_profiles_cache`` row.
+
+    The table is a legacy/orphaned cache (no current writer, not in the
+    init DDL), so the seed creates it on demand to mirror an install
+    that still carries rows from an older AMX version. ``expired=True``
+    stamps the row past its TTL to prove the cache-first reader serves
+    it regardless of freshness.
+    """
+    import json
+    import time
+
+    now = time.time()
+    expires_at = now - 100.0 if expired else now + 3600.0
+    with history._connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS column_profiles_cache (
+                cache_key      TEXT PRIMARY KEY,
+                db_profile     TEXT NOT NULL,
+                database_name  TEXT NOT NULL DEFAULT '',
+                schema_name    TEXT NOT NULL,
+                table_name     TEXT NOT NULL,
+                profiles_json  TEXT NOT NULL,
+                fetched_at     REAL NOT NULL,
+                expires_at     REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO column_profiles_cache
+                (cache_key, db_profile, database_name, schema_name,
+                 table_name, profiles_json, fetched_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"{PROFILE}|{database}|{schema}|{table}",
+                PROFILE,
+                database,
+                schema,
+                table,
+                json.dumps(columns, ensure_ascii=True),
+                now,
+                expires_at,
+            ),
+        )
+
+
+def test_columns_endpoint_serves_from_profiles_cache_without_live(
+    client, auth_headers, monkeypatch, history
+) -> None:
+    """A table whose columns live only in the (legacy, expired)
+    ``column_profiles_cache`` still renders from cache. The live
+    introspector is never called — the user's contract is "serve from
+    cache, don't query the live DB unless I ask"."""
+    _seed_profiles_cache(
+        history,
+        database="SAP",
+        schema="sap_s6p",
+        table="cepct",
+        columns=[
+            {"name": "mandt", "dtype": "TEXT", "nullable": True},
+            {"name": "prctr", "dtype": "TEXT", "nullable": True},
+        ],
+        expired=True,
+    )
+    live_mock = MagicMock(list_column_profiles=MagicMock(return_value=[]))
+    monkeypatch.setattr(live_db, "DatabaseConnector", lambda *_a, **_kw: live_mock)
+    response = client.get(
+        f"/api/live/schemas/sap_s6p/tables/cepct/columns{_q('database=SAP')}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "catalog"
+    assert {c["name"] for c in payload["columns"]} == {"mandt", "prctr"}
+    # dtype survives — profiles_cache carries it, unlike comments cache.
+    assert {c["dtype"] for c in payload["columns"]} == {"TEXT"}
+    live_mock.list_column_profiles.assert_not_called()
+
+
+def test_snapshot_merges_comments_onto_profiles_cache_columns(
+    client, auth_headers, monkeypatch, history
+) -> None:
+    """When the snapshot salvages from cache, column structure comes
+    from ``column_profiles_cache`` (name + dtype) and per-column
+    comments are overlaid from ``column_comments_cache`` — both served
+    from cache without a live round-trip."""
+    _seed_profiles_cache(
+        history,
+        database="SAP",
+        schema="sap_s6p",
+        table="cepct",
+        columns=[
+            {"name": "mandt", "dtype": "TEXT", "nullable": True},
+            {"name": "prctr", "dtype": "TEXT", "nullable": True},
+        ],
+        expired=True,
+    )
+    save_column_comments_cache(
+        history,
+        db_profile=PROFILE,
+        database="SAP",
+        schema="sap_s6p",
+        entries={
+            "cepct": {
+                "table_comment": "",
+                "columns": {"prctr": "Profit center key"},
+                "kind": "TABLE",
+            }
+        },
+    )
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(
+            get_table_metadata_snapshot=MagicMock(
+                return_value={
+                    "schema": "sap_s6p",
+                    "table": "cepct",
+                    "table_comment": "",
+                    "columns": [],
+                }
+            )
+        ),
+    )
+    response = client.get(
+        f"/api/live/schemas/sap_s6p/tables/cepct/snapshot{_q('database=SAP')}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    cols = {c["name"]: c for c in response.json()["columns"]}
+    assert cols.keys() == {"mandt", "prctr"}
+    # Structure (dtype) from profiles_cache:
+    assert cols["mandt"]["dtype"] == "TEXT"
+    # Comment merged from comments_cache:
+    assert cols["prctr"]["comment"] == "Profit center key"
+    assert cols["mandt"]["comment"] == ""
+
+
 def test_columns_endpoint_falls_back_to_comments_cache(
     client, auth_headers, monkeypatch, history
 ) -> None:
@@ -246,6 +394,50 @@ def test_snapshot_endpoint_falls_back_when_live_returns_zero_columns(
     assert response.status_code == 200
     payload = response.json()
     assert payload["source"] == "cache-fallback"
+    assert {c["name"] for c in payload["columns"]} == {"order_id"}
+
+
+def test_snapshot_surfaces_cached_table_comment_on_fallback(
+    client, auth_headers, monkeypatch, history
+) -> None:
+    """When the live snapshot returns zero columns and an empty table
+    comment (wrong-scope live read), the cache-fallback surfaces both
+    the column comments AND the cached table-level comment a sync
+    imported — not just the columns."""
+    save_column_comments_cache(
+        history,
+        db_profile=PROFILE,
+        database="appdb",
+        schema="sales",
+        entries={
+            "orders": {
+                "table_comment": "Customer purchase orders header table.",
+                "columns": {"order_id": "Primary key"},
+                "kind": "TABLE",
+            }
+        },
+    )
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(
+            get_table_metadata_snapshot=MagicMock(
+                return_value={
+                    "schema": "sales",
+                    "table": "orders",
+                    "table_comment": "",
+                    "columns": [],
+                }
+            )
+        ),
+    )
+    response = client.get(
+        f"/api/live/schemas/sales/tables/orders/snapshot{_q('database=appdb')}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "cache-fallback"
+    assert payload["table_comment"] == "Customer purchase orders header table."
     assert {c["name"] for c in payload["columns"]} == {"order_id"}
 
 

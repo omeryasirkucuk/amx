@@ -53,6 +53,17 @@ from amx.utils.logging import get_logger
 log = get_logger("db.connector")
 
 
+#: TTL stamped on comment-cache rows written by a deliberate *sync*
+#: (the skeleton-sync warm pass), as opposed to the opportunistic
+#: per-table browse fallback. A sync is the user's explicit "populate
+#: the durable cache" action, so its rows must outlive the 1-hour
+#: browse TTL — otherwise the cache-only read gate
+#: (``get_column_comments`` / ``get_table_comment``) starts returning
+#: empty an hour after every sync and Studio silently loses all the
+#: comments the sync just imported. 30 days; the next sync refreshes it.
+DURABLE_COMMENT_CACHE_TTL_SECONDS = 30 * 24 * 3600.0
+
+
 # Process-wide hit / miss tallies for the in-memory wizard memo. Exposed
 # through ``/db cache stats`` so the user can verify the wizard fix is
 # serving repeat picker invocations from memo rather than the live DB.
@@ -804,6 +815,7 @@ class DatabaseConnector:
         entries: dict[str, dict[str, Any]],
         *,
         bulk_filled: bool = False,
+        ttl_seconds: float | None = None,
     ) -> None:
         """Persist a per-schema metadata dict to the cache.
 
@@ -812,6 +824,13 @@ class DatabaseConnector:
         the schema. Per-table fallback writes pass ``False`` so the
         cache row is usable for column-comment short-circuits but not
         for ``list_assets``.
+
+        ``ttl_seconds`` overrides the store's default browse TTL. The
+        skeleton-sync warm pass passes
+        :data:`DURABLE_COMMENT_CACHE_TTL_SECONDS` so sync-imported
+        comments persist instead of evaporating an hour later (which
+        would leave the cache-only read gate returning empty until the
+        next sync). ``None`` keeps the store default.
         """
         if not entries:
             return
@@ -822,16 +841,108 @@ class DatabaseConnector:
         store = history_store()
         if store is None:
             return
+        kwargs: dict[str, Any] = {
+            "db_profile": self._cache_profile_key,
+            "database": self._cache_database_key(),
+            "schema": schema,
+            "entries": entries,
+            "bulk_filled": bulk_filled,
+        }
+        if ttl_seconds is not None:
+            kwargs["ttl_seconds"] = ttl_seconds
         try:
-            store.save_column_comments_cache(
-                db_profile=self._cache_profile_key,
-                database=self._cache_database_key(),
-                schema=schema,
-                entries=entries,
-                bulk_filled=bulk_filled,
-            )
+            store.save_column_comments_cache(**kwargs)
         except Exception as exc:
             log.debug("column-comments cache save failed: %s", exc)
+
+    def cache_snapshot_comment_entry(self, schema: str, table: str) -> dict[str, Any] | None:
+        """Return a copy of the cached comment entry for ``(schema, table)``
+        — ``{"table_comment", "columns", "kind"}`` — or ``None`` when no
+        row is cached.
+
+        The apply path takes this snapshot as a rollback point *before*
+        its cache-first write, so a failed live-DB write can restore the
+        cache to exactly its prior state (cache never drifts ahead of the
+        database). See :meth:`cache_write_comment` /
+        :meth:`cache_restore_comment_entry`.
+        """
+        schema = self._normalize_id(schema)
+        table = self._normalize_id(table)
+        cached = self._lookup_column_comments_cache(schema, table)
+        if not cached:
+            return None
+        return {
+            "table_comment": cached.get("table_comment"),
+            "columns": dict(cached.get("columns") or {}),
+            "kind": cached.get("kind") or "TABLE",
+        }
+
+    def cache_write_comment(
+        self,
+        schema: str,
+        table: str,
+        *,
+        column: str | None,
+        comment: str,
+        asset_kind: AssetKind = AssetKind.TABLE,
+    ) -> None:
+        """Merge one applied comment into the durable comment cache.
+
+        Cache-first half of the apply contract: the new value lands in
+        the cache *before* the live-DB ``COMMENT ON`` so any Studio /
+        agent read between the two steps sees the intended text rather
+        than the stale prior value. Sibling columns and the table-level
+        comment already cached are preserved. Written with the durable
+        sync TTL so it survives the 1-hour browse window.
+        """
+        schema = self._normalize_id(schema)
+        table = self._normalize_id(table)
+        existing = self._lookup_column_comments_cache(schema, table) or {}
+        cols = dict(existing.get("columns") or {})
+        table_comment = existing.get("table_comment")
+        kind = existing.get("kind") or (
+            asset_kind.value if isinstance(asset_kind, AssetKind) else "TABLE"
+        )
+        if column is None:
+            table_comment = comment
+        else:
+            cols[str(column)] = comment
+        self._save_column_comments_cache(
+            schema,
+            {table: {"table_comment": table_comment, "columns": cols, "kind": kind}},
+            ttl_seconds=DURABLE_COMMENT_CACHE_TTL_SECONDS,
+        )
+
+    def cache_restore_comment_entry(
+        self, schema: str, table: str, snapshot: dict[str, Any] | None
+    ) -> None:
+        """Restore the entry captured by :meth:`cache_snapshot_comment_entry`.
+
+        Rollback half of the apply contract: called when the live-DB
+        write fails after the cache-first write, so the cache reverts to
+        its prior value and ``cache == DB`` always holds. A ``None``
+        snapshot means there was no prior row — drop whatever the
+        cache-first write left behind (across every ``database_name``
+        scope, mirroring the apply path's invalidation breadth).
+        """
+        schema = self._normalize_id(schema)
+        table = self._normalize_id(table)
+        if snapshot is None:
+            self.invalidate_column_comments_cache(
+                schema=schema, table=table, match_any_database=True
+            )
+            return
+        self._save_column_comments_cache(
+            schema,
+            {
+                table: {
+                    "table_comment": snapshot.get("table_comment"),
+                    "columns": dict(snapshot.get("columns") or {}),
+                    "kind": snapshot.get("kind") or "TABLE",
+                }
+            },
+            ttl_seconds=DURABLE_COMMENT_CACHE_TTL_SECONDS,
+        )
 
     def _schema_bulk_cache_is_fresh(self, schema: str) -> bool:
         """Cheap check used by ``list_assets`` before re-running SHOW TABLES."""
@@ -1032,7 +1143,9 @@ class DatabaseConnector:
         self._save_schemas_cache(catalog, payload, bulk_filled=True)
         return True
 
-    def _populate_schema_metadata_cache(self, schema: str) -> bool:
+    def _populate_schema_metadata_cache(
+        self, schema: str, *, ttl_seconds: float | None = None
+    ) -> bool:
         """Run the adapter's bulk source for ``schema`` and cache results.
 
         Returns ``True`` when the adapter populated the cache (any
@@ -1041,6 +1154,11 @@ class DatabaseConnector:
         back to per-table inspector calls. The fallback path also
         caches its results entry-by-entry, so subsequent reads of any
         cached table short-circuit either way.
+
+        ``ttl_seconds`` is forwarded to :meth:`_save_column_comments_cache`;
+        the skeleton-sync warm pass passes
+        :data:`DURABLE_COMMENT_CACHE_TTL_SECONDS` so a sync's imported
+        comments don't expire out from under the cache-only read gate.
 
         Long-first-fetch CLI affordance: when stdout is a TTY and no
         Rich Live region is already painting (so we are in an
@@ -1098,7 +1216,7 @@ class DatabaseConnector:
             return False
         if not payload:
             return False
-        self._save_column_comments_cache(schema, payload, bulk_filled=True)
+        self._save_column_comments_cache(schema, payload, bulk_filled=True, ttl_seconds=ttl_seconds)
         return True
 
     def get_table_comment(self, schema: str, table: str) -> str | None:
