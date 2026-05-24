@@ -40,6 +40,14 @@ class _StubConnector:
     def list_assets(self, schema: str) -> list[tuple[str, str]]:
         return list(self._assets.get(schema, []))
 
+    def _populate_schema_metadata_cache(self, schema: str) -> bool:
+        """No-op stand-in: the real connector bulk-fills
+        ``column_comments_cache`` here. The stub just signals "warm
+        pass completed" so the skeleton sync stamps
+        ``last_columns_sync_at`` and ``is_profile_fully_synced``
+        returns True under the post-tightening contract."""
+        return True
+
 
 class _StubCfg:
     """Stand-in for ``AMXConfig`` carrying just the fields the
@@ -321,6 +329,9 @@ class _PerDBConnector:
 
     def list_assets(self, schema: str) -> list[tuple[str, str]]:
         return list(self._schemas.get(schema, []))
+
+    def _populate_schema_metadata_cache(self, schema: str) -> bool:
+        return True
 
 
 class _UnpinnedStubCfg:

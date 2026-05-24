@@ -85,14 +85,20 @@ def _seed(
                     ),
                 )
         if fully_synced:
+            # is_profile_fully_synced now requires all four sync
+            # timestamps to be non-null. Stamp every per-surface
+            # timestamp here so the seed mimics a true completed
+            # ``Sync all`` run.
             conn.execute(
                 """
                 INSERT INTO catalog_profile_state (
                     db_profile, state, total_tables, processed_tables,
-                    started_at, finished_at, last_full_sync_at, last_error
-                ) VALUES (?, 'done', 1, 1, ?, ?, ?, '')
+                    started_at, finished_at, last_full_sync_at,
+                    last_skeleton_sync_at, last_schemas_sync_at,
+                    last_columns_sync_at, last_error
+                ) VALUES (?, 'done', 1, 1, ?, ?, ?, ?, ?, ?, '')
                 """,
-                (profile, now, now, now),
+                (profile, now, now, now, now, now, now),
             )
 
 
