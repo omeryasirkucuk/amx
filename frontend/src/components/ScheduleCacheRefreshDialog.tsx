@@ -206,6 +206,12 @@ export default function ScheduleCacheRefreshDialog({
   });
   const [showCron, setShowCron] = useState(false);
   const [customCron, setCustomCron] = useState(editing?.cron_expr ?? "0 */6 * * *");
+  // Deep schedules profile columns + exact row counts (deep_sync) instead
+  // of the shallow skeleton/comment warm. Preserved across edits via the
+  // ``deep`` flag stored inside scope_json.
+  const [deepSync, setDeepSync] = useState<boolean>(
+    Boolean((editing?.scope_json as Record<string, unknown> | null | undefined)?.deep),
+  );
   const [error, setError] = useState<string | null>(null);
 
   const dbProfilesQ = useQuery({
@@ -303,7 +309,7 @@ export default function ScheduleCacheRefreshDialog({
       db_profile: dbProfile,
       database: isCatalogBackend ? null : database || null,
       catalog: isCatalogBackend ? database || null : null,
-      scope: picksToScopeJson(scopePicks),
+      scope: { ...picksToScopeJson(scopePicks), deep: deepSync },
       cron_expr: cron,
     };
     // Only set ``kind`` on create — PATCH never changes a row's kind.
@@ -436,6 +442,24 @@ export default function ScheduleCacheRefreshDialog({
               onChange={setScopePicks}
             />
           </Field>
+          <div className="md:col-span-2">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={deepSync}
+                onChange={(e) => setDeepSync(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span className="text-sm">
+                <span className="font-medium">Deep sync</span>
+                <span className="block text-xs text-ink-dim">
+                  Profile columns + exact row counts each run (slower —
+                  issues a COUNT(*) per table). Leave off for a fast
+                  inventory-only refresh.
+                </span>
+              </span>
+            </label>
+          </div>
         </div>
         <div className="rounded-md border border-border bg-surface-muted px-3 py-2 text-xs">
           <button
