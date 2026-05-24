@@ -316,6 +316,70 @@ def _cached_table_comment(
     return str(row["table_comment"] or "")
 
 
+def _cached_row_count(
+    profile: str,
+    schema: str,
+    table: str,
+    *,
+    database_scope: str | None,
+) -> int | None:
+    """Return the synced row count from ``catalog_entities``, or ``None``
+    when unknown.
+
+    A stored ``row_count`` of 0 means "not captured" — ``/search sync``
+    records 0 for tables it never counted — so it is reported as
+    ``None`` (unknown) rather than a misleading "0 rows", matching the
+    describe_table guard. The table-level entity carries the count;
+    ``database_scope`` disambiguates same-named tables across databases.
+    """
+    try:
+        from amx.storage.sqlite_store import history_store as _history_store
+
+        hs = _history_store()
+    except Exception:
+        hs = None
+    if hs is None:
+        return None
+    row = None
+    try:
+        with hs._connect() as conn:  # noqa: SLF001 — same access as sibling helpers
+            if database_scope:
+                row = conn.execute(
+                    """
+                    SELECT row_count FROM catalog_entities
+                    WHERE db_profile = ? AND database_name = ?
+                      AND schema_name = ? AND table_name = ?
+                      AND entity_kind = 'table'
+                    ORDER BY row_count DESC, last_synced_at DESC LIMIT 1
+                    """,
+                    (profile, database_scope, schema, table),
+                ).fetchone()
+            if row is None:
+                # No database scope (or no scoped hit): the same
+                # schema.table can exist in multiple databases, one
+                # counted and one skeleton-only (row_count 0). Prefer
+                # the counted copy so an ambiguous lookup surfaces the
+                # real number rather than a stale 0.
+                row = conn.execute(
+                    """
+                    SELECT row_count FROM catalog_entities
+                    WHERE db_profile = ? AND schema_name = ? AND table_name = ?
+                      AND entity_kind = 'table'
+                    ORDER BY row_count DESC, last_synced_at DESC LIMIT 1
+                    """,
+                    (profile, schema, table),
+                ).fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    try:
+        count = int(row["row_count"] or 0)
+    except (TypeError, ValueError):
+        return None
+    return count if count > 0 else None
+
+
 def _cached_column_structure(
     profile: str,
     schema: str,
@@ -1282,6 +1346,9 @@ def table_snapshot(
                     for c in salvage
                 ],
                 "source": "cache-fallback",
+                "row_count": _cached_row_count(
+                    name, schema, table, database_scope=cache_scope
+                ),
             },
             schema,
             table,
@@ -1315,8 +1382,16 @@ def table_snapshot(
                         for c in salvage
                     ],
                     "source": "cache-fallback",
+                    "row_count": _cached_row_count(
+                        name, schema, table, database_scope=cache_scope
+                    ),
                 },
                 schema,
                 table,
             )
+    # Surface the synced row count (from the catalog) so the Table page
+    # can show "N rows" — the live snapshot itself is profiling-free and
+    # carries no count. ``None`` when unknown (never counted), so the UI
+    # shows nothing rather than a misleading 0.
+    snapshot["row_count"] = _cached_row_count(name, schema, table, database_scope=cache_scope)
     return _merge_pending(snapshot, schema, table)
