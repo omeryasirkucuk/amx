@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -199,13 +200,23 @@ def cache_inventory(
     )
 
 
-def cache_stats() -> dict[str, CacheStat]:
+def cache_stats(
+    *,
+    valid_profiles: Iterable[str] | None = None,
+) -> dict[str, CacheStat]:
     """Aggregate metrics per cache table.
 
     ``ttl_aware`` is True for ``schemas_cache`` + ``column_comments_cache``
     (they carry ``expires_at`` so a stale-row count is meaningful) and
     False for ``catalog_entities`` — the catalog is rewritten by
     ``/sync``, never sweeps itself.
+
+    When ``valid_profiles`` is set, every row in the underlying tables
+    whose ``db_profile`` is *not* a member is excluded from the
+    aggregate. The Studio Catalog cache page passes the configured
+    profile set so a deleted-profile tombstone never inflates the
+    headline numbers. Pass ``None`` (the default) to keep the legacy,
+    unfiltered shape — used by the REPL ``/db cache-stats`` view.
     """
     conn = _open()
     if conn is None:
@@ -213,6 +224,8 @@ def cache_stats() -> dict[str, CacheStat]:
     try:
         now = time.time()
         result: dict[str, CacheStat] = {}
+
+        valid_filter, valid_params = _profile_filter(valid_profiles)
 
         def _stat_ttl(table: str) -> CacheStat:
             row = conn.execute(
@@ -222,8 +235,9 @@ def cache_stats() -> dict[str, CacheStat]:
                           MIN(fetched_at) AS oldest,
                           MAX(fetched_at) AS newest,
                           SUM(CASE WHEN expires_at < ? THEN 1 ELSE 0 END) AS expired
-                     FROM {table}""",
-                (now,),
+                     FROM {table}
+                     WHERE 1 = 1{valid_filter}""",
+                (now, *valid_params),
             ).fetchone()
             return CacheStat(
                 table=table,
@@ -241,12 +255,14 @@ def cache_stats() -> dict[str, CacheStat]:
 
         # catalog_entities uses last_synced_at; never expires.
         row = conn.execute(
-            """SELECT COUNT(*) AS n,
+            f"""SELECT COUNT(*) AS n,
                       COUNT(DISTINCT db_profile) AS p,
                       COUNT(DISTINCT database_name) AS d,
                       MIN(last_synced_at) AS oldest,
                       MAX(last_synced_at) AS newest
-                 FROM catalog_entities"""
+                 FROM catalog_entities
+                 WHERE 1 = 1{valid_filter}""",
+            valid_params,
         ).fetchone()
         result["catalog"] = CacheStat(
             table="catalog_entities",
@@ -261,6 +277,26 @@ def cache_stats() -> dict[str, CacheStat]:
         return result
     finally:
         conn.close()
+
+
+def _profile_filter(
+    valid_profiles: Iterable[str] | None,
+) -> tuple[str, tuple[str, ...]]:
+    """Render an ``AND db_profile IN (...)`` clause + bind values.
+
+    Returns ``("", ())`` when ``valid_profiles`` is ``None`` so the
+    legacy (unfiltered) callers keep the same SQL shape. When the
+    caller supplies an empty iterable the clause becomes
+    ``AND 1 = 0`` — that's the "user has zero configured profiles"
+    state and matching no rows is the correct answer.
+    """
+    if valid_profiles is None:
+        return "", ()
+    names = tuple({str(p) for p in valid_profiles if p})
+    if not names:
+        return " AND 1 = 0", ()
+    placeholders = ",".join("?" for _ in names)
+    return f" AND db_profile IN ({placeholders})", names
 
 
 def cache_runtime_counters() -> dict[str, Any]:
@@ -394,6 +430,110 @@ def _delete_scoped(
         return int(cur.rowcount or 0)
     finally:
         conn.close()
+
+
+def purge_orphan_profile_rows(
+    valid_profiles: Iterable[str],
+) -> dict[str, int]:
+    """Delete every cache row whose ``db_profile`` is not in
+    ``valid_profiles``. Returns per-table delete counts.
+
+    Idempotent and safe to call at startup. Covers the three on-disk
+    cache tables (``schemas_cache``, ``column_comments_cache``,
+    ``catalog_entities``) plus the dependent rows in
+    ``catalog_descriptions`` and ``catalog_profile_state`` so the
+    state row that drives the Studio freshness pill disappears with
+    the rest of the profile's footprint.
+
+    Used by:
+
+    * the Studio app startup hook (one-time backfill sweep so the
+      Catalog cache page reflects only configured profiles), and
+    * :func:`amx.config.AMXConfig.remove_db_profile` (eager purge the
+      moment a profile is removed) — through the same helper so the
+      two paths can't drift.
+    """
+    names = tuple({str(p) for p in valid_profiles if p})
+    conn = _open(read_only=False)
+    if conn is None:
+        return {}
+    deleted: dict[str, int] = {}
+    try:
+        if not names:
+            # No configured profiles → every row is an orphan.
+            ce_count = int(
+                conn.execute("SELECT COUNT(*) AS n FROM catalog_entities").fetchone()["n"] or 0
+            )
+            conn.execute("DELETE FROM catalog_descriptions")
+            conn.execute("DELETE FROM catalog_entities")
+            try:
+                conn.execute("DELETE FROM catalog_profile_state")
+            except sqlite3.OperationalError:
+                pass
+            sc = conn.execute("DELETE FROM schemas_cache").rowcount or 0
+            cc = conn.execute("DELETE FROM column_comments_cache").rowcount or 0
+            conn.commit()
+            return {
+                "catalog_entities": ce_count,
+                "schemas_cache": int(sc),
+                "column_comments_cache": int(cc),
+            }
+
+        placeholders = ",".join("?" for _ in names)
+        not_in = f"db_profile NOT IN ({placeholders})"
+
+        # Count catalog_entities orphans BEFORE deleting; the
+        # post-delete rowcount is not portable across sqlite versions
+        # when a foreign key dependency was wiped in the same txn.
+        ce_count = int(
+            conn.execute(
+                f"SELECT COUNT(*) AS n FROM catalog_entities WHERE {not_in}",
+                names,
+            ).fetchone()["n"]
+            or 0
+        )
+        # Descriptions first so the FK isn't orphaned.
+        conn.execute(
+            f"""DELETE FROM catalog_descriptions
+                 WHERE entity_id IN (
+                     SELECT id FROM catalog_entities WHERE {not_in}
+                 )""",
+            names,
+        )
+        conn.execute(
+            f"DELETE FROM catalog_entities WHERE {not_in}",
+            names,
+        )
+        try:
+            conn.execute(
+                f"DELETE FROM catalog_profile_state WHERE {not_in}",
+                names,
+            )
+        except sqlite3.OperationalError:
+            pass
+        sc = (
+            conn.execute(
+                f"DELETE FROM schemas_cache WHERE {not_in}",
+                names,
+            ).rowcount
+            or 0
+        )
+        cc = (
+            conn.execute(
+                f"DELETE FROM column_comments_cache WHERE {not_in}",
+                names,
+            ).rowcount
+            or 0
+        )
+        conn.commit()
+        deleted = {
+            "catalog_entities": ce_count,
+            "schemas_cache": int(sc),
+            "column_comments_cache": int(cc),
+        }
+    finally:
+        conn.close()
+    return deleted
 
 
 def _clear_catalog_tables(

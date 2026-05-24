@@ -431,14 +431,24 @@ class EntityCrudMixin:
         }
 
     def is_profile_fully_synced(self, db_profile: str) -> bool:
-        """``True`` iff a full skeleton sync has ever finished for
-        *db_profile*. Reads ``catalog_profile_state``; requires
-        ``state='done'`` only. The cache NEVER auto-expires — pre-PR
-        the helper rejected snapshots older than 7 days, which forced
-        sidebar / Ask / drift surfaces to fall through to the live DB
-        on any week-old profile. The user's contract now: keep
-        cached data forever, surface a UI staleness pill instead of
-        invalidating.
+        """``True`` iff every cache surface for *db_profile* has been
+        warmed by a successful ``Sync all``. Tightened from "skeleton
+        done" to "skeleton + schemas + columns all stamped" so the
+        cache-only read mode in
+        :meth:`amx.db.connector.DatabaseConnector._is_cache_warm`
+        only kicks in when the next read can actually be served from
+        cache. Previously a profile with only the skeleton populated
+        (catalog_entities) would surface as fully synced and the
+        cache-only gate would route ``get_column_comments`` to an
+        empty cache row — starving the caller — because
+        ``column_comments_cache`` had never been warmed.
+
+        Reads ``catalog_profile_state``. The cache NEVER auto-expires
+        — pre-PR the helper rejected snapshots older than 7 days,
+        which forced sidebar / Ask / drift surfaces to fall through
+        to the live DB on any week-old profile. The user's contract
+        now: keep cached data forever, surface a UI staleness pill
+        instead of invalidating.
 
         Returns ``False`` when:
         - the table doesn't exist (legacy catalog from a pre-v0.15
@@ -446,16 +456,22 @@ class EntityCrudMixin:
           run a fresh skeleton sync)
         - the state row exists but `state != 'done'` (sync still
           running, failed, or never started)
+        - any of ``last_skeleton_sync_at`` / ``last_schemas_sync_at``
+          / ``last_columns_sync_at`` is NULL (a partial sync — the
+          caller must keep the live-DB fallback armed)
 
-        Use :meth:`get_profile_state` from ``SyncMixin`` to read
-        ``last_full_sync_at`` when a UI surface wants to render a
-        "synced N days ago" pill.
+        Use :meth:`get_profile_state` from ``SyncMixin`` to read the
+        individual timestamps when a UI surface wants to render a
+        "synced N days ago" pill or a per-surface staleness chip.
         """
         try:
             with self._connect() as conn:
                 row = conn.execute(
                     """
-                    SELECT state, last_full_sync_at
+                    SELECT state, last_full_sync_at,
+                           last_skeleton_sync_at,
+                           last_schemas_sync_at,
+                           last_columns_sync_at
                     FROM catalog_profile_state
                     WHERE db_profile = ?
                     """,
@@ -466,8 +482,21 @@ class EntityCrudMixin:
         if not row:
             return False
         state = str(row["state"] or "")
-        last = row["last_full_sync_at"]
-        return state == "done" and last is not None
+        if state != "done":
+            return False
+        # All four timestamps are required. ``last_full_sync_at``
+        # remains a hard gate for back-compat (any pre-existing logic
+        # that reads it directly stays consistent); the three
+        # per-surface stamps are the new contract.
+        return all(
+            row[col] is not None
+            for col in (
+                "last_full_sync_at",
+                "last_skeleton_sync_at",
+                "last_schemas_sync_at",
+                "last_columns_sync_at",
+            )
+        )
 
     def fetch_distinct_databases(self, db_profile: str) -> list[dict]:
         """Return distinct ``database_name`` rows for *db_profile* with

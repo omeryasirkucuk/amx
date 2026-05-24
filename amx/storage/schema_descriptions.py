@@ -884,6 +884,26 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "UTC epoch seconds of the last successful 'done' transition. "
             "Drives /sync recency hints."
         ),
+        "last_skeleton_sync_at": (
+            "UTC epoch seconds the last skeleton sync (catalog_entities "
+            "upsert) finished. Set alongside last_full_sync_at on a "
+            "successful sync; the cache-only read gate trusts it as "
+            "evidence the table-grain rows are populated."
+        ),
+        "last_schemas_sync_at": (
+            "UTC epoch seconds the last schemas_cache warm pass completed. "
+            "Stamped by sync_profile_skeleton when 'Sync all' fans out "
+            "into bulk schema reads, and by the granular 'Sync scope' "
+            "executor for mode='schemas'. The cache-only gate trusts a "
+            "non-null value as evidence the schemas cache is hot."
+        ),
+        "last_columns_sync_at": (
+            "UTC epoch seconds the last column_comments_cache warm pass "
+            "completed. Stamped by sync_profile_skeleton when 'Sync all' "
+            "fans out into bulk column reads, and by the granular 'Sync "
+            "scope' executor for mode='columns'. The cache-only gate "
+            "trusts a non-null value as evidence column metadata is hot."
+        ),
         "last_error": (
             "Error message captured when state='failed'. Empty string for successful syncs."
         ),

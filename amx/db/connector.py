@@ -360,6 +360,23 @@ class DatabaseConnector:
             cached = self._list_schemas_from_cache(catalog)
             if cached:
                 live = [name for name, _ in cached]
+        # Cache-only gate: when a full ``Sync all`` has warmed this
+        # profile's caches, the schemas_cache is authoritative. Skip
+        # the live-DB fallthrough entirely — a missing row means the
+        # sync was incomplete and the caller should re-sync, not pay
+        # for a silent live round-trip. Anything outside this gate
+        # falls through to the original cache-first / live-fallback
+        # path so non-synced profiles behave exactly as before.
+        if live is None and self._is_cache_warm():
+            cached = self._list_schemas_from_cache(catalog)
+            log.info(
+                "list_schemas: cache-only mode for profile=%r catalog=%r - "
+                "served %d cached rows, no live DB query",
+                self.profile_name,
+                catalog,
+                len(cached),
+            )
+            return self._apply_pinned_schema_filter([name for name, _ in cached])
         if live is None and self._populate_catalogs_cache(catalog):
             cached = self._list_schemas_from_cache(catalog)
             if cached:
@@ -721,6 +738,46 @@ class DatabaseConnector:
         """Database scope the cache narrows on within a profile."""
         return str(getattr(self.cfg, "database", "") or getattr(self.cfg, "catalog", "") or "")
 
+    def _is_cache_warm(self) -> bool:
+        """Return ``True`` when the cached metadata for this connector's
+        profile can be trusted as complete — set by a finished
+        ``Sync all`` that warmed every cache table for the profile
+        (``catalog_entities``, ``schemas_cache``, and
+        ``column_comments_cache``). When True, the cache-aware read
+        paths (:meth:`list_schemas`, :meth:`get_table_comment`,
+        :meth:`get_column_comments`, :meth:`get_schema_comment`) MUST
+        NOT fall back to a live DB round-trip on a cache miss — they
+        serve the empty result instead and log a sync-gap warning so
+        a missing row surfaces as a bug to fix in the sync, not as a
+        silent latency spike.
+
+        Anonymous connectors (no ``profile_name``) always return
+        ``False`` so direct ``DBConfig`` constructions in tests keep
+        the legacy fallback behaviour.
+
+        Failures are swallowed and surface as ``False`` — a cache
+        without the new state columns (legacy database) is treated
+        as cold; we never starve a caller because the bookkeeping
+        layer hiccuped.
+        """
+        # Defensive ``getattr`` — some test paths build connector-like
+        # objects without going through ``__init__`` (subclasses,
+        # specced MagicMocks, the metadata-mode stub in
+        # tests/test_regressions.py). Treat a missing attribute the
+        # same as an unset profile name: legacy fallback path.
+        profile_name = getattr(self, "profile_name", "") or ""
+        if not profile_name:
+            return False
+        try:
+            from amx.search.catalog import SearchCatalog
+
+            cat = SearchCatalog.from_history_store()
+            if cat is None:
+                return False
+            return bool(cat.is_profile_fully_synced(profile_name))
+        except Exception:
+            return False
+
     def _lookup_column_comments_cache(self, schema: str, table: str) -> dict[str, Any] | None:
         """Return a cached ``{table_comment, columns, kind, ...}`` or None."""
         try:
@@ -1052,6 +1109,19 @@ class DatabaseConnector:
         cached = self._lookup_column_comments_cache(schema, table)
         if cached is not None:
             return cached.get("table_comment")
+        # Cache-only gate: see :meth:`list_schemas` for the rationale.
+        # When a Sync all has warmed this profile, missing cache rows
+        # imply a sync gap — serve ``None`` rather than masking the
+        # gap with a live DB call.
+        if self._is_cache_warm():
+            log.info(
+                "get_table_comment: cache-only mode missed %s.%s for profile=%r - "
+                "returning None (re-sync the profile to populate)",
+                schema,
+                table,
+                self.profile_name,
+            )
+            return None
         # Try a single round-trip bulk source for the whole schema; on
         # success every sibling table is now warm in the cache too. If
         # the backend has no bulk source, drop to the per-table
@@ -1082,6 +1152,19 @@ class DatabaseConnector:
         cached = self._lookup_column_comments_cache(schema, table)
         if cached is not None and cached.get("columns"):
             return dict(cached["columns"])
+        # Cache-only gate — see :meth:`list_schemas`. The original
+        # Studio complaint was specifically this method silently
+        # hitting live DB after a Sync all had ostensibly populated
+        # the cache; the warm flag now forces the empty result.
+        if self._is_cache_warm():
+            log.info(
+                "get_column_comments: cache-only mode missed %s.%s for profile=%r - "
+                "returning {} (re-sync the profile to populate)",
+                schema,
+                table,
+                self.profile_name,
+            )
+            return {}
         if self._populate_schema_metadata_cache(schema):
             cached = self._lookup_column_comments_cache(schema, table)
             if cached is not None and cached.get("columns"):
@@ -1130,6 +1213,16 @@ class DatabaseConnector:
         cached = self._lookup_schemas_cache(catalog, schema)
         if cached is not None:
             return cached.get("schema_comment")
+        # Cache-only gate — see :meth:`list_schemas`.
+        if self._is_cache_warm():
+            log.info(
+                "get_schema_comment: cache-only mode missed %s in catalog=%r for "
+                "profile=%r - returning None (re-sync to populate)",
+                schema,
+                catalog,
+                self.profile_name,
+            )
+            return None
         # Cold path: bulk-fill the whole catalog in one shot so the
         # sidebar's per-schema loop becomes O(1) cache hits after the
         # first call. If the adapter has no bulk source, drop to the
