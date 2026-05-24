@@ -715,6 +715,144 @@ def sync_profile_skeleton(
     return summary
 
 
+def deep_sync_profile(
+    cfg,
+    profile: str,
+    catalog,
+    *,
+    databases: list[str] | None = None,
+) -> dict:
+    """Full-profile sync: profile every table the skeleton already
+    catalogued and write its columns + row count.
+
+    The skeleton sync (:func:`sync_profile_skeleton`) is deliberately
+    fast — it writes table-level rows only, no columns or counts. This
+    is the opt-in "Deep sync": for every table already in
+    ``catalog_entities`` it runs ``profile_table`` (which issues a
+    ``COUNT(*)``) and ``sync_table_profile`` so the Studio Table page
+    shows real column lists + row counts. It reuses the skeleton's
+    inventory rather than re-walking the live DB, the skeleton state
+    machine for progress (so the freshness pill renders), and the
+    cooperative cancel registry. Never raises — terminal failures land
+    on ``finish_skeleton_sync(ok=False)``.
+
+    ``databases`` (optional) restricts the pass to those container
+    names; ``None`` covers every database the skeleton recorded.
+    """
+    from amx.search import _skeleton_jobs
+
+    cancel_event = _skeleton_jobs.register(profile)
+    summary: dict[str, Any] = {"profile": profile, "state": "syncing", "processed": 0, "failed": 0}
+
+    profile_map = getattr(cfg, "db_profiles", {}) or {}
+    target_db = profile_map.get((profile or "").strip()) if hasattr(profile_map, "get") else None
+    if target_db is None and cfg is not None:
+        target_db = getattr(cfg, "db", None)
+    db_backend = str(getattr(target_db, "backend", "") or "") if target_db is not None else ""
+    is_three_level = db_backend in _THREE_LEVEL_BACKENDS
+
+    # Pull the table inventory the skeleton already populated. Reusing
+    # it avoids a second live-DB enumeration; the skeleton is a
+    # prerequisite (the Studio "Deep sync" button is only offered once
+    # a profile has rows).
+    inventory: list[tuple[str, str, str]] = []
+    try:
+        with catalog._connect() as conn:  # noqa: SLF001 — same access as catalog methods
+            if databases:
+                placeholders = ",".join("?" for _ in databases)
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT database_name, schema_name, table_name
+                    FROM catalog_entities
+                    WHERE db_profile = ? AND entity_kind = 'table'
+                      AND database_name IN ({placeholders})
+                    ORDER BY database_name, schema_name, table_name
+                    """,
+                    (profile, *databases),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT database_name, schema_name, table_name
+                    FROM catalog_entities
+                    WHERE db_profile = ? AND entity_kind = 'table'
+                    ORDER BY database_name, schema_name, table_name
+                    """,
+                    (profile,),
+                ).fetchall()
+        inventory = [
+            (str(r["database_name"] or ""), str(r["schema_name"] or ""), str(r["table_name"] or ""))
+            for r in rows
+            if r["schema_name"] and r["table_name"]
+        ]
+    except Exception as exc:
+        log.warning("Deep sync inventory read failed for %s: %s", profile, exc)
+        catalog.finish_skeleton_sync(profile, ok=False, error=str(exc))
+        summary["state"] = "failed"
+        summary["error"] = str(exc)
+        _skeleton_jobs.unregister(profile)
+        return summary
+
+    total = len(inventory)
+    catalog.start_skeleton_sync(profile, total_tables=total)
+    if total == 0:
+        catalog.finish_skeleton_sync(profile, ok=True)
+        summary["state"] = "done"
+        summary["note"] = "no tables in catalog — run a skeleton sync first"
+        _skeleton_jobs.unregister(profile)
+        return summary
+
+    processed = 0
+    failed = 0
+    # Group consecutive tables by container so one scoped connector
+    # serves every table in a database.
+    connector = None
+    current_container: str | None = None
+    for container, schema, table in inventory:
+        if cancel_event.is_set():
+            break
+        if connector is None or container != current_container:
+            try:
+                connector = _scoped_connector(cfg, profile, container or None, is_three_level)
+                current_container = container
+            except Exception as exc:
+                log.warning(
+                    "Deep sync connector failed for %s/%s: %s", profile, container or "<default>", exc
+                )
+                connector = None
+                failed += 1
+                continue
+        try:
+            prof = connector.profile_table(schema, table, sample_size=0)
+            catalog.sync_table_profile(
+                db_profile=profile,
+                db_backend=db_backend,
+                database_name=container,
+                profile=prof,
+                query_usage={},
+            )
+            processed += 1
+        except Exception as exc:
+            failed += 1
+            log.warning("Deep sync profile failed for %s.%s: %s", schema, table, exc)
+        # Progress on its own short-lived connection — never hold a
+        # catalog connection open across sync_table_profile (which
+        # opens its own), or SQLite WAL deadlocks.
+        catalog.record_skeleton_progress(profile, processed)
+
+    if cancel_event.is_set():
+        catalog.finish_skeleton_sync(profile, ok=False, error="cancelled")
+        summary["state"] = "cancelled"
+    else:
+        catalog.finish_skeleton_sync(profile, ok=True)
+        summary["state"] = "done"
+    summary["processed"] = processed
+    summary["failed"] = failed
+    summary["total"] = total
+    _skeleton_jobs.unregister(profile)
+    return summary
+
+
 def _asset_name_and_kind(asset: Any) -> tuple[str, str]:
     """Connectors return ``list_assets`` rows in two shapes — a tuple
     ``(name, kind)`` or a single string ``name``. Normalize so the

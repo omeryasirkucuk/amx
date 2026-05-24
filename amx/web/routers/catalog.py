@@ -478,6 +478,96 @@ def trigger_catalog_sync(
     }
 
 
+@router.post("/deep-sync")
+def trigger_deep_sync(
+    profile: str | None = Query(default=None),
+    database: str | None = Query(default=None, alias="database"),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Kick off a deep (full-profile) sync for the requested profile.
+
+    Unlike ``POST /sync`` (skeleton — table-level rows only), this
+    profiles every catalogued table (``profile_table`` + ``COUNT(*)``)
+    and writes columns + row counts so the Table page renders real
+    structure and counts. Slower by design, so it is a separate
+    opt-in action. Runs in a daemon thread and reuses the skeleton
+    state machine, so the freshness pill and ``POST /sync/cancel``
+    work unchanged.
+
+    A skeleton sync must have run first (it populates the table
+    inventory this pass profiles); on an empty catalog the job
+    finishes immediately with a note.
+    """
+    import threading
+
+    from amx.search.catalog import SearchCatalog
+    from amx.search.drift import deep_sync_profile
+
+    if profile:
+        targets = [profile.strip()]
+    else:
+        if database:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="?database= requires ?profile= to scope the deep sync.",
+            )
+        profile_map = getattr(cfg, "db_profiles", None)
+        targets = list(profile_map.keys()) if hasattr(profile_map, "keys") else []
+    targets = [p for p in targets if p]
+    if not targets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No DB profile to deep-sync. Pass ?profile=<name> or save a profile first.",
+        )
+    catalog = SearchCatalog.from_history_store()
+    if catalog is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised — cannot deep-sync catalog yet.",
+        )
+    for target in targets:
+        try:
+            catalog.start_skeleton_sync(target, total_tables=0)
+        except Exception:
+            try:
+                catalog.finish_skeleton_sync(target, ok=False, error="bootstrap failed")
+            except Exception:
+                pass
+
+    databases_arg: list[str] | None = [database.strip()] if database else None
+
+    from amx.search import _skeleton_jobs
+
+    def _spawn(target_profile: str) -> None:
+        _skeleton_jobs.register(target_profile)
+
+        def _runner() -> None:
+            try:
+                deep_sync_profile(cfg, target_profile, catalog, databases=databases_arg)
+            except Exception as exc:  # pragma: no cover - best-effort
+                try:
+                    catalog.finish_skeleton_sync(target_profile, ok=False, error=str(exc))
+                except Exception:
+                    pass
+                finally:
+                    _skeleton_jobs.unregister(target_profile)
+
+        threading.Thread(
+            target=_runner,
+            name=f"amx-catalog-deep-sync-{target_profile}",
+            daemon=True,
+        ).start()
+
+    for target in targets:
+        _spawn(target)
+    return {
+        "profiles": targets,
+        "database": database or None,
+        "status": "queued",
+        "mode": "deep",
+    }
+
+
 @router.post("/sync/cancel")
 def cancel_catalog_sync(body: CatalogSyncCancelRequest) -> dict[str, Any]:
     """Cooperatively cancel an in-flight skeleton sync for ``profile``.
