@@ -41,21 +41,17 @@ class ShortCircuitsMixin:
         as ``needs_clarification=True``, yielding "Could you clarify the
         exact scope (database/schema/table)?" — a confusing reply when the
         user just typed "hi".
+
+        Detection is delegated to the pure
+        :func:`amx.search.pipeline.short_circuits.is_chitchat`; the
+        mixin keeps ownership of the side-effect glue (session-store
+        recording, ``SearchAnswer`` construction).
         """
-        sample = (question or "").strip().lower()
-        if not sample:
+        from amx.search.pipeline.short_circuits import chitchat_summary, is_chitchat
+
+        if not is_chitchat(question, self._CHITCHAT_TOKENS):
             return None
-        # Must be short and contain only chitchat tokens — punctuation aside.
-        words = [tok for tok in re.split(r"[\s\?!.,;:]+", sample) if tok]
-        if not words or len(words) > 4:
-            return None
-        if not all(word in self._CHITCHAT_TOKENS for word in words):
-            return None
-        summary = (
-            "Hi! I'm AMX's metadata search assistant — I'm built to answer questions about "
-            "your database schemas, tables, and columns rather than chat. "
-            "Try: `what is the vbrk table?`, `which tables relate to pricing?`."
-        )
+        summary = chitchat_summary()
         self._record_short_circuit_assistant(summary=summary, intent="chitchat")
         return SearchAnswer(
             intent="chitchat",
