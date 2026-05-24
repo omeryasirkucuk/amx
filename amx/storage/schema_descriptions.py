@@ -783,6 +783,20 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "UTC epoch seconds of the last code-context sync (lineage usage, "
             "test references). NULL on entities never touched by /code."
         ),
+        # Attribution columns — present on the SHARED catalog_entities table
+        # (team-wide structural catalog) so /history-store list-team can show
+        # who profiled what. Absent from the local SQLite table.
+        "created_by": (
+            "User who ran the deep sync that produced this row. Shared-store "
+            "only — for team attribution."
+        ),
+        "hostname": (
+            "Machine that ran the deep sync. Shared-store only — for team "
+            "attribution."
+        ),
+        "client_version": (
+            "AMX client version that wrote the row. Shared-store only."
+        ),
     },
     # ── catalog_descriptions (local only) ─────────────────────────────────
     "catalog_descriptions": {
