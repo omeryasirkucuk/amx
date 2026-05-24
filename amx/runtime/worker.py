@@ -438,12 +438,20 @@ def cache_refresh_executor(run_id: int, payload: dict[str, Any]) -> None:
     except (TypeError, ValueError):
         scope_obj = {}
     mode = str(scope_obj.get("mode") or "all")
+    # ``deep`` opts the schedule into full profiling (columns + exact
+    # row counts via deep_sync) instead of the shallow skeleton/comment
+    # warm. Off by default so existing schedules keep their fast,
+    # inventory-only behaviour; on, a recurring schedule keeps row
+    # counts fresh and (when the shared store is enabled) propagates
+    # them to the team automatically.
+    deep = bool(scope_obj.get("deep"))
 
     log.info(
-        "cache_refresh_executor: schedule #%s firing on profile=%s mode=%s",
+        "cache_refresh_executor: schedule #%s firing on profile=%s mode=%s deep=%s",
         schedule_id,
         profile_name,
         mode,
+        deep,
     )
 
     if mode == "all":
@@ -451,7 +459,12 @@ def cache_refresh_executor(run_id: int, payload: dict[str, Any]) -> None:
         if catalog is None:
             raise RuntimeError("History store unavailable; cache refresh aborted.")
         databases_arg = [str(database_overlay)] if database_overlay else None
-        sync_profile_skeleton(cfg, profile_name, catalog, databases=databases_arg)
+        if deep:
+            from amx.search.drift import deep_sync_profile
+
+            deep_sync_profile(cfg, profile_name, catalog, databases=databases_arg)
+        else:
+            sync_profile_skeleton(cfg, profile_name, catalog, databases=databases_arg)
         return
 
     # Collect (schema, table | None) work units. schemas → whole-schema.
@@ -536,6 +549,41 @@ def cache_refresh_executor(run_id: int, payload: dict[str, Any]) -> None:
                         schema,
                         asset_name,
                         exc,
+                    )
+
+    # Deep scoped refresh: profile each resolved table (columns + exact
+    # row count) so a scoped deep schedule keeps counts fresh, not just
+    # comments. Schema-level units expand to their tables. Best-effort
+    # per table — a single failure never aborts the schedule.
+    if deep and work:
+        from amx.search.drift import deep_sync_one_table
+
+        deep_db = database_overlay or catalog_overlay
+        for schema, table in work:
+            tables_to_sync: list[str] = []
+            if table:
+                tables_to_sync = [table]
+            else:
+                try:
+                    tables_to_sync = [name for name, _kind in connector.list_assets(schema)]
+                except Exception as exc:
+                    log.debug(
+                        "cache_refresh_executor: deep list_assets(%s) failed: %s", schema, exc
+                    )
+            for asset_name in tables_to_sync:
+                res = deep_sync_one_table(
+                    cfg,
+                    profile_name,
+                    schema=schema,
+                    table=asset_name,
+                    database=str(deep_db) if deep_db else None,
+                )
+                if not res.get("ok"):
+                    log.debug(
+                        "cache_refresh_executor: deep sync %s.%s skipped: %s",
+                        schema,
+                        asset_name,
+                        res.get("error"),
                     )
 
 

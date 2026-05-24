@@ -89,3 +89,61 @@ def test_run_warm_columns_mode_collapses_to_table(monkeypatch: pytest.MonkeyPatc
     calls = built[0].bulk_warm_calls
     # Two column picks on the same table collapse to a single schema warm.
     assert calls.count(("sap_s6p", DURABLE_COMMENT_CACHE_TTL_SECONDS)) == 1
+
+
+def test_deep_all_calls_deep_sync_not_skeleton(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cache_refresh schedule with scope.deep=True and mode='all'
+    runs deep_sync_profile (columns + row counts), NOT the shallow
+    skeleton sync."""
+    _patch(monkeypatch)
+
+    import amx.search.catalog as catalog_mod
+    import amx.search.drift as drift_mod
+
+    monkeypatch.setattr(
+        catalog_mod.SearchCatalog, "from_history_store", classmethod(lambda cls: object())
+    )
+    calls = {"deep": 0, "skeleton": 0}
+    monkeypatch.setattr(
+        drift_mod, "deep_sync_profile", lambda *a, **k: calls.__setitem__("deep", calls["deep"] + 1)
+    )
+    monkeypatch.setattr(
+        drift_mod,
+        "sync_profile_skeleton",
+        lambda *a, **k: calls.__setitem__("skeleton", calls["skeleton"] + 1),
+    )
+
+    worker.cache_refresh_executor(
+        9, {"id": 9, "db_profile": "prof", "scope_json": json.dumps({"mode": "all", "deep": True})}
+    )
+
+    assert calls["deep"] == 1
+    assert calls["skeleton"] == 0
+
+
+def test_shallow_all_calls_skeleton_not_deep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without deep, mode='all' keeps the fast skeleton sync."""
+    _patch(monkeypatch)
+
+    import amx.search.catalog as catalog_mod
+    import amx.search.drift as drift_mod
+
+    monkeypatch.setattr(
+        catalog_mod.SearchCatalog, "from_history_store", classmethod(lambda cls: object())
+    )
+    calls = {"deep": 0, "skeleton": 0}
+    monkeypatch.setattr(
+        drift_mod, "deep_sync_profile", lambda *a, **k: calls.__setitem__("deep", calls["deep"] + 1)
+    )
+    monkeypatch.setattr(
+        drift_mod,
+        "sync_profile_skeleton",
+        lambda *a, **k: calls.__setitem__("skeleton", calls["skeleton"] + 1),
+    )
+
+    worker.cache_refresh_executor(
+        10, {"id": 10, "db_profile": "prof", "scope_json": json.dumps({"mode": "all"})}
+    )
+
+    assert calls["skeleton"] == 1
+    assert calls["deep"] == 0
