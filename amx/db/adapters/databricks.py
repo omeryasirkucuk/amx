@@ -266,6 +266,17 @@ class DatabricksAdapter(DatabaseAdapter):
             return f"`{catalog}`.`{schema}`.`{table}`"
         return f"`{schema}`.`{table}`"
 
+    @staticmethod
+    def _info_schema(catalog: str, view: str) -> str:
+        # Per-catalog ``information_schema`` is accessible to anyone with
+        # USE CATALOG on the target catalog. ``system.information_schema``
+        # is the global aggregator and needs an explicit grant the typical
+        # workspace user does not hold. Bulk-metadata queries target the
+        # per-catalog view so the connecting principal never needs
+        # ``system`` access.
+        cat = (catalog or "").replace("`", "``")
+        return f"`{cat}`.information_schema.{view}"
+
     # ── Column profiling ──────────────────────────────────────────────────
 
     def column_stats_sql(self, fqn: str, quoted_col: str) -> str:
@@ -452,19 +463,25 @@ class DatabricksAdapter(DatabaseAdapter):
         engine: Engine,
         schema: str,
     ) -> list[dict[str, Any]]:
-        # Unity Catalog: ``system.information_schema.views`` carries the
-        # view definition. Hive-metastore profiles return ``[]`` since the
-        # legacy metastore exposes only ``SHOW VIEWS`` (name list).
+        # Unity Catalog: the catalog's own ``information_schema.views``
+        # carries the view definition. Hive-metastore profiles return
+        # ``[]`` since the legacy metastore exposes only ``SHOW VIEWS``
+        # (name list). The per-catalog view is reachable with USE CATALOG
+        # and avoids the ``system`` catalog grant the global aggregator
+        # would otherwise require.
         if not schema:
+            return []
+        catalog = (getattr(self.cfg, "catalog", "") or "").strip()
+        if not catalog:
             return []
         with engine.connect() as conn:
             try:
                 rows = conn.execute(
                     text(
-                        "SELECT table_name, view_definition "
-                        "FROM system.information_schema.views "
-                        "WHERE table_schema = :schema "
-                        "ORDER BY table_name"
+                        f"SELECT table_name, view_definition "
+                        f"FROM {self._info_schema(catalog, 'views')} "
+                        f"WHERE table_schema = :schema "
+                        f"ORDER BY table_name"
                     ),
                     {"schema": schema},
                 ).fetchall()
@@ -489,13 +506,16 @@ class DatabricksAdapter(DatabaseAdapter):
         catalog: str = "",
     ) -> dict[str, str | None] | None:
         """Unity Catalog: every schema in ``catalog`` + its comment in
-        one ``system.information_schema.schemata`` query.
+        one ``<catalog>.information_schema.schemata`` query.
 
         Replaces the sidebar's per-schema ``DESCRIBE SCHEMA`` loop on
         Databricks, which is the single most expensive bit of metadata
         polish when expanding a catalog with many schemas. Legacy Hive
-        metastore profiles return ``None`` (no ``system.information_
-        schema``) and fall back to per-schema fetch.
+        metastore profiles return ``None`` (no ``information_schema``)
+        and fall back to per-schema fetch. Querying the catalog's own
+        ``information_schema`` (instead of the global ``system``
+        aggregator) keeps this path open to principals that hold
+        ``USE CATALOG`` but no ``system`` grants.
         """
         cat = (catalog or getattr(self.cfg, "catalog", "") or "").strip()
         if not cat:
@@ -504,11 +524,10 @@ class DatabricksAdapter(DatabaseAdapter):
             with engine.connect() as conn:
                 rows = conn.execute(
                     text(
-                        "SELECT schema_name, comment "
-                        "FROM system.information_schema.schemata "
-                        "WHERE catalog_name = :cat AND schema_name <> 'information_schema'"
+                        f"SELECT schema_name, comment "
+                        f"FROM {self._info_schema(cat, 'schemata')} "
+                        f"WHERE schema_name <> 'information_schema'"
                     ),
-                    {"cat": cat},
                 ).fetchall()
             return {str(r[0]): (str(r[1]) if r[1] else None) for r in rows}
         except Exception:
@@ -523,18 +542,22 @@ class DatabricksAdapter(DatabaseAdapter):
         *,
         catalog: str = "",
     ) -> dict[str, dict[str, Any]] | None:
-        """Bulk fetch via Unity Catalog's ``system.information_schema``.
+        """Bulk fetch via the catalog's own ``information_schema``.
 
         Two queries — one for tables/views, one for columns — both
-        filtered on ``table_catalog`` + ``table_schema``. This is the
-        single biggest perf win in the entire AMX-Databricks story: a
-        200-table schema collapses from 200 sequential ``DESCRIBE TABLE
-        EXTENDED`` calls to two ``INFORMATION_SCHEMA`` queries (~1s).
+        filtered on ``table_schema``. This is the single biggest perf
+        win in the entire AMX-Databricks story: a 200-table schema
+        collapses from 200 sequential ``DESCRIBE TABLE EXTENDED`` calls
+        to two ``information_schema`` queries (~1s).
 
-        Legacy Hive metastore profiles have no ``system.information_
-        schema`` so the query raises and we return ``None`` — the
-        connector then falls back to the per-table inspector path that
-        Hive callers have always used. No regression for that case.
+        Querying ``<catalog>.information_schema`` (instead of the global
+        ``system.information_schema`` aggregator) means the connecting
+        principal needs only ``USE CATALOG`` — no separate grant on the
+        ``system`` catalog. Legacy Hive metastore profiles have no
+        ``information_schema`` at all so the query raises and we return
+        ``None`` — the connector then falls back to the per-table
+        inspector path that Hive callers have always used. No regression
+        for that case.
         """
         cat = (catalog or getattr(self.cfg, "catalog", "") or "").strip()
         if not cat:
@@ -544,11 +567,11 @@ class DatabricksAdapter(DatabaseAdapter):
             with engine.connect() as conn:
                 table_rows = conn.execute(
                     text(
-                        "SELECT table_name, table_type, comment "
-                        "FROM system.information_schema.tables "
-                        "WHERE table_catalog = :cat AND table_schema = :schema"
+                        f"SELECT table_name, table_type, comment "
+                        f"FROM {self._info_schema(cat, 'tables')} "
+                        f"WHERE table_schema = :schema"
                     ),
-                    {"cat": cat, "schema": schema},
+                    {"schema": schema},
                 ).fetchall()
                 for r in table_rows:
                     raw_kind = str(r[1] or "").upper()
@@ -565,12 +588,12 @@ class DatabricksAdapter(DatabaseAdapter):
                     }
                 col_rows = conn.execute(
                     text(
-                        "SELECT table_name, column_name, comment "
-                        "FROM system.information_schema.columns "
-                        "WHERE table_catalog = :cat AND table_schema = :schema "
-                        "ORDER BY table_name, ordinal_position"
+                        f"SELECT table_name, column_name, comment "
+                        f"FROM {self._info_schema(cat, 'columns')} "
+                        f"WHERE table_schema = :schema "
+                        f"ORDER BY table_name, ordinal_position"
                     ),
-                    {"cat": cat, "schema": schema},
+                    {"schema": schema},
                 ).fetchall()
             for r in col_rows:
                 entry = out.setdefault(
@@ -757,7 +780,7 @@ class DatabricksAdapter(DatabaseAdapter):
         engine: Engine,
         catalog: str,
     ) -> list[dict[str, Any]] | None:
-        """One ``system.information_schema.volumes`` query covers every schema.
+        """One ``<catalog>.information_schema.volumes`` query covers every schema.
 
         The ``/ask`` ``list_volumes`` tool used to issue one
         ``SHOW VOLUMES IN cat.schema`` per schema — 50 schemas =
@@ -765,18 +788,19 @@ class DatabricksAdapter(DatabaseAdapter):
         a queryable view, so we can fetch everything in one go.
         Returns ``None`` on permission denial / older runtimes that
         don't expose this view, and the caller falls back to the
-        per-schema loop.
+        per-schema loop. The per-catalog view (instead of the global
+        ``system.information_schema``) keeps this open to principals
+        that have ``USE CATALOG`` but no ``system`` grants.
         """
         if not catalog:
             return None
         sql = (
-            "SELECT volume_schema, volume_name, volume_type, comment "
-            "FROM system.information_schema.volumes "
-            "WHERE volume_catalog = :cat"
+            f"SELECT volume_schema, volume_name, volume_type, comment "
+            f"FROM {self._info_schema(catalog, 'volumes')}"
         )
         try:
             with engine.connect() as conn:
-                rows = conn.execute(text(sql), {"cat": catalog}).fetchall()
+                rows = conn.execute(text(sql)).fetchall()
         except Exception as exc:
             log.debug("list_volumes_bulk failed for %s: %s", catalog, exc)
             return None
@@ -802,7 +826,7 @@ class DatabricksAdapter(DatabaseAdapter):
         engine: Engine,
         catalog: str,
     ) -> list[tuple[str, str, str]] | None:
-        """One ``system.information_schema.tables`` query for the whole catalog.
+        """One ``<catalog>.information_schema.tables`` query for the whole catalog.
 
         ``find_table_by_name`` and similar fuzzy-search tools previously
         called ``list_assets(schema)`` per schema, paying for one
@@ -810,6 +834,8 @@ class DatabricksAdapter(DatabaseAdapter):
         asset (table / view / materialized view) across every schema in
         ``catalog`` in a single query. Returns ``None`` when the
         information_schema view isn't accessible — caller falls back.
+        Querying the catalog's own ``information_schema`` means the
+        principal only needs ``USE CATALOG``, never a ``system`` grant.
         """
         if not catalog:
             return None
@@ -817,13 +843,12 @@ class DatabricksAdapter(DatabaseAdapter):
         # information_schema's own table list back to the tool layer.
         sys_schemas = self.system_schemas()
         sql = (
-            "SELECT table_schema, table_name, table_type "
-            "FROM system.information_schema.tables "
-            "WHERE table_catalog = :cat"
+            f"SELECT table_schema, table_name, table_type "
+            f"FROM {self._info_schema(catalog, 'tables')}"
         )
         try:
             with engine.connect() as conn:
-                rows = conn.execute(text(sql), {"cat": catalog}).fetchall()
+                rows = conn.execute(text(sql)).fetchall()
         except Exception as exc:
             log.debug("list_assets_bulk failed for %s: %s", catalog, exc)
             return None
@@ -988,7 +1013,7 @@ class DatabricksAdapter(DatabaseAdapter):
             last_modified = (
                 datetime.fromtimestamp(modified_ms / 1000, tz=timezone.utc) if modified_ms else None
             )
-            if object_type == "DIRECTORY":
+            if object_type in ("DIRECTORY", "REPO"):
                 yield WorkspaceEntry(
                     kind="notebook",
                     path=full_path,

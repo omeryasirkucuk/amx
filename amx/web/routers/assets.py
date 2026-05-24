@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -39,9 +39,46 @@ _PATH_SEARCH_COL = {
     "query": None,
 }
 
-# In-process registry of ingest jobs to asyncio.Queue. Studio is single-tenant
-# per process, so a module-level dict is fine.
-_INGEST_JOBS: dict[str, asyncio.Queue] = {}
+
+class _JobChannel:
+    """Per-job event log + waiter for SSE consumers.
+
+    Why a log (not just a queue): corporate proxies sometimes kill an
+    idle HTTP connection mid-job. The browser reconnects with
+    ``Last-Event-ID``; we replay anything the client missed straight
+    from ``events`` instead of dropping the user back to "unknown
+    state". ``_eof`` is the in-band marker that the producer is done;
+    once observed, no further publishes are expected.
+
+    Studio is single-tenant per process so concurrent consumers for the
+    same job are rare; the design still handles them — each consumer
+    reads from its own cursor.
+    """
+
+    __slots__ = ("events", "waiter", "closed")
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+        # A fresh Event per publish so consumers can hold a reference to
+        # the *old* event across the await boundary without missing the
+        # next signal. ``asyncio.Event`` must be created inside a
+        # running loop — callers instantiate ``_JobChannel`` from the
+        # async request handler, which guarantees that.
+        self.waiter: asyncio.Event = asyncio.Event()
+        self.closed = False
+
+    def publish(self, evt: dict[str, Any]) -> None:
+        self.events.append(evt)
+        if evt.get("_eof"):
+            self.closed = True
+        old = self.waiter
+        self.waiter = asyncio.Event()
+        old.set()
+
+
+# In-process registry of ingest job_id → channel. Studio is
+# single-tenant per process, so a module-level dict is fine.
+_INGEST_JOBS: dict[str, _JobChannel] = {}
 
 
 def _history_db_path(cfg: AMXConfig) -> Path:
@@ -262,22 +299,62 @@ def _hit_path(hit: Any) -> str:
     return ""
 
 
+_SSE_HEARTBEAT_SECONDS = 15.0
+
+
 @router.get("/ingest/{job_id}/events")
-async def ingest_events(job_id: str) -> StreamingResponse:
-    """Stream SSE progress events for a running ingest job."""
-    queue = _INGEST_JOBS.get(job_id)
-    if not queue:
+async def ingest_events(request: Request, job_id: str) -> StreamingResponse:
+    """Stream SSE progress events for a running ingest job.
+
+    Emits one heartbeat comment per ~15s of silence so corporate
+    proxies (which kill idle HTTP connections after 30–60s) keep the
+    pipe open. Honors ``Last-Event-ID`` for resume after a network
+    drop — the client picks up exactly where it left off.
+    """
+    channel = _INGEST_JOBS.get(job_id)
+    if not channel:
         raise HTTPException(404, "Unknown job_id")
 
+    last_event_id = request.headers.get("last-event-id", "")
+    try:
+        start_idx = max(int(last_event_id), 0)
+    except ValueError:
+        start_idx = 0
+
     async def gen():
+        idx = start_idx
         while True:
-            evt = await queue.get()
-            if evt.get("_eof"):
+            # Drain everything the client has not yet seen.
+            while idx < len(channel.events):
+                evt = channel.events[idx]
+                event_id = idx + 1  # 1-based id sent on the wire
+                idx += 1
+                if evt.get("_eof"):
+                    yield f"id: {event_id}\nevent: end\ndata: {{}}\n\n"
+                    _INGEST_JOBS.pop(job_id, None)
+                    return
+                yield f"id: {event_id}\ndata: {json.dumps(evt)}\n\n"
+            if channel.closed:
                 _INGEST_JOBS.pop(job_id, None)
                 return
-            yield f"data: {json.dumps(evt)}\n\n"
+            waiter = channel.waiter
+            try:
+                await asyncio.wait_for(waiter.wait(), timeout=_SSE_HEARTBEAT_SECONDS)
+            except asyncio.TimeoutError:
+                # Comment frame: valid SSE no-op, browsers ignore the
+                # payload, but the bytes travelling across the wire
+                # reset corporate-proxy idle timers.
+                yield ": keepalive\n\n"
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    headers = {
+        # ``no-transform`` blocks chunk-reassembling intermediaries
+        # from buffering the stream; ``X-Accel-Buffering: no`` does the
+        # same for nginx specifically.
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
 
 _CHUNKING_KIND_NORM = {
@@ -1273,16 +1350,16 @@ async def start_ingest(
 ) -> dict[str, str]:
     """Kick off an asset ingest job and return a job_id for SSE polling."""
     job_id = str(uuid.uuid4())
-    queue: asyncio.Queue = asyncio.Queue()
-    _INGEST_JOBS[job_id] = queue
-    background.add_task(_run_ingest_job, job_id=job_id, body=body, cfg=cfg, queue=queue)
+    channel = _JobChannel()
+    _INGEST_JOBS[job_id] = channel
+    background.add_task(_run_ingest_job, job_id=job_id, body=body, cfg=cfg, channel=channel)
     return {"job_id": job_id}
 
 
 async def _run_ingest_job(
-    *, job_id: str, body: IngestBody, cfg: AMXConfig, queue: asyncio.Queue
+    *, job_id: str, body: IngestBody, cfg: AMXConfig, channel: _JobChannel
 ) -> None:
-    """Run IngestAssetsService in a thread-executor and forward progress to the queue."""
+    """Run IngestAssetsService in a thread-executor and forward progress to the channel."""
     from amx.cli_support.commands.db_assets_impl import _open_catalog, _open_connector
     from amx.services.ingest_assets import IngestAssetsService, IngestRequest
 
@@ -1290,7 +1367,7 @@ async def _run_ingest_job(
 
     def on_progress(evt) -> None:
         loop.call_soon_threadsafe(
-            queue.put_nowait,
+            channel.publish,
             {
                 "state": evt.state,
                 "asset_type": evt.asset_type,
@@ -1315,13 +1392,13 @@ async def _run_ingest_job(
             selection=body.selection,
         )
         result = await loop.run_in_executor(None, lambda: svc.run(req, progress=on_progress))
-        await queue.put(
+        channel.publish(
             {"state": "completed", "counts": result.counts, "failures": result.failures}
         )
     except Exception as exc:  # noqa: BLE001
-        await queue.put({"state": "error", "message": str(exc)})
+        channel.publish({"state": "error", "message": str(exc)})
     finally:
-        await queue.put({"_eof": True})
+        channel.publish({"_eof": True})
 
 
 @router.post("/refresh", status_code=202)

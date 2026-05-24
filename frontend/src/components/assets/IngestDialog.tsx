@@ -203,9 +203,22 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
       const es = new EventSource(`/api/assets/ingest/${encodeURIComponent(job_id)}/events`);
       esRef.current = es;
 
+      // Backend emits a terminal ``event: end`` once the job finishes
+      // (clean close — distinct from a network drop). Treat it as a
+      // graceful "no more events" signal so we do not flash the
+      // "connection dropped" banner on completion.
+      es.addEventListener("end", () => {
+        es.close();
+        esRef.current = null;
+        setSubmitting(false);
+      });
+
       es.onmessage = (evt) => {
         try {
           const data = JSON.parse(evt.data) as RemoteAssetIngestEvent;
+          // A successful frame clears any "reconnecting…" banner the
+          // last transient drop left behind.
+          setError(null);
 
           // The orchestrator emits ``state: "completed"`` once per asset
           // type (with ``asset_type`` set and a single-integer ``count``)
@@ -275,10 +288,23 @@ export default function IngestDialog({ open, onClose, profile }: Props) {
       };
 
       es.onerror = () => {
-        setError("SSE connection dropped. The job may still be running in the background.");
-        setSubmitting(false);
-        es.close();
-        esRef.current = null;
+        // The browser auto-reconnects with ``Last-Event-ID`` while
+        // ``readyState`` is CONNECTING (0). Only treat the drop as
+        // terminal once the runtime has given up (CLOSED, 2). Corporate
+        // proxies that close idle HTTP connections trip this onerror
+        // briefly between heartbeats; auto-reconnect drains the buffered
+        // events on the backend and the job continues without surfacing
+        // a misleading "may still be running" message.
+        if (es.readyState === EventSource.CLOSED) {
+          setError(
+            "Lost connection to the ingest job. The job may still be running in the background — refresh the assets table in a moment to check.",
+          );
+          setSubmitting(false);
+          es.close();
+          esRef.current = null;
+        } else {
+          setError("Reconnecting to the ingest stream…");
+        }
       };
     } catch (err) {
       setError((err as Error).message ?? "Ingestion failed.");

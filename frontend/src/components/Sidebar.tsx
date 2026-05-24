@@ -687,12 +687,16 @@ function ProfileNode({
   profileNameMatched: boolean;
 }) {
   const params = useParams();
-  // Collapsed by default so the tree doesn't fire one fetch per
-  // profile on first render. Expand sticky if the user is currently
-  // looking at this profile, OR while a search query is active --
-  // a search hit is worthless if the children stay hidden behind
-  // a chevron the user has to click.
-  const [open, setOpen] = useState<boolean>(params.profile === profile.name);
+  // Every profile row starts collapsed. Previously the row of the
+  // currently-active profile auto-opened, which cascaded into a
+  // ``ProfileScopeChildren`` mount → ``liveCatalogs`` + ``liveDatabases``
+  // fetches → live DB fall-through when the cache was empty. That
+  // broke the "no work before the user expands a node" contract on
+  // any URL that names a profile (e.g. /db/<profile>/...). The chevron
+  // is the only signal that opens the row now; an active search query
+  // still force-expands so search hits aren't hidden behind a closed
+  // chevron the user would have to click.
+  const [open, setOpen] = useState<boolean>(false);
   const effectiveOpen = open || !!query;
 
   return (

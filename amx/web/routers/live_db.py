@@ -335,6 +335,150 @@ def _columns_from_cache(
     return rows
 
 
+def _profile_backend(cfg: AMXConfig, profile: str) -> str:
+    """Best-effort lookup of the connecting backend for ``profile``.
+
+    Used by every cache write-through so freshly-inserted rows carry
+    the same backend stamp that ``/search sync`` writes. Returns an
+    empty string on any failure — the catalog accepts that and the
+    sidebar still reads back correctly.
+    """
+    try:
+        db_cfg = cfg.db_profiles.get(profile) if cfg.db_profiles else None
+        return str(getattr(db_cfg, "backend", "") or "") if db_cfg else ""
+    except Exception:
+        return ""
+
+
+def _writethrough_databases_to_catalog(
+    profile: str,
+    *,
+    db_backend: str,
+    databases: list[str],
+) -> None:
+    """Persist a list of catalog / database names into ``catalog_entities``.
+
+    Writes one marker row per name with ``entity_kind='database'``.
+    The sidebar's catalog-inventory read (``fetch_inventory(scope=
+    'databases')``) surfaces any row with a non-empty ``database_name``
+    regardless of ``entity_kind``, so the next expand of the same
+    profile serves from cache.
+
+    Best-effort: failures are swallowed. Write-through is a cache-
+    warming nice-to-have; never fail the user-facing request.
+    """
+    if not databases:
+        return
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+        if cat is None:
+            return
+        with cat._connect() as conn:  # noqa: SLF001 — same access pattern as drift.py
+            for name in databases:
+                clean = (name or "").strip()
+                if not clean:
+                    continue
+                cat._upsert_entity(  # noqa: SLF001
+                    conn,
+                    db_profile=profile,
+                    db_backend=db_backend,
+                    database_name=clean,
+                    schema_name="",
+                    table_name="",
+                    column_name=None,
+                    entity_kind="database",
+                )
+    except Exception:
+        return
+
+
+def _writethrough_schemas_to_catalog(
+    profile: str,
+    *,
+    db_backend: str,
+    database_scope: str | None,
+    schemas: list[str],
+) -> None:
+    """Persist a list of schema names under one database into
+    ``catalog_entities`` with ``entity_kind='schema'``.
+
+    The schema marker complements the existing ``entity_kind='table'``
+    rows that ``/search sync`` writes: when the sidebar fetches
+    schemas on a cache miss for a catalog that has not been fully
+    synced yet, we still want the next expand to be cache-served.
+    ``fetch_distinct_schemas`` matches both kinds.
+    """
+    if not schemas:
+        return
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+        if cat is None:
+            return
+        with cat._connect() as conn:  # noqa: SLF001
+            for schema in schemas:
+                clean = (schema or "").strip()
+                if not clean:
+                    continue
+                cat._upsert_entity(  # noqa: SLF001
+                    conn,
+                    db_profile=profile,
+                    db_backend=db_backend,
+                    database_name=database_scope or "",
+                    schema_name=clean,
+                    table_name="",
+                    column_name=None,
+                    entity_kind="schema",
+                )
+    except Exception:
+        return
+
+
+def _writethrough_assets_to_catalog(
+    profile: str,
+    schema: str,
+    *,
+    db_backend: str,
+    database_scope: str | None,
+    assets: list[dict[str, Any]],
+) -> None:
+    """Persist a list of tables / views into ``catalog_entities`` with
+    ``entity_kind='table'`` so a subsequent expand of the same schema
+    serves from cache. Each entry of *assets* is the route's response
+    shape ``{"name": ..., "kind": ...}``.
+    """
+    if not assets:
+        return
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+        if cat is None:
+            return
+        with cat._connect() as conn:  # noqa: SLF001
+            for asset in assets:
+                name = (asset.get("name") or "").strip()
+                if not name:
+                    continue
+                kind = (asset.get("kind") or "table").strip().lower()
+                cat._upsert_entity(  # noqa: SLF001
+                    conn,
+                    db_profile=profile,
+                    db_backend=db_backend,
+                    database_name=database_scope or "",
+                    schema_name=schema,
+                    table_name=name,
+                    column_name=None,
+                    entity_kind="table",
+                    asset_kind=kind or "table",
+                )
+    except Exception:
+        return
+
+
 def _writethrough_columns_to_catalog(
     profile: str,
     schema: str,
@@ -494,9 +638,16 @@ def list_catalogs(
     db = _connector_for_scope(cfg, name)
     supports = _coerce_or_500("Probing catalog support", db.supports_catalogs)
     catalogs = _coerce_or_500("Listing catalogs", db.list_catalogs) if supports else []
+    catalog_list = list(catalogs)
+    if catalog_list and supports:
+        _writethrough_databases_to_catalog(
+            name,
+            db_backend=_profile_backend(cfg, name),
+            databases=catalog_list,
+        )
     return {
         "supports_catalogs": bool(supports),
-        "catalogs": list(catalogs),
+        "catalogs": catalog_list,
         "active_catalog": scope["active_catalog"],
         "active_project": scope["active_project"],
         "source": "live",
@@ -528,8 +679,15 @@ def list_databases(
             }
     db = _connector_for_scope(cfg, name)
     databases = _coerce_or_500("Listing databases", db.list_databases)
+    db_list = list(databases)
+    if db_list:
+        _writethrough_databases_to_catalog(
+            name,
+            db_backend=_profile_backend(cfg, name),
+            databases=db_list,
+        )
     return {
-        "databases": list(databases),
+        "databases": db_list,
         "active_database": scope["active_database"],
         "source": "live",
     }
@@ -621,6 +779,13 @@ def list_schemas(
         except Exception:
             comment = ""
         items.append({"name": schema_name, "comment": comment})
+    if items:
+        _writethrough_schemas_to_catalog(
+            name,
+            db_backend=_profile_backend(cfg, name),
+            database_scope=cache_scope,
+            schemas=[it["name"] for it in items],
+        )
     return {
         "catalog": catalog or None,
         "schemas": [it["name"] for it in items],
@@ -768,6 +933,14 @@ def list_assets(
         except Exception:
             comment = ""
         items.append({"name": asset_name, "kind": kind.value, "comment": comment})
+    if items:
+        _writethrough_assets_to_catalog(
+            name,
+            schema,
+            db_backend=_profile_backend(cfg, name),
+            database_scope=cache_scope,
+            assets=items,
+        )
     return {"schema": schema, "assets": items, "count": len(items), "source": "live"}
 
 
