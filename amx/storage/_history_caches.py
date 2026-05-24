@@ -377,6 +377,91 @@ def lookup_column_comments_cache_bulk(
     return out
 
 
+def lookup_column_profiles_cache(
+    hs: SQLiteHistoryStore,
+    *,
+    db_profile: str,
+    database: str,
+    schema: str,
+    table: str,
+) -> list[dict[str, Any]]:
+    """Return cached column profiles ``[{"name", "dtype", "nullable"}]``.
+
+    Reads the ``column_profiles_cache`` table populated by historical
+    profiling runs. Three properties set this apart from
+    :func:`lookup_column_comments_cache`:
+
+    1. **TTL-agnostic.** Rows are served regardless of ``expires_at``.
+       The Studio cache-first browse contract is "surface whatever was
+       cached rather than silently issue a live-DB round-trip the user
+       did not ask for" — so an expired profile row is still better
+       than an empty table page.
+    2. **Scope-tolerant.** The exact ``(profile, database, schema,
+       table)`` row is preferred, but the SPA sometimes omits the
+       ``database`` query parameter on cold navigation; the freshest
+       row for ``(profile, schema, table)`` across any database is the
+       fallback.
+    3. **Legacy-safe.** ``column_profiles_cache`` is not in the current
+       init DDL and has no live writer — a fresh install simply lacks
+       the table. A missing table (or any read error) yields ``[]`` so
+       callers fall through to their next source.
+
+    Carries column dtype + nullable, which the name-only
+    ``column_comments_cache`` map cannot.
+    """
+    profile = str(db_profile or "")
+    db = str(database or "")
+    sch = str(schema or "")
+    tbl = str(table or "")
+    try:
+        with hs._connect() as conn:
+            row = None
+            if db:
+                row = conn.execute(
+                    """
+                    SELECT profiles_json FROM column_profiles_cache
+                    WHERE db_profile = ? AND database_name = ?
+                      AND schema_name = ? AND table_name = ?
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    (profile, db, sch, tbl),
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT profiles_json FROM column_profiles_cache
+                    WHERE db_profile = ? AND schema_name = ? AND table_name = ?
+                    ORDER BY fetched_at DESC LIMIT 1
+                    """,
+                    (profile, sch, tbl),
+                ).fetchone()
+    except Exception:
+        # Table absent on a fresh install, or any read error — let the
+        # caller fall through to its next cache layer.
+        return []
+    if row is None:
+        return []
+    try:
+        data = json.loads(row["profiles_json"]) or []
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        out.append(
+            {
+                "name": name,
+                "dtype": str(item.get("dtype") or ""),
+                "nullable": bool(item.get("nullable", True)),
+            }
+        )
+    return out
+
+
 def invalidate_column_comments_cache(
     hs: SQLiteHistoryStore,
     *,
