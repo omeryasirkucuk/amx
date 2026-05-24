@@ -160,6 +160,19 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_utc(value: Any) -> datetime | None:
+    """Coerce a datetime to aware-UTC for safe comparison.
+
+    SQLite round-trips ``DateTime`` columns as naive; warehouse backends
+    return aware. Comparing the two raises ``TypeError``, so normalise a
+    naive value to UTC before any ``>`` comparison. Non-datetimes and
+    ``None`` pass through as ``None``.
+    """
+    if not isinstance(value, datetime):
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
 def _jsonable(value: Any) -> Any:
     """Recursively convert a value to a JSON-serializable form.
 
@@ -240,6 +253,7 @@ class SQLAlchemyHistoryStore:
         self._t_lineage_comments = self._md.tables[f"{schema}.lineage_comments"]
         self._t_pages = self._md.tables[f"{schema}.documentation_pages"]
         self._t_documentation_pages = self._t_pages  # alias used by backfill code
+        self._t_catalog = self._md.tables[f"{schema}.catalog_entities"]
         self._hostname = _hostname()
         self._username = _username()
         self._client_version = _client_version()
@@ -894,6 +908,107 @@ class SQLAlchemyHistoryStore:
         for row in rows:
             host = row.get("hostname") or ""
             if exclude_hostname and host == exclude_hostname:
+                continue
+            out.append(dict(row))
+        return out
+
+    # ── shared catalog (structural metadata) ──────────────────────────────
+
+    def upsert_catalog_entities(self, rows: list[dict[str, Any]]) -> int:
+        """Upsert structural catalog rows into the shared store.
+
+        Each row is keyed by the natural tuple
+        (db_profile, database_name, schema_name, table_name, column_name).
+        Last-write-wins: an incoming row only overwrites the stored one
+        when its ``last_synced_at`` is strictly newer (so an older
+        snapshot from a lagging teammate never clobbers a fresher count).
+
+        Portable across backends — a per-row SELECT then conditional
+        INSERT/UPDATE rather than dialect-specific ``ON CONFLICT``.
+        Returns the number of rows inserted or updated. Best-effort:
+        a backend error is logged and the count so far is returned, so
+        a partial shared outage never raises into the caller.
+        """
+        if not rows:
+            return 0
+        t = self._t_catalog
+        written = 0
+        try:
+            with self.engine.begin() as conn:
+                for row in rows:
+                    key = and_(
+                        t.c.db_profile == row["db_profile"],
+                        t.c.database_name == (row.get("database_name") or ""),
+                        t.c.schema_name == row["schema_name"],
+                        t.c.table_name == row["table_name"],
+                        t.c.column_name == (row.get("column_name") or ""),
+                    )
+                    existing = conn.execute(
+                        select(t.c.id, t.c.last_synced_at).where(key)
+                    ).mappings().first()
+                    payload = {
+                        "db_profile": row["db_profile"],
+                        "db_backend": row.get("db_backend"),
+                        "database_name": row.get("database_name") or "",
+                        "schema_name": row["schema_name"],
+                        "table_name": row["table_name"],
+                        "column_name": row.get("column_name") or "",
+                        "entity_kind": row["entity_kind"],
+                        "asset_kind": row.get("asset_kind"),
+                        "dtype": row.get("dtype"),
+                        "nullable": row.get("nullable"),
+                        "pk_flag": row.get("pk_flag"),
+                        "fk_flag": row.get("fk_flag"),
+                        "row_count": row.get("row_count"),
+                        "last_synced_at": row.get("last_synced_at"),
+                        "created_by": row.get("created_by") or self._username,
+                        "hostname": row.get("hostname") or self._hostname,
+                        "client_version": row.get("client_version") or self._client_version,
+                    }
+                    if existing is None:
+                        payload["id"] = str(uuid.uuid4())
+                        conn.execute(insert(t).values(**payload))
+                        written += 1
+                    else:
+                        # Normalise to aware-UTC before comparing: SQLite
+                        # round-trips DateTime as naive, so a naive stored
+                        # value and an aware incoming one would raise
+                        # "can't compare offset-naive and offset-aware".
+                        incoming_ts = _as_utc(row.get("last_synced_at"))
+                        stored_ts = _as_utc(existing.get("last_synced_at"))
+                        # Last-write-wins: only overwrite with a strictly
+                        # newer snapshot. Missing timestamps never win.
+                        if incoming_ts is not None and (
+                            stored_ts is None or incoming_ts > stored_ts
+                        ):
+                            conn.execute(
+                                update(t).where(t.c.id == existing["id"]).values(**payload)
+                            )
+                            written += 1
+        except SQLAlchemyError as exc:
+            log.warning("upsert_catalog_entities failed after %d rows: %s", written, exc)
+        return written
+
+    def fetch_catalog_entities(
+        self, *, exclude_hostname: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return shared catalog rows for pull-to-local.
+
+        Unlike runs, catalog rows are NOT filtered to other hosts —
+        the freshest structural snapshot is wanted regardless of who
+        produced it (last-write-wins already deduped on push). The
+        ``exclude_hostname`` arg is accepted for symmetry with
+        :meth:`iter_runs_by_other_hosts` but defaults to including all.
+        """
+        try:
+            with self.engine.begin() as conn:
+                rows = conn.execute(select(self._t_catalog)).mappings().all()
+        except SQLAlchemyError as exc:
+            log.debug("fetch_catalog_entities failed: %s", exc)
+            return []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if exclude_hostname and (row.get("hostname") or "") == exclude_hostname:
                 continue
             out.append(dict(row))
         return out
