@@ -2554,8 +2554,19 @@ class ToolBox(
         # already assembled — zero extra cost.
         nullable_count = sum(1 for c in all_cols if c.get("nullable"))
         documented_count = sum(1 for c in all_cols if str(c.get("comment") or "").strip())
+        # The catalog cache does NOT capture row counts — /search sync
+        # records 0 for every table. So a cached row_count of 0 means
+        # "unknown", not "empty table"; presenting it as 0 would let the
+        # LLM falsely report an empty table (the same failure mode the
+        # zero-column guard fixes). Only the live profile_table path
+        # yields a trustworthy count. When unknown we emit ``null`` +
+        # ``row_count_known: false`` so the model defers instead of
+        # claiming 0.
+        row_count_known = source == "live" or int(profile.row_count or 0) > 0
+        row_count_value: int | None = int(profile.row_count or 0) if row_count_known else None
         stats = {
-            "row_count": int(profile.row_count or 0),
+            "row_count": row_count_value,
+            "row_count_known": row_count_known,
             "column_count": len(all_cols),
             "nullable_columns": nullable_count,
             "non_nullable_columns": max(0, len(all_cols) - nullable_count),
@@ -2571,7 +2582,8 @@ class ToolBox(
             "catalog": cat_arg or None,
             "found": True,
             "table_comment": str(profile.existing_comment or ""),
-            "row_count": int(profile.row_count or 0),
+            "row_count": row_count_value,
+            "row_count_known": row_count_known,
             "column_count": len(all_cols),
             "stats": stats,
             "dtype_summary": dtype_summary,
