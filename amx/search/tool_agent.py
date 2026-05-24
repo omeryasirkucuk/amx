@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import threading
 import time as _llm_time
 from collections.abc import Callable
@@ -32,11 +33,14 @@ from amx.llm.provider import LLMProvider
 from amx.search._tool_agent_prompts import agent_system_prompt as _agent_system_prompt
 from amx.search.agent_tools import ToolBox
 from amx.search.catalog import SearchCatalog
+from amx.utils.logging import get_logger
 from amx.utils.token_tracker import estimate_tokens
 from amx.utils.token_tracker import tracker as token_tracker
 
 if TYPE_CHECKING:
     from amx.utils.live_display import LiveDisplay
+
+log = get_logger("search.tool_agent")
 
 # Maximum number of tool-call iterations before we force the LLM to answer.
 # A typical question takes 1–3 tool calls; 6 gives headroom for chained
@@ -47,6 +51,47 @@ _MAX_ITERATIONS = 6
 # Cap on tokens per LLM round in the agent loop. Tool answers are JSON
 # blobs; we trim them in agent_tools._safe_json so the prompt stays bounded.
 _AGENT_MAX_TOKENS = 1500
+
+# Cumulative input-token cap on the agent's `messages` list. Override
+# per-deployment via AMX_ASK_INPUT_TOKEN_BUDGET (lower for 32K-context
+# providers). When the next iteration's prompt would exceed this, the
+# oldest tool results are progressively replaced with a "context budget
+# reached" placeholder until the prompt fits — prevents silent model
+# choke on multi-turn sessions that accumulate 10–15 k tokens of tool
+# output. 100 000 leaves headroom for system prompt, tools schema, and
+# the configured output cap on the 200K Claude / GPT-4-turbo window.
+_AGENT_INPUT_TOKEN_BUDGET = int(os.environ.get("AMX_ASK_INPUT_TOKEN_BUDGET", "100000"))
+
+# Sentinel content that replaces a truncated tool result. Plain JSON so
+# the model parses it the same way as a normal result envelope.
+_TRUNCATED_TOOL_PAYLOAD = '{"truncated": true, "reason": "context budget reached"}'
+
+
+def _enforce_input_token_budget(
+    messages: list[dict[str, Any]],
+    *,
+    budget: int,
+) -> bool:
+    """Truncate oldest tool-result contents in-place until the estimated
+    token cost of `messages` falls under `budget`. Returns True when
+    any truncation occurred.
+
+    Tool results are mutated in iteration order so the model still sees
+    the most recent results in full — older results decay first.
+    """
+    if estimate_tokens(messages) <= budget:
+        return False
+    truncated_any = False
+    for msg in messages:
+        if msg.get("role") != "tool":
+            continue
+        if msg.get("content") == _TRUNCATED_TOOL_PAYLOAD:
+            continue
+        msg["content"] = _TRUNCATED_TOOL_PAYLOAD
+        truncated_any = True
+        if estimate_tokens(messages) <= budget:
+            return True
+    return truncated_any
 
 
 class ToolAgentResult:
@@ -653,7 +698,8 @@ def _run_tool_loop(
     schemas_hint: list[str] = []
     try:
         schemas_hint = [str(s) for s in toolbox._live_db().list_schemas()]  # noqa: SLF001
-    except Exception:
+    except Exception as exc:
+        log.warning("schemas_hint pre-fetch failed: %s", exc)
         schemas_hint = []
 
     # Multi-profile system-prompt enrichment: scope (which profiles the
@@ -721,9 +767,11 @@ def _run_tool_loop(
         if on_thinking_delta is not None:
             try:
                 on_thinking_delta(text)
-            except Exception:
-                # Never let a UI hook crash the agent loop.
-                pass
+            except Exception as exc:
+                # Never let a UI hook crash the agent loop; log so the
+                # silent UI failure is at least diagnosable in service
+                # logs.
+                log.warning("on_thinking_delta hook failed: %s", exc)
 
     on_thinking = (
         _forward_thinking if (display is not None or on_thinking_delta is not None) else None
@@ -735,6 +783,17 @@ def _run_tool_loop(
             from amx.agents.orchestrator import RunCancelled
 
             raise RunCancelled(f"Cancelled before iteration {iteration}")
+        # Defensive truncation BEFORE building the LiteLLM payload so a
+        # model with a smaller context window never gets a silently
+        # over-budget prompt. Mutates `messages` in place; subsequent
+        # iterations see the truncated tool results too.
+        if _enforce_input_token_budget(messages, budget=_AGENT_INPUT_TOKEN_BUDGET):
+            log.warning(
+                "tool_agent iter %d: input budget %d tokens exceeded; "
+                "truncated oldest tool results",
+                iterations,
+                _AGENT_INPUT_TOKEN_BUDGET,
+            )
         chat_messages = [_convert_message_for_litellm(m) for m in messages]
         # Pre-call token estimate so the tracker can label this step's
         # input cost. Falls back to 0 silently when tiktoken can't
@@ -754,9 +813,10 @@ def _run_tool_loop(
                 return
             try:
                 on_content_delta(chunk)
-            except Exception:
-                # Never let a UI hook crash the agent loop.
-                pass
+            except Exception as exc:
+                # Never let a UI hook crash the agent loop; log so the
+                # silent UI failure is at least diagnosable.
+                log.warning("on_content_delta hook failed: %s", exc)
 
         with _llm_round_heartbeat(
             on_llm_round=on_llm_round,
@@ -854,10 +914,38 @@ def _run_tool_loop(
                             "scope_profiles": list(toolbox.db_profiles),
                         }
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("on_tool_start hook failed: %s", exc)
             tool_t0 = _time.monotonic()
-            tool_result = toolbox.invoke(tc.name, tc.arguments or "{}")
+            try:
+                tool_result = toolbox.invoke(tc.name, tc.arguments or "{}")
+            except Exception as exc:
+                # Loop must NEVER crash on a tool exception — surface a
+                # structured error to the LLM so it can recover (try a
+                # different tool, or compose an answer that admits the
+                # failure). Without this, a transient DB blip kills the
+                # whole /ask turn.
+                log.warning(
+                    "tool %s raised during invoke: %s",
+                    tc.name,
+                    exc,
+                    exc_info=True,
+                )
+                # Argument-shape errors the LLM can fix by re-prompting
+                # are "permanent" (don't retry); everything else is
+                # treated as "transient" (retry-eligible).
+                category = (
+                    "permanent"
+                    if isinstance(exc, (ValueError, KeyError, TypeError))
+                    else "transient"
+                )
+                tool_result = json.dumps(
+                    {
+                        "error": f"Tool {tc.name} failed: {exc}",
+                        "category": category,
+                        "tool_name": tc.name,
+                    }
+                )
             tool_elapsed_ms = int((_time.monotonic() - tool_t0) * 1000)
             per_tool_latency_ms[tc.name] = per_tool_latency_ms.get(tc.name, 0) + tool_elapsed_ms
             summary = _summarise_tool_call(tc, tool_result)
@@ -900,14 +988,18 @@ def _run_tool_loop(
                         else:
                             summary["source"] = "mixed"
                     summary["elapsed_ms"] = tool_elapsed_ms
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning(
+                    "failed to parse tool %s result for source detection: %s",
+                    tc.name,
+                    exc,
+                )
             tool_call_log.append(summary)
             if on_tool_call is not None:
                 try:
                     on_tool_call(summary)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("on_tool_call hook failed: %s", exc)
             messages.append(
                 {
                     "role": "tool",
@@ -996,11 +1088,15 @@ def _run_tool_loop(
                                     }
                                 )
                                 _lineage_pages_appendix_injected = True
-            except Exception:
+            except Exception as exc:
                 # Best-effort enrichment — a failure here must never
-                # break the answer path. The legacy CLI path applies
-                # the same swallow-and-log policy.
-                pass
+                # break the answer path. Logged for diagnosis (the
+                # legacy CLI path's "swallow-and-log policy" referenced
+                # in earlier comments was actually swallow-only; this
+                # fixes the missing log without changing recovery).
+                log.warning(
+                    "lineage/pages enrichment failed: %s", exc, exc_info=True
+                )
     else:
         # Hit the iteration cap without a final answer — force a closing call
         # without ``tools`` so the LLM returns plain text from whatever it
