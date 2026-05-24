@@ -34,6 +34,7 @@ from amx.search._tool_agent_prompts import agent_system_prompt as _agent_system_
 from amx.search.agent_tools import ToolBox
 from amx.search.catalog import SearchCatalog
 from amx.search.pipeline import budget as _budget
+from amx.search.pipeline.focus import compute_focus_profile as _compute_focus_profile
 from amx.utils.logging import get_logger
 from amx.utils.token_tracker import estimate_tokens
 from amx.utils.token_tracker import tracker as token_tracker
@@ -611,41 +612,6 @@ def _llm_round_heartbeat(
             )
         except Exception:
             pass
-
-
-def _compute_focus_profile(
-    session_memory: list[dict[str, Any]] | None,
-    scope: list[str],
-) -> str | None:
-    """Detect the conversation's focus profile from prior turns.
-
-    Heuristic: scan the last ~3 assistant turns' answer text for
-    ``db_profile=NAME`` or ``profile NAME`` mentions. If one profile
-    accounts for ≥60% of the mentions, return it. Otherwise return
-    ``None`` and let the LLM pick. Lightweight on purpose — we don't
-    re-parse tool_call traces (those aren't carried in session_memory)
-    so the heuristic operates on what the LLM has already said.
-
-    Skipped entirely when scope is single-profile (focus is implicit).
-    """
-    if not scope or len(scope) < 2 or not session_memory:
-        return None
-    last_turns = [t for t in session_memory if t.get("role") == "assistant"][-3:]
-    if not last_turns:
-        return None
-    counts: dict[str, int] = dict.fromkeys(scope, 0)
-    text_blob = " ".join(str(t.get("content") or "") for t in last_turns).lower()
-    for name in scope:
-        # Word-boundary-ish: name surrounded by whitespace, punctuation, or quotes.
-        # Cheap substring count is correct enough for short profile names.
-        counts[name] = text_blob.count(name.lower())
-    total = sum(counts.values())
-    if total < 2:  # too few mentions → don't bias
-        return None
-    top_name, top_count = max(counts.items(), key=lambda kv: kv[1])
-    if top_count == 0 or top_count / total < 0.60:
-        return None
-    return top_name
 
 
 def _run_tool_loop(
