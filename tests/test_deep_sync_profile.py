@@ -134,6 +134,40 @@ def test_deep_sync_empty_catalog_finishes_with_note(
     assert called["n"] == 0  # no connector opened
 
 
+def test_deep_sync_fills_row_count_when_profiler_returns_zero(
+    catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On backends that block the profiler's COUNT(*) (e.g. Databricks),
+    profile_table returns row_count=0. Deep sync then runs an exact
+    count via _exact_row_count and persists THAT, so Databricks tables
+    get real counts instead of a misleading 0."""
+    _seed_skeleton(catalog.db_path, "p", [("dbx", "amx_test_schema", "adrc")])
+
+    class _ZeroCountConn:
+        def profile_table(self, schema: str, table: str, sample_size: int = 0) -> TableProfile:
+            return TableProfile(
+                schema=schema,
+                name=table,
+                asset_kind=AssetKind.TABLE,
+                row_count=0,  # profiler blocked the COUNT(*)
+                columns=[ColumnProfile(name="id", dtype="int", nullable=True, existing_comment="")],
+            )
+
+    monkeypatch.setattr(drift, "_scoped_connector", lambda *a, **k: _ZeroCountConn())
+    # Stand in for the exact COUNT(*) the connector would run.
+    monkeypatch.setattr(drift, "_exact_row_count", lambda *a, **k: 123456)
+
+    summary = drift.deep_sync_profile(_cfg_stub(), "p", catalog)
+
+    assert summary["state"] == "done"
+    with catalog._connect() as conn:  # noqa: SLF001
+        row_count = conn.execute(
+            "SELECT row_count FROM catalog_entities "
+            "WHERE entity_kind = 'table' AND table_name = 'adrc'"
+        ).fetchone()[0]
+    assert row_count == 123456
+
+
 def test_deep_sync_continues_past_a_failing_table(
     catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
