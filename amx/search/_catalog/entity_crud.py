@@ -539,6 +539,15 @@ class EntityCrudMixin:
         can reach multiple databases and each has its own schemas.
         Without the filter, the cache would leak schemas across
         databases under the same profile.
+
+        Matches both ``entity_kind='table'`` rows (the historical
+        marker — present whenever any table under the schema has been
+        synced) and ``entity_kind='schema'`` rows (the lighter marker
+        the sidebar's live-fallback path writes when the user expands
+        a catalog and the connector returned schemas but no tables
+        yet). Without the schema marker, a sidebar that fetched
+        schemas live on a cache miss would never serve them from
+        cache on the next expand.
         """
         with self._connect() as conn:
             if database_name is None:
@@ -546,7 +555,7 @@ class EntityCrudMixin:
                     """
                     SELECT schema_name, MAX(last_synced_at) AS last_synced_at
                     FROM catalog_entities
-                    WHERE db_profile = ? AND entity_kind = 'table'
+                    WHERE db_profile = ? AND entity_kind IN ('table', 'schema')
                       AND schema_name != ''
                     GROUP BY schema_name
                     ORDER BY schema_name
@@ -559,7 +568,7 @@ class EntityCrudMixin:
                     SELECT schema_name, MAX(last_synced_at) AS last_synced_at
                     FROM catalog_entities
                     WHERE db_profile = ? AND database_name = ?
-                      AND entity_kind = 'table'
+                      AND entity_kind IN ('table', 'schema')
                       AND schema_name != ''
                     GROUP BY schema_name
                     ORDER BY schema_name

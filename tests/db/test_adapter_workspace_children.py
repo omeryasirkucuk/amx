@@ -18,7 +18,7 @@ def _databricks_adapter():
     return a
 
 
-def test_databricks_yields_dir_and_notebook_skips_file():
+def test_databricks_yields_dir_repo_and_notebook_skips_file():
     a = _databricks_adapter()
     a._workspace_client_override.list_workspace_objects_immediate.return_value = iter(
         [
@@ -42,19 +42,47 @@ def test_databricks_yields_dir_and_notebook_skips_file():
             {
                 "object_id": 4,
                 "object_type": "REPO",
-                "path": "/Repos/alice",
+                "path": "/Repos/alice/my-repo",
+                "creator_user_name": "alice@x.com",
             },
         ]
     )
     rows = list(a.list_workspace_children(parent_path="/Users/alice", kind="notebook"))
-    assert len(rows) == 2
-    folder, notebook = rows
+    assert len(rows) == 3
+    folder, notebook, repo = rows
     assert folder.is_directory and folder.external_id is None
     assert folder.path == "/Users/alice/folder"
     assert folder.name == "folder"
     assert not notebook.is_directory
     assert notebook.external_id == "2"
     assert notebook.owner == "alice@x.com"
+    assert repo.is_directory and repo.external_id is None
+    assert repo.path == "/Repos/alice/my-repo"
+    assert repo.name == "my-repo"
+    assert repo.owner == "alice@x.com"
+
+
+def test_databricks_repo_drillable_lists_inner_notebook():
+    """A REPO node behaves like a folder: recursing into it via parent_path
+    surfaces the notebooks inside the Git folder."""
+    a = _databricks_adapter()
+    a._workspace_client_override.list_workspace_objects_immediate.return_value = iter(
+        [
+            {
+                "object_id": 7,
+                "object_type": "NOTEBOOK",
+                "path": "/Repos/alice/my-repo/etl",
+                "modified_at": 1700000000000,
+                "creator_user_name": "alice@x.com",
+            },
+        ]
+    )
+    rows = list(a.list_workspace_children(parent_path="/Repos/alice/my-repo", kind="notebook"))
+    assert len(rows) == 1
+    nb = rows[0]
+    assert nb.path == "/Repos/alice/my-repo/etl"
+    assert not nb.is_directory
+    assert nb.external_id == "7"
 
 
 def test_databricks_unknown_kind_yields_nothing():

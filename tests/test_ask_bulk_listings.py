@@ -27,7 +27,8 @@ def test_default_bulk_methods_return_none() -> None:
 
 
 def test_databricks_list_volumes_bulk_query_shape() -> None:
-    """The Databricks bulk volume query targets system.information_schema.volumes."""
+    """The Databricks bulk volume query targets the catalog's own
+    information_schema.volumes (per-catalog, not the system aggregator)."""
     captured: list[tuple[str, dict]] = []
 
     class FakeConn:
@@ -78,8 +79,9 @@ def test_databricks_list_volumes_bulk_query_shape() -> None:
     ]
     assert len(captured) == 1
     sql, params = captured[0]
-    assert "system.information_schema.volumes" in sql
-    assert params == {"cat": "prod_catalog"}
+    assert "`prod_catalog`.information_schema.volumes" in sql
+    assert "system.information_schema" not in sql
+    assert params == {}
 
 
 def test_databricks_list_assets_bulk_normalises_kinds() -> None:

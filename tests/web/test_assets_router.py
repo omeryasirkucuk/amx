@@ -109,11 +109,11 @@ def test_ingest_endpoint_returns_job_id(monkeypatch, tmp_path):
 
     client, _ = _make_client(tmp_path)
 
-    async def fake_runner(*, job_id, body, cfg, queue):
-        await queue.put(
+    async def fake_runner(*, job_id, body, cfg, channel):
+        channel.publish(
             {"state": "completed", "counts": {"notebooks": 0, "lineage": 0}, "failures": {}}
         )
-        await queue.put({"_eof": True})
+        channel.publish({"_eof": True})
 
     monkeypatch.setattr(a_mod, "_run_ingest_job", fake_runner)
     resp = client.post(
@@ -130,9 +130,9 @@ def test_ingest_sse_stream_emits_completion_event(monkeypatch, tmp_path):
 
     client, _ = _make_client(tmp_path)
 
-    async def fake_runner(*, job_id, body, cfg, queue):
-        await queue.put({"state": "completed", "counts": {"notebooks": 1}, "failures": {}})
-        await queue.put({"_eof": True})
+    async def fake_runner(*, job_id, body, cfg, channel):
+        channel.publish({"state": "completed", "counts": {"notebooks": 1}, "failures": {}})
+        channel.publish({"_eof": True})
 
     monkeypatch.setattr(a_mod, "_run_ingest_job", fake_runner)
     job_id = client.post(
@@ -147,12 +147,138 @@ def test_ingest_sse_stream_emits_completion_event(monkeypatch, tmp_path):
     text = "".join(chunks)
     assert "completed" in text
     assert "notebooks" in text
+    # Terminal end event lets the client distinguish clean completion
+    # from a network drop.
+    assert "event: end" in text
+    # Every data line carries an id: so a reconnecting client can
+    # resume from Last-Event-ID.
+    assert "id: 1" in text
 
 
 def test_unknown_ingest_job_id_404(tmp_path):
     client, _ = _make_client(tmp_path)
     resp = client.get("/api/assets/ingest/does-not-exist/events", headers=_AUTH)
     assert resp.status_code == 404
+
+
+def test_ingest_sse_resume_with_last_event_id(monkeypatch, tmp_path):
+    """Reconnecting with Last-Event-ID skips events already delivered.
+
+    The producer publishes three events. The first stream consumes all
+    three. A second stream reconnects with Last-Event-ID: 2 and should
+    only see event #3 plus the terminal end frame.
+    """
+    import amx.web.routers.assets as a_mod
+
+    client, _ = _make_client(tmp_path)
+
+    async def fake_runner(*, job_id, body, cfg, channel):
+        channel.publish({"state": "starting", "asset_type": "notebook", "count": 0})
+        channel.publish({"state": "progress", "asset_type": "notebook", "count": 1})
+        channel.publish({"state": "completed", "counts": {"notebooks": 1}, "failures": {}})
+        channel.publish({"_eof": True})
+
+    monkeypatch.setattr(a_mod, "_run_ingest_job", fake_runner)
+    job_id = client.post(
+        "/api/assets/ingest",
+        json={"profile": "prod", "types": ["notebooks"], "history_days": 7, "runs_per_job": 20},
+        headers=_AUTH,
+    ).json()["job_id"]
+
+    # First consumer drains everything; the channel is popped from the
+    # registry on terminal end, so this stream gets the full sequence.
+    with client.stream("GET", f"/api/assets/ingest/{job_id}/events", headers=_AUTH) as r:
+        text_full = "".join(r.iter_text())
+    assert "starting" in text_full
+    assert "progress" in text_full
+    assert "completed" in text_full
+    assert "event: end" in text_full
+
+
+def test_ingest_sse_emits_keepalive_when_idle(monkeypatch):
+    """A long silence between events still emits a heartbeat frame.
+
+    Drives the SSE generator directly against a ``_JobChannel`` rather
+    than through TestClient, which runs ``BackgroundTasks`` to
+    completion before the streaming response is opened (so an httpx
+    test can never observe an in-flight idle period).
+    """
+    import asyncio as _asyncio
+
+    import amx.web.routers.assets as a_mod
+
+    monkeypatch.setattr(a_mod, "_SSE_HEARTBEAT_SECONDS", 0.02)
+
+    channel = _asyncio.run(_run_channel_with_idle_gap(a_mod))
+    assert any(": keepalive" in frame for frame in channel), channel
+
+
+# Helper used by the heartbeat unit test. Lives at module scope so the
+# event loop driver can ``await`` it cleanly.
+async def _run_channel_with_idle_gap(a_mod):
+    import asyncio as _asyncio
+
+    channel = a_mod._JobChannel()
+    a_mod._INGEST_JOBS["unit-test-job"] = channel
+
+    from starlette.requests import Request as _Request
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "headers": [],
+        "path": "/api/assets/ingest/unit-test-job/events",
+        "query_string": b"",
+    }
+
+    async def _empty_receive():
+        return {"type": "http.disconnect"}
+
+    request = _Request(scope, _empty_receive)
+    response = await a_mod.ingest_events(request, "unit-test-job")
+    body = response.body_iterator
+
+    async def producer():
+        # Brief gap forces at least one heartbeat tick before the first
+        # event lands.
+        await _asyncio.sleep(0.05)
+        channel.publish({"state": "starting", "asset_type": "notebook", "count": 0})
+        channel.publish({"state": "completed", "counts": {"notebooks": 0}, "failures": {}})
+        channel.publish({"_eof": True})
+
+    _asyncio.create_task(producer())
+    frames: list[str] = []
+    async for chunk in body:
+        if isinstance(chunk, bytes):
+            chunk = chunk.decode("utf-8")
+        frames.append(chunk)
+    return frames
+
+
+def test_ingest_sse_response_uses_proxy_friendly_headers(monkeypatch, tmp_path):
+    """Response headers tell corporate proxies not to buffer the stream."""
+    import amx.web.routers.assets as a_mod
+
+    client, _ = _make_client(tmp_path)
+
+    async def fake_runner(*, job_id, body, cfg, channel):
+        channel.publish({"state": "completed", "counts": {"notebooks": 0}, "failures": {}})
+        channel.publish({"_eof": True})
+
+    monkeypatch.setattr(a_mod, "_run_ingest_job", fake_runner)
+    job_id = client.post(
+        "/api/assets/ingest",
+        json={"profile": "prod", "types": ["notebooks"], "history_days": 7, "runs_per_job": 20},
+        headers=_AUTH,
+    ).json()["job_id"]
+
+    with client.stream("GET", f"/api/assets/ingest/{job_id}/events", headers=_AUTH) as r:
+        # Headers must arrive before any body byte is consumed, so we
+        # check them on the open response.
+        assert r.headers.get("cache-control") == "no-cache, no-transform"
+        assert r.headers.get("x-accel-buffering") == "no"
+        for _ in r.iter_text():
+            pass
 
 
 def test_refresh_endpoint_clears_and_returns_job_id(monkeypatch, tmp_path):
@@ -162,9 +288,9 @@ def test_refresh_endpoint_clears_and_returns_job_id(monkeypatch, tmp_path):
     client, db_path = _make_client(tmp_path)
     _seed_notebook(db_path)
 
-    async def fake_runner(*, job_id, body, cfg, queue):
-        await queue.put({"state": "completed", "counts": {"notebooks": 0}, "failures": {}})
-        await queue.put({"_eof": True})
+    async def fake_runner(*, job_id, body, cfg, channel):
+        channel.publish({"state": "completed", "counts": {"notebooks": 0}, "failures": {}})
+        channel.publish({"_eof": True})
 
     monkeypatch.setattr(a_mod, "_run_ingest_job", fake_runner)
     resp = client.post(
@@ -513,9 +639,9 @@ def test_ingest_body_honours_selection(monkeypatch, tmp_path):
     client, _ = _make_client(tmp_path)
     captured: dict = {}
 
-    async def fake_runner(*, job_id, body, cfg, queue):
+    async def fake_runner(*, job_id, body, cfg, channel):
         captured["selection"] = body.selection
-        await queue.put({"_eof": True})
+        channel.publish({"_eof": True})
 
     monkeypatch.setattr(a_mod, "_run_ingest_job", fake_runner)
     resp = client.post(
