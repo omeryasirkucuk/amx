@@ -72,3 +72,55 @@ def test_chitchat_summary_is_stable() -> None:
     s = chitchat_summary()
     assert "AMX's metadata search assistant" in s
     assert "vbrk" in s
+
+
+# --------------------------------------------------------------------- meta_query
+
+from amx.search.pipeline.short_circuits import (  # noqa: E402
+    is_meta_query,
+    meta_query_summary,
+)
+
+
+def test_meta_query_recognises_previous_question_phrasings() -> None:
+    """The three legacy regex patterns each match at least one
+    natural phrasing of "what was my last question?"."""
+    for q in (
+        "what was my previous question",
+        "what was my last question?",
+        "what is my prior question",
+        "what did I ask?",
+        "what have I asked so far",
+        "what have I been asking",
+    ):
+        assert is_meta_query(q) is True, q
+
+
+def test_meta_query_rejects_normal_questions() -> None:
+    """Questions about data, not about the conversation itself,
+    must fall through to planning."""
+    for q in (
+        "what is the customers table",
+        "list all schemas",
+        "describe the vbrk table",
+        "",
+        "   ",
+    ):
+        assert is_meta_query(q) is False, q
+
+
+def test_meta_query_summary_uses_canonical_first_turn_wording_when_empty() -> None:
+    s = meta_query_summary("")
+    assert "first question in this session" in s
+
+
+def test_meta_query_summary_quotes_prior_question_verbatim() -> None:
+    s = meta_query_summary("what is the customers table?")
+    assert 'Your previous question was: "what is the customers table?"' == s
+
+
+def test_meta_query_summary_strips_whitespace_around_prior() -> None:
+    """Leading/trailing whitespace on the stored prior question is
+    cleaned before quoting."""
+    s = meta_query_summary("   list schemas   ")
+    assert 'Your previous question was: "list schemas"' == s

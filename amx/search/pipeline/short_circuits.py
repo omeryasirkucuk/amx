@@ -72,3 +72,43 @@ def chitchat_summary() -> str:
     detected. Exposed as a function so the constant cannot be
     mutated in place by accident."""
     return _CHITCHAT_SUMMARY
+
+
+# Meta-query patterns: questions about the conversation itself
+# ("what was my previous question?"). The patterns come from the
+# legacy mixin verbatim so the regression suite passes unchanged.
+_META_PATTERNS: tuple[str, ...] = (
+    r"\b(?:previous|prior|last)\s+question\b",
+    r"\bwhat\s+(?:did|was)\s+(?:i|my)\s+(?:last\s+|previous\s+|prior\s+)?(?:question|ask)\b",
+    r"\bwhat\s+have\s+i\s+(?:asked|been\s+asking)\b",
+)
+
+_META_COMPILED: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in _META_PATTERNS)
+
+
+def is_meta_query(question: str) -> bool:
+    """Detect questions about the conversation itself.
+
+    Returns ``True`` for ``"what was my previous question?"`` and
+    close variants. Mirrors
+    :meth:`amx.search._agent.short_circuits.ShortCircuitsMixin._handle_meta_query`
+    detection step. Empty input is rejected up front so callers
+    don't have to guard.
+    """
+    sample = (question or "").strip().lower()
+    if not sample:
+        return False
+    return any(pat.search(sample) for pat in _META_COMPILED)
+
+
+def meta_query_summary(prior_question: str) -> str:
+    """Compose the canned reply for a meta-query short circuit.
+
+    When ``prior_question`` is empty the reply admits this is the
+    first turn in the session; otherwise it quotes the user's prior
+    question verbatim. Wording matches the legacy mixin.
+    """
+    cleaned = (prior_question or "").strip()
+    if not cleaned:
+        return "This is the first question in this session; no prior question is on record."
+    return f'Your previous question was: "{cleaned}"'

@@ -99,16 +99,20 @@ class ShortCircuitsMixin:
         Patterns: "what was my previous question?", "what did I ask?".
         Resolves against ``ChatSessionStore.recent_turns`` so the user gets
         the literal prior question text rather than a clarification prompt.
+
+        Detection delegated to the pure
+        :func:`amx.search.pipeline.short_circuits.is_meta_query`;
+        reply composition uses
+        :func:`amx.search.pipeline.short_circuits.meta_query_summary`.
+        The mixin retains the side-effect glue (session-store lookup,
+        assistant-turn recording, ``SearchAnswer`` construction).
         """
-        sample = (question or "").strip().lower()
-        if not sample:
-            return None
-        meta_patterns = (
-            r"\b(?:previous|prior|last)\s+question\b",
-            r"\bwhat\s+(?:did|was)\s+(?:i|my)\s+(?:last\s+|previous\s+|prior\s+)?(?:question|ask)\b",
-            r"\bwhat\s+have\s+i\s+(?:asked|been\s+asking)\b",
+        from amx.search.pipeline.short_circuits import (
+            is_meta_query,
+            meta_query_summary,
         )
-        if not any(re.search(p, sample) for p in meta_patterns):
+
+        if not is_meta_query(question):
             return None
         prior_question = ""
         store = self._ensure_session_store()
@@ -123,10 +127,7 @@ class ShortCircuitsMixin:
             # we want the one BEFORE it.
             if len(user_turns) >= 2:
                 prior_question = str(user_turns[-2].get("question") or "").strip()
-        if not prior_question:
-            summary = "This is the first question in this session; no prior question is on record."
-        else:
-            summary = f'Your previous question was: "{prior_question}"'
+        summary = meta_query_summary(prior_question)
         self._record_short_circuit_assistant(summary=summary, intent="meta_query")
         return SearchAnswer(
             intent="meta_query",
