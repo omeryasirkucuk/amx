@@ -33,12 +33,19 @@ from amx.llm.provider import LLMProvider
 from amx.search._tool_agent_prompts import agent_system_prompt as _agent_system_prompt
 from amx.search.agent_tools import ToolBox
 from amx.search.catalog import SearchCatalog
+from amx.search.pipeline import budget as _budget
 from amx.utils.logging import get_logger
 from amx.utils.token_tracker import estimate_tokens
 from amx.utils.token_tracker import tracker as token_tracker
 
 if TYPE_CHECKING:
     from amx.utils.live_display import LiveDisplay
+
+# Backward-compat re-exports — older callers and tests reference these
+# private names directly. PR 7 removes the aliases; until then keep
+# them so the move is a pure relocation.
+_TRUNCATED_TOOL_PAYLOAD = _budget.TRUNCATED_TOOL_PAYLOAD
+_enforce_input_token_budget = _budget.enforce_input_token_budget
 
 log = get_logger("search.tool_agent")
 
@@ -61,38 +68,6 @@ _AGENT_MAX_TOKENS = 1500
 # output. 100 000 leaves headroom for system prompt, tools schema, and
 # the configured output cap on the 200K Claude / GPT-4-turbo window.
 _AGENT_INPUT_TOKEN_BUDGET = int(os.environ.get("AMX_ASK_INPUT_TOKEN_BUDGET", "100000"))
-
-# Sentinel content that replaces a truncated tool result. Plain JSON so
-# the model parses it the same way as a normal result envelope.
-_TRUNCATED_TOOL_PAYLOAD = '{"truncated": true, "reason": "context budget reached"}'
-
-
-def _enforce_input_token_budget(
-    messages: list[dict[str, Any]],
-    *,
-    budget: int,
-) -> bool:
-    """Truncate oldest tool-result contents in-place until the estimated
-    token cost of `messages` falls under `budget`. Returns True when
-    any truncation occurred.
-
-    Tool results are mutated in iteration order so the model still sees
-    the most recent results in full — older results decay first.
-    """
-    if estimate_tokens(messages) <= budget:
-        return False
-    truncated_any = False
-    for msg in messages:
-        if msg.get("role") != "tool":
-            continue
-        if msg.get("content") == _TRUNCATED_TOOL_PAYLOAD:
-            continue
-        msg["content"] = _TRUNCATED_TOOL_PAYLOAD
-        truncated_any = True
-        if estimate_tokens(messages) <= budget:
-            return True
-    return truncated_any
-
 
 class ToolAgentResult:
     """Container for what the agent loop produced."""
