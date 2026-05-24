@@ -112,3 +112,48 @@ def meta_query_summary(prior_question: str) -> str:
     if not cleaned:
         return "This is the first question in this session; no prior question is on record."
     return f'Your previous question was: "{cleaned}"'
+
+
+# Followup reaffirmation patterns: short pushback phrasings ("are
+# you sure?", "really?", "why?"). Each is anchored with ^/$ to
+# require the whole input is just the pushback — a fresh question
+# that happens to contain "sure" must NOT short-circuit.
+_AFFIRM_PATTERNS: tuple[str, ...] = (
+    r"^\s*(?:are\s+you\s+sure|you\s+sure|really|seriously|sure\?+)\s*[\.\?\!]*\s*$",
+    r"^\s*(?:is\s+that\s+(?:right|correct|true)|you\s+positive|positive\?+)\s*[\.\?\!]*\s*$",
+    r"^\s*(?:why|why\??|how\s+come|how)\s*[\.\?\!]*\s*$",
+)
+
+_AFFIRM_COMPILED: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in _AFFIRM_PATTERNS)
+
+
+def is_followup_reaffirmation(question: str) -> bool:
+    """Detect short pushback phrasings on the prior answer.
+
+    Returns ``True`` for ``"are you sure?"``, ``"really"``, ``"why?"``
+    and close variants. Patterns are anchored with ``^/$`` so a fresh
+    question that happens to contain ``"sure"`` does not match.
+
+    Mirrors
+    :meth:`amx.search._agent.short_circuits.ShortCircuitsMixin._handle_followup_reaffirmation`
+    detection step byte-for-byte; the mixin keeps ownership of the
+    session-store lookup and ``SearchAnswer`` construction.
+    """
+    sample = (question or "").strip().lower()
+    if not sample:
+        return False
+    return any(pat.match(sample) for pat in _AFFIRM_COMPILED)
+
+
+def reaffirmation_summary(prior_assistant: str) -> str:
+    """Compose the canned reply for a reaffirmation short circuit.
+
+    Quotes the prior assistant answer verbatim so the user sees the
+    confirmation came from the same source they originally received.
+    Wording matches the legacy mixin.
+    """
+    cleaned = (prior_assistant or "").strip()
+    return (
+        "Yes, I'm sure — the previous answer came from live database metadata. To restate: "
+        + cleaned
+    )

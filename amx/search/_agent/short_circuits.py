@@ -154,11 +154,18 @@ class ShortCircuitsMixin:
         the planner to map to anything meaningful and we don't want to fall
         through to "Could you clarify the exact scope?". Pull the last
         assistant turn out of the session store and re-confirm it verbatim.
+
+        Detection + summary composition delegated to pure helpers in
+        :mod:`amx.search.pipeline.short_circuits`; the mixin retains
+        ownership of the session-store lookup and ``SearchAnswer``
+        construction.
         """
-        sample = (question or "").strip().lower()
-        if not sample:
-            return None
-        if not any(re.match(pattern, sample) for pattern in self._AFFIRM_FOLLOWUP_RE):
+        from amx.search.pipeline.short_circuits import (
+            is_followup_reaffirmation,
+            reaffirmation_summary,
+        )
+
+        if not is_followup_reaffirmation(question):
             return None
         store = self._ensure_session_store()
         sid = self.cfg.active_chat_session_id
@@ -179,10 +186,7 @@ class ShortCircuitsMixin:
                     break
         if not prior_assistant:
             return None
-        summary = (
-            "Yes, I'm sure — the previous answer came from live database metadata. To restate: "
-            + prior_assistant
-        )
+        summary = reaffirmation_summary(prior_assistant)
         self._record_short_circuit_assistant(summary=summary, intent="reaffirmation")
         return SearchAnswer(
             intent="reaffirmation",
