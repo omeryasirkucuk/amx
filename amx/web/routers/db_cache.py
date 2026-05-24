@@ -16,9 +16,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from amx.config import AMXConfig
 from amx.storage.cache_ops import (
     CACHE_TYPES,
     cache_clear,
@@ -26,6 +27,7 @@ from amx.storage.cache_ops import (
     cache_runtime_counters,
     cache_stats,
 )
+from amx.web.deps import get_cfg
 
 router = APIRouter(prefix="/api/db/cache", tags=["db-cache"])
 
@@ -64,14 +66,20 @@ def show(
 
 
 @router.get("/stats")
-def stats() -> dict[str, Any]:
+def stats(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     """Aggregate metrics per cache table.
+
+    Counts are restricted to the profiles currently configured in
+    ``cfg.db_profiles``. Rows for a deleted/renamed profile remain on
+    disk until a startup sweep or eager purge removes them, but they
+    never inflate the headline numbers the Studio Catalog cache page
+    renders.
 
     Includes a ``runtime`` section that surfaces the in-process
     counters added alongside the wizard memo and the cache-age-aware
     drift probe so Studio can show how often each gate fired.
     """
-    raw = cache_stats()
+    raw = cache_stats(valid_profiles=tuple(cfg.db_profiles.keys()))
     payload: dict[str, Any] = {
         key: {
             "table": stat.table,

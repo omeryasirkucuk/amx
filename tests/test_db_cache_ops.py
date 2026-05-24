@@ -21,6 +21,7 @@ from amx.storage.cache_ops import (
     cache_clear,
     cache_inventory,
     cache_stats,
+    purge_orphan_profile_rows,
 )
 from amx.storage.sqlite_store import SQLiteHistoryStore
 
@@ -193,3 +194,92 @@ def test_clear_global_flush_when_no_filters(store: SQLiteHistoryStore) -> None:
 def test_clear_unknown_type_raises(store: SQLiteHistoryStore) -> None:
     with pytest.raises(ValueError, match="Unknown cache types"):
         cache_clear(types=["foo"])
+
+
+def test_stats_valid_profiles_filter_excludes_tombstones(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Rows for a profile not in ``valid_profiles`` are excluded from
+    every aggregate — distinct counts AND total_rows. The Studio
+    Catalog cache page passes the configured profile set so a
+    deleted-profile tombstone never inflates the headline numbers.
+    """
+    _seed(store)
+    # Pretend the user just removed prof-b; prof-a is the only
+    # configured profile but prof-b's catalog rows are still on disk.
+    s = cache_stats(valid_profiles=("prof-a",))
+    assert s["schemas"].distinct_profiles == 1
+    assert s["schemas"].total_rows == 3  # 4 seeded rows - 1 for prof-b
+    assert s["catalog"].distinct_profiles == 1
+    assert s["catalog"].total_rows == 3  # 4 catalog rows - 1 for prof-b
+
+
+def test_stats_legacy_unfiltered_call_keeps_old_shape(
+    store: SQLiteHistoryStore,
+) -> None:
+    """``valid_profiles=None`` (the default) preserves the unfiltered
+    aggregate the REPL ``/db cache-stats`` view depends on."""
+    _seed(store)
+    s = cache_stats()
+    assert s["schemas"].distinct_profiles == 2
+    assert s["catalog"].distinct_profiles == 2
+
+
+def test_purge_orphan_profile_rows_deletes_tombstones(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Eager + startup paths both call this helper; rows for any
+    profile outside ``valid_profiles`` are deleted across all three
+    cache tables, descriptions, and the per-profile state row."""
+    _seed(store)
+    # Seed a catalog_profile_state row for prof-b so the helper can
+    # prove it cleans up the state table alongside the data tables.
+    with store._connect() as conn:  # noqa: SLF001
+        conn.execute(
+            """INSERT OR REPLACE INTO catalog_profile_state
+                   (db_profile, state, last_full_sync_at)
+               VALUES ('prof-b', 'done', ?)""",
+            (time.time(),),
+        )
+    counts = purge_orphan_profile_rows(("prof-a",))
+    assert counts["catalog_entities"] == 1
+    assert counts["schemas_cache"] == 1
+    assert counts["column_comments_cache"] == 0
+    # prof-b should be gone from every cache surface.
+    rows = cache_inventory(profile="prof-b")
+    assert rows == []
+    with store._connect() as conn:  # noqa: SLF001
+        n = conn.execute(
+            "SELECT COUNT(*) AS n FROM catalog_profile_state WHERE db_profile = 'prof-b'"
+        ).fetchone()
+    assert int(n["n"]) == 0
+    # prof-a left intact.
+    a = cache_inventory(profile="prof-a")
+    assert {(r.profile, r.database) for r in a} == {
+        ("prof-a", "db1"),
+        ("prof-a", "db2"),
+    }
+
+
+def test_purge_orphan_profile_rows_empty_valid_set_clears_everything(
+    store: SQLiteHistoryStore,
+) -> None:
+    """When the user has no configured DB profiles every cached row
+    is an orphan. The helper walks every table."""
+    _seed(store)
+    counts = purge_orphan_profile_rows(())
+    assert counts["catalog_entities"] == 4
+    assert cache_inventory() == []
+
+
+def test_purge_orphan_profile_rows_idempotent(store: SQLiteHistoryStore) -> None:
+    """Second call returns zeros — the startup sweep can run on every
+    boot without flicker."""
+    _seed(store)
+    purge_orphan_profile_rows(("prof-a",))
+    counts = purge_orphan_profile_rows(("prof-a",))
+    assert counts == {
+        "catalog_entities": 0,
+        "schemas_cache": 0,
+        "column_comments_cache": 0,
+    }

@@ -711,6 +711,23 @@ class SQLiteHistoryStore:
                 )
                 """
             )
+            # Per-asset-type freshness stamps for the catalog cache. The
+            # original ``last_full_sync_at`` only tracks whether the
+            # skeleton (catalog_entities) finished — but a profile can
+            # be "skeleton-done" while ``schemas_cache`` /
+            # ``column_comments_cache`` are still cold. These columns
+            # let the read-side cache-only gate require all three caches
+            # to be warm before suppressing the live-DB fallback.
+            # Added as additive ALTERs so existing databases upgrade in
+            # place; nullable so the legacy state row remains valid
+            # while the next sync stamps the new fields.
+            for _ddl in (
+                "ALTER TABLE catalog_profile_state ADD COLUMN last_skeleton_sync_at REAL",
+                "ALTER TABLE catalog_profile_state ADD COLUMN last_schemas_sync_at REAL",
+                "ALTER TABLE catalog_profile_state ADD COLUMN last_columns_sync_at REAL",
+            ):
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(_ddl)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_relationships (

@@ -60,8 +60,14 @@ def stub_ops(monkeypatch):
         state["inventory_args"] = (profile, database)
         return [_Row("prof-a", "db1", 2, 1, 4, 1700000000.0)]
 
-    def fake_stats():
+    def fake_stats(*, valid_profiles=None):
+        # ``valid_profiles`` is the configured profile set the
+        # /api/db/cache/stats endpoint forwards from cfg.db_profiles so
+        # tombstones (rows for deleted profiles) never inflate the
+        # headline counts. Tests don't exercise the filter — they just
+        # accept the kwarg so the router can pass it through.
         state["stats_called"] = True
+        state["stats_valid_profiles"] = valid_profiles
         return {
             "schemas": _Stat("schemas_cache", 4, 1, 2, 1.0, 2.0, 0, True),
         }

@@ -2894,6 +2894,22 @@ class AMXConfig:
                 self.active_db_profiles = [self.active_db_profile]
             elif not self.active_db_profile:
                 self.active_db_profiles = []
+        # Cache tombstone purge — runs outside the config transaction
+        # so a sqlite hiccup on the cache side cannot block the config
+        # write. Without this, the just-removed profile's rows linger
+        # in catalog_entities / schemas_cache / column_comments_cache
+        # forever and the Studio Catalog cache page reports a phantom
+        # third profile.
+        try:
+            from amx.storage.cache_ops import cache_clear
+
+            cache_clear(profile=name)
+        except Exception:
+            # Best-effort cleanup; the startup sweep + read-side
+            # tombstone filter still hide the orphans even if this
+            # path fails (e.g. history store not yet initialised in
+            # an edge-case load order).
+            pass
 
     def apply_active_llm_profile(self) -> None:
         name = self.active_llm_profile or "default"

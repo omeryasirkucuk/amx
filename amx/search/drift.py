@@ -638,9 +638,69 @@ def sync_profile_skeleton(
         _skeleton_jobs.unregister(profile)
         return summary
 
+    # Step 4: warm the per-table metadata caches so a post-sync read
+    # never falls back to live DB. ``schemas_cache`` was already
+    # populated as a side-effect of ``connector.list_schemas()`` in
+    # pass 1 (it routes through ``_populate_catalogs_cache``).
+    # ``column_comments_cache`` is NOT touched by the skeleton upsert
+    # pass, so the first sidebar drill or /ask read would otherwise
+    # hit live DB to fetch table + column comments. We walk per
+    # (container, schema) and let the connector's bulk helper fill
+    # the cache one round-trip at a time.
+    schemas_warmed_ok = reached_any
+    columns_warmed_ok = True
+    for container, schema_assets in per_container_plan:
+        if cancel_event.is_set():
+            break
+        try:
+            connector = _scoped_connector(cfg, profile, container or None, is_three_level)
+        except Exception as exc:
+            log.warning(
+                "Cache warm skipped, connector unavailable for %s/%s: %s",
+                profile,
+                container or "<default>",
+                exc,
+            )
+            columns_warmed_ok = False
+            continue
+        for schema, _assets in schema_assets:
+            if cancel_event.is_set():
+                break
+            try:
+                # Bulk-fill column_comments_cache for the whole schema
+                # in one round-trip when the adapter supports it.
+                connector._populate_schema_metadata_cache(schema)  # noqa: SLF001
+            except Exception as exc:
+                log.debug(
+                    "Cache warm raised for %s/%s/%s: %s",
+                    profile,
+                    container or "<default>",
+                    schema,
+                    exc,
+                )
+                columns_warmed_ok = False
+
     catalog.finish_skeleton_sync(profile, ok=True)
+    # Stamp the per-asset-type freshness timestamps only when the
+    # corresponding warm pass actually completed for this run.
+    # ``last_skeleton_sync_at`` is stamped inside finish_skeleton_sync;
+    # ``last_schemas_sync_at`` / ``last_columns_sync_at`` carry the
+    # "cache is hot for this profile" signal the cache-only read gate
+    # in connector.list_schemas / get_column_comments depends on.
+    if schemas_warmed_ok:
+        try:
+            catalog.mark_schemas_sync_done(profile)
+        except Exception as exc:
+            log.debug("mark_schemas_sync_done raised for %s: %s", profile, exc)
+    if columns_warmed_ok:
+        try:
+            catalog.mark_columns_sync_done(profile)
+        except Exception as exc:
+            log.debug("mark_columns_sync_done raised for %s: %s", profile, exc)
     summary["state"] = "done"
     summary["processed"] = processed
+    summary["schemas_warmed"] = bool(schemas_warmed_ok)
+    summary["columns_warmed"] = bool(columns_warmed_ok)
     _skeleton_jobs.unregister(profile)
     return summary
 
