@@ -88,7 +88,62 @@ def test_safe_json_truncates_long_payloads() -> None:
     big = {"rows": ["x" * 100 for _ in range(200)]}
     out = _safe_json(big, max_len=200)
     assert len(out) <= 200
-    assert out.endswith("...<truncated>")
+
+
+def test_safe_json_truncation_is_always_valid_json() -> None:
+    """Regression: the old char-chop truncation produced INVALID JSON
+    (unterminated strings) when the cut landed mid-value, corrupting
+    the tool result handed to the LLM. Truncation must now always
+    round-trip through ``json.loads``."""
+    import json
+
+    from amx.search._agent_tools_helpers import _safe_json
+
+    # A wide describe_table-shaped payload that comfortably exceeds the
+    # default 6000-char budget.
+    big = {
+        "schema": "airline",
+        "table": "wide",
+        "columns": [
+            {"name": f"col_{i}", "type": "varchar", "comment": "x" * 80}
+            for i in range(300)
+        ],
+    }
+    out = _safe_json(big)
+    parsed = json.loads(out)  # must not raise
+    assert parsed["_truncated"] is True
+    assert "_note" in parsed
+    # The readable prefix preserves the leading fields so the LLM still
+    # sees the schema/table and the first columns verbatim.
+    assert "airline" in parsed["_partial_prefix"]
+    assert len(out) <= 6000
+
+
+def test_safe_json_small_payload_round_trips_unchanged() -> None:
+    """Below the budget, the output is the plain serialized value —
+    no envelope wrapping on the happy path."""
+    import json
+
+    from amx.search._agent_tools_helpers import _safe_json
+
+    payload = {"schema": "s", "table": "t", "columns": [{"name": "id"}]}
+    out = _safe_json(payload)
+    assert json.loads(out) == payload
+    assert "_truncated" not in out
+
+
+def test_safe_json_respects_custom_max_len_and_stays_valid() -> None:
+    """A tiny custom budget still yields valid JSON (the envelope is
+    trimmed until it fits)."""
+    import json
+
+    from amx.search._agent_tools_helpers import _safe_json
+
+    big = {"rows": ["y" * 50 for _ in range(100)]}
+    out = _safe_json(big, max_len=400)
+    assert len(out) <= 400
+    parsed = json.loads(out)  # must not raise
+    assert parsed["_truncated"] is True
 
 
 def test_safe_json_returns_str_for_unserialisable() -> None:

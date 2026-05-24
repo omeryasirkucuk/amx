@@ -129,14 +129,66 @@ def _description_proximity(left: str, right: str) -> float:
 
 
 def _safe_json(value: Any, *, max_len: int = 6000) -> str:
-    """Serialize a tool result; truncate so the prompt stays manageable."""
+    """Serialize a tool result; truncate so the prompt stays manageable.
+
+    Truncation ALWAYS yields valid JSON. The previous implementation
+    chopped the serialized string at a fixed offset and appended
+    ``...<truncated>`` — which produced invalid JSON whenever the cut
+    landed mid-string or mid-object (e.g. a wide ``describe_table``
+    result). That corrupted payload was then handed straight to the
+    LLM as the tool result, so for tables with many columns / long
+    descriptions the model received an unparseable blob and could
+    silently miss the columns that got cut off.
+
+    When the serialized form exceeds ``max_len`` we instead emit a
+    valid JSON envelope: a ``_truncated`` flag, a short instruction
+    the LLM can act on, and a readable text prefix of the original
+    payload so the model still sees the leading fields verbatim.
+    """
     try:
         text = json.dumps(value, ensure_ascii=False, default=str)
     except Exception:  # pragma: no cover - JSON of catalog rows always works
         text = str(value)
-    if len(text) > max_len:
-        text = text[: max_len - 18] + "...<truncated>"
-    return text
+    if len(text) <= max_len:
+        return text
+
+    note = (
+        f"Result exceeded {max_len} characters and was truncated. "
+        "Some fields below may be cut off. If you need the missing "
+        "detail, ask a narrower question (e.g. specific columns) or "
+        "request the next part."
+    )
+
+    def _envelope(prefix: str) -> str:
+        return json.dumps(
+            {"_truncated": True, "_note": note, "_partial_prefix": prefix},
+            ensure_ascii=False,
+            default=str,
+        )
+
+    # When the budget is so small that even the empty-prefix envelope
+    # (its fixed ``_note`` text) overflows, fall back to a minimal but
+    # still-valid JSON marker. Realistic budgets (default 6000) never
+    # hit this; it keeps the "always valid JSON, always within budget"
+    # contract honest for pathologically small ``max_len`` values.
+    if len(_envelope("")) > max_len:
+        return '{"_truncated": true}'
+
+    # Start from a budget-aware prefix length (subtract the empty
+    # envelope's own size) then shrink until the serialized envelope —
+    # JSON-escaping of the prefix included — fits under ``max_len``.
+    # This keeps as much readable payload as possible for the LLM
+    # while guaranteeing valid JSON, rather than capping the prefix at
+    # a fixed fraction of the budget.
+    budget = max(0, max_len - len(_envelope("")) - 8)
+    prefix = text[:budget]
+    result = _envelope(prefix)
+    while len(result) > max_len and prefix:
+        # Trim 10% at a time; escaping overhead is the only reason a
+        # within-budget prefix can overflow, and it's bounded.
+        prefix = prefix[: int(len(prefix) * 0.9)]
+        result = _envelope(prefix)
+    return result
 
 
 def _sample_distinct_values(
