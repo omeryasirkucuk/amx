@@ -19,10 +19,13 @@ disagreed with ``cfg.active_db_profile``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from amx.config import AMXConfig
+from amx.core.errors import classify_write_error
 from amx.db.connector import AssetKind, DatabaseConnector
 from amx.web.deps import get_cfg
 from amx.web.routers.live_db import _connector_for_scope
@@ -74,6 +77,70 @@ def _coerce_or_400(action: str, fn):
         ) from exc
 
 
+def _classified_or_400(
+    fn: Callable[[], object],
+    *,
+    db: DatabaseConnector,
+    schema: str = "",
+    table: str = "",
+    column: str | None = None,
+) -> object:
+    """Run a single live-DB write through the same classifier the
+    Apply pending queue path uses, so a permission-denied edit from
+    the inline editor surfaces the same actionable banner the bulk
+    apply does. The 400 detail is a JSON object the SPA reads
+    structured fields off; ``error_kind`` is the stable slug.
+
+    Falls back to a stringified detail when classification itself
+    raises (defensive — the classifier currently never returns
+    ``None``, but a future regression must not hide a write failure
+    behind a stack trace)."""
+    try:
+        return fn()
+    except Exception as exc:
+        backend = ""
+        try:
+            backend = str(getattr(db, "backend", "") or "")
+        except Exception:
+            backend = ""
+        try:
+            cls = classify_write_error(
+                exc,
+                backend=backend,
+                schema=schema,
+                table=table,
+                column=column,
+            )
+            # ``message`` mirrors the classifier title so the SPA's
+            # generic toast handler (``api.ts`` reads ``detail.message``)
+            # shows the user-friendly headline. Hint carries the
+            # suggested action so existing toast UIs that render
+            # ``hint`` get the DBA-grant string for free.
+            detail = {
+                "message": cls.title,
+                "hint": cls.suggested_action,
+                "error_kind": cls.kind,
+                "error_title": cls.title,
+                "error_text": cls.body,
+                "error_action": cls.suggested_action,
+                "raw": str(exc)[:1000],
+            }
+        except Exception:
+            detail = {
+                "message": "Write failed",
+                "hint": "",
+                "error_kind": "unknown",
+                "error_title": "Write failed",
+                "error_text": str(exc)[:1000],
+                "error_action": "",
+                "raw": str(exc)[:1000],
+            }
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=detail,
+        ) from exc
+
+
 @router.put("/database")
 def set_database_comment(
     body: CommentBody,
@@ -86,7 +153,10 @@ def set_database_comment(
     to a 400 with the connector's actionable message on backends that
     don't (e.g. SQLite)."""
     db = _scoped_connector(cfg, profile, database, catalog)
-    _coerce_or_400("Setting database comment", lambda: db.set_database_comment(body.comment))
+    _classified_or_400(
+        lambda: db.set_database_comment(body.comment),
+        db=db,
+    )
     # Wipe the cached column-comments for this profile so the next
     # read picks up the just-written value. Database-level writes are
     # rare enough that nuking the whole profile is cheaper than
@@ -105,9 +175,10 @@ def set_schema_comment(
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, str]:
     db = _scoped_connector(cfg, profile, database, catalog)
-    _coerce_or_400(
-        f"Setting schema comment on {schema}",
+    _classified_or_400(
         lambda: db.set_schema_comment(schema, body.comment),
+        db=db,
+        schema=schema,
     )
     db.invalidate_column_comments_cache(schema=schema)
     return {"ok": "true"}
@@ -128,9 +199,11 @@ def set_table_comment(
     an explicit ``?kind=view`` so the SPA can edit view comments
     too."""
     db = _scoped_connector(cfg, profile, database, catalog)
-    _coerce_or_400(
-        f"Setting table comment on {schema}.{table}",
+    _classified_or_400(
         lambda: db.set_table_comment(schema, table, body.comment, asset_kind=AssetKind.TABLE),
+        db=db,
+        schema=schema,
+        table=table,
     )
     db.invalidate_column_comments_cache(schema=schema, table=table)
     return {"ok": "true"}
@@ -151,9 +224,12 @@ def set_column_comment(
     on save. The connector handles per-backend SQL syntax + identifier
     quoting; we just pass the strings through verbatim."""
     db = _scoped_connector(cfg, profile, database, catalog)
-    _coerce_or_400(
-        f"Setting column comment on {schema}.{table}.{column}",
+    _classified_or_400(
         lambda: db.set_column_comment(schema, table, column, body.comment),
+        db=db,
+        schema=schema,
+        table=table,
+        column=column,
     )
     # Column-level granularity isn't worth the bookkeeping — the next
     # fetch refreshes the entire table's column dict in one bulk call.

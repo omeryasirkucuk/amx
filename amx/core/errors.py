@@ -208,3 +208,253 @@ class ErrorMapper:
 def actionable_error_message(exc: Exception, *, backend: str = "") -> str:
     mapped = ErrorMapper.map(exc, backend=backend)
     return mapped.render() if mapped else str(exc)
+
+
+# ── Write-path classifier ────────────────────────────────────────────────
+#
+# ``ErrorMapper.map`` above covers read-path connection / auth errors
+# (and a smattering of write-path cases). When a COMMENT ON / ALTER
+# TABLE inside :func:`amx.agents._orchestrator.writeback.apply_review_results_to_db`
+# fails, we want a sharper classification: which row failed, why, and
+# what the user can do about it without reading the raw driver stack
+# trace. The Studio aggregate banner reads ``WriteErrorClass.kind`` to
+# decide which icon / hint to render alongside the failed row's
+# qualified name.
+
+
+@dataclass(frozen=True)
+class WriteErrorClass:
+    """Structured classification of a single live-DB write failure.
+
+    ``kind`` is a stable slug (``alter_privilege_denied``,
+    ``table_not_found``, ``comment_unsupported``,
+    ``savepoint_unsupported``, ``connection_lost``, ``syntax_error``,
+    ``unknown``) the SPA pivots on. ``title`` / ``body`` /
+    ``suggested_action`` are the human-readable surfaces — the SPA
+    banner renders title + body inline and the "Copy DBA-ready hint"
+    button copies the full triple.
+    """
+
+    kind: str
+    title: str
+    body: str
+    suggested_action: str
+
+
+_PRIVILEGE_PATTERNS: tuple[str, ...] = (
+    "permission denied",
+    "insufficient privilege",
+    "insufficient_permissions",
+    "access denied",
+    "accessdenied",
+    "lacks permission",
+    "not authorized",
+    "no permission",
+    "denied for user",
+    # MSSQL "ALTER permission was denied on the object"
+    "permission was denied",
+)
+
+_NOT_FOUND_PATTERNS: tuple[str, ...] = (
+    "does not exist",
+    "no such table",
+    "no such column",
+    "table or view does not exist",
+    "object not found",
+    "not found or not authorized",
+    "not exist or not authorized",
+    "invalid identifier",
+)
+
+_COMMENT_UNSUPPORTED_PATTERNS: tuple[str, ...] = (
+    "unsupporteddatabaseoperation",
+    "comment is not supported",
+    "comments not supported",
+    'syntax error at or near "comment"',
+)
+
+_CONNECTION_LOST_PATTERNS: tuple[str, ...] = (
+    "server closed the connection",
+    "connection lost",
+    "connection closed",
+    "connection reset by peer",
+    "broken pipe",
+)
+
+
+def _qualified_label(schema: str, table: str, column: str | None) -> str:
+    parts = [p for p in (schema or "", table or "", column or "") if p]
+    return ".".join(parts) if parts else "(unknown asset)"
+
+
+def _privilege_hint(backend: str) -> str:
+    b = backend.lower()
+    if b == "databricks":
+        return (
+            "Ask your Databricks workspace admin to grant ALTER on the "
+            "table (or the parent schema for inherited ALTER)."
+        )
+    if b == "bigquery":
+        return (
+            "Grant the BigQuery Data Editor role (or the narrower "
+            "bigquery.tables.update permission) on the dataset and retry."
+        )
+    if b == "snowflake":
+        return (
+            "Grant MODIFY (table-level) or USAGE + MODIFY on the schema "
+            "to the active role and retry."
+        )
+    if b in ("postgresql", "redshift"):
+        return (
+            "Run `GRANT ALTER ON TABLE <table> TO <role>;` as the owner or a superuser, then retry."
+        )
+    if b == "mysql":
+        return "Grant ALTER on the table or schema to the active user and retry."
+    if b == "mssql":
+        return "Grant ALTER permission on the object (or its schema) to the active login and retry."
+    return (
+        "Grant the equivalent of ALTER / MODIFY on the target object to "
+        "the active connection's role, then retry."
+    )
+
+
+def classify_write_error(
+    exc: Exception,
+    *,
+    backend: str = "",
+    schema: str = "",
+    table: str = "",
+    column: str | None = None,
+) -> WriteErrorClass:
+    """Map a single live-DB write exception to a :class:`WriteErrorClass`.
+
+    Always returns a value — never ``None`` — so the writeback path
+    can stamp every ``RowApplyOutcome`` with a ``kind`` slug even on
+    drivers we have not yet special-cased. The fallback ``kind`` is
+    ``unknown`` and the body carries the raw driver text truncated to
+    keep the SPA payload small.
+
+    The classifier reads the exception text (case-insensitive) plus
+    the backend label; ``schema`` / ``table`` / ``column`` are
+    pre-rendered into the title so the SPA banner can be specific
+    ("missing ALTER privilege on samples.nyctaxi.trips") without the
+    caller building strings.
+    """
+    msg = str(exc)
+    lower = msg.lower()
+    asset = _qualified_label(schema, table, column)
+
+    # 1) SAVEPOINT explicitly rejected (Databricks et al. — defence in
+    #    depth; the writeback path already gates on capability so this
+    #    should not appear in practice, but we want the classifier to
+    #    say so loudly if it ever does).
+    if "savepoint" in lower and (
+        "syntax error" in lower or "not supported" in lower or "unsupported" in lower
+    ):
+        return WriteErrorClass(
+            kind="savepoint_unsupported",
+            title=f"{backend.capitalize() or 'Backend'} rejected SAVEPOINT",
+            body=(
+                f"AMX tried to wrap the write to {asset} in a SAVEPOINT, "
+                "but the server has no SAVEPOINT primitive. This is a "
+                "bug in the writeback path — the backend should be "
+                "flagged supports_savepoints=False."
+            ),
+            suggested_action=(
+                "Report this so the adapter's BackendCapabilities can "
+                "set supports_savepoints=False; in the meantime, retry "
+                "after the next AMX deploy."
+            ),
+        )
+
+    # 2) Privilege denied — the screenshot-evidence case.
+    if _matches_any(lower, _PRIVILEGE_PATTERNS):
+        return WriteErrorClass(
+            kind="alter_privilege_denied",
+            title=f"Missing ALTER privilege on {asset}",
+            body=(
+                f"The active connection's role cannot ALTER / COMMENT "
+                f"on {asset}. The write was rolled back; the description "
+                "stays in the pending queue."
+            ),
+            suggested_action=_privilege_hint(backend),
+        )
+
+    # 3) Object not found — likely race condition (table dropped or
+    #    renamed between review and apply).
+    if _matches_any(lower, _NOT_FOUND_PATTERNS):
+        return WriteErrorClass(
+            kind="table_not_found",
+            title=f"{asset} no longer exists",
+            body=(
+                "The driver could not find the target object. Either the "
+                "table / column was dropped or renamed after the review, "
+                "or the active database / catalog scope no longer matches."
+            ),
+            suggested_action=(
+                "Re-sync the catalog (/sync) and re-review the affected "
+                "row. If the target was renamed, edit the suggestion in "
+                "place before re-applying."
+            ),
+        )
+
+    # 4) COMMENT unsupported on this backend / capability missing.
+    if _matches_any(lower, _COMMENT_UNSUPPORTED_PATTERNS):
+        return WriteErrorClass(
+            kind="comment_unsupported",
+            title=f"{backend.capitalize() or 'Backend'} cannot persist this comment",
+            body=(
+                f"{backend.capitalize() or 'The backend'} either has no "
+                f"COMMENT ON syntax for the target object kind, or the "
+                "adapter's capability flag is off. Nothing was written."
+            ),
+            suggested_action=(
+                "Skip this row, or store the description in AMX's "
+                "internal description store (catalog_descriptions) "
+                "instead of pushing it back to the live DB."
+            ),
+        )
+
+    # 5) Connection lost mid-write — partial commit on some backends.
+    if _matches_any(lower, _CONNECTION_LOST_PATTERNS):
+        return WriteErrorClass(
+            kind="connection_lost",
+            title=f"Connection to {backend.capitalize() or 'backend'} dropped during write",
+            body=(
+                "The driver lost its session before the write committed. "
+                "The row stays queued and will retry cleanly once the "
+                "connection is healthy."
+            ),
+            suggested_action=(
+                "Check warehouse / database status, network / VPN, and "
+                "retry Apply pending queue. Recurring drops usually mean "
+                "an idle-timeout shorter than the apply duration."
+            ),
+        )
+
+    # 6) Generic SQL syntax error — usually identifier quoting.
+    if "syntax error" in lower:
+        return WriteErrorClass(
+            kind="syntax_error",
+            title=f"{backend.capitalize() or 'Backend'} rejected the write SQL",
+            body=(
+                f"The COMMENT / ALTER statement for {asset} failed to "
+                "parse. This is almost always an identifier quoting issue "
+                "in the adapter's COMMENT template."
+            ),
+            suggested_action=(
+                "Report the failing object name (special characters, "
+                "reserved words) so the adapter quoting can be fixed."
+            ),
+        )
+
+    # 7) Unknown / fallback — keep the raw text, truncated.
+    return WriteErrorClass(
+        kind="unknown",
+        title=f"Write to {asset} failed",
+        body=msg[:500],
+        suggested_action=(
+            "Inspect the driver message above and the run's activity "
+            "log; re-apply once the underlying issue is resolved."
+        ),
+    )

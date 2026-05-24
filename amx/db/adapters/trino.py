@@ -55,6 +55,9 @@ class TrinoAdapter(DatabaseAdapter):
         # connector that lacks row mutation.
         supports_shared_history=False,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
+        # Trino has no SAVEPOINT; per-row separate transactions on the
+        # writeback path.
+        supports_savepoints=False,
     )
 
     # ── Engine / connection ───────────────────────────────────────────────

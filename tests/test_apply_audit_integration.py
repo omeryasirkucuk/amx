@@ -50,12 +50,17 @@ def _make_db_mock() -> MagicMock:
 
 def test_audit_log_receives_one_event_per_successful_apply() -> None:
     db = _make_db_mock()
-    # Pre-write reader (added in PR-12b2) consults ``get_column_comments``
-    # before each overwrite so audit rows can carry the prior text.
-    # Stub returns the originals AMX is about to replace.
-    db.get_column_comments.return_value = {
-        "id": "Order id (DBA-written).",
-        "amount": "Total amount in cents.",
+    # Pre-write reader now consults the column-comments cache via
+    # ``_lookup_column_comments_cache`` (cache-only — no live DB
+    # round trip on a warm profile). Stub returns the originals AMX
+    # is about to replace.
+    db._lookup_column_comments_cache.return_value = {
+        "table_comment": None,
+        "columns": {
+            "id": "Order id (DBA-written).",
+            "amount": "Total amount in cents.",
+        },
+        "kind": "TABLE",
     }
     audit = MagicMock()
 
@@ -95,8 +100,10 @@ def test_audit_log_receives_one_event_per_successful_apply() -> None:
     second_kwargs = audit.record_apply_event.call_args_list[1].kwargs
     assert second_kwargs["old_comment"] == "Total amount in cents."
 
-    # Reader caches per-table; both rows share one round-trip.
-    db.get_column_comments.assert_called_once_with("public", "orders")
+    # Reader memoizes per-table; both rows share one cache lookup
+    # and never touch the live-DB fallback method.
+    db._lookup_column_comments_cache.assert_called_once_with("public", "orders")
+    db.get_column_comments.assert_not_called()
 
 
 def test_audit_log_omitted_means_no_record_calls() -> None:

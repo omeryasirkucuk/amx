@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from amx.db.connector import AssetKind, DatabaseConnector
@@ -25,6 +26,56 @@ if TYPE_CHECKING:
     from amx.agents.orchestrator import ReviewResult
 
 log = get_logger("agents.orchestrator.writeback")
+
+
+@dataclass(frozen=True)
+class RowApplyOutcome:
+    """Per-row result from :func:`apply_review_results_to_db`.
+
+    The function used to return only an ``int`` — the count of rows
+    it claimed to apply. That shape hid which rows failed and what
+    went wrong, so callers (the Studio worker, the SPA's queue
+    counter) couldn't preserve a partial-failure queue or render a
+    user-friendly error. ``RowApplyOutcome`` is the truth source the
+    worker uses to:
+
+    * drain the pending queue only for rows whose live DB write
+      actually committed,
+    * report a per-row breakdown to the SPA so failed rows can stay
+      visible with their classified error chip,
+    * keep CLI / orchestrator callers' existing "applied count"
+      semantics by simply counting ``status == 'applied'`` outcomes.
+
+    Fields mirror the ``ReviewResult`` shape so the SPA can render
+    "missing ALTER privilege on samples.nyctaxi.trips" without
+    chasing extra metadata.
+
+    ``status`` values:
+
+    * ``applied`` — the per-row (or per-batch) transaction committed.
+    * ``failed`` — the connector raised; the row's tx rolled back and
+      the live DB does not hold the new comment.
+    * ``cancelled`` — the cancel-token tripped before the row ran.
+    """
+
+    result_id: int | None
+    schema: str
+    table: str
+    column: str | None
+    asset_kind: str
+    status: str
+    error_kind: str = ""
+    # ``error_text`` carries the classifier body (friendly, curated
+    # description). ``error_raw`` carries the verbatim driver text
+    # (e.g. ``[INSUFFICIENT_PERMISSIONS] User omer lacks ALTER on
+    # samples.nyctaxi.trips``) so the SPA banner can render a
+    # "Show driver message" disclosure inline — without that, the
+    # user only sees the curated body and can't tell what the
+    # database actually returned.
+    error_text: str = ""
+    error_title: str = ""
+    error_action: str = ""
+    error_raw: str = ""
 
 
 # Sentinel descriptions the orchestrator writes when the LLM produced no
@@ -175,45 +226,83 @@ def _record_audit(
 
 
 class _OldCommentReader:
-    """Read prior COMMENT values from the live DB before they are
-    overwritten, with a per-(schema, table) column-comment cache so
-    a 200-row apply against one table costs one
-    ``get_column_comments`` call rather than 200.
+    """Read prior COMMENT values from the persistent column-comments
+    cache before they are overwritten. **Cache-only** — never falls
+    back to a live DB call.
 
-    Misses (adapter without a read API, query failure, asset kind
-    AMX cannot read) return ``None`` — the audit row records that
-    as "original unknown" and ``/history rollback`` skips that
-    row instead of synthesising garbage.
+    Pre-fix this reader called ``connector.get_table_comment`` /
+    ``get_column_comments``, which on a cache miss triggered the
+    adapter's ``bulk_schema_metadata`` query. On Databricks that
+    is a ``SELECT … FROM system.information_schema.{tables,columns}``
+    that can take 10+ seconds per applied row — and it ran even when
+    the COMMENT ON was about to fail. The audit log's "old comment"
+    snapshot is useful but is **not** worth a multi-second
+    information_schema round trip on every apply.
+
+    Trade-off: when the profile's
+    ``column_comments_cache`` is cold (no Sync all has run yet),
+    the audit row records ``old_comment=None``. After Sync all
+    warms the cache, the audit captures the real prior text. Both
+    are acceptable; what's not acceptable is paying for a heavy
+    bulk read on every apply just so the audit table can record a
+    string the user can usually reconstruct from the run's history.
+
+    Misses still return ``None`` for the same reasons as before
+    (adapter without a read API, asset kind AMX cannot read, etc.).
     """
 
     def __init__(self, db: DatabaseConnector) -> None:
         self.db = db
-        self._column_cache: dict[tuple[str, str], dict[str, str | None]] = {}
+        # Memoize per-(schema, table) cache reads inside the same
+        # apply call so a 200-row apply against one table hits the
+        # cache lookup once.
+        self._column_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
 
     def read(self, r: ReviewResult, kind: AssetKind) -> str | None:
         try:
             if kind == AssetKind.SCHEMA:
+                # Schema / database comments are rare enough (one row
+                # per profile per apply) that the cache-only treatment
+                # is overkill. Read directly through the existing
+                # methods, which already use schemas_cache as their
+                # fast path; on cold cache they accept a single
+                # ``get_schema_comment`` call (no bulk SELECT) and we
+                # tolerate that cost for a single row.
                 return self.db.get_schema_comment(r.schema)
             if kind == AssetKind.DATABASE:
                 return self.db.get_database_comment()
-            if r.column is None:
-                return self.db.get_table_comment(r.schema, r.table)
-            key = (r.schema, r.table)
+            # Table / column reads — go through the cache-only lookup
+            # so we never trigger the bulk
+            # ``information_schema.{tables,columns}`` SELECTs that
+            # ``connector.get_table_comment`` /
+            # ``get_column_comments`` would otherwise issue on a
+            # cache miss.
+            table = r.table or ""
+            key = (r.schema, table)
             cached = self._column_cache.get(key)
-            if cached is None:
+            if key not in self._column_cache:
                 try:
-                    cached = self.db.get_column_comments(r.schema, r.table) or {}
+                    cached = self.db._lookup_column_comments_cache(  # noqa: SLF001
+                        r.schema, table
+                    )
                 except Exception as exc:
                     log.debug(
-                        "get_column_comments failed for %s.%s (%s); "
+                        "_lookup_column_comments_cache failed for %s.%s (%s); "
                         "audit will record old_comment=None",
                         r.schema,
-                        r.table,
+                        table,
                         exc,
                     )
-                    cached = {}
+                    cached = None
                 self._column_cache[key] = cached
-            return cached.get(r.column)
+            if cached is None:
+                return None
+            if r.column is None:
+                value = cached.get("table_comment")
+                return str(value) if value is not None else None
+            cols = cached.get("columns") or {}
+            value = cols.get(r.column) if isinstance(cols, dict) else None
+            return str(value) if value is not None else None
         except Exception as exc:
             log.debug(
                 "old-comment read failed for %s.%s.%s (%s); audit will record old_comment=None",
@@ -265,6 +354,52 @@ def _savepoint_or_passthrough(conn: Any):
         exit_(None, None, None)
 
 
+@contextlib.contextmanager
+def _row_apply_tx(
+    db: DatabaseConnector,
+    shared_conn: Any,
+    *,
+    supports_savepoints: bool,
+):
+    """Per-row (or per-batch) transaction context the apply loop runs
+    its statements inside.
+
+    Two execution modes, decided once per call by the connector's
+    advertised ``supports_savepoints`` capability:
+
+    * **Savepoint-capable backend** (Postgres, MySQL/InnoDB, Oracle,
+      MSSQL, Snowflake, Redshift, DuckDB) — yields ``shared_conn``
+      wrapped in a SAVEPOINT. The outer caller already opened
+      ``db.engine.begin()`` once for the entire queue, so per-row
+      failures are isolated through ``begin_nested()`` without
+      reopening the connection.
+    * **No-savepoint backend** (Databricks, BigQuery, Hive, Trino,
+      ClickHouse) — yields a fresh connection from
+      ``db.engine.begin()`` so each row commits independently. No
+      ``SAVEPOINT sa_savepoint_N`` SQL is ever shipped to the server,
+      which both lets the query history stay clean (no rejected
+      savepoint statements) and isolates per-row failures without
+      depending on a primitive the backend does not implement.
+
+    The caller never sees the distinction — it always receives a
+    usable connection in the ``yield`` and lets ``apply_comment``
+    write through it. Failure semantics are identical: a raised
+    exception inside the ``with`` block rolls back exactly that row's
+    write and leaves siblings untouched.
+    """
+    if supports_savepoints:
+        with _savepoint_or_passthrough(shared_conn):
+            yield shared_conn
+        return
+    # No-savepoint mode: each invocation opens (and commits) its own
+    # transaction. ``shared_conn`` is ignored — the caller passes the
+    # outer ``shared_conn`` as ``None`` in this mode, so accidentally
+    # using it would surface as a clear AttributeError rather than a
+    # silent write against the wrong connection.
+    with db.engine.begin() as own_conn:
+        yield own_conn
+
+
 def apply_review_results_to_db(
     db: DatabaseConnector,
     results: list[ReviewResult],
@@ -279,6 +414,7 @@ def apply_review_results_to_db(
     audit_user: str = "",
     audit_host: str = "",
     audit_run_id: int | None = None,
+    outcomes_out: list[RowApplyOutcome] | None = None,
 ) -> int:
     """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database.
 
@@ -296,6 +432,15 @@ def apply_review_results_to_db(
     returns ``0`` because nothing was actually applied — callers can
     distinguish "preview" from "applied" by inspecting the progress
     callbacks, not by trusting the return value.
+
+    ``outcomes_out`` (optional): when a list is supplied, every
+    attempted row appends a :class:`RowApplyOutcome` to it. This is
+    the truth source for callers that need to act on partial failure
+    — most importantly the Studio apply worker, which drains the
+    pending queue only for ``status='applied'`` outcomes and surfaces
+    ``status='failed'`` rows with their classified error to the SPA.
+    Backwards compatible: legacy callers that ignore the parameter
+    still get the int count via the return value.
     """
     applied = 0
     # Filter out fallback placeholders BEFORE we hit the DB. They're a UI
@@ -352,7 +497,18 @@ def apply_review_results_to_db(
     # every legacy caller that doesn't audit.
     old_reader = _OldCommentReader(db) if audit_log is not None else None
 
-    with db.engine.begin() as conn:
+    # Transaction-grouping decision: savepoint-capable backends share
+    # one outer ``engine.begin()`` and isolate per-row failures via
+    # SAVEPOINT. Backends without SAVEPOINT (Databricks, BigQuery,
+    # Hive, Trino, ClickHouse) run each row in its own
+    # ``engine.begin()`` — see :func:`_row_apply_tx` for the
+    # contextmanager dispatch. The outer ``shared_ctx`` is a no-op
+    # ``nullcontext`` in the no-savepoint mode so the same loop body
+    # works either way.
+    supports_savepoints = bool(getattr(db.capabilities, "supports_savepoints", True))
+    shared_ctx: Any = db.engine.begin() if supports_savepoints else contextlib.nullcontext(None)
+
+    with shared_ctx as conn:
         total = len(pending)
         index = 0
         while index < total:
@@ -414,9 +570,11 @@ def apply_review_results_to_db(
                             on_progress(
                                 group[0], "started", index + 1, total, f"batch:{len(group)}"
                             )
-                        with _savepoint_or_passthrough(conn):
+                        with _row_apply_tx(
+                            db, conn, supports_savepoints=supports_savepoints
+                        ) as row_conn:
                             applied_batch = db.apply_column_comments_batch(
-                                r.schema, r.table, batched_comments, conn=conn
+                                r.schema, r.table, batched_comments, conn=row_conn
                             )
                         if applied_batch:
                             for offset, item in enumerate(group, start=1):
@@ -431,6 +589,17 @@ def apply_review_results_to_db(
                                     )
                                 if on_applied is not None:
                                     on_applied(item)
+                                if outcomes_out is not None:
+                                    outcomes_out.append(
+                                        RowApplyOutcome(
+                                            result_id=getattr(item, "result_id", None),
+                                            schema=item.schema,
+                                            table=item.table or "",
+                                            column=item.column,
+                                            asset_kind=str(item.asset_kind or "table"),
+                                            status="applied",
+                                        )
+                                    )
                                 _record_audit(
                                     audit_log,
                                     item,
@@ -506,26 +675,38 @@ def apply_review_results_to_db(
             try:
                 if on_progress is not None:
                     on_progress(r, "started", index + 1, total, "")
-                # Per-row SAVEPOINT: keeps a single failed COMMENT (eg.
-                # "schema does not exist" on Postgres) from poisoning
-                # the rest of the batch with InFailedSqlTransaction.
-                # The savepoint auto-rolls back on exception when used
-                # as a context manager, so the outer tx stays alive
-                # for the next row.
-                with _savepoint_or_passthrough(conn):
+                # Per-row transaction context: SAVEPOINT on
+                # savepoint-capable backends (keeps Postgres'
+                # ``InFailedSqlTransaction`` cascade from killing
+                # sibling rows in the same batch) or a fresh
+                # ``engine.begin()`` on backends that don't support
+                # SAVEPOINT (Databricks et al). See :func:`_row_apply_tx`
+                # for the dispatch contract.
+                with _row_apply_tx(db, conn, supports_savepoints=supports_savepoints) as row_conn:
                     db.apply_comment(
                         schema=r.schema,
                         table=r.table,
                         column=r.column,
                         comment=r.final_description,
                         asset_kind=kind,
-                        conn=conn,
+                        conn=row_conn,
                     )
                 applied += 1
                 if on_progress is not None:
                     on_progress(r, "applied", index + 1, total, "")
                 if on_applied is not None:
                     on_applied(r)
+                if outcomes_out is not None:
+                    outcomes_out.append(
+                        RowApplyOutcome(
+                            result_id=getattr(r, "result_id", None),
+                            schema=r.schema,
+                            table=r.table or "",
+                            column=r.column,
+                            asset_kind=str(r.asset_kind or "table"),
+                            status="applied",
+                        )
+                    )
                 _record_audit(
                     audit_log,
                     r,
@@ -580,6 +761,33 @@ def apply_review_results_to_db(
                     on_progress(r, "failed", index + 1, total, str(exc))
                 if on_failed is not None:
                     on_failed(r, exc)
+                if outcomes_out is not None:
+                    # Classify so the SPA banner can render an
+                    # actionable hint instead of the raw driver text.
+                    from amx.core.errors import classify_write_error
+
+                    cls = classify_write_error(
+                        exc,
+                        backend=str(getattr(db, "backend", "") or ""),
+                        schema=r.schema,
+                        table=r.table or "",
+                        column=r.column,
+                    )
+                    outcomes_out.append(
+                        RowApplyOutcome(
+                            result_id=getattr(r, "result_id", None),
+                            schema=r.schema,
+                            table=r.table or "",
+                            column=r.column,
+                            asset_kind=str(r.asset_kind or "table"),
+                            status="failed",
+                            error_kind=cls.kind,
+                            error_text=cls.body,
+                            error_title=cls.title,
+                            error_action=cls.suggested_action,
+                            error_raw=str(exc)[:2000],
+                        )
+                    )
                 # Surface the proximate cause (eg. schema/table not
                 # found) instead of the cascade noise. Postgres
                 # ``InFailedSqlTransaction`` errors used to dominate

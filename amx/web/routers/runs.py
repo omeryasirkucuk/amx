@@ -39,6 +39,7 @@ from sse_starlette.sse import EventSourceResponse
 from amx.agents.orchestrator import (
     Orchestrator,
     ReviewResult,
+    RowApplyOutcome,
     RunCancelled,
     apply_review_results_to_db,
 )
@@ -47,6 +48,7 @@ from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
 from amx.pending_review import (  # noqa: F401 - load_pending re-exported for tests
     clear_pending,
+    clear_pending_for,
     load_pending,
     save_pending,
 )
@@ -1872,6 +1874,7 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
     except Exception:
         hostname = ""
 
+    outcomes: list[RowApplyOutcome] = []
     try:
         applied = apply_review_results_to_db(
             db,
@@ -1884,6 +1887,7 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
             audit_profile=str(body.db_profile or getattr(cfg.db, "name", "") or ""),
             audit_user=applied_by,
             audit_host=hostname,
+            outcomes_out=outcomes,
         )
     except RunCancelled:
         # apply_review_results_to_db already commits-what-was-applied
@@ -1923,16 +1927,21 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
         emit_terminal(job.queue, "job.cancelled", {"summary": job.summary})
         return
 
-    # Clear the on-disk pending queue when the apply consumed it (i.e.
-    # body.results was None so we loaded from disk). Mirrors the CLI's
-    # ``clear_pending()`` after ``apply_review_results_to_db``. Skip
-    # clearing when the caller passed an explicit subset — clearing
-    # would silently drop entries the user hadn't approved yet.
+    # Drain the on-disk pending queue, but ONLY for rows whose live DB
+    # write actually committed. Failed rows stay queued so the user
+    # sees the classified error and can retry / edit / skip without
+    # re-accepting every suggestion. ``outcomes_out`` is the truth
+    # source — never ``applied`` alone, because that count masks per-
+    # row partial failure on partially-applied queues.
     if body.results is None:
-        try:
-            clear_pending()
-        except Exception:
-            pass
+        applied_ids = [
+            o.result_id for o in outcomes if o.status == "applied" and o.result_id is not None
+        ]
+        if applied_ids:
+            try:
+                clear_pending_for(applied_ids)
+            except Exception:
+                pass
 
     # Roll the per-run applied count and status forward so the Runs
     # list pill stops claiming "ready" after the user applied rows.
@@ -1956,12 +1965,44 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
             except Exception as exc:  # pragma: no cover — best-effort
                 log.debug("post-apply status transition for run %s failed: %s", rid, exc)
 
-    job.status = "done"
-    job.summary = {"applied": int(applied), "total": len(results)}
+    # Job summary carries per-row outcomes so the SPA can render a
+    # truthful counter: "N applied, M failed" instead of the legacy
+    # "N applied" that hid the failure of M rows. The ``failed`` list
+    # is small (only failed rows; payload stays under a kilobyte for
+    # typical queues) and the SPA renders the classified error chip
+    # next to each entry. Pre-PR consumers reading just ``applied`` /
+    # ``total`` still work — those keys are kept under the same names.
+    failed_outcomes = [o for o in outcomes if o.status == "failed"]
+    job.status = "done" if not failed_outcomes else "applied_partial"
+    job.summary = {
+        "applied": int(applied),
+        "total": len(results),
+        "failed_count": len(failed_outcomes),
+        "applied_ids": [
+            o.result_id for o in outcomes if o.status == "applied" and o.result_id is not None
+        ],
+        "failed": [
+            {
+                "result_id": o.result_id,
+                "schema": o.schema,
+                "table": o.table,
+                "column": o.column,
+                "asset_kind": o.asset_kind,
+                "error_kind": o.error_kind,
+                "error_title": o.error_title,
+                "error_text": o.error_text,
+                "error_action": o.error_action,
+                "error_raw": o.error_raw,
+            }
+            for o in failed_outcomes
+        ],
+    }
     job.ended_at = time.time()
-    emit(
-        job.queue,
-        "activity.complete",
-        {"idx": 0, "detail": f"Applied {applied}/{len(results)}."},
-    )
+    if failed_outcomes:
+        detail = (
+            f"Applied {applied}/{len(results)} — {len(failed_outcomes)} failed (queue preserved)."
+        )
+    else:
+        detail = f"Applied {applied}/{len(results)}."
+    emit(job.queue, "activity.complete", {"idx": 0, "detail": detail})
     emit_terminal(job.queue, "job.done", {"summary": job.summary})
