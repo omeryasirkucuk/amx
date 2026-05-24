@@ -373,6 +373,15 @@ export interface SnapshotResponse {
   row_count?: number | null;
 }
 
+/** Result of a per-table deep sync (POST /api/catalog/deep-sync-table). */
+export interface DeepSyncTableResponse {
+  ok: boolean;
+  schema: string;
+  table: string;
+  row_count: number;
+  column_count: number;
+}
+
 export interface RunRow {
   id: number;
   command: string;
@@ -690,6 +699,18 @@ export const api = {
         `/api/live/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/snapshot`,
         scope,
       ),
+    ),
+  /** Deep-sync ONE table: profile its columns + exact row count into the
+   *  catalog (and shared store when active). Powers the per-table "Deep
+   *  sync" button so the user can refresh one table's count without
+   *  re-profiling the whole profile. */
+  deepSyncTable: (scope: Scope, schema: string, table: string) =>
+    apiFetch<DeepSyncTableResponse>(
+      withScope(
+        `/api/catalog/deep-sync-table?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`,
+        scope,
+      ),
+      { method: "POST" },
     ),
   recentRuns: (limit = 20, command: string | null = "analyze.run") => {
     const params = new URLSearchParams({ limit: String(limit) });
