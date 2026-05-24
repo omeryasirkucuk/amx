@@ -424,6 +424,79 @@ def test_describe_table_zero_column_catalog_hit_falls_through_to_live(monkeypatc
     fake_db.profile_table.assert_called()
 
 
+def test_describe_table_cached_zero_row_count_reported_as_unknown(monkeypatch):
+    """Regression: /search sync never captures row counts (every
+    catalog row stores row_count=0), so a cached row_count of 0 means
+    "unknown", NOT "empty table". describe_table must surface it as
+    ``row_count=None`` + ``row_count_known=False`` so the assistant
+    doesn't tell the user a populated table has zero rows.
+    """
+    tb = _bare_toolbox()
+    tb._allow_live_refresh = False  # cache-only mode — the /ask default
+
+    # Catalog hit WITH columns (so we stay on the cache branch) but
+    # row_count 0 — exactly what /search sync produces.
+    monkeypatch.setattr(
+        tb,
+        "_resolve_table_metadata",
+        lambda **_kw: (
+            {
+                "columns": [
+                    {"name": "id", "dtype": "int", "nullable": False, "comment": "pk"},
+                    {"name": "name", "dtype": "varchar", "nullable": True, "comment": ""},
+                ],
+                "table_comment": "customer rows",
+                "row_count": 0,
+            },
+            "catalog",
+            100.0,
+        ),
+    )
+    fake_db = MagicMock()
+    fake_db.cfg = SimpleNamespace(database="", catalog="", project="")
+    tb._db = fake_db
+
+    out = tb._tool_describe_table(schema="beer_factory", table="customers")
+
+    # The table + its columns ARE known; only the row count is not.
+    assert out["found"] is True
+    assert out["column_count"] == 2
+    assert out["row_count_known"] is False
+    assert out["row_count"] is None
+    assert out["stats"]["row_count"] is None
+    assert out["stats"]["row_count_known"] is False
+
+
+def test_describe_table_cached_positive_row_count_is_trusted(monkeypatch):
+    """A cached row_count > 0 is real data worth surfacing — it must
+    stay an int and be marked known, so the guard above doesn't blank
+    out legitimately-captured counts."""
+    tb = _bare_toolbox()
+    tb._allow_live_refresh = False
+
+    monkeypatch.setattr(
+        tb,
+        "_resolve_table_metadata",
+        lambda **_kw: (
+            {
+                "columns": [{"name": "id", "dtype": "int", "nullable": False, "comment": ""}],
+                "table_comment": "",
+                "row_count": 4242,
+            },
+            "catalog",
+            100.0,
+        ),
+    )
+    fake_db = MagicMock()
+    fake_db.cfg = SimpleNamespace(database="", catalog="", project="")
+    tb._db = fake_db
+
+    out = tb._tool_describe_table(schema="s", table="t")
+
+    assert out["row_count"] == 4242
+    assert out["row_count_known"] is True
+
+
 def test_list_schemas_serves_from_catalog_when_synced(monkeypatch):
     """``list_schemas`` reads from ``catalog_entities`` first; only
     falls back to a live ``db.list_schemas`` call when the catalog is
