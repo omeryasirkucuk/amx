@@ -39,6 +39,7 @@ _PATH_SEARCH_COL = {
     "query": None,
 }
 
+
 class _JobChannel:
     """Per-job event log + waiter for SSE consumers.
 

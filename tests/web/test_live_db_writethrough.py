@@ -35,9 +35,7 @@ def _wipe_connector_cache() -> None:
 def _register_databricks_profile(cfg) -> None:
     """Databricks (3-level) so the ``/catalogs`` route exercises the
     live-DB fallback instead of returning early."""
-    cfg.db_profiles[PROFILE] = DBConfig(
-        backend="databricks", host="dbc.test", access_token="x"
-    )
+    cfg.db_profiles[PROFILE] = DBConfig(backend="databricks", host="dbc.test", access_token="x")
 
 
 class _FakeCatalog:
@@ -84,9 +82,7 @@ def _install_fake_catalog(monkeypatch) -> _FakeCatalog:
     # Force cache reads to miss so the route falls through to live.
     monkeypatch.setattr(live_db, "_cached_catalog_inventory", lambda *_a, **_kw: None)
     monkeypatch.setattr(live_db, "_cached_schemas_for_profile", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        live_db, "_cached_assets_for_profile_schema", lambda *_a, **_kw: None
-    )
+    monkeypatch.setattr(live_db, "_cached_assets_for_profile_schema", lambda *_a, **_kw: None)
     return fake
 
 
@@ -136,9 +132,7 @@ def test_schemas_live_path_writes_through(client, auth_headers, monkeypatch, cfg
         ),
     )
 
-    resp = client.get(
-        f"/api/live/schemas{_q('database=appdb')}", headers=auth_headers
-    )
+    resp = client.get(f"/api/live/schemas{_q('database=appdb')}", headers=auth_headers)
     assert resp.status_code == 200
     assert resp.json()["source"] == "live"
 
@@ -168,9 +162,7 @@ def test_assets_live_path_writes_through(client, auth_headers, monkeypatch, cfg)
         ),
     )
 
-    resp = client.get(
-        f"/api/live/schemas/sales/assets{_q('database=appdb')}", headers=auth_headers
-    )
+    resp = client.get(f"/api/live/schemas/sales/assets{_q('database=appdb')}", headers=auth_headers)
     assert resp.status_code == 200
     assert resp.json()["source"] == "live"
 
@@ -183,9 +175,7 @@ def test_assets_live_path_writes_through(client, auth_headers, monkeypatch, cfg)
     assert all(r["database_name"] == "appdb" for r in fake.rows)
 
 
-def test_databases_live_path_writes_through(
-    client, auth_headers, monkeypatch, cfg
-) -> None:
+def test_databases_live_path_writes_through(client, auth_headers, monkeypatch, cfg) -> None:
     """Cache miss on a 2-level profile → live ``list_databases`` →
     one ``database`` marker row per database."""
     cfg.db_profiles[PROFILE] = DBConfig(

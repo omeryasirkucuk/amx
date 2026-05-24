@@ -14,13 +14,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-ADAPTER_SRC = (
-    Path(__file__).resolve().parents[2]
-    / "amx"
-    / "db"
-    / "adapters"
-    / "databricks.py"
-)
+ADAPTER_SRC = Path(__file__).resolve().parents[2] / "amx" / "db" / "adapters" / "databricks.py"
 
 
 def test_no_executable_system_information_schema_sql() -> None:
@@ -46,10 +40,7 @@ def test_info_schema_helper_quotes_catalog() -> None:
 
     from amx.db.adapters.databricks import DatabricksAdapter
 
-    assert (
-        DatabricksAdapter._info_schema("main", "tables")
-        == "`main`.information_schema.tables"
-    )
+    assert DatabricksAdapter._info_schema("main", "tables") == "`main`.information_schema.tables"
     # backticks inside the catalog name must be doubled
     assert (
         DatabricksAdapter._info_schema("weird`name", "views")
@@ -58,7 +49,4 @@ def test_info_schema_helper_quotes_catalog() -> None:
     # works as instance method too
     a = DatabricksAdapter.__new__(DatabricksAdapter)
     a.cfg = SimpleNamespace(catalog="my-catalog")  # type: ignore[attr-defined]
-    assert (
-        a._info_schema("my-catalog", "columns")
-        == "`my-catalog`.information_schema.columns"
-    )
+    assert a._info_schema("my-catalog", "columns") == "`my-catalog`.information_schema.columns"
