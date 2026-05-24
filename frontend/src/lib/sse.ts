@@ -46,8 +46,14 @@ const DEFAULT_TERMINAL = ["job.done", "job.cancelled", "job.failed"] as const;
 
 /** Cap on retained events so a runaway stream cannot grow memory. */
 export const MAX_EVENTS = 5000;
-/** Max reconnect attempts after a transport error. */
-const MAX_RECONNECT_ATTEMPTS = 5;
+/** Max reconnect attempts after a transport error. Long-running ingest
+ *  / writeback jobs need a generous budget — corporate proxies that
+ *  close idle HTTP connections every 30–60s would otherwise exhaust
+ *  five attempts and surface a misleading "connection lost" banner
+ *  in the middle of an otherwise-healthy run. With the 30s backoff
+ *  cap, 20 attempts give ~10 minutes of recoverable transient
+ *  failure before the hook hands off to the manual Reconnect button. */
+const MAX_RECONNECT_ATTEMPTS = 20;
 /** Backoff schedule (milliseconds). Index = attempt count. Last entry caps. */
 const RECONNECT_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const;
 

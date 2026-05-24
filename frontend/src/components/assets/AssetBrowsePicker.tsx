@@ -187,21 +187,24 @@ export default function AssetBrowsePicker({
     onSelectionChange({ ...selection, [activeTab.id]: next });
   };
 
-  const allLoadedLeaves = useCallback((): DiscoverTreeNode[] => {
+  const allLoadedNodes = useCallback((): DiscoverTreeNode[] => {
+    // Return every loaded node — directories AND leaves. Directories
+    // used to be excluded here, which meant a user typing the name of
+    // a folder they could see in the tree got zero matches. Folders
+    // appear in the search results too now; selection is still only
+    // possible on leaves (the checkbox is disabled for directories
+    // downstream in SearchResults).
     const acc: DiscoverTreeNode[] = [];
-    const pushLeaf = (n: DiscoverTreeNode) => {
-      if (!isDir(n)) acc.push(n);
-    };
-    (rootChildren ?? []).forEach(pushLeaf);
+    (rootChildren ?? []).forEach((n) => acc.push(n));
     Object.values(nodes).forEach((s) => {
-      (s.children ?? []).forEach(pushLeaf);
+      (s.children ?? []).forEach((n) => acc.push(n));
     });
     return acc;
   }, [rootChildren, nodes]);
 
   const cacheHasAnyRow = (rootChildren?.length ?? 0) > 0;
 
-  const onWalk = async () => {
+  const onWalk = useCallback(async () => {
     setWalking(true);
     setWalkError(null);
     try {
@@ -212,16 +215,45 @@ export default function AssetBrowsePicker({
     } finally {
       setWalking(false);
     }
-  };
+  }, [profile, activeTab.kindParam, fetchRoot]);
 
   const matched = (() => {
     if (!debouncedFilter) return null;
-    const needle = debouncedFilter.toLowerCase();
-    return allLoadedLeaves().filter((l) => {
-      const hay = `${l.name} ${l.path} ${l.owner ?? ""}`.toLowerCase();
+    // Strip a leading/trailing slash so a user typing ``FOLDER`` still
+    // matches a row whose ``path`` displays as ``/FOLDER_NAME/``.
+    const needle = debouncedFilter.toLowerCase().replace(/^\/+|\/+$/g, "");
+    if (!needle) return [];
+    return allLoadedNodes().filter((n) => {
+      const hay = `${n.name} ${n.path} ${n.owner ?? ""}`.toLowerCase();
       return hay.includes(needle);
     });
   })();
+
+  // Auto-walk the workspace once per profile/kind/session when the
+  // user starts searching against an empty cache. The user's intent
+  // is "find me X across the whole tree" — making them click a second
+  // "walk workspace" button before the search runs is friction. Only
+  // fires when: a search needle is present, the cache has nothing
+  // loaded yet, no walk is already running, and we have not auto-
+  // walked for this tab in this session.
+  const [autoWalked, setAutoWalked] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!debouncedFilter) return;
+    if (cacheHasAnyRow) return;
+    if (walking) return;
+    const walkKey = `${profile}::${activeTab.kindParam}`;
+    if (autoWalked.has(walkKey)) return;
+    setAutoWalked((prev) => new Set(prev).add(walkKey));
+    void onWalk();
+  }, [
+    debouncedFilter,
+    cacheHasAnyRow,
+    walking,
+    profile,
+    activeTab.kindParam,
+    autoWalked,
+    onWalk,
+  ]);
 
   if (tabs.length === 0) {
     return (
@@ -627,26 +659,38 @@ function SearchResults({
   }
   return (
     <ul className="divide-y divide-border/60">
-      {matched.map((leaf) => (
-        <li
-          key={leaf.path}
-          className="flex items-center gap-2 px-3 py-1 text-sm hover:bg-surface-subtle"
-        >
-          <input
-            type="checkbox"
-            checked={
-              leaf.external_id ? selectedSet.has(leaf.external_id) : false
-            }
-            onChange={() => onToggleLeaf(leaf)}
-            disabled={disabled || !leaf.external_id}
-            className="h-3.5 w-3.5 shrink-0 accent-accent"
-          />
-          <span className="flex-1 truncate text-ink">{leaf.name}</span>
-          <span className="shrink-0 truncate font-mono text-[11px] text-ink-dim">
-            {leaf.path}
-          </span>
-        </li>
-      ))}
+      {matched.map((leaf) => {
+        const isDirectory = Boolean(leaf.is_directory);
+        return (
+          <li
+            key={leaf.path}
+            className="flex items-center gap-2 px-3 py-1 text-sm hover:bg-surface-subtle"
+          >
+            <input
+              type="checkbox"
+              checked={
+                !isDirectory && leaf.external_id
+                  ? selectedSet.has(leaf.external_id)
+                  : false
+              }
+              onChange={() => !isDirectory && onToggleLeaf(leaf)}
+              // Folders surface in search hits so users can find them by
+              // name (the previous filter only matched leaves), but they
+              // are not ingest-pickable — the checkbox is disabled and a
+              // folder icon flags the row.
+              disabled={disabled || isDirectory || !leaf.external_id}
+              className="h-3.5 w-3.5 shrink-0 accent-accent"
+              aria-label={isDirectory ? `Folder ${leaf.name}` : leaf.name}
+            />
+            <span className="flex-1 truncate text-ink">
+              {isDirectory ? `📁 ${leaf.name}` : leaf.name}
+            </span>
+            <span className="shrink-0 truncate font-mono text-[11px] text-ink-dim">
+              {leaf.path}
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }
