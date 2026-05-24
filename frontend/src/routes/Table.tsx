@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
-import { AlignLeft, Columns, Sparkles, Database, Workflow } from "lucide-react";
+import { AlignLeft, Columns, Hash, Sparkles, Database, Workflow } from "lucide-react";
 
 import { api, assetsForTable, lineageArtifactsForTable } from "../lib/api";
 import type { LineageArtifact, LinkedAssetRow } from "../lib/api";
@@ -82,6 +82,10 @@ export default function Table() {
   });
 
   const totalCols = snapshot.data?.columns?.length ?? columns.data?.count ?? 0;
+  // Synced row count from the catalog. ``null``/undefined means the
+  // count was never captured by /search sync — show "—" rather than a
+  // misleading "0".
+  const rowCount = snapshot.data?.row_count ?? null;
   const commented =
     snapshot.data?.columns?.filter((c) => (c.comment || "").trim().length > 0).length ?? 0;
   const tableComment = snapshot.data?.table_comment ?? "";
@@ -374,8 +378,13 @@ export default function Table() {
         }
       />
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
         <SummaryCard label="Columns" value={String(totalCols)} icon={Columns} />
+        <SummaryCard
+          label="Rows"
+          value={rowCount != null ? rowCount.toLocaleString() : "—"}
+          icon={Hash}
+        />
         <SummaryCard
           label="With comments"
           value={totalCols ? `${commented}/${totalCols}` : "—"}
