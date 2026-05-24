@@ -83,8 +83,11 @@ def test_set_column_comment_passthrough(client, auth_headers, stub_db) -> None:
 
 def test_connector_failure_returns_400(client, auth_headers, stub_db) -> None:
     """Backends that don't support COMMENT ON DATABASE raise — we
-    surface that as a clean 400 with the connector's actionable
-    message instead of a 500 with a stack trace."""
+    surface that as a clean 400 carrying the classified write error
+    so the SPA inline editor can render the same actionable hint the
+    Apply pending queue banner shows. The detail is now a structured
+    object with stable fields (``error_kind``, ``error_title``,
+    ``error_text``, ``error_action``, ``raw``)."""
     stub_db.set_database_comment.side_effect = RuntimeError("not supported")
     response = client.put(
         f"/api/comments/database?profile={PROFILE}",
@@ -92,7 +95,10 @@ def test_connector_failure_returns_400(client, auth_headers, stub_db) -> None:
         json={"comment": "x"},
     )
     assert response.status_code == 400
-    assert "not supported" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert isinstance(detail, dict)
+    assert detail["error_kind"]  # stable slug, never empty
+    assert "not supported" in detail["raw"]
 
 
 def test_table_comment_writes_to_named_profile_not_active(
