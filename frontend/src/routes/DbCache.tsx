@@ -325,6 +325,34 @@ export default function DbCache() {
         title: e instanceof Error ? e.message : "Sync failed",
       }),
   });
+  // Deep sync — full profile (columns + row counts), opt-in because it
+  // runs profile_table + COUNT(*) per table. The plain Sync above is
+  // skeleton-only (fast table inventory). Reuses the same freshness
+  // state machine, so the pill + invalidations are identical.
+  const deepSyncMut = useMutation({
+    mutationFn: (target: string | null) =>
+      apiFetch(
+        target
+          ? `/api/catalog/deep-sync?profile=${encodeURIComponent(target)}`
+          : "/api/catalog/deep-sync",
+        { method: "POST" },
+      ),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["catalog-freshness"] });
+      qc.invalidateQueries({ queryKey: ["db-cache", "show"] });
+      qc.invalidateQueries({ queryKey: ["db-cache", "stats"] });
+      qc.invalidateQueries({ queryKey: ["live-schemas"] });
+      window.setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["catalog-freshness"] });
+        qc.invalidateQueries({ queryKey: ["db-cache", "show"] });
+      }, 3000);
+    },
+    onError: (e) =>
+      toast.push({
+        tone: "error",
+        title: e instanceof Error ? e.message : "Deep sync failed",
+      }),
+  });
   const freshness = freshnessQ.data;
   const freshnessProfiles = freshness?.profiles ?? [];
   const anySyncing = (freshness?.syncing_profile_count ?? 0) > 0;
@@ -687,22 +715,41 @@ export default function DbCache() {
           title="Profile freshness"
           description="Per-profile last sync timestamp and manual refresh controls."
           actions={
-            <Button
-              variant="primary"
-              size="sm"
-              leadingIcon={
-                <RefreshCw
-                  size={12}
-                  className={
-                    anySyncing || syncMut.isPending ? "animate-spin" : ""
-                  }
-                />
-              }
-              onClick={() => syncMut.mutate(null)}
-              disabled={syncMut.isPending || anySyncing}
-            >
-              {anySyncing || syncMut.isPending ? "Syncing…" : "Sync all"}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="primary"
+                size="sm"
+                leadingIcon={
+                  <RefreshCw
+                    size={12}
+                    className={
+                      anySyncing || syncMut.isPending ? "animate-spin" : ""
+                    }
+                  />
+                }
+                onClick={() => syncMut.mutate(null)}
+                disabled={syncMut.isPending || deepSyncMut.isPending || anySyncing}
+              >
+                {anySyncing || syncMut.isPending ? "Syncing…" : "Sync all"}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                leadingIcon={
+                  <RefreshCw
+                    size={12}
+                    className={
+                      anySyncing || deepSyncMut.isPending ? "animate-spin" : ""
+                    }
+                  />
+                }
+                onClick={() => deepSyncMut.mutate(null)}
+                disabled={syncMut.isPending || deepSyncMut.isPending || anySyncing}
+                title="Full profile: fetches columns + row counts for every table (slower)."
+              >
+                {deepSyncMut.isPending ? "Deep syncing…" : "Deep sync all"}
+              </Button>
+            </div>
           }
         />
         <CardBody>
