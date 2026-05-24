@@ -871,6 +871,65 @@ def deep_sync_profile(
     return summary
 
 
+def deep_sync_one_table(
+    cfg,
+    profile: str,
+    *,
+    schema: str,
+    table: str,
+    database: str | None = None,
+) -> dict:
+    """Deep-sync a SINGLE table: profile it (columns + exact COUNT(*))
+    and write the structural row to the local catalog (and shared store
+    when active).
+
+    Powers the per-asset "Deep sync" button on the Table page so a user
+    can refresh one table's columns + row count without re-profiling the
+    whole profile. Synchronous (one table is quick) and returns the
+    outcome for the caller to render. Never raises — failures land in
+    the returned dict.
+    """
+    profile_map = getattr(cfg, "db_profiles", {}) or {}
+    target_db = profile_map.get((profile or "").strip()) if hasattr(profile_map, "get") else None
+    if target_db is None and cfg is not None:
+        target_db = getattr(cfg, "db", None)
+    db_backend = str(getattr(target_db, "backend", "") or "") if target_db is not None else ""
+    is_three_level = db_backend in _THREE_LEVEL_BACKENDS
+
+    from amx.search.catalog import SearchCatalog
+
+    catalog = SearchCatalog.from_history_store()
+    if catalog is None:
+        return {"ok": False, "error": "history store not initialised"}
+    try:
+        connector = _scoped_connector(cfg, profile, database or None, is_three_level)
+    except Exception as exc:
+        return {"ok": False, "error": f"connector unavailable: {exc}"}
+    try:
+        prof = connector.profile_table(schema, table, sample_size=0)
+        if not getattr(prof, "row_count", 0):
+            exact = _exact_row_count(connector, schema, table)
+            if exact is not None:
+                prof.row_count = exact
+        catalog.sync_table_profile(
+            db_profile=profile,
+            db_backend=db_backend,
+            database_name=database or "",
+            profile=prof,
+            query_usage={},
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    _push_catalog_if_shared(profile)
+    return {
+        "ok": True,
+        "schema": schema,
+        "table": table,
+        "row_count": int(getattr(prof, "row_count", 0) or 0),
+        "column_count": len(getattr(prof, "columns", []) or []),
+    }
+
+
 def _exact_row_count(connector: Any, schema: str, table: str) -> int | None:
     """Run an exact ``SELECT COUNT(*)`` for one table, best-effort.
 
