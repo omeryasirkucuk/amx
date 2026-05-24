@@ -886,9 +886,27 @@ def deep_sync_one_table(
     Powers the per-asset "Deep sync" button on the Table page so a user
     can refresh one table's columns + row count without re-profiling the
     whole profile. Synchronous (one table is quick) and returns the
-    outcome for the caller to render. Never raises — failures land in
-    the returned dict.
+    outcome for the caller to render. Never raises — EVERY failure path
+    (including catalog/connector setup) lands in the returned dict so
+    the HTTP layer surfaces a clear message instead of an opaque 500.
     """
+    try:
+        return _deep_sync_one_table_impl(
+            cfg, profile, schema=schema, table=table, database=database
+        )
+    except Exception as exc:  # pragma: no cover - belt-and-braces
+        log.warning("deep_sync_one_table failed for %s.%s: %s", schema, table, exc)
+        return {"ok": False, "error": str(exc)}
+
+
+def _deep_sync_one_table_impl(
+    cfg,
+    profile: str,
+    *,
+    schema: str,
+    table: str,
+    database: str | None = None,
+) -> dict:
     profile_map = getattr(cfg, "db_profiles", {}) or {}
     target_db = profile_map.get((profile or "").strip()) if hasattr(profile_map, "get") else None
     if target_db is None and cfg is not None:
