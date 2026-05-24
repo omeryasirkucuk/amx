@@ -954,18 +954,33 @@ function ScopeNode({
       <div className="flex w-full items-center">
         <button
           type="button"
-          onClick={() => {
+          aria-label={effectiveOpen ? "Collapse" : "Expand"}
+          onClick={(e) => {
+            // The chevron only folds the node. Navigation lives on the
+            // label button beside it so a user can peek at children
+            // without leaving the page they're on.
+            e.stopPropagation();
             setOpen((v) => !v);
+          }}
+          className="shrink-0 rounded p-1 text-ink-muted transition-colors duration-fast hover:bg-surface-subtle hover:text-ink"
+        >
+          {effectiveOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            // Navigating opens the node so its children are revealed,
+            // never collapses it out from under the user.
+            setOpen(true);
             navigate(scopePath(scope));
           }}
           className={cn(
-            "flex min-w-0 flex-1 items-center gap-1 rounded px-2 py-1 text-left text-[13px] transition-colors duration-fast",
+            "flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-1 text-left text-[13px] transition-colors duration-fast",
             isOnThis
               ? "bg-accent-soft text-accent-ink"
               : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
           )}
         >
-          {effectiveOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           <span className="truncate">{label}</span>
         </button>
         {containerName && (
@@ -1145,18 +1160,30 @@ function SchemaNode({
       <div className="flex w-full items-center">
         <button
           type="button"
-          onClick={() => {
+          aria-label={effectiveOpen ? "Collapse" : "Expand"}
+          onClick={(e) => {
+            // Chevron folds the schema's asset list only; the label
+            // button beside it is what navigates to the schema page.
+            e.stopPropagation();
             setOpen((v) => !v);
+          }}
+          className="shrink-0 rounded p-1 text-ink-dim transition-colors duration-fast hover:bg-surface-subtle hover:text-ink"
+        >
+          {effectiveOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(true);
             navigate(scopePath(scope, schema));
           }}
           className={cn(
-            "flex min-w-0 flex-1 items-center gap-1 rounded px-2 py-1 text-left text-[12px] transition-colors duration-fast",
+            "flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-1 text-left text-[12px] transition-colors duration-fast",
             isOnThis
               ? "bg-accent-soft text-accent-ink"
               : "text-ink-dim hover:bg-surface-subtle hover:text-ink",
           )}
         >
-          {effectiveOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <span className="truncate">{schema}</span>
         </button>
         <button
