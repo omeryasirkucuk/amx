@@ -35,6 +35,7 @@ from amx.search.agent_tools import ToolBox
 from amx.search.catalog import SearchCatalog
 from amx.search.pipeline import budget as _budget
 from amx.search.pipeline.focus import compute_focus_profile as _compute_focus_profile
+from amx.search.pipeline.tool_results import looks_partial as _looks_partial_impl
 from amx.utils.logging import get_logger
 from amx.utils.token_tracker import estimate_tokens
 from amx.utils.token_tracker import tracker as token_tracker
@@ -121,17 +122,12 @@ def _convert_message_for_litellm(message: dict[str, Any]) -> dict[str, Any]:
     return msg
 
 
-def _looks_partial(tool_result: str) -> bool:
-    """Cheap textual check for the ``"partial": true`` marker on a
-    tool result. The result is the JSON string the catalog tools
-    return; parsing every result would be wasteful when only a
-    minority carry the flag. ``"partial": true`` (with single or
-    double quotes) is unambiguous enough."""
-    if not tool_result:
-        return False
-    if '"partial": true' in tool_result or '"partial":true' in tool_result:
-        return True
-    return "'partial': True" in tool_result or "'partial':True" in tool_result
+def _looks_partial(tool_result: str | None) -> bool:
+    """Backward-compatible re-export of
+    :func:`amx.search.pipeline.tool_results.looks_partial`.
+    Kept until PR 7 of the plan removes the alias along with the
+    other backward-compat shims in this module."""
+    return _looks_partial_impl(tool_result)
 
 
 def _summarise_tool_call(tool_call: Any, result: str) -> dict[str, Any]:
