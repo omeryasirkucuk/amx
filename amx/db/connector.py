@@ -370,7 +370,7 @@ class DatabaseConnector:
         if live is None and self._is_cache_warm():
             cached = self._list_schemas_from_cache(catalog)
             log.info(
-                "list_schemas: cache-only mode for profile=%r catalog=%r — "
+                "list_schemas: cache-only mode for profile=%r catalog=%r - "
                 "served %d cached rows, no live DB query",
                 self.profile_name,
                 catalog,
@@ -760,7 +760,13 @@ class DatabaseConnector:
         as cold; we never starve a caller because the bookkeeping
         layer hiccuped.
         """
-        if not self.profile_name:
+        # Defensive ``getattr`` — some test paths build connector-like
+        # objects without going through ``__init__`` (subclasses,
+        # specced MagicMocks, the metadata-mode stub in
+        # tests/test_regressions.py). Treat a missing attribute the
+        # same as an unset profile name: legacy fallback path.
+        profile_name = getattr(self, "profile_name", "") or ""
+        if not profile_name:
             return False
         try:
             from amx.search.catalog import SearchCatalog
@@ -768,7 +774,7 @@ class DatabaseConnector:
             cat = SearchCatalog.from_history_store()
             if cat is None:
                 return False
-            return bool(cat.is_profile_fully_synced(self.profile_name))
+            return bool(cat.is_profile_fully_synced(profile_name))
         except Exception:
             return False
 
@@ -1109,7 +1115,7 @@ class DatabaseConnector:
         # gap with a live DB call.
         if self._is_cache_warm():
             log.info(
-                "get_table_comment: cache-only mode missed %s.%s for profile=%r — "
+                "get_table_comment: cache-only mode missed %s.%s for profile=%r - "
                 "returning None (re-sync the profile to populate)",
                 schema,
                 table,
@@ -1152,7 +1158,7 @@ class DatabaseConnector:
         # the cache; the warm flag now forces the empty result.
         if self._is_cache_warm():
             log.info(
-                "get_column_comments: cache-only mode missed %s.%s for profile=%r — "
+                "get_column_comments: cache-only mode missed %s.%s for profile=%r - "
                 "returning {} (re-sync the profile to populate)",
                 schema,
                 table,
@@ -1211,7 +1217,7 @@ class DatabaseConnector:
         if self._is_cache_warm():
             log.info(
                 "get_schema_comment: cache-only mode missed %s in catalog=%r for "
-                "profile=%r — returning None (re-sync to populate)",
+                "profile=%r - returning None (re-sync to populate)",
                 schema,
                 catalog,
                 self.profile_name,
