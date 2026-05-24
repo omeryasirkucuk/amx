@@ -820,9 +820,30 @@ class ToolBox(
                 cache_key = None  # un-cacheable args; just dispatch normally
 
         try:
-            handler = getattr(self, f"_tool_{name}", None)
-            if handler is None:
+            from amx.search.tools.registry import get_binding
+
+            binding = get_binding(name)
+            if binding is None:
+                # Tool name not declared in the registry → either an
+                # unknown name or a schema/registry sync issue. The
+                # registry-vs-schemas drift test catches the second
+                # case at import time; this branch covers genuinely
+                # bad tool names from the LLM.
                 return _safe_json({"error": f"Unknown tool: {name}"})
+            handler = getattr(self, binding.handler_method, None)
+            if handler is None:
+                # Registry knows the tool but ToolBox lacks the handler
+                # method — same drift signal as the import-time test;
+                # treated as a server error envelope rather than a
+                # silent fall-through.
+                return _safe_json(
+                    {
+                        "error": (
+                            f"Tool {name} declared in registry but handler "
+                            f"{binding.handler_method!r} not found on ToolBox"
+                        )
+                    }
+                )
             payload = handler(**args)
             result = _safe_json(payload)
         except _ToolError as exc:
