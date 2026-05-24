@@ -366,6 +366,11 @@ export interface SnapshotResponse {
   pending_description?: string | null;
   pending_column_descriptions?: Record<string, string>;
   pending_run_id?: number | null;
+  /** Synced row count from the catalog (``/search sync``). ``null`` when
+   *  unknown — sync records 0 for tables it never counted, which is
+   *  surfaced as ``null`` rather than a misleading "0 rows". Absent on
+   *  older servers. */
+  row_count?: number | null;
 }
 
 export interface RunRow {
