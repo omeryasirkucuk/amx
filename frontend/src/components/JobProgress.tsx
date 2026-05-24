@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { useEventSource, type SseEvent } from "../lib/sse";
 import { cn } from "../lib/cn";
@@ -12,12 +12,17 @@ interface Props {
   onCancel?: () => void;
   /** Called once the stream finishes (any terminal event). */
   onTerminal?: (terminal: SseEvent) => void;
+  /** Called when the user dismisses the terminal-state card (e.g. after
+   * reading the failure banner). Parent typically clears its job-id
+   * state so this card unmounts. Omit when the card should stay
+   * pinned until parent decides. */
+  onDismiss?: () => void;
 }
 
 // JobProgress streams progress events for one /run / /apply / docs op
 // into a Rich-CLI-style activity tree. The component is intentionally
 // presentational — the parent owns the cancel + retry actions.
-export default function JobProgress({ jobId, kind, onCancel, onTerminal }: Props) {
+export default function JobProgress({ jobId, kind, onCancel, onTerminal, onDismiss }: Props) {
   const ssePath =
     kind === "runs" || kind === "apply"
       ? `/api/${kind}/${jobId}/events`
@@ -28,7 +33,22 @@ export default function JobProgress({ jobId, kind, onCancel, onTerminal }: Props
   const { events, closed, error } = useEventSource({ path: ssePath });
 
   const terminal = useMemo(() => events.find((e) => /^job\./.test(e.type)), [events]);
-  if (terminal && onTerminal) onTerminal(terminal);
+
+  // Fire onTerminal exactly once per terminal event. The legacy
+  // pattern called onTerminal during render, which fired the callback
+  // on every re-render AND let the parent's state update (e.g.
+  // ``setActiveApplyJob(null)``) unmount this component before the
+  // failure banner could paint — which is exactly the "no banner
+  // shown" symptom the user reported. The ref guards re-firing if the
+  // SSE stream emits multiple terminal-shaped events.
+  const firedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!terminal || !onTerminal) return;
+    const key = `${terminal.type}:${(terminal as { _seq?: number })._seq ?? ""}`;
+    if (firedRef.current === key) return;
+    firedRef.current = key;
+    onTerminal(terminal);
+  }, [terminal, onTerminal]);
 
   const writeback = events.filter((e) => e.type === "writeback.progress");
   const lastWriteback = writeback[writeback.length - 1];
@@ -73,6 +93,16 @@ export default function JobProgress({ jobId, kind, onCancel, onTerminal }: Props
             className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-critical/10 hover:text-critical"
           >
             Cancel
+          </button>
+        )}
+        {closed && terminal && onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-surface hover:text-ink"
+            title="Dismiss this card"
+          >
+            Dismiss
           </button>
         )}
       </header>

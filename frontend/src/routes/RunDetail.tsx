@@ -3165,6 +3165,7 @@ function ResultsTab({
         <JobProgress
           jobId={activeApplyJob}
           kind="apply"
+          onDismiss={() => setActiveApplyJob(null)}
           onCancel={async () => {
             try {
               await apiFetch(`/api/apply/${activeApplyJob}/cancel`, { method: "POST" });
@@ -3172,7 +3173,7 @@ function ResultsTab({
               /* SSE will surface job.cancelled */
             }
           }}
-          onTerminal={() => {
+          onTerminal={(terminal) => {
             // Refresh three times: the worker writes both row.applied_at
             // and the pending file, but the SSE terminal event can
             // arrive a tick before the SQLite write has been observed
@@ -3190,13 +3191,42 @@ function ResultsTab({
             refresh();
             window.setTimeout(refresh, 1200);
             window.setTimeout(refresh, 3000);
-            toast.push({
-              title: "Apply finished",
-              description: "Pending queue and applied badges refreshed.",
-              tone: "success",
-              duration: 2400,
-            });
-            setActiveApplyJob(null);
+            // Inspect the structured job summary the worker emits.
+            // ``failed_count > 0`` means at least one row's live-DB
+            // write was rejected (typically a missing ALTER privilege).
+            // The queue was deliberately NOT drained for those rows so
+            // the user can retry; we MUST NOT show a green "Apply
+            // finished" toast — that's the exact lie the user
+            // screenshotted. Keep the JobProgress component mounted so
+            // the aggregate failure banner stays visible until the
+            // user dismisses it by re-applying or navigating away.
+            const summary = (terminal as { summary?: unknown }).summary as
+              | {
+                  applied?: number;
+                  failed_count?: number;
+                  failed?: { error_title?: string }[];
+                }
+              | undefined;
+            const failedCount = summary?.failed_count ?? 0;
+            const appliedCount = summary?.applied ?? 0;
+            if (failedCount > 0) {
+              const headline = summary?.failed?.[0]?.error_title || "Some rows could not be written";
+              toast.push({
+                title: `${appliedCount} applied, ${failedCount} failed`,
+                description: `${headline} — queue preserved, see banner below.`,
+                tone: "error",
+                duration: 5000,
+              });
+              // Leave activeApplyJob set so the banner stays visible.
+            } else {
+              toast.push({
+                title: "Apply finished",
+                description: "Pending queue and applied badges refreshed.",
+                tone: "success",
+                duration: 2400,
+              });
+              setActiveApplyJob(null);
+            }
           }}
         />
       )}
