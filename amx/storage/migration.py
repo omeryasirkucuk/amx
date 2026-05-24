@@ -602,4 +602,180 @@ def ensure_column_exists(
             )
 
 
-__all__ = ["ensure_column_exists", "migrate_local_to_shared", "pull_shared_to_local"]
+_CATALOG_STRUCTURAL_COLS = (
+    "db_profile",
+    "db_backend",
+    "database_name",
+    "schema_name",
+    "table_name",
+    "column_name",
+    "entity_kind",
+    "asset_kind",
+    "dtype",
+    "nullable",
+    "pk_flag",
+    "fk_flag",
+    "row_count",
+    "last_synced_at",
+)
+
+
+def push_catalog_to_shared(
+    local: SQLiteHistoryStore,
+    shared: SQLAlchemyHistoryStore,
+    *,
+    db_profile: str | None = None,
+) -> int:
+    """Push local structural catalog rows UP to the shared store.
+
+    Reads ``catalog_entities`` from local SQLite (optionally scoped to
+    one ``db_profile``) and upserts them into the shared store, where
+    last-write-wins on ``last_synced_at`` dedupes against teammates'
+    rows. Used both by the deep-sync push (one profile) and the
+    enable-time backfill (all profiles).
+
+    Local ``last_synced_at`` is epoch seconds; the shared store wants a
+    tz-aware datetime, so it is converted here. Table-level rows store
+    ``column_name`` as NULL locally and ``''`` in the shared natural
+    key, so the value is normalised on the way up.
+
+    Best-effort and read-only against local: returns the number of rows
+    the shared store reported written. A shared outage is swallowed by
+    ``upsert_catalog_entities`` (returns a partial count).
+    """
+    where = "WHERE db_profile = ?" if db_profile else ""
+    params: tuple[Any, ...] = (db_profile,) if db_profile else ()
+    with local._connect() as conn:  # noqa: SLF001
+        local_rows = conn.execute(
+            f"SELECT {', '.join(_CATALOG_STRUCTURAL_COLS)} "
+            f"FROM catalog_entities {where}",
+            params,
+        ).fetchall()
+    if not local_rows:
+        return 0
+    rows: list[dict[str, Any]] = []
+    for r in local_rows:
+        d = {col: r[col] for col in _CATALOG_STRUCTURAL_COLS}
+        d["column_name"] = d.get("column_name") or ""
+        ts = d.get("last_synced_at")
+        d["last_synced_at"] = (
+            datetime.fromtimestamp(float(ts), tz=timezone.utc) if ts else None
+        )
+        rows.append(d)
+    return shared.upsert_catalog_entities(rows)
+
+
+def pull_catalog_to_local(
+    local: SQLiteHistoryStore,
+    shared: SQLAlchemyHistoryStore,
+) -> int:
+    """Pull shared structural catalog rows DOWN into local SQLite.
+
+    Upserts by the natural key
+    (db_profile, database_name, schema_name, table_name, column_name)
+    with last-write-wins on ``last_synced_at``. Only the structural
+    columns are touched; a newly inserted row gets
+    ``effective_description_id = NULL`` (descriptions resolve from the
+    puller's own local state, populated by the run-sharing path), and
+    an existing local row keeps its description link untouched — only
+    its structural columns refresh when the shared snapshot is newer.
+
+    Returns the number of local rows inserted or updated. Degrades to 0
+    when the shared store is unreachable.
+    """
+    shared_rows = shared.fetch_catalog_entities()
+    if not shared_rows:
+        return 0
+    written = 0
+    with local._lock:  # noqa: SLF001
+        with local._connect() as conn:  # noqa: SLF001
+            for row in shared_rows:
+                # Normalise the shared '' table-level marker back to the
+                # local NULL convention so the natural-key match works.
+                col_name = row.get("column_name") or None
+                incoming_ts = _dt_to_ts(row.get("last_synced_at"))
+                existing = conn.execute(
+                    """
+                    SELECT id, last_synced_at FROM catalog_entities
+                    WHERE db_profile = ? AND database_name = ?
+                      AND schema_name = ? AND table_name = ?
+                      AND ((column_name IS NULL AND ? IS NULL) OR column_name = ?)
+                    LIMIT 1
+                    """,
+                    (
+                        row.get("db_profile"),
+                        row.get("database_name") or "",
+                        row.get("schema_name"),
+                        row.get("table_name"),
+                        col_name,
+                        col_name,
+                    ),
+                ).fetchone()
+                if existing is None:
+                    conn.execute(
+                        """
+                        INSERT INTO catalog_entities (
+                            db_profile, db_backend, database_name, schema_name,
+                            table_name, column_name, entity_kind, asset_kind,
+                            dtype, nullable, pk_flag, fk_flag, row_count,
+                            search_text, effective_description_id,
+                            updated_at, last_synced_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, ?, ?)
+                        """,
+                        (
+                            row.get("db_profile"),
+                            row.get("db_backend"),
+                            row.get("database_name") or "",
+                            row.get("schema_name"),
+                            row.get("table_name"),
+                            col_name,
+                            row.get("entity_kind"),
+                            row.get("asset_kind"),
+                            row.get("dtype"),
+                            row.get("nullable"),
+                            row.get("pk_flag"),
+                            row.get("fk_flag"),
+                            row.get("row_count"),
+                            time.time(),
+                            incoming_ts,
+                        ),
+                    )
+                    written += 1
+                else:
+                    stored_ts = existing["last_synced_at"]
+                    if incoming_ts is not None and (
+                        stored_ts is None or incoming_ts > float(stored_ts)
+                    ):
+                        conn.execute(
+                            """
+                            UPDATE catalog_entities
+                            SET db_backend = ?, entity_kind = ?, asset_kind = ?,
+                                dtype = ?, nullable = ?, pk_flag = ?, fk_flag = ?,
+                                row_count = ?, updated_at = ?, last_synced_at = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                row.get("db_backend"),
+                                row.get("entity_kind"),
+                                row.get("asset_kind"),
+                                row.get("dtype"),
+                                row.get("nullable"),
+                                row.get("pk_flag"),
+                                row.get("fk_flag"),
+                                row.get("row_count"),
+                                time.time(),
+                                incoming_ts,
+                                existing["id"],
+                            ),
+                        )
+                        written += 1
+    return written
+
+
+__all__ = [
+    "ensure_column_exists",
+    "migrate_local_to_shared",
+    "pull_shared_to_local",
+    "push_catalog_to_shared",
+    "pull_catalog_to_local",
+]

@@ -849,8 +849,34 @@ def deep_sync_profile(
     summary["processed"] = processed
     summary["failed"] = failed
     summary["total"] = total
+    # Team sharing: when the shared history store is active, push this
+    # profile's freshly-profiled structural rows up so teammates inherit
+    # the COUNT(*) work. Best-effort — a shared-store failure must never
+    # turn a successful local deep sync into a failure. When the store is
+    # OFF the active history store has no ``.shared`` handle, so this is
+    # a silent no-op (the gating the user asked for).
+    if summary["state"] == "done":
+        summary["shared_pushed"] = _push_catalog_if_shared(profile)
     _skeleton_jobs.unregister(profile)
     return summary
+
+
+def _push_catalog_if_shared(profile: str) -> int:
+    """Push a profile's local catalog rows to the shared store when one
+    is active. Returns the number of rows pushed (0 when no shared store
+    / on any failure). Never raises."""
+    try:
+        from amx.storage.sqlite_store import history_store
+
+        hs = history_store()
+        if hs is None or not hasattr(hs, "shared") or not hasattr(hs, "local"):
+            return 0  # store disabled → local-only, no push
+        from amx.storage.migration import push_catalog_to_shared
+
+        return push_catalog_to_shared(hs.local, hs.shared, db_profile=profile)
+    except Exception as exc:  # pragma: no cover - best-effort
+        log.warning("Catalog push to shared store skipped for %s: %s", profile, exc)
+        return 0
 
 
 def _asset_name_and_kind(asset: Any) -> tuple[str, str]:
