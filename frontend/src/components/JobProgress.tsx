@@ -169,6 +169,10 @@ interface ApplyFailedEntry {
   error_title: string;
   error_text: string;
   error_action: string;
+  // Verbatim driver message (e.g. ``[INSUFFICIENT_PERMISSIONS] …``)
+  // — present alongside the classifier's curated body so users can
+  // see exactly what the database returned.
+  error_raw: string;
 }
 
 interface ApplySummary {
@@ -217,20 +221,32 @@ function ApplyDoneSummary({ summary }: { summary: ApplySummary | undefined }) {
             <span className="text-ink-dim">Suggested:</span> {action}
           </div>
         )}
-        <details className="mt-2">
+        <details className="mt-2" open={failedCount === 1}>
           <summary className="cursor-pointer text-xs text-ink-dim hover:text-ink-muted">
             Show failing rows ({failedCount})
           </summary>
-          <ul className="mt-1 space-y-0.5 pl-3 text-[11px] text-ink-muted">
+          <ul className="mt-1 space-y-1 pl-3 text-[11px] text-ink-muted">
             {failed.map((f, i) => {
               const path = [f.schema, f.table, f.column ?? ""]
                 .filter(Boolean)
                 .join(".");
               return (
-                <li key={i} className="font-mono">
-                  {path}
-                  {!sameKind && f.error_title && (
-                    <span className="ml-2 text-ink-dim">— {f.error_title}</span>
+                <li key={i}>
+                  <div className="font-mono">
+                    {path}
+                    {!sameKind && f.error_title && (
+                      <span className="ml-2 text-ink-dim">— {f.error_title}</span>
+                    )}
+                  </div>
+                  {f.error_raw && (
+                    <details className="mt-0.5">
+                      <summary className="cursor-pointer text-[11px] text-ink-dim hover:text-ink-muted">
+                        Show driver message
+                      </summary>
+                      <pre className="mt-0.5 whitespace-pre-wrap break-words rounded-md bg-surface-subtle px-2 py-1 font-mono text-[10px] text-ink">
+                        {f.error_raw}
+                      </pre>
+                    </details>
                   )}
                 </li>
               );

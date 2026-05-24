@@ -1992,6 +1992,7 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
                 "error_title": o.error_title,
                 "error_text": o.error_text,
                 "error_action": o.error_action,
+                "error_raw": o.error_raw,
             }
             for o in failed_outcomes
         ],

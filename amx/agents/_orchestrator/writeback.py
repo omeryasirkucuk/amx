@@ -65,9 +65,17 @@ class RowApplyOutcome:
     asset_kind: str
     status: str
     error_kind: str = ""
+    # ``error_text`` carries the classifier body (friendly, curated
+    # description). ``error_raw`` carries the verbatim driver text
+    # (e.g. ``[INSUFFICIENT_PERMISSIONS] User omer lacks ALTER on
+    # samples.nyctaxi.trips``) so the SPA banner can render a
+    # "Show driver message" disclosure inline — without that, the
+    # user only sees the curated body and can't tell what the
+    # database actually returned.
     error_text: str = ""
     error_title: str = ""
     error_action: str = ""
+    error_raw: str = ""
 
 
 # Sentinel descriptions the orchestrator writes when the LLM produced no
@@ -218,45 +226,83 @@ def _record_audit(
 
 
 class _OldCommentReader:
-    """Read prior COMMENT values from the live DB before they are
-    overwritten, with a per-(schema, table) column-comment cache so
-    a 200-row apply against one table costs one
-    ``get_column_comments`` call rather than 200.
+    """Read prior COMMENT values from the persistent column-comments
+    cache before they are overwritten. **Cache-only** — never falls
+    back to a live DB call.
 
-    Misses (adapter without a read API, query failure, asset kind
-    AMX cannot read) return ``None`` — the audit row records that
-    as "original unknown" and ``/history rollback`` skips that
-    row instead of synthesising garbage.
+    Pre-fix this reader called ``connector.get_table_comment`` /
+    ``get_column_comments``, which on a cache miss triggered the
+    adapter's ``bulk_schema_metadata`` query. On Databricks that
+    is a ``SELECT … FROM system.information_schema.{tables,columns}``
+    that can take 10+ seconds per applied row — and it ran even when
+    the COMMENT ON was about to fail. The audit log's "old comment"
+    snapshot is useful but is **not** worth a multi-second
+    information_schema round trip on every apply.
+
+    Trade-off: when the profile's
+    ``column_comments_cache`` is cold (no Sync all has run yet),
+    the audit row records ``old_comment=None``. After Sync all
+    warms the cache, the audit captures the real prior text. Both
+    are acceptable; what's not acceptable is paying for a heavy
+    bulk read on every apply just so the audit table can record a
+    string the user can usually reconstruct from the run's history.
+
+    Misses still return ``None`` for the same reasons as before
+    (adapter without a read API, asset kind AMX cannot read, etc.).
     """
 
     def __init__(self, db: DatabaseConnector) -> None:
         self.db = db
-        self._column_cache: dict[tuple[str, str], dict[str, str | None]] = {}
+        # Memoize per-(schema, table) cache reads inside the same
+        # apply call so a 200-row apply against one table hits the
+        # cache lookup once.
+        self._column_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
 
     def read(self, r: ReviewResult, kind: AssetKind) -> str | None:
         try:
             if kind == AssetKind.SCHEMA:
+                # Schema / database comments are rare enough (one row
+                # per profile per apply) that the cache-only treatment
+                # is overkill. Read directly through the existing
+                # methods, which already use schemas_cache as their
+                # fast path; on cold cache they accept a single
+                # ``get_schema_comment`` call (no bulk SELECT) and we
+                # tolerate that cost for a single row.
                 return self.db.get_schema_comment(r.schema)
             if kind == AssetKind.DATABASE:
                 return self.db.get_database_comment()
-            if r.column is None:
-                return self.db.get_table_comment(r.schema, r.table)
-            key = (r.schema, r.table)
+            # Table / column reads — go through the cache-only lookup
+            # so we never trigger the bulk
+            # ``information_schema.{tables,columns}`` SELECTs that
+            # ``connector.get_table_comment`` /
+            # ``get_column_comments`` would otherwise issue on a
+            # cache miss.
+            table = r.table or ""
+            key = (r.schema, table)
             cached = self._column_cache.get(key)
-            if cached is None:
+            if key not in self._column_cache:
                 try:
-                    cached = self.db.get_column_comments(r.schema, r.table) or {}
+                    cached = self.db._lookup_column_comments_cache(  # noqa: SLF001
+                        r.schema, table
+                    )
                 except Exception as exc:
                     log.debug(
-                        "get_column_comments failed for %s.%s (%s); "
+                        "_lookup_column_comments_cache failed for %s.%s (%s); "
                         "audit will record old_comment=None",
                         r.schema,
-                        r.table,
+                        table,
                         exc,
                     )
-                    cached = {}
+                    cached = None
                 self._column_cache[key] = cached
-            return cached.get(r.column)
+            if cached is None:
+                return None
+            if r.column is None:
+                value = cached.get("table_comment")
+                return str(value) if value is not None else None
+            cols = cached.get("columns") or {}
+            value = cols.get(r.column) if isinstance(cols, dict) else None
+            return str(value) if value is not None else None
         except Exception as exc:
             log.debug(
                 "old-comment read failed for %s.%s.%s (%s); audit will record old_comment=None",
@@ -743,6 +789,7 @@ def apply_review_results_to_db(
                             error_text=cls.body,
                             error_title=cls.title,
                             error_action=cls.suggested_action,
+                            error_raw=str(exc)[:2000],
                         )
                     )
                 # Surface the proximate cause (eg. schema/table not
