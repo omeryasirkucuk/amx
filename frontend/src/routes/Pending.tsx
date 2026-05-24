@@ -59,6 +59,10 @@ export default function Pending() {
   const qc = useQueryClient();
   const toast = useToast();
   const [activeJob, setActiveJob] = useState<string | null>(null);
+  // applyInFlight is true between submit and the SSE terminal event,
+  // independent of activeJob (which may stay set after a partial
+  // failure so the JobProgress card keeps the failure banner visible).
+  const [applyInFlight, setApplyInFlight] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [query, setQuery] = useState("");
   const [previewEvents, setPreviewEvents] = useState<PreviewEvent[] | null>(null);
@@ -115,6 +119,7 @@ export default function Pending() {
         body: JSON.stringify({}),
       });
       setActiveJob(res.job_id);
+      setApplyInFlight(true);
       toast.push({
         title: "Apply started",
         description: `${pending.data?.count ?? 0} ${pending.data?.count === 1 ? "row" : "rows"} streaming…`,
@@ -200,7 +205,7 @@ export default function Pending() {
               variant="primary"
               size="md"
               leadingIcon={<Play size={14} />}
-              disabled={!total || (!!activeJob)}
+              disabled={!total || applyInFlight}
               onClick={handleApply}
             >
               Apply ({total})
@@ -229,6 +234,7 @@ export default function Pending() {
               }
             }}
             onTerminal={() => {
+              setApplyInFlight(false);
               qc.invalidateQueries({ queryKey: ["pending"] });
             }}
           />

@@ -2307,6 +2307,11 @@ function ResultsTab({
   const queryClient = useQueryClient();
   const toast = useToast();
   const [activeApplyJob, setActiveApplyJob] = useState<string | null>(null);
+  // applyInFlight is set on apply submit and cleared on terminal SSE
+  // event. Drives the button label/disabled state independently of
+  // activeApplyJob, which deliberately stays set after a failure so
+  // the banner remains mounted.
+  const [applyInFlight, setApplyInFlight] = useState(false);
   // Multi-select Re-Run state. ``multiSelectMode`` flips the per-row
   // checkbox on; ``selectedIds`` is the set of result_ids the user
   // picked. The bulk dialog opens with ``bulkRerunOpen``; once the
@@ -2561,6 +2566,7 @@ function ResultsTab({
     },
     onSuccess: (result) => {
       setActiveApplyJob(result.job_id);
+      setApplyInFlight(true);
       toast.push({
         title: "Apply started",
         description: "Watching the live worker stream below.",
@@ -3035,8 +3041,8 @@ function ResultsTab({
   const appliedCount = rows.filter(
     (r) => !!r.applied_at && !(r.id != null && pendingByResultId.has(r.id)),
   ).length;
-  const nothingToApply = queuedCount === 0 && !activeApplyJob;
-  const applyLabel = activeApplyJob
+  const nothingToApply = queuedCount === 0 && !applyInFlight;
+  const applyLabel = applyInFlight
     ? "Apply running…"
     : queuedCount === 0
       ? appliedCount > 0
@@ -3088,7 +3094,7 @@ function ResultsTab({
           leadingIcon={<PlayCircle size={14} />}
           loading={queueApply.isPending}
           disabled={
-            !!activeApplyJob ||
+            applyInFlight ||
             nothingToApply ||
             queueApply.isPending ||
             !hasDatabaseScope
@@ -3174,6 +3180,10 @@ function ResultsTab({
             }
           }}
           onTerminal={(terminal) => {
+            // First thing: the job is no longer in flight. The button
+            // label / disabled flips back even if we keep the banner
+            // mounted to show the failure details below.
+            setApplyInFlight(false);
             // Refresh three times: the worker writes both row.applied_at
             // and the pending file, but the SSE terminal event can
             // arrive a tick before the SQLite write has been observed
