@@ -2319,24 +2319,63 @@ class ToolBox(
             force_fresh=force_fresh,
         )
 
+        # A cache payload that carries the table but ZERO columns means
+        # the catalog has only a table-level entry — column entities were
+        # never synced for this table. That is NOT the same as a
+        # genuinely empty table. Trusting it makes describe_table report
+        # "0 columns" and the assistant confidently claim the table is an
+        # empty stub — a misleading answer when the table actually has
+        # columns the catalog simply never indexed. Demote the payload to
+        # a miss so we either probe live (when allowed) or return an
+        # honest "columns not cached" envelope below.
+        columns_unsynced = bool(
+            cache_payload is not None and not (cache_payload.get("columns") or [])
+        )
+        if columns_unsynced:
+            cache_payload = None
+            # Mirror a real cache miss: ``_resolve_table_metadata``
+            # returns ``source="live"`` on miss, and the final response
+            # echoes ``source`` verbatim. Without resetting it here the
+            # live-probe result would mislabel itself as a catalog hit.
+            source = "live"
+
         # Cache miss + cache-only mode: do not spin up a live connector.
         # Return a structured "not in cache" payload that the LLM can
         # surface back to the user; the assistant should then suggest
         # enabling Live refresh + re-asking (or running /search sync).
         if cache_payload is None and not self._allow_live_refresh and not force_fresh:
-            return {
-                "schema": schema_name,
-                "table": table_name,
-                "found": False,
-                "source": "catalog",
-                "cache_only": True,
-                "possibly_partial": True,
-                "hint": (
+            if columns_unsynced:
+                # The table EXISTS in the catalog; only its columns are
+                # missing. The hint explicitly tells the LLM not to
+                # infer emptiness so the user doesn't get told their
+                # populated table is a stub.
+                hint = (
+                    f"Column metadata for '{schema_name}.{table_name}' is not cached "
+                    f"for profile {target_profile}: the table is in the catalog but "
+                    f"its columns were never synced. Enable 'Live refresh' in the "
+                    f"composer and ask again to fetch the columns live, or run "
+                    f"/search sync first. Do NOT tell the user the table is empty or "
+                    f"has no columns — the column list is simply not cached."
+                )
+            else:
+                hint = (
                     f"Table '{schema_name}.{table_name}' is not in the "
                     f"catalog for profile {target_profile}. Enable "
                     f"'Live refresh' in the composer and ask again "
                     f"to fetch it live, or run /search sync first."
-                ),
+                )
+            return {
+                "schema": schema_name,
+                "table": table_name,
+                # When only the columns are unsynced the table itself
+                # is known to exist — report found=True so the LLM
+                # confirms existence while deferring on the columns.
+                "found": columns_unsynced,
+                "source": "catalog",
+                "cache_only": True,
+                "possibly_partial": True,
+                "columns_not_cached": columns_unsynced,
+                "hint": hint,
             }
 
         # Defer the live-connector + cat_arg resolution to the live

@@ -334,6 +334,96 @@ def test_databases_to_sweep_memoises_per_profile(monkeypatch):
     assert live_calls["n"] == 1
 
 
+def test_describe_table_zero_column_catalog_hit_not_reported_as_empty(monkeypatch):
+    """Regression: a catalog entry that carries the TABLE but ZERO
+    columns (column entities never synced) must NOT be reported as an
+    empty table.
+
+    Before the fix, ``describe_table`` trusted the zero-column cache
+    payload and returned ``column_count=0``, leading the assistant to
+    tell the user their populated table was an empty stub. In
+    cache-only mode the tool now returns ``columns_not_cached=True``
+    with a hint that explicitly forbids claiming emptiness.
+    """
+    tb = _bare_toolbox()
+    tb._allow_live_refresh = False  # cache-only mode — the /ask default
+
+    # Resolver returns a payload (table exists) but with NO columns.
+    monkeypatch.setattr(
+        tb,
+        "_resolve_table_metadata",
+        lambda **_kw: ({"columns": [], "table_comment": "", "row_count": 0}, "catalog", 100.0),
+    )
+    # profile_table must never run in cache-only mode.
+    fake_db = MagicMock()
+    fake_db.profile_table.side_effect = AssertionError("live probe in cache-only mode")
+    fake_db.cfg = SimpleNamespace(database="", catalog="", project="")
+    tb._db = fake_db
+
+    out = tb._tool_describe_table(schema="airline", table="Airports")
+
+    assert out["columns_not_cached"] is True
+    # The table itself is known to exist — only its columns are missing.
+    assert out["found"] is True
+    assert out["cache_only"] is True
+    # The hint must steer the assistant away from claiming emptiness.
+    hint = out["hint"].lower()
+    assert "not cached" in hint
+    assert "empty" in hint  # "do NOT tell the user the table is empty"
+    fake_db.profile_table.assert_not_called()
+
+
+def test_describe_table_zero_column_catalog_hit_falls_through_to_live(monkeypatch):
+    """When live refresh is allowed, a zero-column catalog hit is
+    demoted to a miss so ``describe_table`` probes the live DB and
+    returns the real columns instead of trusting the empty catalog
+    entry.
+    """
+    tb = _bare_toolbox()  # fixture sets _allow_live_refresh = True
+
+    monkeypatch.setattr(
+        tb,
+        "_resolve_table_metadata",
+        lambda **_kw: ({"columns": [], "table_comment": "", "row_count": 0}, "catalog", 100.0),
+    )
+
+    fake_profile = SimpleNamespace(
+        columns=[
+            SimpleNamespace(name="Code", dtype="varchar", nullable=False, existing_comment=""),
+            SimpleNamespace(
+                name="Description", dtype="varchar", nullable=True, existing_comment=""
+            ),
+        ],
+        row_count=100,
+        existing_comment="",
+        analytics=None,
+    )
+    fake_db = MagicMock()
+    fake_db.profile_table.return_value = fake_profile
+    fake_db.cfg = SimpleNamespace(database="", catalog="", project="")
+    tb._db = fake_db
+
+    class _Store:
+        def lookup_run_context_cache(self, **_kw):
+            return None
+
+        def save_run_context_cache(self, **_kw):
+            return None
+
+    monkeypatch.setattr(tb, "_history_store", lambda: _Store())
+    monkeypatch.setattr(tb, "_databases_to_sweep", lambda: [None])
+    monkeypatch.setattr(tb, "_connector_for_database", lambda _d: fake_db)
+    monkeypatch.setattr(tb, "_resolve_catalog_or_autopick", lambda *_a, **_kw: ("", [], []))
+    monkeypatch.setattr(tb, "_scoped_catalog", lambda *_a, **_kw: _NullCtx())
+    monkeypatch.setattr(tb, "_now", lambda: 1_700_000_000.0)
+
+    out = tb._tool_describe_table(schema="airline", table="Airports")
+
+    assert out["source"] == "live"
+    assert out["column_count"] == 2
+    fake_db.profile_table.assert_called()
+
+
 def test_list_schemas_serves_from_catalog_when_synced(monkeypatch):
     """``list_schemas`` reads from ``catalog_entities`` first; only
     falls back to a live ``db.list_schemas`` call when the catalog is
