@@ -29,6 +29,7 @@ import json
 import sqlite3
 import time
 
+from amx.rag_core.collection_identity import CollectionIdentityMismatch
 from amx.search._catalog._constants import SOURCE_PRIORITY, _json_loads
 from amx.utils.logging import get_logger
 
@@ -1078,11 +1079,45 @@ class EntityCrudMixin:
         )
         return results[:limit], truncated
 
+    def _note_index_degraded(self, exc: Exception) -> None:
+        """Record that semantic indexing was skipped, logging once.
+
+        Writing the structured catalog metadata (columns, dtypes, row
+        counts, FKs) lives in SQLite and is independent of the
+        embedding model — only semantic search needs the vector index.
+        When the embedding profile drifts away from the identity the
+        collection was built with, indexing raises
+        :class:`CollectionIdentityMismatch`; that must degrade semantic
+        search, NOT abort the metadata write. The flag lets the sync
+        caller surface a single "run /search rebuild" hint instead of
+        spamming one warning per column.
+        """
+        if not getattr(self, "_index_degraded", False):
+            log.warning(
+                "Semantic indexing skipped during catalog write — the embedding "
+                "identity no longer matches the vector collection (%s). Structured "
+                "metadata (columns, row counts, types) is still written; run "
+                "/search rebuild to restore semantic search.",
+                exc,
+            )
+        self._index_degraded = True
+        self._index_degraded_reason = str(exc)
+
     def _index_entity(self, conn: sqlite3.Connection, entity_id: int) -> None:
         row = conn.execute("SELECT * FROM catalog_entities WHERE id = ?", (entity_id,)).fetchone()
         if not row:
             return
-        self.index.upsert_entities([dict(row)])
+        try:
+            self.index.upsert_entities([dict(row)])
+        except CollectionIdentityMismatch as exc:
+            # Embedding profile drifted from the collection's stamped
+            # identity. Skip the vector upsert (and the indexed=1 stamp
+            # below) so the entity stays unindexed until /search rebuild,
+            # but let the structured metadata commit. ``rebuild_profile``
+            # resets the collection identity first, so it never reaches
+            # this branch — only drifted sync/usage writes do.
+            self._note_index_degraded(exc)
+            return
         conn.execute(
             """
             UPDATE catalog_descriptions
