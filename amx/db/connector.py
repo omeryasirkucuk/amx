@@ -376,9 +376,7 @@ class DatabaseConnector:
                 catalog,
                 len(cached),
             )
-            return self._apply_pinned_schema_filter(
-                [name for name, _ in cached]
-            )
+            return self._apply_pinned_schema_filter([name for name, _ in cached])
         if live is None and self._populate_catalogs_cache(catalog):
             cached = self._list_schemas_from_cache(catalog)
             if cached:

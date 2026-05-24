@@ -32,7 +32,6 @@ from amx.lineage.extractors.sql_parse import (
 
 from .conftest import seed_table_entity
 
-
 # ── extract_reads_writes ─────────────────────────────────────────────
 
 

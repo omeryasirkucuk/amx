@@ -462,10 +462,7 @@ def purge_orphan_profile_rows(
         if not names:
             # No configured profiles → every row is an orphan.
             ce_count = int(
-                conn.execute(
-                    "SELECT COUNT(*) AS n FROM catalog_entities"
-                ).fetchone()["n"]
-                or 0
+                conn.execute("SELECT COUNT(*) AS n FROM catalog_entities").fetchone()["n"] or 0
             )
             conn.execute("DELETE FROM catalog_descriptions")
             conn.execute("DELETE FROM catalog_entities")
@@ -474,9 +471,7 @@ def purge_orphan_profile_rows(
             except sqlite3.OperationalError:
                 pass
             sc = conn.execute("DELETE FROM schemas_cache").rowcount or 0
-            cc = conn.execute(
-                "DELETE FROM column_comments_cache"
-            ).rowcount or 0
+            cc = conn.execute("DELETE FROM column_comments_cache").rowcount or 0
             conn.commit()
             return {
                 "catalog_entities": ce_count,
@@ -516,14 +511,20 @@ def purge_orphan_profile_rows(
             )
         except sqlite3.OperationalError:
             pass
-        sc = conn.execute(
-            f"DELETE FROM schemas_cache WHERE {not_in}",
-            names,
-        ).rowcount or 0
-        cc = conn.execute(
-            f"DELETE FROM column_comments_cache WHERE {not_in}",
-            names,
-        ).rowcount or 0
+        sc = (
+            conn.execute(
+                f"DELETE FROM schemas_cache WHERE {not_in}",
+                names,
+            ).rowcount
+            or 0
+        )
+        cc = (
+            conn.execute(
+                f"DELETE FROM column_comments_cache WHERE {not_in}",
+                names,
+            ).rowcount
+            or 0
+        )
         conn.commit()
         deleted = {
             "catalog_entities": ce_count,

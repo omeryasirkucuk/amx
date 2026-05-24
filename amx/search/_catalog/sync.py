@@ -260,19 +260,13 @@ class SyncMixin:
                 float(row["last_full_sync_at"]) if row["last_full_sync_at"] else None
             ),
             "last_skeleton_sync_at": (
-                float(row["last_skeleton_sync_at"])
-                if row["last_skeleton_sync_at"]
-                else None
+                float(row["last_skeleton_sync_at"]) if row["last_skeleton_sync_at"] else None
             ),
             "last_schemas_sync_at": (
-                float(row["last_schemas_sync_at"])
-                if row["last_schemas_sync_at"]
-                else None
+                float(row["last_schemas_sync_at"]) if row["last_schemas_sync_at"] else None
             ),
             "last_columns_sync_at": (
-                float(row["last_columns_sync_at"])
-                if row["last_columns_sync_at"]
-                else None
+                float(row["last_columns_sync_at"]) if row["last_columns_sync_at"] else None
             ),
             "last_error": str(row["last_error"] or ""),
         }
