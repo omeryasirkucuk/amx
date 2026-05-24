@@ -294,7 +294,28 @@ def register_schedule_commands(
         "review_strategy",
         default=None,
         type=click.Choice(["auto", "manual"]),
-        help="Review strategy. Prompts if omitted.",
+        help="Review strategy. Prompts if omitted (analyze schedules only).",
+    )
+    @click.option(
+        "--kind",
+        default="analyze",
+        type=click.Choice(["analyze", "cache_refresh"]),
+        help="Schedule kind: 'analyze' (LLM generation) or 'cache_refresh' (catalog sync).",
+    )
+    @click.option(
+        "--deep",
+        is_flag=True,
+        default=False,
+        help=(
+            "cache_refresh only: profile columns + exact row counts each run "
+            "(deep sync) instead of the shallow inventory/comment warm."
+        ),
+    )
+    @click.option(
+        "--cron",
+        "cron_expr",
+        default=None,
+        help="Recurring cron expression (e.g. '0 */6 * * *'). One-shot when omitted.",
     )
     @pc
     def schedule_add(
@@ -306,13 +327,25 @@ def register_schedule_commands(
         scope: str | None,
         llm_profile: str | None,
         review_strategy: str | None,
+        kind: str,
+        deep: bool,
+        cron_expr: str | None,
     ) -> None:
         """Create a new scheduled run.
 
         Run without flags for a guided wizard with picker-based selection
         of DB / LLM profiles and live-DB scope, OR supply every flag for
         a non-interactive create.
+
+        ``--kind cache_refresh`` schedules a catalog sync instead of an
+        LLM analyze run; add ``--deep`` to profile columns + row counts
+        each run. Example:
+
+            /schedule add --kind cache_refresh --deep \\
+                --db dbr-oyk --scope all --cron '0 */6 * * *' \\
+                --at '2026-01-01 02:00'
         """
+        is_cache_refresh = kind == "cache_refresh"
         hs = _require_store()
 
         # Resolve each field: use the flag if given, otherwise prompt.
@@ -343,7 +376,9 @@ def register_schedule_commands(
                 default=cfg.active_db_profile,
             )
 
-        if not llm_profile:
+        # cache_refresh schedules have no LLM step or review strategy —
+        # they sync the catalog, not generate descriptions.
+        if not llm_profile and not is_cache_refresh:
             llm_names = sorted((cfg.llm_profiles or {}).keys())
             llm_profile = _pick_from_list(
                 llm_names,
@@ -354,7 +389,7 @@ def register_schedule_commands(
         if not scope:
             scope = _pick_scope_spec(cfg, db_profile)
 
-        if not review_strategy:
+        if not review_strategy and not is_cache_refresh:
             review_strategy = click.prompt(
                 "Review strategy",
                 type=click.Choice(["auto", "manual"]),
@@ -362,16 +397,26 @@ def register_schedule_commands(
                 show_default=True,
             )
 
-        fire_at_utc, fire_at_tz = _parse_at(at, tz_name)
-        scope_json = _parse_scope(scope)
+        # at / tz_name / scope are guaranteed set by the prompts above;
+        # coerce for the type checker (and as a runtime safety net).
+        fire_at_utc, fire_at_tz = _parse_at(str(at), str(tz_name))
+        scope_json = _parse_scope(str(scope))
+        # Thread the deep flag into scope_json — the cache_refresh
+        # executor reads scope.deep to choose deep_sync vs skeleton.
+        if deep:
+            _scope_obj = json.loads(scope_json)
+            _scope_obj["deep"] = True
+            scope_json = json.dumps(_scope_obj)
         sid = hs.create_scheduled_run(
             name=name,
             fire_at_utc=fire_at_utc,
             fire_at_tz=fire_at_tz,
             db_profile=db_profile,
             scope_json=scope_json,
-            llm_profile=llm_profile,
-            review_strategy=review_strategy,
+            llm_profile=llm_profile or "",
+            review_strategy=review_strategy or "auto",
+            kind=kind,
+            cron_expr=cron_expr,
         )
         row = hs.get_scheduled_run(sid)
         local = _render_at_local(row)
