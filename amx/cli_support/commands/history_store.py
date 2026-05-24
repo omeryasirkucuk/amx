@@ -312,6 +312,26 @@ def _run_pull_from_shared(shared_store) -> None:
     else:
         info("Nothing new to pull (already in sync).")
 
+    # Shared structural catalog: backfill local deep-sync results UP
+    # (covers rows produced while the store was off), then pull the
+    # team's catalog DOWN so columns + row counts arrive without a local
+    # COUNT(*) pass. Best-effort — never blocks the enable/pull flow.
+    try:
+        from amx.storage.migration import (
+            pull_catalog_to_local,
+            push_catalog_to_shared,
+        )
+
+        pushed = push_catalog_to_shared(local, shared_store)
+        pulled = pull_catalog_to_local(local, shared_store)
+        if pushed or pulled:
+            info(
+                f"Catalog sync: pushed {pushed} local row(s) up, "
+                f"pulled {pulled} team row(s) down."
+            )
+    except Exception as exc:
+        info(f"Catalog sync skipped (runs still synced): {exc}")
+
 
 def _pick_history_database(cfg: AMXConfig, db_cfg, adapter) -> str:
     """Ask the user which database / catalog should host the AMX schema.
