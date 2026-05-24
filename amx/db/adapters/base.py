@@ -68,6 +68,18 @@ class BackendCapabilities:
     # the ``finish_run`` lifecycle) leave this False so the user gets a
     # clean error instead of a silent half-broken setup.
     supports_shared_history: bool = False
+    # ── Transaction grouping for bulk writes ─────────────────────────────
+    # ``supports_savepoints`` decides how
+    # ``apply_review_results_to_db`` groups per-row writes. Backends
+    # with a real SAVEPOINT (Postgres/MySQL/Oracle/MSSQL) wrap the whole
+    # queue in one ``engine.begin()`` and run each row inside a nested
+    # SAVEPOINT — one failure rolls back that row only. Backends without
+    # SAVEPOINT support (Databricks/BigQuery/Hive/ClickHouse —
+    # SQLAlchemy still emits ``SAVEPOINT sa_savepoint_N`` and the server
+    # rejects it) flip this False so the writeback executes each row in
+    # its own ``engine.begin()`` instead, preserving per-row failure
+    # isolation without ever shipping SAVEPOINT SQL.
+    supports_savepoints: bool = True
 
 
 class DatabaseAdapter(ABC):

@@ -265,6 +265,52 @@ def _savepoint_or_passthrough(conn: Any):
         exit_(None, None, None)
 
 
+@contextlib.contextmanager
+def _row_apply_tx(
+    db: DatabaseConnector,
+    shared_conn: Any,
+    *,
+    supports_savepoints: bool,
+):
+    """Per-row (or per-batch) transaction context the apply loop runs
+    its statements inside.
+
+    Two execution modes, decided once per call by the connector's
+    advertised ``supports_savepoints`` capability:
+
+    * **Savepoint-capable backend** (Postgres, MySQL/InnoDB, Oracle,
+      MSSQL, Snowflake, Redshift, DuckDB) — yields ``shared_conn``
+      wrapped in a SAVEPOINT. The outer caller already opened
+      ``db.engine.begin()`` once for the entire queue, so per-row
+      failures are isolated through ``begin_nested()`` without
+      reopening the connection.
+    * **No-savepoint backend** (Databricks, BigQuery, Hive, Trino,
+      ClickHouse) — yields a fresh connection from
+      ``db.engine.begin()`` so each row commits independently. No
+      ``SAVEPOINT sa_savepoint_N`` SQL is ever shipped to the server,
+      which both lets the query history stay clean (no rejected
+      savepoint statements) and isolates per-row failures without
+      depending on a primitive the backend does not implement.
+
+    The caller never sees the distinction — it always receives a
+    usable connection in the ``yield`` and lets ``apply_comment``
+    write through it. Failure semantics are identical: a raised
+    exception inside the ``with`` block rolls back exactly that row's
+    write and leaves siblings untouched.
+    """
+    if supports_savepoints:
+        with _savepoint_or_passthrough(shared_conn):
+            yield shared_conn
+        return
+    # No-savepoint mode: each invocation opens (and commits) its own
+    # transaction. ``shared_conn`` is ignored — the caller passes the
+    # outer ``shared_conn`` as ``None`` in this mode, so accidentally
+    # using it would surface as a clear AttributeError rather than a
+    # silent write against the wrong connection.
+    with db.engine.begin() as own_conn:
+        yield own_conn
+
+
 def apply_review_results_to_db(
     db: DatabaseConnector,
     results: list[ReviewResult],
@@ -352,7 +398,20 @@ def apply_review_results_to_db(
     # every legacy caller that doesn't audit.
     old_reader = _OldCommentReader(db) if audit_log is not None else None
 
-    with db.engine.begin() as conn:
+    # Transaction-grouping decision: savepoint-capable backends share
+    # one outer ``engine.begin()`` and isolate per-row failures via
+    # SAVEPOINT. Backends without SAVEPOINT (Databricks, BigQuery,
+    # Hive, Trino, ClickHouse) run each row in its own
+    # ``engine.begin()`` — see :func:`_row_apply_tx` for the
+    # contextmanager dispatch. The outer ``shared_ctx`` is a no-op
+    # ``nullcontext`` in the no-savepoint mode so the same loop body
+    # works either way.
+    supports_savepoints = bool(getattr(db.capabilities, "supports_savepoints", True))
+    shared_ctx: Any = (
+        db.engine.begin() if supports_savepoints else contextlib.nullcontext(None)
+    )
+
+    with shared_ctx as conn:
         total = len(pending)
         index = 0
         while index < total:
@@ -414,9 +473,11 @@ def apply_review_results_to_db(
                             on_progress(
                                 group[0], "started", index + 1, total, f"batch:{len(group)}"
                             )
-                        with _savepoint_or_passthrough(conn):
+                        with _row_apply_tx(
+                            db, conn, supports_savepoints=supports_savepoints
+                        ) as row_conn:
                             applied_batch = db.apply_column_comments_batch(
-                                r.schema, r.table, batched_comments, conn=conn
+                                r.schema, r.table, batched_comments, conn=row_conn
                             )
                         if applied_batch:
                             for offset, item in enumerate(group, start=1):
@@ -506,20 +567,23 @@ def apply_review_results_to_db(
             try:
                 if on_progress is not None:
                     on_progress(r, "started", index + 1, total, "")
-                # Per-row SAVEPOINT: keeps a single failed COMMENT (eg.
-                # "schema does not exist" on Postgres) from poisoning
-                # the rest of the batch with InFailedSqlTransaction.
-                # The savepoint auto-rolls back on exception when used
-                # as a context manager, so the outer tx stays alive
-                # for the next row.
-                with _savepoint_or_passthrough(conn):
+                # Per-row transaction context: SAVEPOINT on
+                # savepoint-capable backends (keeps Postgres'
+                # ``InFailedSqlTransaction`` cascade from killing
+                # sibling rows in the same batch) or a fresh
+                # ``engine.begin()`` on backends that don't support
+                # SAVEPOINT (Databricks et al). See :func:`_row_apply_tx`
+                # for the dispatch contract.
+                with _row_apply_tx(
+                    db, conn, supports_savepoints=supports_savepoints
+                ) as row_conn:
                     db.apply_comment(
                         schema=r.schema,
                         table=r.table,
                         column=r.column,
                         comment=r.final_description,
                         asset_kind=kind,
-                        conn=conn,
+                        conn=row_conn,
                     )
                 applied += 1
                 if on_progress is not None:
