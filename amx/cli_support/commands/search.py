@@ -482,6 +482,10 @@ def _sync_db_scope(
     database_name = cfg.db.database or cfg.db.catalog or cfg.db.project or ""
     inserted = 0
     updated = 0
+    # Clear any stale degradation flag from a previous catalog reuse so
+    # the post-sync hint reflects THIS run's indexing outcome only.
+    if hasattr(catalog, "_index_degraded"):
+        catalog._index_degraded = False
     total_assets = sum(len(asset_names) for asset_names in scope.values())
     display = get_display()
     activity_idx: int | None = None
@@ -547,6 +551,16 @@ def _sync_db_scope(
             display.fail_activity(activity_idx, summary)
         else:
             display.complete_activity(activity_idx, summary)
+    # Structured metadata always lands now even when semantic indexing
+    # was skipped (embedding profile drifted from the vector
+    # collection). Surface that once so the user knows columns/row
+    # counts are synced but semantic search needs a rebuild.
+    if getattr(catalog, "_index_degraded", False):
+        warn(
+            "Columns and row counts were synced, but semantic search indexing "
+            "was skipped because the embedding profile no longer matches the "
+            "vector collection. Run `/search rebuild` to restore semantic search."
+        )
     return inserted, updated
 
 
