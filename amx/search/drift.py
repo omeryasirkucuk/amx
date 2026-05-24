@@ -824,6 +824,16 @@ def deep_sync_profile(
                 continue
         try:
             prof = connector.profile_table(schema, table, sample_size=0)
+            # Backends that block the profiler's COUNT(*) when no cheap
+            # stat is available (Databricks sets
+            # full_scan_when_row_count_unknown=False to avoid surprise
+            # full scans) leave row_count at 0. Deep sync is the opt-in
+            # "pay the cost" path, so fetch an exact count here when the
+            # profiler couldn't — that's the whole reason the user ran it.
+            if not getattr(prof, "row_count", 0):
+                exact = _exact_row_count(connector, schema, table)
+                if exact is not None:
+                    prof.row_count = exact
             catalog.sync_table_profile(
                 db_profile=profile,
                 db_backend=db_backend,
@@ -859,6 +869,29 @@ def deep_sync_profile(
         summary["shared_pushed"] = _push_catalog_if_shared(profile)
     _skeleton_jobs.unregister(profile)
     return summary
+
+
+def _exact_row_count(connector: Any, schema: str, table: str) -> int | None:
+    """Run an exact ``SELECT COUNT(*)`` for one table, best-effort.
+
+    Used by deep sync to fill the row count on backends whose profiler
+    skips the COUNT(*) (e.g. Databricks, where
+    full_scan_when_row_count_unknown is False). On Delta the count is
+    usually answered from file metadata, so it is cheap in practice.
+    Returns ``None`` on any failure so a single uncountable table never
+    aborts the deep sync.
+    """
+    try:
+        from sqlalchemy import text as _text
+
+        adapter = connector._adapter  # noqa: SLF001
+        fqn = adapter.fully_qualified_name(schema, table)
+        with connector.engine.connect() as conn:
+            value = conn.execute(_text(f"SELECT COUNT(*) FROM {fqn}")).scalar()
+        return int(value) if value is not None else None
+    except Exception as exc:  # pragma: no cover - best-effort
+        log.debug("Exact row count failed for %s.%s: %s", schema, table, exc)
+        return None
 
 
 def _push_catalog_if_shared(profile: str) -> int:
