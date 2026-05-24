@@ -175,6 +175,28 @@ def create_app(
         # cleanup keeps the table tidy regardless.
         pass
 
+    # Catalog cache tombstone sweep — drop catalog_entities /
+    # schemas_cache / column_comments_cache rows whose db_profile is
+    # not in cfg.db_profiles. Required because pre-fix
+    # ``/remove-db-profile`` runs left the cache rows behind, which
+    # then surfaced on the Studio Catalog cache page as a phantom
+    # extra "profile" in the catalog_entities count. Idempotent: once
+    # disk reflects only configured profiles, this is a no-op.
+    try:
+        import logging
+
+        from amx.storage.cache_ops import purge_orphan_profile_rows
+
+        configured = tuple(cfg.db_profiles.keys())
+        purged = purge_orphan_profile_rows(configured)
+        if any(purged.values()):
+            logging.getLogger("amx.web.startup").info(
+                "catalog cache tombstone sweep purged %s",
+                {k: v for k, v in purged.items() if v},
+            )
+    except Exception:
+        pass
+
     # Scheduler bootstrap pass: surface stale runs + missed schedules
     # for the catch-up banner. Pinned on the module object so the
     # ``/api/scheduler/bootstrap-report`` route can read it without
