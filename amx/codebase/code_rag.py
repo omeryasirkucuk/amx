@@ -164,42 +164,16 @@ def _resolve_code_embedding(
     (``amx.search.embeddings`` pulls Chroma which pulls this module on
     some platforms).
     """
-    from amx.search.embeddings import make_embedding_function
+    from amx.rag_core.embedding_resolver import resolve_embedding
 
-    if cfg is None:
-        try:
-            from amx.config import AMXConfig
-
-            cfg = AMXConfig.load()
-        except Exception:
-            cfg = None
-
-    embedding = getattr(cfg, "embedding_code", None) if cfg is not None else None
-    if embedding is None:
-        return _default_code_embedding()
-
-    kind = (getattr(embedding, "kind", "") or "minilm").lower().strip()
-    model = getattr(embedding, "model", "") or ""
-    api_key = getattr(embedding, "api_key", "") or ""
-    base_url = getattr(embedding, "base_url", "") or ""
-
-    if kind in {"", "minilm", "default", "minilm-l6-v2"}:
-        # User is on the default — opportunistically upgrade to the
-        # code-specialised embedder. An explicit ``/embeddings minilm``
-        # choice falls into this branch too (the cfg layer normalises
-        # both to ``minilm``), which is intentional: a code-trained
-        # encoder is the right floor for ``/code search`` regardless
-        # of what the user picked for prose RAG.
-        return _default_code_embedding()
-
-    if not model:
-        return _default_code_embedding()
-
-    try:
-        ef = make_embedding_function(kind, model=model, api_key=api_key, base_url=base_url)
-    except Exception:
-        return _default_code_embedding()
-    return (kind, model, ef)
+    # Code's default/fallback target is the opportunistic jina encoder
+    # (with its own MiniLM fallback + one-time warning), NOT plain
+    # MiniLM — so the explicit-provider path + the honest fallback
+    # signal are shared via resolve_embedding while the code-specialised
+    # default stays in ``_default_code_embedding``.
+    return resolve_embedding(
+        "code", cfg, default_resolver=_default_code_embedding
+    ).as_tuple()
 
 
 def _default_code_embedding() -> tuple[str, str, EmbeddingFunction | None]:

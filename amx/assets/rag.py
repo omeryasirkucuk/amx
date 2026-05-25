@@ -82,34 +82,11 @@ def _resolve_assets_embedding(cfg: Any | None = None) -> tuple[str, str, Any | N
     (``embedding_function=None``) when no config is available or the
     user has the default kind selected.
     """
-    from amx.search.embeddings import make_embedding_function
+    from amx.rag_core.embedding_resolver import resolve_embedding
 
-    if cfg is None:
-        try:
-            from amx.config import AMXConfig
-
-            cfg = AMXConfig.load()
-        except Exception:  # noqa: BLE001 — config load may fail in tests
-            cfg = None
-
-    embedding = getattr(cfg, "embedding_assets", None) if cfg is not None else None
-    if embedding is None:
-        return ("minilm", "minilm-l6-v2", None)
-
-    kind = (getattr(embedding, "kind", "") or "minilm").lower().strip()
-    model = getattr(embedding, "model", "") or ""
-    api_key = getattr(embedding, "api_key", "") or ""
-    base_url = getattr(embedding, "base_url", "") or ""
-
-    if kind in {"", "minilm", "default", "minilm-l6-v2"}:
-        return ("minilm", "minilm-l6-v2", None)
-    if not model:
-        return ("minilm", "minilm-l6-v2", None)
-    try:
-        ef = make_embedding_function(kind, model=model, api_key=api_key, base_url=base_url)
-    except Exception:  # noqa: BLE001 — fall back to MiniLM on builder failure
-        return ("minilm", "minilm-l6-v2", None)
-    return (kind, model, ef)
+    return resolve_embedding(
+        "assets", cfg, default_resolver=lambda: ("minilm", "minilm-l6-v2", None)
+    ).as_tuple()
 
 
 class AssetRAGStore:
