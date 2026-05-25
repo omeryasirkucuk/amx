@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from typing import Any
 
 from amx.rag_core.collection_identity import CollectionIdentityMismatch
 from amx.search._catalog._constants import SOURCE_PRIORITY, _json_loads
@@ -154,6 +155,46 @@ class EntityCrudMixin:
             ),
         )
         return int(cur.lastrowid)
+
+    def new_entities_since(
+        self,
+        db_profile: str,
+        since_ts: float | None,
+        *,
+        database: str | None = None,
+        schemas: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Catalog entities that FIRST appeared after ``since_ts``.
+
+        Drives change-triggered schedules: the dispatcher passes the
+        schedule's ``last_checked_at`` watermark and the watched scope, and
+        gets back the tables/columns newly discovered since then. Rows
+        predating ``first_synced_at`` (NULL) never match — only genuinely
+        new assets do. ``since_ts`` of None means "everything seen so far"
+        (a freshly-created watcher with no watermark yet).
+
+        Returns dicts with ``schema_name``, ``table_name``, ``column_name``,
+        ``entity_kind``, ``first_synced_at`` ordered oldest-first.
+        """
+        clauses = ["db_profile = ?", "first_synced_at IS NOT NULL"]
+        params: list[Any] = [db_profile]
+        if since_ts is not None:
+            clauses.append("first_synced_at > ?")
+            params.append(float(since_ts))
+        if database is not None:
+            clauses.append("database_name = ?")
+            params.append(database)
+        if schemas:
+            placeholders = ",".join("?" for _ in schemas)
+            clauses.append(f"schema_name IN ({placeholders})")
+            params.extend(schemas)
+        sql = (
+            "SELECT schema_name, table_name, column_name, entity_kind, first_synced_at "
+            "FROM catalog_entities WHERE " + " AND ".join(clauses) + " ORDER BY first_synced_at ASC"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
 
     def _insert_description(
         self,

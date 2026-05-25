@@ -362,6 +362,7 @@ def sync_profile_skeleton(
     catalog,
     *,
     databases: list[str] | None = None,
+    dispatch_changes: bool = True,
 ) -> dict:
     """Synchronous skeleton sync. Walks **every** reachable database
     (or catalog, on 3-level backends) under *profile* and upserts the
@@ -712,6 +713,11 @@ def sync_profile_skeleton(
     summary["schemas_warmed"] = bool(schemas_warmed_ok)
     summary["columns_warmed"] = bool(columns_warmed_ok)
     _skeleton_jobs.unregister(profile)
+    # A successful skeleton sync may have discovered new tables — let any
+    # change-triggered schedules react. Suppressed when this sync is itself
+    # part of a fired run (dispatch_changes=False) to avoid recursion.
+    if dispatch_changes:
+        _dispatch_change_schedules(profile, cfg, databases=databases)
     return summary
 
 
@@ -721,6 +727,7 @@ def deep_sync_profile(
     catalog,
     *,
     databases: list[str] | None = None,
+    dispatch_changes: bool = True,
 ) -> dict:
     """Full-profile sync: profile every table the skeleton already
     catalogued and write its columns + row count.
@@ -868,7 +875,23 @@ def deep_sync_profile(
     if summary["state"] == "done":
         summary["shared_pushed"] = _push_catalog_if_shared(profile)
     _skeleton_jobs.unregister(profile)
+    # A deep sync discovers new columns on existing tables (the skeleton
+    # only sees table names) — let change-triggered schedules react.
+    # Suppressed when this deep sync is itself part of a fired run.
+    if dispatch_changes and summary["state"] == "done":
+        _dispatch_change_schedules(profile, cfg, databases=databases)
     return summary
+
+
+def _dispatch_change_schedules(profile: str, cfg, *, databases: list[str] | None) -> None:
+    """Best-effort hook into the change-trigger dispatcher. Isolated here
+    so a dispatcher import/runtime error can never break a sync."""
+    try:
+        from amx.scheduler.change_trigger import dispatch_after_sync
+
+        dispatch_after_sync(profile, cfg, databases=databases)
+    except Exception:
+        log.exception("change-trigger dispatch failed for profile=%s", profile)
 
 
 def deep_sync_one_table(
