@@ -110,6 +110,39 @@ def submit_ingest(
     return {"job_id": job.id, "status": job.status, "paths": paths, "refresh": bool(body.refresh)}
 
 
+@router.post("/reindex")
+def submit_reindex(
+    body: _DocPathsRequest,
+    cfg: AMXConfig = Depends(get_cfg),
+    jobs: JobRegistry = Depends(get_jobs),
+) -> dict[str, Any]:
+    """Drop the docs vector store and re-ingest with the ACTIVE embedding.
+
+    The UI equivalent of the CLI ``/docs reindex``. Use this after the
+    docs embedding model changes (``Settings → Embeddings``): a plain
+    ingest/refresh keeps the collection's old identity stamp, so ``/ask``
+    retrieval stays blocked with an embedding-mismatch error. Reindex
+    drops the collection outright (handling the mismatch) and rebuilds it
+    stamped with the current provider/model.
+    """
+    paths = _resolve_paths(body, cfg)
+    if not paths:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No paths to reindex. Pass paths=[...], profile=<name>, or activate a doc profile.",
+        )
+    profile_name = (body.profile or "").strip() or (cfg.active_doc_profile or "").strip()
+    job = jobs.new_job("docs_ingest")
+    thread = threading.Thread(
+        target=_ingest_worker,
+        args=(job, paths, False, cfg, profile_name, True),
+        name=f"amx-docs-reindex-{job.id}",
+        daemon=True,
+    )
+    thread.start()
+    return {"job_id": job.id, "status": job.status, "paths": paths, "reindex": True}
+
+
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(
     job_id: str,
@@ -327,9 +360,40 @@ def _ingest_worker(
     refresh: bool,
     cfg: AMXConfig | None = None,
     profile_name: str | None = None,
+    reindex: bool = False,
 ) -> None:
     with quiet_console():
-        _ingest_worker_body(job, paths, refresh, cfg=cfg, profile_name=profile_name)
+        _ingest_worker_body(
+            job, paths, refresh, cfg=cfg, profile_name=profile_name, reindex=reindex
+        )
+
+
+def _open_docs_store_for_reindex() -> Any:
+    """Open the docs RAG store, dropping the collection first when its
+    persisted embedding identity no longer matches the active config.
+
+    Mirrors the CLI ``/docs reindex``: a model swap (e.g. minilm →
+    gte-small) leaves the on-disk ``amx_docs`` collection stamped with the
+    old identity, so ``RAGStore()`` raises ``EmbeddingProviderMismatch`` on
+    open. We force-drop the collection by hand, then reconstruct so it is
+    re-stamped with the active provider/model/dim. ``reset_collection``
+    (called by the worker afterwards) clears any FTS5 sidecar too.
+    """
+    from pathlib import Path
+
+    from amx.docs.rag import EmbeddingProviderMismatch, RAGStore
+
+    try:
+        return RAGStore()
+    except EmbeddingProviderMismatch:
+        import chromadb
+
+        client = chromadb.PersistentClient(path=str(Path.home() / ".amx" / "chroma_db"))
+        try:
+            client.delete_collection(name="amx_docs")
+        except Exception as exc:  # noqa: BLE001 - already absent is fine
+            log.debug("reindex: delete_collection(amx_docs) skipped: %s", exc)
+        return RAGStore()
 
 
 def _ingest_worker_body(
@@ -339,6 +403,7 @@ def _ingest_worker_body(
     *,
     cfg: AMXConfig | None = None,
     profile_name: str | None = None,
+    reindex: bool = False,
 ) -> None:
     job.status = "running"
     emit(job.queue, "activity.added", {"idx": 0, "label": "Scanning"})
@@ -361,10 +426,21 @@ def _ingest_worker_body(
             "activity.complete",
             {"idx": 0, "detail": f"{len(documents)} docs · {size:.1f} MB"},
         )
-        emit(job.queue, "activity.added", {"idx": 1, "label": "Ingesting into Chroma"})
+        ingest_label = "Rebuilding index" if reindex else "Ingesting into Chroma"
+        emit(job.queue, "activity.added", {"idx": 1, "label": ingest_label})
         emit(job.queue, "activity.begin", {"idx": 1})
 
-        store = RAGStore()
+        if reindex:
+            # Drop the existing collection (handling a stale embedding-
+            # identity stamp) and clear the FTS5 sidecar, so the rebuilt
+            # collection is re-stamped with the ACTIVE provider/model. The
+            # per-doc loop below then ingests fresh (refresh has no meaning
+            # against an already-empty collection).
+            store = _open_docs_store_for_reindex()
+            store.reset_collection()
+            refresh = False
+        else:
+            store = RAGStore()
         # Iterate documents one at a time so we can poll ``job.cancel``
         # between docs and exit cleanly mid-batch. Mid-document
         # cancellation is intentionally NOT supported — interrupting a
