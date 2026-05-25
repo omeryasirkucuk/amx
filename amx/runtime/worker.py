@@ -180,6 +180,39 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
         overlay["catalog"] = str(overlay_catalog)
     scoped_cfg = replace(db_cfg, **overlay) if overlay else db_cfg
 
+    # Auto-generation knobs carried in scope_json:
+    #   missing_only  → only describe columns that lack a description
+    #   deep_first    → deep-sync the catalog before generating so newly
+    #                   added columns are discovered and described
+    # review_strategy (on the payload) decides apply policy: 'auto'
+    # writes COMMENT ON to the DB after generation; 'manual' leaves the
+    # results in pending review.
+    scope_flags: dict[str, Any] = {}
+    try:
+        _sj = payload.get("scope_json")
+        scope_flags = json.loads(_sj) if isinstance(_sj, str) and _sj else {}
+    except (TypeError, ValueError):
+        scope_flags = {}
+    missing_only = bool(scope_flags.get("missing_only"))
+    deep_first = bool(scope_flags.get("deep_first"))
+    review_strategy = str(payload.get("review_strategy") or "auto")
+
+    if deep_first:
+        try:
+            from amx.search.catalog import SearchCatalog
+            from amx.search.drift import deep_sync_profile
+
+            _cat = SearchCatalog.from_history_store()
+            if _cat is not None:
+                _dbs = [str(overlay_database)] if overlay_database else None
+                deep_sync_profile(cfg, db_profile_name, _cat, databases=_dbs)
+        except Exception as exc:  # noqa: BLE001 - never block generation on a sync hiccup
+            log.warning(
+                "production_run_executor: deep_first sync skipped for schedule #%s: %s",
+                schedule_id,
+                exc,
+            )
+
     db = DatabaseConnector(scoped_cfg, profile_name=db_profile_name)
     llm = LLMProvider(llm_cfg)
     orchestrator = Orchestrator(
@@ -187,6 +220,7 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
         llm,
         run_id=run_id,
         search_profile=db_profile_name,
+        missing_only=missing_only,
     )
 
     # When the schedule was created with column-level picks, plumb the
@@ -276,6 +310,25 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
         if len(per_table_errors) > 5:
             summary += f"; (+{len(per_table_errors) - 5} more)"
         raise RuntimeError(f"All {processed} table(s) in scope failed. {summary}")
+
+    # Apply policy. 'auto' writes the generated descriptions to the DB
+    # (COMMENT ON) right after generation — the unattended path that
+    # makes a scheduled run a true auto-generation. 'manual' leaves the
+    # results in pending review for a human to approve later.
+    if review_strategy == "auto":
+        try:
+            applied = orchestrator.apply_results()
+            log.info(
+                "production_run_executor: schedule #%s auto-applied %s description(s).",
+                schedule_id,
+                applied,
+            )
+        except Exception:
+            log.exception(
+                "production_run_executor: auto-apply failed for schedule #%s; "
+                "results remain in pending review.",
+                schedule_id,
+            )
 
 
 def _scope_column_overrides(
