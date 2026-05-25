@@ -568,7 +568,8 @@ class SQLiteHistoryStore:
                     effective_description_id INTEGER,
                     updated_at REAL NOT NULL DEFAULT 0,
                     last_synced_at REAL NOT NULL DEFAULT 0,
-                    last_code_sync_at REAL
+                    last_code_sync_at REAL,
+                    first_synced_at REAL
                 )
                 """
             )
@@ -608,6 +609,13 @@ class SQLiteHistoryStore:
                 "ON catalog_entities(source_remote_id, entity_kind) "
                 "WHERE source_remote_id IS NOT NULL"
             )
+            # ``first_synced_at`` records when an asset FIRST appeared (set
+            # only on INSERT, never bumped), so change-triggered schedules
+            # can diff "what is new since I last looked" against their
+            # watermark. ``last_synced_at`` can't serve this — it moves on
+            # every re-sync. NULL on rows that predate the column.
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute("ALTER TABLE catalog_entities ADD COLUMN first_synced_at REAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_descriptions (

@@ -121,13 +121,18 @@ class EntityCrudMixin:
             )
             return int(row["id"])
 
+        # ``first_synced_at`` is stamped ONLY here (insert), never in the
+        # UPDATE branch above — it's the durable "this asset first appeared
+        # at T" fact that change-triggered schedules diff against their
+        # watermark. ``last_synced_at`` can't serve that role since it's
+        # bumped on every re-sync.
         cur = conn.execute(
             """
             INSERT INTO catalog_entities (
                 db_profile, db_backend, database_name, schema_name, table_name, column_name,
                 entity_kind, asset_kind, dtype, nullable, pk_flag, fk_flag, row_count,
-                updated_at, last_synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                updated_at, last_synced_at, first_synced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 db_profile,
@@ -143,6 +148,7 @@ class EntityCrudMixin:
                 pk_flag,
                 fk_flag,
                 row_count,
+                now,
                 now,
                 now,
             ),
