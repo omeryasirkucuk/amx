@@ -488,7 +488,7 @@ _SEARCH_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/embeddings",
         "search",
-        "Show or change the search-index embedding provider (/embeddings [minilm|openai|local] [model])",
+        "Embedding provider + health (/embeddings status | rebuild [side|all] | [minilm|openai|local] [model])",
     ),
     # Sync & rebuild
     SlashCommand(
