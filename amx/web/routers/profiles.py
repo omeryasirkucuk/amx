@@ -463,7 +463,7 @@ def _merge_embedding_patch(existing: EmbeddingConfig, body: dict[str, Any]) -> E
 
 
 def _sentence_transformers_available() -> bool:
-    """Cheap probe — no actual import, so the chromadb tax stays unpaid
+    """Cheap probe — no actual import, so the chromadb tax is not incurred
     until the user opts into a non-default provider."""
     try:
         return importlib.util.find_spec("sentence_transformers") is not None
@@ -728,22 +728,12 @@ def get_embedding_status(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     return {side: _collection_status_for_side(side, cfg) for side in _EMBEDDING_SIDES}
 
 
-@router.post("/embedding/{side}/rebuild")
-def rebuild_embedding(
-    side: str,
-    body: dict[str, Any] | None = None,
-    cfg: AMXConfig = Depends(get_cfg),
-) -> dict[str, Any]:
-    """Clear the per-side vector collections so the next query/ingest
-    re-embeds with the active provider.
-
-    Blocking — large catalogs take seconds to tens of seconds; jobs
-    infrastructure is out of scope for the initial split.
+def _rebuild_one_side(side: str, cfg: AMXConfig, profile_filter: str | None) -> dict[str, Any]:
+    """Clear one side's vector collections so the next query/ingest
+    re-embeds under the active provider. Raises ``HTTPException`` when
+    the side's RAG backend is unavailable. Pulled out of the endpoint so
+    the rebuild-all endpoint can drive every side through one code path.
     """
-    side = _check_side(side)
-    body = body or {}
-    profile_filter = (body.get("profile") or "").strip() or None
-
     if side == "docs":
         try:
             from amx.search.catalog import SearchCatalog
@@ -821,6 +811,63 @@ def rebuild_embedding(
             else "Code collection did not exist; nothing to clear."
         ),
     }
+
+
+@router.post("/embedding/rebuild")
+def rebuild_all_embeddings(
+    body: dict[str, Any] | None = None,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Rebuild every side (docs, code, assets) in one call.
+
+    A per-side failure is recorded and the loop continues, so one
+    unavailable backend doesn't abort the others — the response reports
+    which sides succeeded. ``ok`` is True only when every side cleared.
+
+    Note: a rebuild re-embeds under the *active* provider. If a side has
+    silently fallen back (its configured model can't be built), rebuild
+    re-embeds under the fallback — it does not restore the configured
+    model. Fix the dependency/config first; the status endpoint's
+    ``fell_back`` flag is the signal for that.
+    """
+    body = body or {}
+    profile_filter = (body.get("profile") or "").strip() or None
+    results: list[dict[str, Any]] = []
+    failed: list[str] = []
+    for side in _EMBEDDING_SIDES:
+        try:
+            results.append(_rebuild_one_side(side, cfg, profile_filter))
+        except HTTPException as exc:
+            failed.append(side)
+            results.append({"ok": False, "side": side, "error": str(exc.detail)})
+    return {
+        "ok": not failed,
+        "results": results,
+        "failed": failed,
+        "message": (
+            f"Rebuilt {len(_EMBEDDING_SIDES) - len(failed)}/{len(_EMBEDDING_SIDES)} sides."
+            if failed
+            else "Rebuilt every RAG store; re-ingest/query to re-embed under the active provider."
+        ),
+    }
+
+
+@router.post("/embedding/{side}/rebuild")
+def rebuild_embedding(
+    side: str,
+    body: dict[str, Any] | None = None,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Clear one side's vector collections so the next query/ingest
+    re-embeds with the active provider.
+
+    Blocking — large catalogs take seconds to tens of seconds; jobs
+    infrastructure is out of scope for the initial split.
+    """
+    side = _check_side(side)
+    body = body or {}
+    profile_filter = (body.get("profile") or "").strip() or None
+    return _rebuild_one_side(side, cfg, profile_filter)
 
 
 # ── Doc + Code profiles (path lists) ───────────────────────────────────
