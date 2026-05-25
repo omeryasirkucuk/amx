@@ -1546,11 +1546,19 @@ function DocProfileHealthLine({ name }: { name: string }) {
       : null;
   const parts: string[] = [];
   if (chunks > 0) {
+    // Genuinely indexed: report chunk count + when the ingest finished.
     parts.push(`📚 ${chunks.toLocaleString()} chunk${chunks === 1 ? "" : "s"}`);
+    if (ingested) parts.push(`indexed ${ingested}`);
+  } else if (ingested) {
+    // An ingest ran but the collection is empty (e.g. files were added
+    // after the last run, or none matched). Report this coherently —
+    // "not indexed yet" and "indexed just now" must never appear together.
+    parts.push("📚 0 chunks indexed");
+    parts.push(`last ran ${ingested}`);
   } else {
+    // No ingest has ever run.
     parts.push("📚 not indexed yet");
   }
-  if (ingested) parts.push(`indexed ${ingested}`);
   if (data.embedding_model) parts.push(`model ${data.embedding_model}`);
   const files = (data.local_files ?? []).filter(
     (entry): entry is DocProfileFile => !("__truncated__" in entry),
