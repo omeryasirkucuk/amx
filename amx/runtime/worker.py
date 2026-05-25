@@ -205,7 +205,12 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
             _cat = SearchCatalog.from_history_store()
             if _cat is not None:
                 _dbs = [str(overlay_database)] if overlay_database else None
-                deep_sync_profile(cfg, db_profile_name, _cat, databases=_dbs)
+                # dispatch_changes=False: this deep-sync is part of a fired
+                # run, so it must not recursively re-trigger change schedules
+                # on the columns it stamps.
+                deep_sync_profile(
+                    cfg, db_profile_name, _cat, databases=_dbs, dispatch_changes=False
+                )
         except Exception as exc:  # noqa: BLE001 - never block generation on a sync hiccup
             log.warning(
                 "production_run_executor: deep_first sync skipped for schedule #%s: %s",
@@ -808,6 +813,8 @@ def _mark_completed(store: _HistoryStore, *, run_id: int, schedule_id: int) -> N
         log.exception("finish_run failed for run_id=%s", run_id)
     if _try_rearm_recurring(store, schedule_id):
         return
+    if _try_rearm_change(store, schedule_id):
+        return
     try:
         store.set_scheduled_run_status(
             schedule_id,
@@ -846,6 +853,8 @@ def _mark_failed(
     # the diagnostic detail.
     if _try_rearm_recurring(store, schedule_id):
         return
+    if _try_rearm_change(store, schedule_id):
+        return
     try:
         store.set_scheduled_run_status(
             schedule_id,
@@ -874,3 +883,20 @@ def _try_rearm_recurring(store: _HistoryStore, schedule_id: int) -> bool:
         log.exception("arm_next_fire raised for schedule_id=%s", schedule_id)
         return False
     return bool(next_at)
+
+
+def _try_rearm_change(store: _HistoryStore, schedule_id: int) -> bool:
+    """Return a change-triggered schedule to ``pending`` (watching).
+
+    Change schedules never go terminal on their own — they keep watching
+    until deleted. Returns True when the row was a change schedule (caller
+    skips the terminal transition); False otherwise.
+    """
+    helper = getattr(store, "rearm_change_schedule", None)
+    if helper is None:
+        return False
+    try:
+        return bool(helper(schedule_id))
+    except Exception:
+        log.exception("rearm_change_schedule raised for schedule_id=%s", schedule_id)
+        return False

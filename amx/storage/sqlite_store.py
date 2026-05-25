@@ -1161,7 +1161,9 @@ class SQLiteHistoryStore:
                     updated_at REAL NOT NULL,
                     fired_at REAL,
                     triggered_run_id INTEGER,
-                    last_error TEXT
+                    last_error TEXT,
+                    trigger TEXT NOT NULL DEFAULT 'time',
+                    last_checked_at REAL
                 )
                 """
             )
@@ -2037,6 +2039,18 @@ class SQLiteHistoryStore:
             # to ``status='pending'`` with a fresh ``fire_at_utc`` every
             # time it fires.
             ("cron_expr", "TEXT"),
+            # ``trigger`` discriminates time-based schedules ('time',
+            # legacy default — fired by the tick when fire_at_utc elapses)
+            # from change-triggered ones ('change' — fired by the
+            # post-sync dispatcher when a new asset appears under the
+            # watched scope, never by the time loop).
+            ("trigger", "TEXT NOT NULL DEFAULT 'time'"),
+            # ``last_checked_at`` is the change-trigger watermark: the UTC
+            # epoch up to which this schedule has already evaluated new
+            # assets. The dispatcher fires only for catalog_entities whose
+            # first_synced_at exceeds it, then advances it — so a re-sync
+            # of the same assets never re-fires. NULL on time schedules.
+            ("last_checked_at", "REAL"),
         ):
             if col_name in existing_cols:
                 continue
@@ -2246,6 +2260,21 @@ class SQLiteHistoryStore:
         from amx.storage._history_scheduled import arm_next_fire
 
         return arm_next_fire(self, *args, **kwargs)
+
+    def list_change_schedules(self, *args, **kwargs):
+        from amx.storage._history_scheduled import list_change_schedules
+
+        return list_change_schedules(self, *args, **kwargs)
+
+    def advance_change_watermark(self, *args, **kwargs):
+        from amx.storage._history_scheduled import advance_change_watermark
+
+        return advance_change_watermark(self, *args, **kwargs)
+
+    def rearm_change_schedule(self, *args, **kwargs):
+        from amx.storage._history_scheduled import rearm_change_schedule
+
+        return rearm_change_schedule(self, *args, **kwargs)
 
     def profile_has_active_cache_refresh_schedule(self, *args, **kwargs):
         from amx.storage._history_scheduled import profile_has_active_cache_refresh_schedule

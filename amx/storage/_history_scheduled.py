@@ -36,6 +36,7 @@ def create_scheduled_run(
     extra_args_json: str | None = None,
     kind: str = "analyze",
     cron_expr: str | None = None,
+    trigger: str = "time",
 ) -> int:
     """Insert a new scheduled_runs row in status='pending'.
 
@@ -51,8 +52,19 @@ def create_scheduled_run(
     ('cache_refresh'). ``cron_expr`` is NULL for one-shot fires and
     a valid croniter expression for recurring schedules — the tick
     engine re-arms the row from the cron after each fire.
+
+    ``trigger`` is 'time' (default — fired by the tick when
+    ``fire_at_utc`` elapses) or 'change' (fired by the post-sync
+    dispatcher when a new asset appears under the watched scope;
+    ``fire_at_utc`` carries a harmless placeholder and is never used).
     """
     now = time.time()
+    trigger = str(trigger or "time")
+    # A change watcher's watermark starts at creation time so it only fires
+    # for assets that appear AFTER it was set up — otherwise its first sync
+    # would treat the entire pre-existing catalog as "new". Time schedules
+    # leave it NULL.
+    last_checked_at = now if trigger == "change" else None
     with hs._lock, hs._connect() as conn:
         cur = conn.execute(
             """
@@ -60,9 +72,9 @@ def create_scheduled_run(
                 name, fire_at_utc, fire_at_tz, status,
                 db_profile, database, catalog,
                 scope_json, llm_profile, review_strategy,
-                extra_args_json, kind, cron_expr,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                extra_args_json, kind, cron_expr, trigger,
+                created_at, updated_at, last_checked_at
+            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name,
@@ -77,8 +89,10 @@ def create_scheduled_run(
                 extra_args_json,
                 str(kind or "analyze"),
                 cron_expr,
+                trigger,
                 now,
                 now,
+                last_checked_at,
             ),
         )
         return int(cur.lastrowid or 0)
@@ -142,6 +156,72 @@ def list_due_pending_schedules(
             (now_utc, int(limit)),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def list_change_schedules(
+    hs: SQLiteHistoryStore,
+    *,
+    db_profile: str | None = None,
+) -> list[dict[str, Any]]:
+    """Active change-triggered schedules (``trigger='change'``).
+
+    Only rows the dispatcher may fire are returned — ``status='pending'``
+    (watching). A row currently ``running`` is intentionally excluded so a
+    second sync mid-run can't double-fire it. Optionally scoped to one
+    ``db_profile``.
+    """
+    clauses = ["trigger = 'change'", "status = 'pending'"]
+    params: list[Any] = []
+    if db_profile is not None:
+        clauses.append("db_profile = ?")
+        params.append(db_profile)
+    sql = "SELECT * FROM scheduled_runs WHERE " + " AND ".join(clauses) + " ORDER BY id ASC"
+    with hs._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def rearm_change_schedule(hs: SQLiteHistoryStore, schedule_id: int) -> bool:
+    """Return a change schedule to ``pending`` (watching) after a fire.
+
+    A change-triggered schedule never reaches a terminal state on its own
+    — it keeps watching until the user deletes it. Like
+    :func:`arm_next_fire`, this writes ``status='pending'`` directly
+    (bypassing the time-based state machine, which has no running→pending
+    edge). Returns False for non-change schedules so the caller falls back
+    to the normal terminal transition.
+    """
+    with hs._lock, hs._connect() as conn:
+        row = conn.execute(
+            "SELECT trigger FROM scheduled_runs WHERE id = ?",
+            (schedule_id,),
+        ).fetchone()
+        if row is None or str(row[0]) != "change":
+            return False
+        conn.execute(
+            "UPDATE scheduled_runs SET status = 'pending', updated_at = ? WHERE id = ?",
+            (time.time(), schedule_id),
+        )
+        return True
+
+
+def advance_change_watermark(hs: SQLiteHistoryStore, schedule_id: int, ts: float) -> None:
+    """Move a change schedule's ``last_checked_at`` watermark forward.
+
+    Called after the dispatcher has evaluated (and possibly fired on) the
+    assets newer than the previous watermark, so the same assets are never
+    re-evaluated on a later sync. Never moves the watermark backwards.
+    """
+    with hs._lock, hs._connect() as conn:
+        conn.execute(
+            """
+            UPDATE scheduled_runs
+            SET last_checked_at = ?, updated_at = ?
+            WHERE id = ? AND (last_checked_at IS NULL OR last_checked_at < ?)
+            """,
+            (ts, time.time(), schedule_id, ts),
+        )
 
 
 def update_scheduled_run(
@@ -269,13 +349,17 @@ def claim_due_schedule(hs: SQLiteHistoryStore, *, now_utc: float) -> int | None:
     under concurrent calls from multiple threads -- the
     ``WHERE status='pending'`` predicate on the UPDATE turns a lost
     race into a return of None for the loser.
+
+    Change-triggered schedules (``trigger='change'``) are excluded: they
+    have no meaningful ``fire_at_utc`` and are fired only by the post-sync
+    dispatcher, never by the time loop.
     """
     now = time.time()
     with hs._lock, hs._connect() as conn:
         row = conn.execute(
             """
             SELECT id FROM scheduled_runs
-            WHERE status = 'pending' AND fire_at_utc <= ?
+            WHERE status = 'pending' AND trigger = 'time' AND fire_at_utc <= ?
             ORDER BY fire_at_utc ASC
             LIMIT 1
             """,
