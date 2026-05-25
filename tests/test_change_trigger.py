@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -222,3 +223,90 @@ def test_evaluate_one_no_new_assets_does_not_fire(
 
     monkeypatch.setattr(worker, "spawn_scheduled_worker", _boom)
     assert _evaluate_one(store, cat, store.get_scheduled_run(sid), databases=None) == 0
+
+
+# ── catalog overlay (Databricks) + per-table deep-sync dispatch ─────────
+
+
+def test_evaluate_one_matches_catalog_overlay(
+    store_and_catalog: tuple[SQLiteHistoryStore, SearchCatalog],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On three-level backends the watcher stores its container in
+    ``catalog`` (not ``database``); the dispatcher must match on it and
+    not skip the schedule when the synced container list carries it."""
+    store, cat = store_and_catalog
+    t0 = time.time()
+    sid = store.create_scheduled_run(
+        name="watch catalog",
+        fire_at_utc=t0,
+        fire_at_tz="UTC",
+        db_profile="dbr",
+        catalog="amx_test",
+        scope_json=json.dumps({"mode": "all", "deep_first": True}),
+        llm_profile="default",
+        review_strategy="manual",
+        trigger="change",
+    )
+    with store._connect() as conn:  # noqa: SLF001
+        conn.execute(
+            "UPDATE scheduled_runs SET last_checked_at = ? WHERE id = ?", (t0 - 10, sid)
+        )
+    _insert_entity(
+        cat, profile="dbr", schema="amx_test_schema", table="adr_6",
+        column="test2", kind="column", first_synced_at=t0 - 1,
+    )
+    # The new column's database_name must be the catalog for the filter to
+    # match — mirror how deep_sync writes Databricks rows.
+    with cat._connect() as conn:  # noqa: SLF001
+        conn.execute("UPDATE catalog_entities SET database_name = 'amx_test'")
+
+    import amx.runtime.worker as worker
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        worker, "spawn_scheduled_worker", lambda payload, **_k: captured.update(payload=payload) or 1
+    )
+    sched = store.get_scheduled_run(sid)
+    fired = _evaluate_one(store, cat, sched, databases=["amx_test"])
+    assert fired == 1
+    scope = json.loads(captured["payload"]["scope_json"])
+    assert [t["table"] for t in scope["tables"]] == ["adr_6"]
+
+
+def test_deep_sync_one_table_dispatches_change_schedules(
+    store_and_catalog: tuple[SQLiteHistoryStore, SearchCatalog],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-table 'Deep sync' button (deep_sync_one_table) must invoke
+    the change-trigger dispatcher — without it a Watching schedule never
+    reacts to a newly-added column discovered by a single-table deep
+    sync."""
+    import amx.search.drift as drift
+    from amx.db.connector import AssetKind, ColumnProfile, TableProfile
+
+    class _StubConn:
+        def profile_table(self, schema: str, table: str, sample_size: int = 0) -> TableProfile:
+            return TableProfile(
+                schema=schema,
+                name=table,
+                asset_kind=AssetKind.TABLE,
+                columns=[ColumnProfile(name="test2", dtype="STRING", nullable=True)],
+                row_count=5,
+            )
+
+    monkeypatch.setattr(drift, "_scoped_connector", lambda *a, **k: _StubConn())
+    recorded: dict[str, Any] = {}
+    monkeypatch.setattr(
+        drift,
+        "_dispatch_change_schedules",
+        lambda profile, cfg, *, databases=None: recorded.update(
+            profile=profile, databases=databases
+        ),
+    )
+    cfg = SimpleNamespace(db_profiles={"dbr": SimpleNamespace(backend="databricks")}, db=None)
+
+    out = drift.deep_sync_one_table(cfg, "dbr", schema="amx_test_schema", table="adr_6", database="amx_test")
+    assert out["ok"] is True
+    assert recorded.get("profile") == "dbr"
+    assert recorded.get("databases") == ["amx_test"]
