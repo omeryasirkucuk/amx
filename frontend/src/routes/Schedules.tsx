@@ -132,6 +132,15 @@ function NewScheduleDialog({
   const [reviewStrategy, setReviewStrategy] = useState<"auto" | "manual">(
     (editing?.review_strategy as "auto" | "manual" | undefined) ?? "auto",
   );
+  // Auto-generation knobs (stored in scope_json). missing_only →
+  // describe only columns lacking a description; deep_first → deep-sync
+  // the catalog before generating so new columns are discovered.
+  const [missingOnly, setMissingOnly] = useState<boolean>(
+    Boolean((editing?.scope_json as Record<string, unknown> | null | undefined)?.missing_only),
+  );
+  const [deepFirst, setDeepFirst] = useState<boolean>(
+    Boolean((editing?.scope_json as Record<string, unknown> | null | undefined)?.deep_first),
+  );
   const [error, setError] = useState<string | null>(null);
 
   const dbProfilesQ = useQuery({
@@ -208,7 +217,11 @@ function NewScheduleDialog({
   });
 
   function buildScope(): Record<string, unknown> {
-    return picksToScopeJson(scopePicks);
+    return {
+      ...picksToScopeJson(scopePicks),
+      missing_only: missingOnly,
+      deep_first: deepFirst,
+    };
   }
 
   function onSubmit(e: React.FormEvent) {
@@ -385,6 +398,40 @@ function NewScheduleDialog({
               onChange={setScopePicks}
             />
           </Field>
+          <div className="md:col-span-2 space-y-2">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={missingOnly}
+                onChange={(e) => setMissingOnly(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span className="text-sm">
+                <span className="font-medium">Only missing descriptions</span>
+                <span className="block text-xs text-ink-dim">
+                  Describe just the columns that lack a description. With
+                  review strategy “auto”, this auto-generates descriptions
+                  for new/undocumented columns each run.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={deepFirst}
+                onChange={(e) => setDeepFirst(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span className="text-sm">
+                <span className="font-medium">Refresh catalog first (deep)</span>
+                <span className="block text-xs text-ink-dim">
+                  Deep-sync columns + row counts before generating so
+                  newly added columns are discovered and described in the
+                  same run.
+                </span>
+              </span>
+            </label>
+          </div>
         </div>
         {error && (
           <p className="rounded-md border border-critical/40 bg-critical/10 px-3 py-2 text-sm text-critical">
