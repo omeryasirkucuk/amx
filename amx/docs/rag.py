@@ -107,43 +107,11 @@ def _resolve_docs_embedding(cfg: Any | None = None) -> tuple[str, str, Embedding
     what get persisted as collection metadata so a later reopen can
     detect mismatches.
     """
-    from amx.search.embeddings import make_embedding_function
+    from amx.rag_core.embedding_resolver import resolve_embedding
 
-    if cfg is None:
-        try:
-            from amx.config import AMXConfig
-
-            cfg = AMXConfig.load()
-        except Exception:
-            cfg = None
-
-    embedding = getattr(cfg, "embedding_docs", None) if cfg is not None else None
-    if embedding is None:
-        return ("minilm", "minilm-l6-v2", None)
-
-    kind = (getattr(embedding, "kind", "") or "minilm").lower().strip()
-    model = getattr(embedding, "model", "") or ""
-    api_key = getattr(embedding, "api_key", "") or ""
-    base_url = getattr(embedding, "base_url", "") or ""
-
-    if kind in {"", "minilm", "default", "minilm-l6-v2"}:
-        return ("minilm", "minilm-l6-v2", None)
-
-    # For non-default kinds the model id IS the unique identifier; if
-    # the user hasn't picked one yet fall back to MiniLM rather than
-    # error here (the embeddings module emits a themed warning at
-    # startup for that case).
-    if not model:
-        return ("minilm", "minilm-l6-v2", None)
-
-    try:
-        ef = make_embedding_function(kind, model=model, api_key=api_key, base_url=base_url)
-    except Exception:
-        # Builder failure (missing optional dep, bad model id) — fall
-        # back to MiniLM so retrieval still works; the mismatch check
-        # later will catch the wrong-provider case explicitly.
-        return ("minilm", "minilm-l6-v2", None)
-    return (kind, model, ef)
+    return resolve_embedding(
+        "docs", cfg, default_resolver=lambda: ("minilm", "minilm-l6-v2", None)
+    ).as_tuple()
 
 
 EXPLANATORY_TERMS = frozenset(
