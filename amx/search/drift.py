@@ -962,6 +962,10 @@ def _deep_sync_one_table_impl(
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
     _push_catalog_if_shared(profile)
+    # A per-table deep sync discovers new columns just like a full deep
+    # sync — let change-triggered schedules react (the "Deep sync" button
+    # on the Table page lands here). Best-effort; never breaks the sync.
+    _dispatch_change_schedules(profile, cfg, databases=[database] if database else None)
     return {
         "ok": True,
         "schema": schema,

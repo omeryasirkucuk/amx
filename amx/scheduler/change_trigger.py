@@ -120,9 +120,11 @@ def _evaluate_one(
     watermark = sched.get("last_checked_at")
     watch_scope_json = sched.get("scope_json")
     schemas = _watched_schemas(watch_scope_json)
-    # The watcher's database overlay narrows detection to one database; a
-    # sync that touched other databases shouldn't fire it.
-    sched_db = sched.get("database") or None
+    # The watcher's container overlay narrows detection to one database
+    # (or catalog, on three-level backends like Databricks where the
+    # catalog is stored in catalog_entities.database_name). A sync that
+    # touched other containers shouldn't fire it.
+    sched_db = sched.get("database") or sched.get("catalog") or None
     if sched_db and databases is not None and sched_db not in databases:
         return 0
 
