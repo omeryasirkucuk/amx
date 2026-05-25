@@ -317,6 +317,26 @@ def register_schedule_commands(
         default=None,
         help="Recurring cron expression (e.g. '0 */6 * * *'). One-shot when omitted.",
     )
+    @click.option(
+        "--missing-only",
+        is_flag=True,
+        default=False,
+        help=(
+            "analyze only: describe just the columns that lack a "
+            "description. Combine with --strategy auto for unattended "
+            "auto-generation of new columns."
+        ),
+    )
+    @click.option(
+        "--deep-first",
+        is_flag=True,
+        default=False,
+        help=(
+            "analyze only: deep-sync the catalog (columns + row counts) "
+            "before generating, so newly added columns are discovered "
+            "and described in the same run."
+        ),
+    )
     @pc
     def schedule_add(
         cfg: AMXConfig,
@@ -330,6 +350,8 @@ def register_schedule_commands(
         kind: str,
         deep: bool,
         cron_expr: str | None,
+        missing_only: bool,
+        deep_first: bool,
     ) -> None:
         """Create a new scheduled run.
 
@@ -401,11 +423,17 @@ def register_schedule_commands(
         # coerce for the type checker (and as a runtime safety net).
         fire_at_utc, fire_at_tz = _parse_at(str(at), str(tz_name))
         scope_json = _parse_scope(str(scope))
-        # Thread the deep flag into scope_json — the cache_refresh
-        # executor reads scope.deep to choose deep_sync vs skeleton.
-        if deep:
+        # Thread the auto-generation flags into scope_json — executors
+        # read scope.deep (cache_refresh: deep_sync vs skeleton),
+        # scope.missing_only + scope.deep_first (analyze: auto-gen).
+        if deep or missing_only or deep_first:
             _scope_obj = json.loads(scope_json)
-            _scope_obj["deep"] = True
+            if deep:
+                _scope_obj["deep"] = True
+            if missing_only:
+                _scope_obj["missing_only"] = True
+            if deep_first:
+                _scope_obj["deep_first"] = True
             scope_json = json.dumps(_scope_obj)
         sid = hs.create_scheduled_run(
             name=name,
