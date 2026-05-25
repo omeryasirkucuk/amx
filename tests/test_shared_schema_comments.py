@@ -56,13 +56,14 @@ def test_create_history_tables_ddl_emits_comments_on_postgres() -> None:
 
     assert ddl.count("CREATE TABLE") == 27, "expected 27 CREATE TABLE statements"
     assert ddl.count("COMMENT ON TABLE") == 27, "expected 27 COMMENT ON TABLE statements"
-    # 339 columns (275 pre-Phase-A-Task-6 + 46 remote-asset columns:
+    # 340 columns (275 pre-Phase-A-Task-6 + 46 remote-asset columns:
     #              remote_pipelines (12), remote_streamlit_apps (9),
     #              remote_streams (9), remote_task_dependencies (3),
-    #              remote_queries (13) = 46; + catalog_entities (18) for
-    #              the shared structural catalog = 339)
-    assert ddl.count("COMMENT ON COLUMN") == 339, (
-        f"expected 339 COMMENT ON COLUMN statements, got {ddl.count('COMMENT ON COLUMN')}"
+    #              remote_queries (13) = 46; + catalog_entities (19, incl.
+    #              first_synced_at for change-triggered schedules) for
+    #              the shared structural catalog = 340)
+    assert ddl.count("COMMENT ON COLUMN") == 340, (
+        f"expected 340 COMMENT ON COLUMN statements, got {ddl.count('COMMENT ON COLUMN')}"
     )
 
 

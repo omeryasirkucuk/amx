@@ -783,6 +783,12 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "UTC epoch seconds of the last code-context sync (lineage usage, "
             "test references). NULL on entities never touched by /code."
         ),
+        "first_synced_at": (
+            "UTC epoch seconds when this asset FIRST appeared in the catalog. "
+            "Set only on insert, never bumped, so change-triggered schedules "
+            "can diff newly-appeared assets against their watermark. NULL on "
+            "rows that predate the column."
+        ),
         # Attribution columns — present on the SHARED catalog_entities table
         # (team-wide structural catalog) so /history-store list-team can show
         # who profiled what. Absent from the local SQLite table.

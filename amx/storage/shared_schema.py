@@ -130,7 +130,7 @@ DEFAULT_HISTORY_SCHEMA_COMMENT = SHARED_SCHEMA_COMMENT
 # All client versions writing into a shared store record this as their
 # ``schema_version`` so an older client refuses to write into a schema
 # bumped by a newer client (avoids losing columns the new client added).
-SHARED_SCHEMA_VERSION = 6
+SHARED_SCHEMA_VERSION = 7
 
 
 def _desc(table: str, column: str | None = None) -> str:
@@ -1931,6 +1931,11 @@ def build_metadata(schema: str | None = None) -> MetaData:
             DateTime(timezone=True),
             index=True,
             comment=_desc("catalog_entities", "last_synced_at"),
+        ),
+        Column(
+            "first_synced_at",
+            DateTime(timezone=True),
+            comment=_desc("catalog_entities", "first_synced_at"),
         ),
         Column("created_by", String(120), comment=_desc("catalog_entities", "created_by")),
         Column("hostname", String(255), comment=_desc("catalog_entities", "hostname")),

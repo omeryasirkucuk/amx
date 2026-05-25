@@ -532,3 +532,43 @@ def test_skeleton_sync_warms_comments_with_durable_ttl(
     sync_profile_skeleton(_StubCfg(), "prof-a", fresh_catalog)
 
     assert getattr(connector, "last_warm_ttl", None) == DURABLE_COMMENT_CACHE_TTL_SECONDS
+
+
+def _first_synced(cat: SearchCatalog, profile: str, table: str) -> float | None:
+    with cat._connect() as conn:  # noqa: SLF001
+        row = conn.execute(
+            "SELECT first_synced_at FROM catalog_entities "
+            "WHERE db_profile = ? AND table_name = ? AND entity_kind = 'table'",
+            (profile, table),
+        ).fetchone()
+    return None if row is None else row["first_synced_at"]
+
+
+def test_first_synced_at_set_on_insert_preserved_on_resync(
+    fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``first_synced_at`` is the change-trigger signal: stamped when an
+    asset first appears, never bumped on a re-sync (unlike
+    ``last_synced_at``). A newly-appeared table carries a strictly later
+    ``first_synced_at`` so a watermark diff can isolate it."""
+    connector = _StubConnector(schemas=["public"], assets={"public": [("users", "table")]})
+    _stub_build_connector(monkeypatch, connector)
+
+    sync_profile_skeleton(_StubCfg(), "prof-a", fresh_catalog)
+    first = _first_synced(fresh_catalog, "prof-a", "users")
+    assert first is not None and first > 0
+
+    # Re-sync the SAME table — first_synced_at must not move; last_synced_at must.
+    time.sleep(0.01)
+    sync_profile_skeleton(_StubCfg(), "prof-a", fresh_catalog)
+    assert _first_synced(fresh_catalog, "prof-a", "users") == first
+
+    # A brand-new table appears — its first_synced_at is strictly later,
+    # so "what is new since I last looked" is a simple watermark compare.
+    time.sleep(0.01)
+    connector._assets["public"] = [("users", "table"), ("orders", "table")]  # noqa: SLF001
+    sync_profile_skeleton(_StubCfg(), "prof-a", fresh_catalog)
+    new_first = _first_synced(fresh_catalog, "prof-a", "orders")
+    assert new_first is not None and new_first > first
+    # The pre-existing table's stamp is still untouched.
+    assert _first_synced(fresh_catalog, "prof-a", "users") == first
