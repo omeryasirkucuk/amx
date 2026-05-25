@@ -1359,6 +1359,13 @@ export interface ScheduleRow {
   // scheduler re-arms the row with a fresh fire_at_utc after every
   // fire so the schedule keeps cycling.
   cron_expr?: string | null;
+  // Firing mechanism: 'time' (default — fires when fire_at_utc elapses)
+  // or 'change' (no fire time; fires when a new asset appears under the
+  // watched scope). Defaulted server-side so legacy rows read 'time'.
+  trigger?: "time" | "change";
+  // Change-trigger watermark: epoch up to which new assets were already
+  // evaluated. NULL on time schedules.
+  last_checked_at?: number | null;
 }
 
 export interface SchedulesListResponse {
@@ -1377,6 +1384,7 @@ export interface ScheduleCreatePayload {
   review_strategy?: "auto" | "manual";
   kind?: "analyze" | "cache_refresh";
   cron_expr?: string | null;
+  trigger?: "time" | "change";
 }
 
 export interface SchedulerStatusResponse {

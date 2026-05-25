@@ -57,7 +57,14 @@ class ScheduleCreateRequest(BaseModel):
     """
 
     name: str = Field(min_length=1, max_length=200)
-    fire_at_local: str = Field(description="Wall-clock fire time, e.g. '2026-12-31T09:00'.")
+    fire_at_local: str = Field(
+        default="",
+        description=(
+            "Wall-clock fire time, e.g. '2026-12-31T09:00'. Required for "
+            "trigger='time'; ignored (and optional) for trigger='change', "
+            "which has no fire time."
+        ),
+    )
     fire_at_tz: str = Field(default="UTC", description="IANA tz id.")
     db_profile: str
     database: str | None = Field(
@@ -82,6 +89,14 @@ class ScheduleCreateRequest(BaseModel):
             "Optional croniter expression for recurring schedules. NULL "
             "keeps one-shot semantics. Example: '0 */6 * * *' for every "
             "six hours."
+        ),
+    )
+    trigger: Literal["time", "change"] = Field(
+        default="time",
+        description=(
+            "'time' fires when fire_at_local elapses (default). 'change' "
+            "has no fire time — it watches the scope and auto-runs when a "
+            "new asset appears there (fired by the post-sync dispatcher)."
         ),
     )
 
@@ -187,7 +202,17 @@ def list_schedules(
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_schedule(body: ScheduleCreateRequest) -> dict[str, Any]:
     s = _store()
-    fire_at_utc = _parse_fire_at(body.fire_at_local, body.fire_at_tz)
+    # Change watchers have no fire time — store a harmless placeholder
+    # (now); claim_due_schedule never selects trigger='change' rows.
+    if body.trigger == "change":
+        fire_at_utc = time.time()
+    else:
+        if not body.fire_at_local.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="fire_at_local is required for a time-based schedule.",
+            )
+        fire_at_utc = _parse_fire_at(body.fire_at_local, body.fire_at_tz)
     cron_expr = _validate_cron_expr(body.cron_expr)
     sid = s.create_scheduled_run(
         name=body.name,
@@ -201,6 +226,7 @@ def create_schedule(body: ScheduleCreateRequest) -> dict[str, Any]:
         review_strategy=body.review_strategy,
         kind=body.kind,
         cron_expr=cron_expr,
+        trigger=body.trigger,
     )
     return _serialise(s.get_scheduled_run(sid))
 
