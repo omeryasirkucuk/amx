@@ -1,21 +1,11 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, XCircle } from "lucide-react";
+import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 
 import { Card, CardBody, CardHeader } from "../../components/Card";
-import {
-  AlertDialog,
-  Badge,
-  Button,
-  Field,
-  Input,
-  Select,
-} from "../../components/ui";
+import { Badge, Button, Field, Input, Select } from "../../components/ui";
 import { apiFetch } from "../../lib/api";
-
-type Side = "docs" | "code" | "assets";
-
-const SIDES: Side[] = ["docs", "code", "assets"];
+import EmbeddingHealth, { SIDES, type Side, type SideStatus } from "./EmbeddingHealth";
 
 interface KindDescriptor {
   id: string;
@@ -46,22 +36,6 @@ interface EmbeddingState {
   api_key: string;
   base_url: string;
   is_configured: boolean;
-}
-
-interface CollectionStatus {
-  name: string;
-  count: number;
-  embedding_provider: string;
-  embedding_model: string;
-  stale: boolean;
-}
-
-interface SideStatus {
-  collections: CollectionStatus[];
-  stale: boolean;
-  current_provider?: string;
-  current_model?: string;
-  error?: string;
 }
 
 const SECRET_PLACEHOLDER = "********";
@@ -102,12 +76,10 @@ export default function EmbeddingsTab() {
   const status = statusQuery.data;
 
   return (
-    <EmbeddingPanel
-      kinds={kinds}
-      presets={presets}
-      initial={settings}
-      status={status}
-    />
+    <div className="flex flex-col gap-4">
+      <EmbeddingPanel kinds={kinds} presets={presets} initial={settings} />
+      <EmbeddingHealth status={status} loading={statusQuery.isPending} />
+    </div>
   );
 }
 
@@ -115,10 +87,9 @@ interface PanelProps {
   kinds: KindDescriptor[];
   presets: Preset[];
   initial: Record<Side, EmbeddingState>;
-  status?: Record<Side, SideStatus>;
 }
 
-function EmbeddingPanel({ kinds, presets, initial, status }: PanelProps) {
+function EmbeddingPanel({ kinds, presets, initial }: PanelProps) {
   const qc = useQueryClient();
   // Single embedding form drives all three sides (docs / code / assets).
   // Seed from the docs side; the other two are assumed to be in sync
@@ -135,7 +106,6 @@ function EmbeddingPanel({ kinds, presets, initial, status }: PanelProps) {
   const [testResult, setTestResult] = useState<
     { ok: boolean; message: string; dim?: number } | null
   >(null);
-  const [rebuildConfirm, setRebuildConfirm] = useState(false);
 
   // Keep local state in sync when the upstream query refreshes.
   useEffect(() => {
@@ -192,29 +162,6 @@ function EmbeddingPanel({ kinds, presets, initial, status }: PanelProps) {
       setTestResult({ ok: false, message: error.message || "Test failed" }),
   });
 
-  const rebuildMutation = useMutation({
-    mutationFn: async () => {
-      const results = await Promise.all(
-        SIDES.map((side) =>
-          apiFetch<{ ok: boolean; message: string }>(
-            `/api/profiles/embedding/${side}/rebuild`,
-            { method: "POST", body: JSON.stringify({}) },
-          ).catch((err: Error) => ({
-            ok: false,
-            message: `${side}: ${err.message}`,
-          })),
-        ),
-      );
-      return results;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["embedding", "status"] });
-      qc.invalidateQueries({ queryKey: ["profiles", "docs"] });
-      qc.invalidateQueries({ queryKey: ["profiles", "code"] });
-    },
-    onSettled: () => setRebuildConfirm(false),
-  });
-
   const onPickPreset = (presetId: string) => {
     const preset = presets.find((p) => p.id === presetId);
     if (preset) setBaseUrl(preset.base_url);
@@ -225,14 +172,6 @@ function EmbeddingPanel({ kinds, presets, initial, status }: PanelProps) {
     if (needsModel && !model.trim()) return false;
     return true;
   })();
-
-  // Aggregate status across all sides: total chunks across every
-  // collection + stale flag if ANY side is mis-aligned with the
-  // active embedding triple.
-  const allCollections = SIDES.flatMap((side) => status?.[side]?.collections ?? []);
-  const totalChunks = allCollections.reduce((acc, c) => acc + (c.count || 0), 0);
-  const collectionCount = allCollections.length;
-  const isStale = SIDES.some((side) => status?.[side]?.stale);
 
   return (
     <Card className="max-w-2xl">
@@ -376,60 +315,7 @@ function EmbeddingPanel({ kinds, presets, initial, status }: PanelProps) {
             <Badge tone="critical">{(saveMutation.error as Error).message}</Badge>
           )}
         </div>
-
-        {isStale && (
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
-            <div className="flex items-start gap-2">
-              <AlertTriangle size={14} className="mt-0.5 text-amber-500" />
-              <div className="flex-1">
-                <div className="font-medium">Vectors are stale</div>
-                <div className="text-xs text-ink-dim">
-                  {collectionCount} collection
-                  {collectionCount === 1 ? "" : "s"} ·{" "}
-                  {totalChunks.toLocaleString()} chunks embedded with a different
-                  provider. Rebuild to re-embed every RAG store under the active
-                  settings.
-                </div>
-                <div className="mt-2">
-                  <Button
-                    variant="secondary"
-                    onClick={() => setRebuildConfirm(true)}
-                    disabled={rebuildMutation.isPending}
-                  >
-                    {rebuildMutation.isPending ? (
-                      <>
-                        <Loader2 size={13} className="mr-1 animate-spin" /> Rebuilding…
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw size={13} className="mr-1" /> Rebuild all
-                      </>
-                    )}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
       </CardBody>
-
-      <AlertDialog
-        open={rebuildConfirm}
-        title="Rebuild every RAG store?"
-        description={
-          <span>
-            Drops the existing Chroma collections (docs, code, and assets) so
-            the next ingest / query / sync re-embeds with the active provider.
-            Existing chunks are deleted; re-ingestion is required. Tens of
-            seconds for catalogs of a few thousand chunks.
-          </span>
-        }
-        tone="danger"
-        confirmLabel="Rebuild all"
-        loading={rebuildMutation.isPending}
-        onConfirm={() => rebuildMutation.mutate()}
-        onClose={() => setRebuildConfirm(false)}
-      />
     </Card>
   );
 }

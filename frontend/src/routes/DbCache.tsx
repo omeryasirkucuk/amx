@@ -24,6 +24,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
+  AlertTriangle,
   CalendarPlus,
   DatabaseZap,
   ExternalLink,
@@ -357,6 +358,44 @@ export default function DbCache() {
   const freshnessProfiles = freshness?.profiles ?? [];
   const anySyncing = (freshness?.syncing_profile_count ?? 0) > 0;
 
+  // Catalog (docs-side) vector health. Two distinct degradations can
+  // silently break semantic search / concept lookups, and they need
+  // different fixes:
+  //   • stale     — vectors were embedded with a different model than the
+  //                 active one; a Rebuild re-embeds and fixes it.
+  //   • fell_back — the configured model can't be loaded (missing
+  //                 dependency) so a fallback runs instead; rebuilding
+  //                 won't help, the config/dependency must change first.
+  // Surface the right action here instead of burying it in Settings.
+  const embeddingStatusQ = useQuery<
+    Record<string, { stale?: boolean; fell_back?: boolean; fallback_reason?: string | null }>
+  >({
+    queryKey: ["embedding", "status"],
+    queryFn: () =>
+      apiFetch<Record<string, { stale?: boolean; fell_back?: boolean }>>(
+        "/api/profiles/embedding/status",
+      ),
+    staleTime: 60_000,
+  });
+  const docsEmbedding = embeddingStatusQ.data?.docs;
+  const embeddingsStale = Boolean(docsEmbedding?.stale);
+  const embeddingsFellBack = Boolean(docsEmbedding?.fell_back);
+  const rebuildEmbeddingsMut = useMutation({
+    mutationFn: () =>
+      apiFetch("/api/profiles/embedding/docs/rebuild", { method: "POST", body: "{}" }),
+    onSettled: () => {
+      embeddingStatusQ.refetch();
+      qc.invalidateQueries({ queryKey: ["embedding", "status"] });
+    },
+    onError: (e) =>
+      toast.push({
+        tone: "error",
+        title: e instanceof Error ? e.message : "Rebuild failed",
+      }),
+    onSuccess: () =>
+      toast.push({ tone: "success", title: "Embeddings rebuilt — semantic search restored." }),
+  });
+
   // ── Scheduled refreshes ───────────────────────────────────────────
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
@@ -671,6 +710,63 @@ export default function DbCache() {
           </div>
         }
       />
+
+      {embeddingsFellBack ? (
+        <div className="rounded-md border border-critical/40 bg-critical/10 px-4 py-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={16} className="mt-0.5 text-critical" />
+              <div className="text-sm">
+                <div className="font-medium">
+                  Semantic search is running on a fallback model
+                </div>
+                <div className="text-xs text-ink-dim">
+                  The configured embedding model couldn’t be loaded, so the
+                  catalog is indexed with the bundled default. Rebuilding won’t
+                  help — fix the model or its dependency in Settings first.
+                  {docsEmbedding?.fallback_reason && (
+                    <span className="mt-1 block font-mono text-[11px] text-critical">
+                      {docsEmbedding.fallback_reason}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => navigate("/settings?tab=embeddings")}
+            >
+              Open embedding settings
+            </Button>
+          </div>
+        </div>
+      ) : embeddingsStale ? (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={16} className="mt-0.5 text-amber-500" />
+              <div className="text-sm">
+                <div className="font-medium">Semantic search is degraded</div>
+                <div className="text-xs text-ink-dim">
+                  The catalog was indexed with a different embedding model than
+                  the active one. Concept search and /ask semantic lookups won’t
+                  work until the vectors are rebuilt under the active model.
+                </div>
+              </div>
+            </div>
+            <Button
+              variant="primary"
+              size="sm"
+              leadingIcon={<RefreshCw size={13} />}
+              loading={rebuildEmbeddingsMut.isPending}
+              onClick={() => rebuildEmbeddingsMut.mutate()}
+            >
+              {rebuildEmbeddingsMut.isPending ? "Rebuilding…" : "Rebuild embeddings"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         {(["schemas", "columns", "catalog"] as const).map((key) => {

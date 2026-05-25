@@ -222,3 +222,39 @@ def test_status_endpoint_returns_every_side(client, auth_headers, secret_store) 
     for side in ("docs", "code", "assets"):
         assert "collections" in body[side]
         assert "stale" in body[side]
+
+
+def test_status_endpoint_reports_enriched_health_fields(client, auth_headers, secret_store) -> None:
+    # Unified embedding management: every side reports configured-vs-active
+    # plus the single needs_rebuild verdict so the health panel / CTAs can
+    # act on it without re-deriving anything.
+    body = client.get("/api/profiles/embedding/status", headers=auth_headers).json()
+    for side in ("docs", "code", "assets"):
+        s = body[side]
+        for field in (
+            "configured_provider",
+            "configured_model",
+            "fell_back",
+            "fallback_reason",
+            "dependency_available",
+            "needs_rebuild",
+        ):
+            assert field in s, f"{side} missing {field}"
+        # needs_rebuild is the OR of stale and fell_back.
+        assert s["needs_rebuild"] == bool(s["stale"] or s["fell_back"])
+
+
+# ── POST /api/profiles/embedding/rebuild (rebuild-all) ─────────────────
+
+
+def test_rebuild_all_returns_aggregate_for_every_side(client, auth_headers, secret_store) -> None:
+    # Always 200 with a per-side result list; a side whose backend is
+    # unavailable is recorded in ``failed`` instead of aborting the others.
+    response = client.post("/api/profiles/embedding/rebuild", headers=auth_headers, json={})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "results" in body and "failed" in body and "ok" in body
+    sides = {r["side"] for r in body["results"]}
+    assert sides == {"docs", "code", "assets"}
+    # ``ok`` is True only when nothing failed.
+    assert body["ok"] == (not body["failed"])
