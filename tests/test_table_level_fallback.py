@@ -50,13 +50,23 @@ class _StubOrchestrator:
         # A non-empty map marks a (schema, table) as column-scoped, which
         # suppresses table-level coverage.
         self.column_overrides: dict[tuple[str, str], set[str]] = {}
+        self.missing_only = False
+
+    def _should_skip_table_level(self, profile: Any) -> bool:
+        """Delegate to the real method so the suppression logic is exercised
+        exactly as in production (column-scoped OR missing-only with an
+        existing comment)."""
+        from amx.agents.orchestrator import Orchestrator
+
+        return Orchestrator._should_skip_table_level(self, profile)
 
 
-def _profile(*, columns: list[str]) -> TableProfile:
+def _profile(*, columns: list[str], existing_comment: str = "") -> TableProfile:
     return TableProfile(
         schema="public",
         name="orders",
         asset_kind=AssetKind.TABLE,
+        existing_comment=existing_comment,
         columns=[ColumnProfile(name=c, dtype="TEXT", nullable=True) for c in columns],
     )
 
@@ -185,6 +195,64 @@ class TestFallbackHonorsNAlternatives:
         )
         assert not any(s.source == "fallback" for s in out), (
             "Column-scoped run must not inject a table-level fallback."
+        )
+
+    def test_missing_only_skips_table_level_when_table_already_commented(self) -> None:
+        """missing-only run over a table that already has a real comment:
+        the table-level description must NOT be regenerated — only the
+        missing columns. (The user's bug: a Watching schedule re-described
+        an already-documented table every time a new column appeared.)"""
+        orch = _StubOrchestrator(n_alternatives=3)
+        orch.missing_only = True
+        profile = _profile(
+            columns=["test2"],
+            existing_comment="Client address master data with email contacts.",
+        )
+        existing = [
+            MetadataSuggestion(
+                schema="public",
+                table="orders",
+                column=None,  # model emitted a table-level anyway
+                suggestions=["t1", "t2", "t3"],
+                confidence=Confidence.HIGH,
+                reasoning="seeded",
+                source="llm",
+            ),
+            MetadataSuggestion(
+                schema="public",
+                table="orders",
+                column="test2",
+                suggestions=["c1", "c2", "c3"],
+                confidence=Confidence.MEDIUM,
+                reasoning="seeded",
+                source="llm",
+            ),
+        ]
+        out = _ensure(orch, profile, existing)
+        assert all(s.column is not None for s in out), (
+            "missing-only over an already-commented table must keep no table-level row."
+        )
+
+    def test_missing_only_keeps_table_level_when_comment_absent(self) -> None:
+        """missing-only run where the table has NO comment: the table-level
+        description IS still produced (it is genuinely missing)."""
+        orch = _StubOrchestrator(n_alternatives=3)
+        orch.missing_only = True
+        profile = _profile(columns=["test2"], existing_comment="")
+        existing = [
+            MetadataSuggestion(
+                schema="public",
+                table="orders",
+                column=None,
+                suggestions=["t1", "t2", "t3"],
+                confidence=Confidence.HIGH,
+                reasoning="seeded",
+                source="llm",
+            ),
+        ]
+        out = _ensure(orch, profile, existing)
+        assert any(s.column is None for s in out), (
+            "A missing table comment must still be generated under missing-only."
         )
 
     def test_no_fallback_when_model_succeeded(self) -> None:
