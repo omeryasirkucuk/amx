@@ -46,6 +46,10 @@ class _StubOrchestrator:
 
     def __init__(self, n_alternatives: int = 3) -> None:
         self.llm = _StubLLM(cfg=_StubLLMCfg(n_alternatives=n_alternatives))
+        # Mirrors the real Orchestrator (initialised empty in __init__).
+        # A non-empty map marks a (schema, table) as column-scoped, which
+        # suppresses table-level coverage.
+        self.column_overrides: dict[tuple[str, str], set[str]] = {}
 
 
 def _profile(*, columns: list[str]) -> TableProfile:
@@ -146,6 +150,42 @@ class TestFallbackHonorsNAlternatives:
         table_row = next(s for s in out if s.column is None)
         assert "3" in (table_row.reasoning or "")
         assert "fallback" in (table_row.reasoning or "").lower()
+
+    def test_column_scoped_run_drops_and_skips_table_level(self) -> None:
+        """Column-scoped run: a table-level suggestion the model emitted
+        must be dropped, and no table-level fallback injected — generating
+        a table comment when only a column was requested wastes tokens and
+        clobbers the existing table description."""
+        orch = _StubOrchestrator(n_alternatives=3)
+        orch.column_overrides = {("public", "orders"): {"country"}}
+        profile = _profile(columns=["country"])
+        existing = [
+            MetadataSuggestion(
+                schema="public",
+                table="orders",
+                column=None,  # stray table-level the model emitted anyway
+                suggestions=["t1", "t2", "t3"],
+                confidence=Confidence.HIGH,
+                reasoning="seeded",
+                source="llm",
+            ),
+            MetadataSuggestion(
+                schema="public",
+                table="orders",
+                column="country",
+                suggestions=["c1", "c2", "c3"],
+                confidence=Confidence.HIGH,
+                reasoning="seeded",
+                source="llm",
+            ),
+        ]
+        out = _ensure(orch, profile, existing)
+        assert all(s.column is not None for s in out), (
+            "Column-scoped run must contain no table-level (column=None) rows."
+        )
+        assert not any(s.source == "fallback" for s in out), (
+            "Column-scoped run must not inject a table-level fallback."
+        )
 
     def test_no_fallback_when_model_succeeded(self) -> None:
         """The fallback path must NOT fire when the model returned a
