@@ -1574,6 +1574,20 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "Error message when status='failed'. NULL on success and on "
             "schedules that have not fired yet."
         ),
+        "trigger": (
+            "Firing mechanism: 'time' (default — the tick engine fires it "
+            "when fire_at_utc elapses) or 'change' (the post-sync dispatcher "
+            "fires it when a new asset appears under the watched scope). "
+            "Change schedules are excluded from the time-based claim and "
+            "carry a placeholder fire_at_utc that is never used."
+        ),
+        "last_checked_at": (
+            "Change-trigger watermark: UTC epoch up to which this schedule "
+            "has already evaluated new assets. The dispatcher fires only for "
+            "catalog_entities whose first_synced_at exceeds it, then advances "
+            "it, so a re-sync of the same assets never re-fires. NULL on "
+            "time-based schedules."
+        ),
     },
     # ── apply_events (local only) ─────────────────────────────────────────
     "apply_events": {
