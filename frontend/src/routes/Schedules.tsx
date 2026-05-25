@@ -114,6 +114,13 @@ function NewScheduleDialog({
 }: NewScheduleDialogProps) {
   const isEdit = Boolean(editing);
   const toast = useToast();
+  // Trigger type: a 'time' schedule fires at fire_at_local; a 'change'
+  // watcher has no fire time and auto-runs when a new asset appears under
+  // the watched scope.
+  const [trigger, setTrigger] = useState<"time" | "change">(
+    editing?.trigger === "change" ? "change" : "time",
+  );
+  const isChange = trigger === "change";
   const [name, setName] = useState(editing?.name ?? "");
   const [fireAtLocal, setFireAtLocal] = useState(
     editing?.fire_at_local ?? defaultLocalDatetime(),
@@ -219,7 +226,9 @@ function NewScheduleDialog({
   function buildScope(): Record<string, unknown> {
     return {
       ...picksToScopeJson(scopePicks),
-      missing_only: missingOnly,
+      // A change watcher only ever generates for the new (missing) assets,
+      // so missing_only is implicit; for time schedules it's the checkbox.
+      missing_only: isChange ? true : missingOnly,
       deep_first: deepFirst,
     };
   }
@@ -235,7 +244,9 @@ function NewScheduleDialog({
       // mode to keep the existing fire time even if it has slipped
       // into the past while the user was reading the dialog;
       // they'll explicitly pick a new time if they want to re-arm.
-      if (!isEdit) {
+      // A change watcher has no fire time, so the past-time guard only
+      // applies to time-based schedules.
+      if (!isEdit && !isChange) {
         const picked = new Date(fireAtLocal).getTime();
         if (Number.isFinite(picked) && picked <= Date.now()) {
           setError(
@@ -247,7 +258,9 @@ function NewScheduleDialog({
       }
       mutation.mutate({
         name: name.trim(),
-        fire_at_local: fireAtLocal,
+        // Change watchers send no fire time; the server stores a
+        // placeholder and never uses it.
+        fire_at_local: isChange ? "" : fireAtLocal,
         fire_at_tz: fireAtTz,
         db_profile: dbProfile,
         // Persist the picker's ``database`` axis so the scheduler
@@ -259,6 +272,7 @@ function NewScheduleDialog({
         scope: buildScope(),
         llm_profile: llmProfile,
         review_strategy: reviewStrategy,
+        trigger,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -274,6 +288,38 @@ function NewScheduleDialog({
     >
       <form onSubmit={onSubmit} className="space-y-4">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <Field
+            label="Trigger"
+            className="md:col-span-2"
+            hint={
+              isChange
+                ? "Runs automatically when a new asset appears under the watched scope — detected after a sync. No fire time."
+                : "Fires once (or on a recurrence) at the date/time you pick."
+            }
+          >
+            <div className="inline-flex rounded-md border border-border p-0.5">
+              <button
+                type="button"
+                onClick={() => setTrigger("time")}
+                className={
+                  "rounded px-3 py-1 text-sm transition " +
+                  (!isChange ? "bg-accent text-white" : "text-ink-dim hover:text-ink")
+                }
+              >
+                On a schedule
+              </button>
+              <button
+                type="button"
+                onClick={() => setTrigger("change")}
+                className={
+                  "rounded px-3 py-1 text-sm transition " +
+                  (isChange ? "bg-accent text-white" : "text-ink-dim hover:text-ink")
+                }
+              >
+                When new assets appear
+              </button>
+            </div>
+          </Field>
           <Field label="Name" required>
             <Input
               value={name}
@@ -334,27 +380,31 @@ function NewScheduleDialog({
               ))}
             </Select>
           </Field>
-          <Field
-            label="Fire at (local)"
-            required
-            hint={isEdit ? undefined : "Must be in the future"}
-          >
-            <Input
-              type="datetime-local"
-              value={fireAtLocal}
-              onChange={(e) => setFireAtLocal(e.target.value)}
-              min={isEdit ? undefined : nowLocalDatetime()}
-              required
-            />
-          </Field>
-          <Field label="Timezone" hint="IANA, e.g. Europe/Istanbul">
-            <Input
-              value={fireAtTz}
-              onChange={(e) => setFireAtTz(e.target.value)}
-              placeholder="Europe/Istanbul"
-              required
-            />
-          </Field>
+          {!isChange && (
+            <>
+              <Field
+                label="Fire at (local)"
+                required
+                hint={isEdit ? undefined : "Must be in the future"}
+              >
+                <Input
+                  type="datetime-local"
+                  value={fireAtLocal}
+                  onChange={(e) => setFireAtLocal(e.target.value)}
+                  min={isEdit ? undefined : nowLocalDatetime()}
+                  required
+                />
+              </Field>
+              <Field label="Timezone" hint="IANA, e.g. Europe/Istanbul">
+                <Input
+                  value={fireAtTz}
+                  onChange={(e) => setFireAtTz(e.target.value)}
+                  placeholder="Europe/Istanbul"
+                  required
+                />
+              </Field>
+            </>
+          )}
           <Field label="LLM profile" required>
             <Select
               value={llmProfile}
@@ -399,22 +449,24 @@ function NewScheduleDialog({
             />
           </Field>
           <div className="md:col-span-2 space-y-2">
-            <label className="flex items-start gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={missingOnly}
-                onChange={(e) => setMissingOnly(e.target.checked)}
-                className="mt-0.5"
-              />
-              <span className="text-sm">
-                <span className="font-medium">Only missing descriptions</span>
-                <span className="block text-xs text-ink-dim">
-                  Describe just the columns that lack a description. With
-                  review strategy “auto”, this auto-generates descriptions
-                  for new/undocumented columns each run.
+            {!isChange && (
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={missingOnly}
+                  onChange={(e) => setMissingOnly(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span className="text-sm">
+                  <span className="font-medium">Only missing descriptions</span>
+                  <span className="block text-xs text-ink-dim">
+                    Describe just the columns that lack a description. With
+                    review strategy “auto”, this auto-generates descriptions
+                    for new/undocumented columns each run.
+                  </span>
                 </span>
-              </span>
-            </label>
+              </label>
+            )}
             <label className="flex items-start gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -438,13 +490,22 @@ function NewScheduleDialog({
             {error}
           </p>
         )}
-        <p className="rounded-md border border-border bg-surface-muted px-3 py-2 text-xs text-ink-dim">
-          Heads-up — AMX is invocation-based. For this schedule to fire on
-          time, keep AMX/Studio open at fire time OR enable the background
-          daemon. At the AMX REPL prompt, run:{" "}
-          <code className="font-mono text-ink">/analyze schedule install-daemon</code>
-          .
-        </p>
+        {isChange ? (
+          <p className="rounded-md border border-border bg-surface-muted px-3 py-2 text-xs text-ink-dim">
+            This watcher has no fire time. It checks for new assets whenever
+            a sync runs for this profile (manual Sync, a cache-refresh
+            schedule, or the background drift probe) and auto-runs only over
+            what newly appeared. Timeliness follows how often you sync.
+          </p>
+        ) : (
+          <p className="rounded-md border border-border bg-surface-muted px-3 py-2 text-xs text-ink-dim">
+            Heads-up — AMX is invocation-based. For this schedule to fire on
+            time, keep AMX/Studio open at fire time OR enable the background
+            daemon. At the AMX REPL prompt, run:{" "}
+            <code className="font-mono text-ink">/analyze schedule install-daemon</code>
+            .
+          </p>
+        )}
         <div className="flex items-center justify-end gap-2 pt-1">
           <Button variant="secondary" size="md" onClick={onClose} type="button">
             Cancel
@@ -735,10 +796,20 @@ export default function Schedules() {
       {
         id: "when",
         header: "When (local)",
-        sortValue: (row) => row.fire_at_local,
-        cell: (row) => (
-          <span className="text-ink">{row.fire_at_local}</span>
-        ),
+        sortValue: (row) => (row.trigger === "change" ? "" : row.fire_at_local),
+        cell: (row) =>
+          row.trigger === "change" ? (
+            <span className="inline-flex items-center gap-1 text-ink-dim">
+              <Badge tone="info">Watching</Badge>
+              {row.fired_at && (
+                <span className="text-xs">
+                  last fired {new Date(row.fired_at * 1000).toLocaleString()}
+                </span>
+              )}
+            </span>
+          ) : (
+            <span className="text-ink">{row.fire_at_local}</span>
+          ),
       },
       {
         id: "tz",
