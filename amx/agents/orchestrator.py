@@ -405,13 +405,13 @@ class Orchestrator:
         with a low-confidence fallback instead of silently dropping them.
         """
         out = list(merged)
-        # Column-scoped run: the caller asked for specific column(s), so the
-        # table-level description is out of scope. Drop any table-level
-        # suggestion the model emitted anyway and skip the fallback
-        # injection below — generating/writing a table comment here wastes
+        # Drop any table-level suggestion (and skip the fallback injection
+        # below) when this run must not touch the table description —
+        # column-scoped, or missing-only over a table that already has a
+        # comment. Otherwise generating/writing a table comment here wastes
         # tokens and clobbers the existing one.
-        column_scoped = (profile.schema, profile.name) in self.column_overrides
-        if column_scoped:
+        skip_table = self._should_skip_table_level(profile)
+        if skip_table:
             out = [s for s in out if s.column is not None]
         suggested_cols = {s.column for s in out if s.column is not None}
         has_table_level = any(s.column is None for s in out)
@@ -432,7 +432,7 @@ class Orchestrator:
         llm_cfg = getattr(getattr(self, "llm", None), "cfg", None)
         n_alts = max(1, int(getattr(llm_cfg, "n_alternatives", 1) or 1))
 
-        if not has_table_level and not column_scoped:
+        if not has_table_level and not skip_table:
             table_fallback_desc = (
                 f"Table {profile.name} contains business data for schema "
                 f"{profile.schema}. Auto-inference missed a reliable table "
@@ -611,6 +611,27 @@ class Orchestrator:
 
         return out, statuses
 
+    def _should_skip_table_level(self, profile: TableProfile) -> bool:
+        """Whether to suppress table-level description generation for this
+        table — so the agent doesn't spend tokens on, or overwrite, a
+        table comment the run didn't ask for.
+
+        True when EITHER:
+        * the run is column-scoped (``column_overrides`` names this table)
+          — only the picked columns are in scope; or
+        * ``missing_only`` is set and the table already has a real
+          (non-placeholder) comment — the table description is not
+          "missing", so a missing-only run must leave it alone and only
+          fill the column gaps.
+        """
+        if (profile.schema, profile.name) in self.column_overrides:
+            return True
+        if self.missing_only:
+            existing = (profile.existing_comment or "").strip()
+            if existing and not is_placeholder_description(existing):
+                return True
+        return False
+
     def _build_context(self, profile: TableProfile) -> AgentContext:
         db_name = self.db.cfg.database or self.db.cfg.project or self.db.cfg.catalog or "N/A"
         query_usage = self._build_query_usage_hints(profile)
@@ -661,9 +682,11 @@ class Orchestrator:
             asset_context=list(
                 self.asset_context_by_table.get((profile.schema.lower(), profile.name.lower()), [])
             ),
-            # Column-scoped runs (the user picked specific columns) must not
-            # spend tokens on — or overwrite — the table-level description.
-            skip_table_description=(profile.schema, profile.name) in self.column_overrides,
+            # Suppress table-level generation when the run didn't ask for
+            # it — column-scoped, or a missing-only run over a table that
+            # already has a description. Saves tokens and protects the
+            # existing table comment from being overwritten.
+            skip_table_description=self._should_skip_table_level(profile),
         )
 
     def _build_query_usage_hints(self, profile: TableProfile) -> dict[str, object]:
@@ -1222,10 +1245,11 @@ class Orchestrator:
             if not merged:
                 warn(f"Merge produced no output for {schema}.{table}.")
                 continue
-            # Column-scoped: drop any table-level suggestion the model
-            # emitted despite the suppressed prompt, so it isn't persisted
-            # or applied over the existing table comment.
-            if (schema, table) in self.column_overrides:
+            # Drop any table-level suggestion the model emitted despite the
+            # suppressed prompt, so it isn't persisted or applied over the
+            # existing table comment (column-scoped, or missing-only over a
+            # table that already has a description).
+            if self._should_skip_table_level(profile):
                 merged = [s for s in merged if s.column is not None]
                 if not merged:
                     continue
