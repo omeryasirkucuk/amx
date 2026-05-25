@@ -186,8 +186,20 @@ class MiniLMEmbedding(EmbeddingFunction):
     relying on a silent default.
     """
 
-    name = "minilm-l6-v2"
     dim = 384
+
+    @staticmethod
+    def name() -> str:
+        # chromadb >=1.5 calls ``embedding_function.name()`` (a METHOD) during
+        # its ef-conflict check on get/create. AMX governs embedding identity
+        # via collection metadata (embedding_provider/model) + reconcile_identity,
+        # not chromadb's name check, and every AMX collection persisted its ef
+        # config name as "default". Returning "default" — the one value the
+        # check ignores — makes chromadb skip its conflict logic instead of
+        # raising a false "embedding function conflict". Previously ``name`` was
+        # a plain string class attribute that shadowed this method, so chromadb
+        # called a str and raised "'str' object is not callable".
+        return "default"
 
     def __init__(self) -> None:
         try:
@@ -223,7 +235,11 @@ class OpenAICompatibleEmbedding(EmbeddingFunction):
     provider rather than opaque retrieval failures.
     """
 
-    name = "openai-compatible"
+    @staticmethod
+    def name() -> str:
+        # See MiniLMEmbedding.name(): chromadb calls this as a method; return
+        # "default" so its ef-conflict check is skipped (AMX owns identity).
+        return "default"
 
     def __init__(
         self,
@@ -270,7 +286,11 @@ class SentenceTransformerEmbedding(EmbeddingFunction):
         pip install "amx-cli[local-embeddings]"
     """
 
-    name = "sentence-transformers"
+    @staticmethod
+    def name() -> str:
+        # See MiniLMEmbedding.name(): chromadb calls this as a method; return
+        # "default" so its ef-conflict check is skipped (AMX owns identity).
+        return "default"
 
     def __init__(self, *, model: str) -> None:
         if not model:

@@ -1546,11 +1546,19 @@ function DocProfileHealthLine({ name }: { name: string }) {
       : null;
   const parts: string[] = [];
   if (chunks > 0) {
+    // Genuinely indexed: report chunk count + when the ingest finished.
     parts.push(`📚 ${chunks.toLocaleString()} chunk${chunks === 1 ? "" : "s"}`);
+    if (ingested) parts.push(`indexed ${ingested}`);
+  } else if (ingested) {
+    // An ingest ran but the collection is empty (e.g. files were added
+    // after the last run, or none matched). Report this coherently —
+    // "not indexed yet" and "indexed just now" must never appear together.
+    parts.push("📚 0 chunks indexed");
+    parts.push(`last ran ${ingested}`);
   } else {
+    // No ingest has ever run.
     parts.push("📚 not indexed yet");
   }
-  if (ingested) parts.push(`indexed ${ingested}`);
   if (data.embedding_model) parts.push(`model ${data.embedding_model}`);
   const files = (data.local_files ?? []).filter(
     (entry): entry is DocProfileFile => !("__truncated__" in entry),
@@ -1700,6 +1708,20 @@ function DocProfilesSection() {
         label: `Ingesting ${vars.profile}${vars.refresh ? " (refresh)" : ""}`,
       }),
   });
+  // Reindex drops the docs collection and rebuilds it under the ACTIVE
+  // embedding model — the UI equivalent of `/docs reindex`. Needed after
+  // changing the docs embedding in Settings → Embeddings: a plain ingest
+  // keeps the old identity stamp and /ask retrieval stays blocked with an
+  // embedding-mismatch error.
+  const reindex = useMutation({
+    mutationFn: (profile: string) =>
+      apiFetch<{ job_id: string }>("/api/docs/reindex", {
+        method: "POST",
+        body: JSON.stringify({ profile }),
+      }),
+    onSuccess: (r, profile) =>
+      setActiveOp({ jobId: r.job_id, label: `Reindexing ${profile}` }),
+  });
 
   return (
     <>
@@ -1789,14 +1811,12 @@ function DocProfilesSection() {
                       </button>
                       <button
                         type="button"
-                        onClick={() =>
-                          ingest.mutate({ profile: p.name, refresh: true })
-                        }
-                        disabled={ingest.isPending || !!activeOp}
+                        onClick={() => reindex.mutate(p.name)}
+                        disabled={reindex.isPending || !!activeOp}
                         className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-surface-border disabled:opacity-50"
-                        title="Refresh: drop existing chunks for these sources before re-ingesting"
+                        title="Reindex: drop the docs index and rebuild it under the current embedding model (run after changing the docs embedding)"
                       >
-                        Re-ingest
+                        Reindex
                       </button>
                       <button
                         type="button"
