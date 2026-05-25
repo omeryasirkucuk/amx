@@ -25,6 +25,7 @@ from amx.utils.console import (
     ask,
     ask_choice,
     ask_password,
+    confirm,
     error,
     heading,
     info,
@@ -33,6 +34,19 @@ from amx.utils.console import (
 )
 
 Side = Literal["docs", "code"]
+
+#: Every embeddable side for the status/rebuild actions. The provider
+#: picker above still operates on docs/code only (assets follow the docs
+#: model in practice), but health + rebuild cover all three stores.
+_ALL_SIDES = ("docs", "code", "assets")
+_SIDE_ALIASES = {
+    "docs": "docs",
+    "doc": "docs",
+    "rag": "docs",
+    "code": "code",
+    "assets": "assets",
+    "asset": "assets",
+}
 
 # ``amx.search.embeddings`` pulls in chromadb at import time, which
 # we don't want to load on every CLI launch. Mirror the constant
@@ -292,12 +306,119 @@ def _apply_kind(cfg: AMXConfig, side: Side, head: str, rest: list[str]) -> None:
     )
 
 
+_SIDE_TITLE = {"docs": "Catalog / docs", "code": "Code", "assets": "Assets"}
+
+
+def _compact_label(provider: str, model: str) -> str:
+    """Table-friendly identity: the model id is what matters, so show it
+    when present and fall back to the provider (e.g. bare ``minilm``)."""
+    m = (model or "").strip()
+    p = (provider or "").strip()
+    label = m or p or "—"
+    return label if len(label) <= 26 else label[:25] + "…"
+
+
+def cmd_embeddings_status(cfg: AMXConfig) -> None:
+    """Print the health table: configured vs running model, vector count,
+    and the per-side verdict (OK / Stale / Fallback)."""
+    from amx.rag_core.embedding_health import all_status
+
+    statuses = all_status(cfg)
+    heading("Embedding health")
+    info(f"{'Store':<16}{'Configured':<28}{'Running':<28}{'Chunks':>8}  Status")
+    any_fallback = False
+    any_stale = False
+    for side in _ALL_SIDES:
+        s = statuses.get(side, {})
+        if s.get("error"):
+            info(f"{_SIDE_TITLE[side]:<16}{s['error']}")
+            continue
+        configured = _compact_label(
+            s.get("configured_provider", ""), s.get("configured_model", "")
+        )
+        running = _compact_label(s.get("current_provider", ""), s.get("current_model", ""))
+        chunks = sum(int(c.get("count") or 0) for c in s.get("collections", []))
+        if s.get("fell_back"):
+            verdict = "FALLBACK"
+            any_fallback = True
+        elif s.get("stale"):
+            verdict = "stale"
+            any_stale = True
+        else:
+            verdict = "ok"
+        info(f"{_SIDE_TITLE[side]:<16}{configured:<28}{running:<28}{chunks:>8}  {verdict}")
+
+    if any_fallback:
+        warn("")
+        warn(
+            "A configured model could not be loaded, so that store is running "
+            "the bundled default. Rebuilding won't help — install the dependency "
+            "or pick an available model first."
+        )
+        for side in _ALL_SIDES:
+            reason = statuses.get(side, {}).get("fallback_reason")
+            if reason:
+                warn(f"  {_SIDE_TITLE[side]}: {reason}")
+    if any_stale:
+        info("")
+        info("Some vectors are stale — run /embeddings rebuild to re-embed under the active model.")
+
+
+def cmd_embeddings_rebuild(cfg: AMXConfig, rest: list[str]) -> None:
+    """Clear vector collections so the next ingest/query re-embeds under
+    the active provider. ``rebuild`` or ``rebuild all`` does every store;
+    ``rebuild <side>`` does one."""
+    from amx.rag_core.embedding_health import (
+        EmbeddingBackendUnavailable,
+        rebuild_all,
+        rebuild_side,
+    )
+
+    target = (rest[0] if rest else "all").lower().strip()
+    if target in {"all", ""}:
+        if not confirm(
+            "Rebuild every RAG store (docs, code, assets)? Existing vectors are "
+            "dropped and must be re-ingested.",
+            default=False,
+        ):
+            info("Cancelled.")
+            return
+        result = rebuild_all(cfg)
+        for r in result.get("results", []):
+            if r.get("ok"):
+                success(f"{r['side']}: {r.get('message', 'rebuilt')}")
+            else:
+                error(f"{r['side']}: {r.get('error', 'failed')}")
+        (success if result.get("ok") else warn)(result.get("message", "done"))
+        return
+
+    side = _SIDE_ALIASES.get(target)
+    if side is None:
+        error(f"Unknown side {target!r}. Expected one of {_ALL_SIDES} or 'all'.")
+        return
+    if not confirm(
+        f"Rebuild the {_SIDE_TITLE[side]} store? Existing vectors are dropped "
+        "and must be re-ingested.",
+        default=False,
+    ):
+        info("Cancelled.")
+        return
+    try:
+        result = rebuild_side(side, cfg)
+    except EmbeddingBackendUnavailable as exc:
+        error(str(exc))
+        return
+    success(result.get("message", f"Rebuilt {side}."))
+
+
 def cmd_embeddings(cfg: AMXConfig, rest: list[str]) -> None:
     """Show or change the search-index embedding providers.
 
     Usage (inside /search namespace)::
 
         /embeddings                              # show both sides + interactive picker
+        /embeddings status                       # health table for every store
+        /embeddings rebuild [side|all]           # re-embed one store or all of them
         /embeddings docs                         # show docs side + interactive picker
         /embeddings code                         # show code side + interactive picker
         /embeddings docs minilm                  # switch docs to MiniLM (Chroma default)
@@ -315,6 +436,14 @@ def cmd_embeddings(cfg: AMXConfig, rest: list[str]) -> None:
     other provider that exposes the OpenAI ``/embeddings`` shape — the
     user just plugs in the matching ``base_url`` and ``api_key``.
     """
+    action = (rest[0] or "").lower().strip() if rest else ""
+    if action == "status":
+        cmd_embeddings_status(cfg)
+        return
+    if action == "rebuild":
+        cmd_embeddings_rebuild(cfg, rest[1:])
+        return
+
     side, rest = _pick_side(rest)
     if side is None:
         return

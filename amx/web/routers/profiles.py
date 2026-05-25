@@ -637,180 +637,11 @@ def test_embedding(
     return {"ok": True, "message": f"OK — embedded one sample in {dim} dimensions.", "dim": dim}
 
 
-def _collection_status_for_side(side: str, cfg: AMXConfig) -> dict[str, Any]:
-    """Inspect persisted collections to detect stale-vector state.
-
-    Returns the per-collection ``provider``/``model``/``count`` plus a
-    ``stale`` flag. Stale means the collection's metadata recorded a
-    different provider/model than what ``cfg.embedding_{side}`` now
-    resolves to, so vectors must be re-embedded.
-    """
-    from pathlib import Path
-
-    try:
-        import chromadb
-    except Exception:
-        return {"collections": [], "stale": False, "error": "chromadb not installed"}
-
-    persist = str(Path.home() / ".amx" / "chroma_db")
-    try:
-        client = chromadb.PersistentClient(path=persist)
-    except Exception as exc:
-        return {"collections": [], "stale": False, "error": f"{exc.__class__.__name__}: {exc}"}
-
-    from amx.rag_core.embedding_resolver import resolve_side
-
-    prefix = {"docs": "amx_search", "assets": "amx_assets", "code": "amx_code"}.get(
-        side, "amx_search"
-    )
-    resolved = resolve_side(side, cfg)
-    active_provider = resolved.active_provider
-    active_model = resolved.active_model
-
-    collections: list[dict[str, Any]] = []
-    stale = False
-    for coll in client.list_collections():
-        name = getattr(coll, "name", "")
-        if not name.startswith(prefix):
-            continue
-        try:
-            meta = dict(coll.metadata or {})
-        except Exception:
-            meta = {}
-        recorded_provider = str(meta.get("embedding_provider") or "")
-        recorded_model = str(meta.get("embedding_model") or "")
-        try:
-            count = int(coll.count())
-        except Exception:
-            count = 0
-        # An empty collection (count 0) has no vectors to be stale —
-        # flagging it produces a false "Vectors are stale" warning from
-        # leftover/legacy empty collections (e.g. the pre-per-profile
-        # ``amx_search`` shell). Only a populated collection whose
-        # recorded identity differs from the active one is truly stale.
-        is_stale = bool(
-            recorded_provider
-            and recorded_model
-            and count > 0
-            and (recorded_provider != active_provider or recorded_model != active_model)
-        )
-        if is_stale:
-            stale = True
-        collections.append(
-            {
-                "name": name,
-                "count": count,
-                "embedding_provider": recorded_provider,
-                "embedding_model": recorded_model,
-                "stale": is_stale,
-            }
-        )
-    return {
-        "collections": collections,
-        "stale": stale,
-        "current_provider": active_provider,
-        "current_model": active_model,
-        # Enriched (unified embedding management): configured vs actually
-        # running, so the UI can show "configured X but running Y" instead
-        # of a silent substitution. ``needs_rebuild`` is the single verdict
-        # the panel/CTA act on: stale vectors OR a silent fallback.
-        "configured_provider": resolved.configured_provider,
-        "configured_model": resolved.configured_model,
-        "fell_back": resolved.fell_back,
-        "fallback_reason": resolved.fallback_reason,
-        "dependency_available": resolved.dependency_available,
-        "needs_rebuild": bool(stale or resolved.fell_back),
-    }
-
-
 @router.get("/embedding/status")
 def get_embedding_status(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
-    return {side: _collection_status_for_side(side, cfg) for side in _EMBEDDING_SIDES}
+    from amx.rag_core.embedding_health import all_status
 
-
-def _rebuild_one_side(side: str, cfg: AMXConfig, profile_filter: str | None) -> dict[str, Any]:
-    """Clear one side's vector collections so the next query/ingest
-    re-embeds under the active provider. Raises ``HTTPException`` when
-    the side's RAG backend is unavailable. Pulled out of the endpoint so
-    the rebuild-all endpoint can drive every side through one code path.
-    """
-    if side == "docs":
-        try:
-            from amx.search.catalog import SearchCatalog
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Docs catalog unavailable: {exc.__class__.__name__}: {exc}",
-            ) from exc
-        catalog = SearchCatalog.from_history_store()
-        if catalog is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Docs catalog is not initialised; run /sync first.",
-            )
-        rebuilt: list[str] = []
-        targets = [profile_filter] if profile_filter else sorted(cfg.db_profiles.keys()) or [""]
-        for db_profile in targets:
-            try:
-                catalog.rebuild_profile(db_profile or "")
-                rebuilt.append(db_profile or "(default)")
-            except Exception as exc:
-                log.warning("rebuild_profile failed for %r: %s", db_profile, exc)
-        return {
-            "ok": True,
-            "side": "docs",
-            "rebuilt": rebuilt,
-            "message": f"Rebuilt {len(rebuilt)} docs collection(s).",
-        }
-
-    if side == "assets":
-        try:
-            from amx.assets.rag import AssetRAGStore
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Asset RAG unavailable: {exc.__class__.__name__}: {exc}",
-            ) from exc
-        try:
-            store = AssetRAGStore(cfg=cfg)
-            store.reset_collection()
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Asset collection reset failed: {exc.__class__.__name__}: {exc}",
-            ) from exc
-        return {
-            "ok": True,
-            "side": "assets",
-            "cleared": True,
-            "message": (
-                "Cleared the assets collection; run /db assets reindex to "
-                "re-embed under the active provider."
-            ),
-        }
-
-    # side == "code"
-    try:
-        from amx.codebase.code_rag import delete_code_collection
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Code RAG unavailable: {exc.__class__.__name__}: {exc}",
-        ) from exc
-    cleared = bool(
-        delete_code_collection(source_filters=[profile_filter] if profile_filter else None)
-    )
-    return {
-        "ok": True,
-        "side": "code",
-        "cleared": cleared,
-        "message": (
-            "Cleared the code collection; the next /code query will re-embed "
-            "with the active provider."
-            if cleared
-            else "Code collection did not exist; nothing to clear."
-        ),
-    }
+    return all_status(cfg)
 
 
 @router.post("/embedding/rebuild")
@@ -823,33 +654,12 @@ def rebuild_all_embeddings(
     A per-side failure is recorded and the loop continues, so one
     unavailable backend doesn't abort the others — the response reports
     which sides succeeded. ``ok`` is True only when every side cleared.
-
-    Note: a rebuild re-embeds under the *active* provider. If a side has
-    silently fallen back (its configured model can't be built), rebuild
-    re-embeds under the fallback — it does not restore the configured
-    model. Fix the dependency/config first; the status endpoint's
-    ``fell_back`` flag is the signal for that.
     """
+    from amx.rag_core.embedding_health import rebuild_all
+
     body = body or {}
     profile_filter = (body.get("profile") or "").strip() or None
-    results: list[dict[str, Any]] = []
-    failed: list[str] = []
-    for side in _EMBEDDING_SIDES:
-        try:
-            results.append(_rebuild_one_side(side, cfg, profile_filter))
-        except HTTPException as exc:
-            failed.append(side)
-            results.append({"ok": False, "side": side, "error": str(exc.detail)})
-    return {
-        "ok": not failed,
-        "results": results,
-        "failed": failed,
-        "message": (
-            f"Rebuilt {len(_EMBEDDING_SIDES) - len(failed)}/{len(_EMBEDDING_SIDES)} sides."
-            if failed
-            else "Rebuilt every RAG store; re-ingest/query to re-embed under the active provider."
-        ),
-    }
+    return rebuild_all(cfg, profile_filter)
 
 
 @router.post("/embedding/{side}/rebuild")
@@ -864,10 +674,15 @@ def rebuild_embedding(
     Blocking — large catalogs take seconds to tens of seconds; jobs
     infrastructure is out of scope for the initial split.
     """
+    from amx.rag_core.embedding_health import EmbeddingBackendUnavailable, rebuild_side
+
     side = _check_side(side)
     body = body or {}
     profile_filter = (body.get("profile") or "").strip() or None
-    return _rebuild_one_side(side, cfg, profile_filter)
+    try:
+        return rebuild_side(side, cfg, profile_filter)
+    except EmbeddingBackendUnavailable as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 # ── Doc + Code profiles (path lists) ───────────────────────────────────
