@@ -150,3 +150,23 @@ def resolve_embedding(
         fallback_reason=None,
         dependency_available=True,
     )
+
+
+def _minilm_default() -> tuple[str, str, Any | None]:
+    return ("minilm", "minilm-l6-v2", None)
+
+
+def resolve_side(side: str, cfg: Any | None = None) -> ResolvedEmbedding:
+    """Resolve a side by name, applying that side's own default target.
+
+    A convenience dispatcher so callers (status endpoint, health panel,
+    CLI) get a full :class:`ResolvedEmbedding` — configured vs active +
+    fell_back — without knowing each side's default resolver. docs and
+    assets default to plain MiniLM; code defers to its jina-or-MiniLM
+    default. Unknown sides default to MiniLM.
+    """
+    if side == "code":
+        from amx.codebase.code_rag import _default_code_embedding
+
+        return resolve_embedding("code", cfg, default_resolver=_default_code_embedding)
+    return resolve_embedding(side, cfg, default_resolver=_minilm_default)

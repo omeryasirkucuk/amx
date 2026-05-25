@@ -131,6 +131,35 @@ def test_assets_wrapper_back_compat() -> None:
     assert out[0] == "minilm" and out[1] == "minilm-l6-v2"
 
 
+def test_resolve_side_docs_uses_minilm_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The side dispatcher applies the right default without the caller
+    knowing it — docs/assets default to plain MiniLM."""
+    from amx.rag_core.embedding_resolver import resolve_side
+
+    r = resolve_side("docs", _cfg("docs", kind="minilm"))
+    assert r.active_provider == "minilm"
+    assert r.fell_back is False
+
+
+def test_resolve_side_reports_fallback_honestly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The headline contract: a configured model that can't build is
+    reported as fell_back with active != configured — never a silent
+    swap."""
+    import amx.search.embeddings as emb
+    from amx.rag_core.embedding_resolver import resolve_side
+
+    monkeypatch.setattr(
+        emb,
+        "make_embedding_function",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("dep missing")),
+    )
+    r = resolve_side("assets", _cfg("assets", kind="sentence_transformers", model="x/y"))
+    assert r.configured_model == "x/y"
+    assert r.active_provider == "minilm"
+    assert r.fell_back is True
+    assert r.dependency_available is False
+
+
 def test_resolved_embedding_is_frozen() -> None:
     r = ResolvedEmbedding(
         side="docs",

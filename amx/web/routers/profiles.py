@@ -658,21 +658,14 @@ def _collection_status_for_side(side: str, cfg: AMXConfig) -> dict[str, Any]:
     except Exception as exc:
         return {"collections": [], "stale": False, "error": f"{exc.__class__.__name__}: {exc}"}
 
-    if side == "docs":
-        from amx.docs.rag import _resolve_docs_embedding
+    from amx.rag_core.embedding_resolver import resolve_side
 
-        active_provider, active_model, _ = _resolve_docs_embedding(cfg)
-        prefix = "amx_search"
-    elif side == "assets":
-        from amx.assets.rag import _resolve_assets_embedding
-
-        active_provider, active_model, _ = _resolve_assets_embedding(cfg)
-        prefix = "amx_assets"
-    else:
-        from amx.codebase.code_rag import _resolve_code_embedding
-
-        active_provider, active_model, _ = _resolve_code_embedding(cfg)
-        prefix = "amx_code"
+    prefix = {"docs": "amx_search", "assets": "amx_assets", "code": "amx_code"}.get(
+        side, "amx_search"
+    )
+    resolved = resolve_side(side, cfg)
+    active_provider = resolved.active_provider
+    active_model = resolved.active_model
 
     collections: list[dict[str, Any]] = []
     stale = False
@@ -690,9 +683,15 @@ def _collection_status_for_side(side: str, cfg: AMXConfig) -> dict[str, Any]:
             count = int(coll.count())
         except Exception:
             count = 0
+        # An empty collection (count 0) has no vectors to be stale —
+        # flagging it produces a false "Vectors are stale" warning from
+        # leftover/legacy empty collections (e.g. the pre-per-profile
+        # ``amx_search`` shell). Only a populated collection whose
+        # recorded identity differs from the active one is truly stale.
         is_stale = bool(
             recorded_provider
             and recorded_model
+            and count > 0
             and (recorded_provider != active_provider or recorded_model != active_model)
         )
         if is_stale:
@@ -711,6 +710,16 @@ def _collection_status_for_side(side: str, cfg: AMXConfig) -> dict[str, Any]:
         "stale": stale,
         "current_provider": active_provider,
         "current_model": active_model,
+        # Enriched (unified embedding management): configured vs actually
+        # running, so the UI can show "configured X but running Y" instead
+        # of a silent substitution. ``needs_rebuild`` is the single verdict
+        # the panel/CTA act on: stale vectors OR a silent fallback.
+        "configured_provider": resolved.configured_provider,
+        "configured_model": resolved.configured_model,
+        "fell_back": resolved.fell_back,
+        "fallback_reason": resolved.fallback_reason,
+        "dependency_available": resolved.dependency_available,
+        "needs_rebuild": bool(stale or resolved.fell_back),
     }
 
 
