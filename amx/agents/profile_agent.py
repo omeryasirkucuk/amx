@@ -52,7 +52,7 @@ Output rules:
 - Write every description and reasoning string in **clear, business-friendly American English**.
 - Use complete sentences ending with a period.
 - Length rule (CRITICAL — honour the user's verbosity preset): {description_length_rule}
-- Keep the response labels (`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`, `TABLE_DESCRIPTION_1`, etc.) verbatim.
+- Keep the response labels (`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`, {table_label}etc.) verbatim.
 
 Write descriptions assertively and directly (e.g. "Telephone extension number." or "Indicates the fax number.").
 Do NOT start descriptions with "This column likely represents" or "This column likely is".
@@ -83,12 +83,7 @@ DESCRIPTION_1: <most likely description>
 {self_decl_line_1}{desc_lines}
 CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <why you think so>
-
-Also include ONE table-level description block (even when processing column batches):
-TABLE_DESCRIPTION_1: <most likely table description>
-{table_desc_lines}
-TABLE_CONFIDENCE: <HIGH|MEDIUM|LOW>
-
+{table_description_block}
 Example style:
 COLUMN: account_ref
 DESCRIPTION_1: Account reference identifier.
@@ -103,6 +98,7 @@ def _build_system_prompt(
     style_profile: StyleProfile | None = None,
     emit_self_decl: bool = False,
     alternatives_mode: str = DEFAULT_ALTERNATIVES_MODE,
+    include_table_description: bool = True,
 ) -> str:
     """Build the system prompt dynamically for the requested number of alternatives.
 
@@ -149,6 +145,22 @@ def _build_system_prompt(
         )
         alternatives_length_reminder = ALTERNATIVES_LENGTH_RULE_REMINDER
     description_length_rule = length_rule(description_verbosity)
+    # Omit the table-level block entirely when the run is column-scoped —
+    # the caller only asked for specific column(s), so spending tokens on a
+    # table description (which would then overwrite the table comment) is
+    # waste. The block is the only place TABLE_DESCRIPTION is requested.
+    if include_table_description:
+        table_description_block = (
+            "\nAlso include ONE table-level description block (even when processing "
+            "column batches):\n"
+            "TABLE_DESCRIPTION_1: <most likely table description>\n"
+            f"{table_desc_lines}\n"
+            "TABLE_CONFIDENCE: <HIGH|MEDIUM|LOW>\n"
+        )
+        table_label = "`TABLE_DESCRIPTION_1`, "
+    else:
+        table_description_block = ""
+        table_label = ""
     return (
         _BASE_SYSTEM_PROMPT.format(
             description_length_rule=description_length_rule,
@@ -158,7 +170,8 @@ def _build_system_prompt(
             extra_items=extra_items,
             desc_lines=desc_lines,
             self_decl_line_1=self_decl_line_1,
-            table_desc_lines=table_desc_lines,
+            table_description_block=table_description_block,
+            table_label=table_label,
         ).strip()
         + "\n"
         + render_style_section(style_profile)
@@ -361,6 +374,7 @@ class ProfileAgent(BaseAgent):
             rag_context=ctx.rag_context,
             code_context=ctx.code_context,
             existing_metadata=ctx.existing_metadata,
+            skip_table_description=ctx.skip_table_description,
         )
 
     def collect_messages(self, ctx: AgentContext) -> list:
@@ -428,6 +442,7 @@ class ProfileAgent(BaseAgent):
             style_profile=self._style_profile,
             emit_self_decl=emit_self_decl,
             alternatives_mode=getattr(self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE),
+            include_table_description=not ctx.skip_table_description,
         )
         return [
             {"role": "system", "content": system},
