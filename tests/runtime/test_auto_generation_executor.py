@@ -27,11 +27,18 @@ class _FakeOrchestrator:
     def __init__(self, *a: Any, **k: Any) -> None:
         self.missing_only = k.get("missing_only")
         self.process_calls: list[tuple[str, str]] = []
+        # Record the auto_apply kwarg per call — the auto path must thread
+        # review_strategy='auto' into process_table so the per-table
+        # _auto_apply_branch writes to the DB + catalog cache. (The old
+        # design called apply_results() at the end, but with deferred
+        # results that filter never applied anything.)
+        self.auto_apply_calls: list[bool] = []
         self.applied = 0
         _FakeOrchestrator.last = self
 
-    def process_table(self, schema: str, table: str, **_k: Any) -> None:
+    def process_table(self, schema: str, table: str, **k: Any) -> None:
         self.process_calls.append((schema, table))
+        self.auto_apply_calls.append(bool(k.get("auto_apply")))
 
     def apply_results(self, results: Any = None) -> int:
         self.applied += 1
@@ -84,7 +91,9 @@ def test_auto_strategy_applies_results(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_common(monkeypatch)
     production_run_executor(1, _payload(missing_only=True, review_strategy="auto"))
 
-    assert _FakeOrchestrator.last.applied == 1  # apply_results called once
+    # 'auto' must thread auto_apply=True into every process_table call so
+    # the accepted description lands in the live DB AND the catalog cache.
+    assert _FakeOrchestrator.last.auto_apply_calls == [True]
 
 
 def test_manual_strategy_does_not_apply(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -93,7 +102,8 @@ def test_manual_strategy_does_not_apply(monkeypatch: pytest.MonkeyPatch) -> None
     _patch_common(monkeypatch)
     production_run_executor(1, _payload(review_strategy="manual"))
 
-    assert _FakeOrchestrator.last.applied == 0  # left in pending review
+    # 'manual' leaves results in pending review — no auto-apply.
+    assert _FakeOrchestrator.last.auto_apply_calls == [False]
 
 
 def test_deep_first_runs_deep_sync_before_generation(monkeypatch: pytest.MonkeyPatch) -> None:

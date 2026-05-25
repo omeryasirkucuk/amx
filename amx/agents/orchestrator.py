@@ -405,6 +405,14 @@ class Orchestrator:
         with a low-confidence fallback instead of silently dropping them.
         """
         out = list(merged)
+        # Column-scoped run: the caller asked for specific column(s), so the
+        # table-level description is out of scope. Drop any table-level
+        # suggestion the model emitted anyway and skip the fallback
+        # injection below — generating/writing a table comment here wastes
+        # tokens and clobbers the existing one.
+        column_scoped = (profile.schema, profile.name) in self.column_overrides
+        if column_scoped:
+            out = [s for s in out if s.column is not None]
         suggested_cols = {s.column for s in out if s.column is not None}
         has_table_level = any(s.column is None for s in out)
 
@@ -424,7 +432,7 @@ class Orchestrator:
         llm_cfg = getattr(getattr(self, "llm", None), "cfg", None)
         n_alts = max(1, int(getattr(llm_cfg, "n_alternatives", 1) or 1))
 
-        if not has_table_level:
+        if not has_table_level and not column_scoped:
             table_fallback_desc = (
                 f"Table {profile.name} contains business data for schema "
                 f"{profile.schema}. Auto-inference missed a reliable table "
@@ -653,6 +661,9 @@ class Orchestrator:
             asset_context=list(
                 self.asset_context_by_table.get((profile.schema.lower(), profile.name.lower()), [])
             ),
+            # Column-scoped runs (the user picked specific columns) must not
+            # spend tokens on — or overwrite — the table-level description.
+            skip_table_description=(profile.schema, profile.name) in self.column_overrides,
         )
 
     def _build_query_usage_hints(self, profile: TableProfile) -> dict[str, object]:
@@ -1055,6 +1066,23 @@ class Orchestrator:
                 with step_spinner(f"Profiling {schema}.{table}"):
                     profiles[table] = self.db.profile_table(schema, table, asset_kind=ak)
 
+        # Column scope: when the run targets specific columns, restrict each
+        # profile to those columns (chat mode does this in
+        # _filter_column_override; batch mode must too or it would describe
+        # — and bill for — every column plus the table). The table-level
+        # description is suppressed downstream via skip_table_description.
+        for table, prof in list(profiles.items()):
+            override_set = self.column_overrides.get((schema, table))
+            if override_set is None:
+                continue
+            prof.columns = [c for c in prof.columns if c.name in override_set]
+            if not prof.columns:
+                info(f"[Batch] Column scope: no matching columns on {schema}.{table}; skipping.")
+                del profiles[table]
+        tables = [t for t in tables if t in profiles]
+        if not profiles:
+            return []
+
         # Apply the missing-only filter in batch mode too. Tables fully
         # commented are dropped from the request set; tables with partial
         # coverage have their column list narrowed to the gaps before
@@ -1194,6 +1222,13 @@ class Orchestrator:
             if not merged:
                 warn(f"Merge produced no output for {schema}.{table}.")
                 continue
+            # Column-scoped: drop any table-level suggestion the model
+            # emitted despite the suppressed prompt, so it isn't persisted
+            # or applied over the existing table comment.
+            if (schema, table) in self.column_overrides:
+                merged = [s for s in merged if s.column is not None]
+                if not merged:
+                    continue
 
             result_id_map = self._save_merged_suggestions(merged, asset_kind=ak)
             reviewed = self._human_review(

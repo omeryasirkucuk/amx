@@ -226,6 +226,14 @@ class AgentContext:
     # from user (re-run):" block so the original DB/docs/code context
     # is preserved and only this guidance is layered on top.
     user_instructions: str = ""
+    # True when the run is column-scoped (the caller asked for specific
+    # column(s), not the whole table). The ProfileAgent then omits the
+    # table-level description from its prompt, and the orchestrator skips
+    # injecting / persisting / applying a table-level suggestion —
+    # generating a table comment when only a column was requested wastes
+    # tokens and clobbers the existing table description. Set by the
+    # orchestrator in ``_build_context`` from ``column_overrides``.
+    skip_table_description: bool = False
 
 
 def _user_instructions_block(ctx: AgentContext) -> str:

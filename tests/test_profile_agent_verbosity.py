@@ -118,3 +118,22 @@ def test_profile_agent_prompt_n_alternatives_one_omits_reminder() -> None:
     prompt as small as before the fix."""
     prompt = _build_system_prompt(1, description_verbosity="brief")
     assert ALTERNATIVES_LENGTH_RULE_REMINDER not in prompt
+
+
+def test_table_description_block_present_by_default() -> None:
+    """Whole-table runs still ask the model for a table-level description."""
+    prompt = _build_system_prompt(3)
+    assert "TABLE_DESCRIPTION_1" in prompt
+    assert "table-level description block" in prompt
+
+
+def test_table_description_block_omitted_when_column_scoped() -> None:
+    """Column-scoped runs (include_table_description=False) must NOT ask
+    for a table description — generating one wastes tokens and clobbers
+    the existing table comment."""
+    prompt = _build_system_prompt(3, include_table_description=False)
+    assert "TABLE_DESCRIPTION_1" not in prompt
+    assert "table-level description block" not in prompt
+    # Column instructions are still present.
+    assert "COLUMN:" in prompt
+    assert "DESCRIPTION_1" in prompt

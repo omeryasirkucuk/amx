@@ -294,7 +294,20 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
                     except Exception:  # noqa: BLE001
                         pass
                 try:
-                    orchestrator.process_table(schema, table, interactive_review=False)
+                    # auto_apply threads the review strategy into the
+                    # per-table dispatch: 'auto' takes the _auto_apply_branch
+                    # which accepts the top suggestion and writes it to BOTH
+                    # the live DB (COMMENT ON) and the catalog cache
+                    # (sync_review_decision) immediately. Without this the
+                    # table took the deferred branch (applied=False) and the
+                    # end-of-run apply step — which only writes already-applied
+                    # rows — silently applied nothing.
+                    orchestrator.process_table(
+                        schema,
+                        table,
+                        interactive_review=False,
+                        auto_apply=(review_strategy == "auto"),
+                    )
                 except Exception as exc:  # noqa: BLE001 - keep going on per-table errors
                     log.exception(
                         "production_run_executor: %s.%s failed under schedule #%s",
@@ -316,24 +329,13 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
             summary += f"; (+{len(per_table_errors) - 5} more)"
         raise RuntimeError(f"All {processed} table(s) in scope failed. {summary}")
 
-    # Apply policy. 'auto' writes the generated descriptions to the DB
-    # (COMMENT ON) right after generation — the unattended path that
-    # makes a scheduled run a true auto-generation. 'manual' leaves the
-    # results in pending review for a human to approve later.
-    if review_strategy == "auto":
-        try:
-            applied = orchestrator.apply_results()
-            log.info(
-                "production_run_executor: schedule #%s auto-applied %s description(s).",
-                schedule_id,
-                applied,
-            )
-        except Exception:
-            log.exception(
-                "production_run_executor: auto-apply failed for schedule #%s; "
-                "results remain in pending review.",
-                schedule_id,
-            )
+    # Apply policy. With 'auto' each table already wrote its accepted
+    # description to the live DB (COMMENT ON) and the catalog cache inside
+    # process_table's _auto_apply_branch — per-table so a mid-run crash
+    # still leaves finished tables applied. 'manual' leaves the results in
+    # pending review for a human to approve later. No end-of-run apply step
+    # is needed (the previous one filtered on the applied flag and, with
+    # the deferred branch, applied nothing).
 
 
 def _scope_column_overrides(
