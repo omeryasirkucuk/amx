@@ -36,6 +36,8 @@ import type {
   EdgeCardinality,
   TableNodeData,
 } from "../types";
+import { MoreVertical } from "lucide-react";
+
 import { lineageDeleteEdge, lineageEdgeStyle } from "../../lib/api";
 import { EdgeEditorPopover, type EdgeStylePatch } from "./EdgeEditorPopover";
 
@@ -340,12 +342,37 @@ function ColumnEdgeImpl({
             className="lcv-edge-label"
             style={{
               position: "absolute",
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              // Sit above the midpoint dot so the two don't overlap.
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY - 22}px)`,
               pointerEvents: "none",
             }}
           >
             {data.hoverLabel}
           </div>
+        </EdgeLabelRenderer>
+      )}
+      {/* Midpoint dot — Databricks-style affordance. Clicking opens the
+          edge "Lineage details" drawer (Canvas listens for the event). */}
+      {!showPopover && (
+        <EdgeLabelRenderer>
+          <button
+            type="button"
+            className="nodrag nopan lcv-edge-dot"
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              pointerEvents: "all",
+            }}
+            title="Lineage details"
+            onClick={(e) => {
+              e.stopPropagation();
+              window.dispatchEvent(
+                new CustomEvent("lcv:edgeDetails", { detail: { edgeId: id } }),
+              );
+            }}
+          >
+            <MoreVertical size={12} />
+          </button>
         </EdgeLabelRenderer>
       )}
       {showPopover && (

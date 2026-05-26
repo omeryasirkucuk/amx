@@ -83,6 +83,26 @@
   pointer-events: none;
 }
 
+/* Edge midpoint dot — Databricks-style affordance that opens the edge
+   "Lineage details" drawer. A small round chip centered on the path. */
+.lcv-edge-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--lcv-surface-raised);
+  border: 1px solid var(--lcv-border-strong);
+  color: var(--lcv-ink-muted);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+.lcv-edge-dot:hover {
+  border-color: var(--lcv-accent, #60a5fa);
+  color: var(--lcv-ink);
+}
+
 /* Handle dot — small disc colored by data type. */
 .lcv-handle {
   width: 8px;

@@ -61,6 +61,13 @@ export interface TableNodeData {
   /** Defaults to "full"; "name_only" marks a table discovered via
    *  native lineage fetch without read access (greyed, no drill-in). */
   metadataState?: "full" | "name_only";
+  /** Table owner display name (e.g. "Kucuk, Omer Yasir"), shown under
+   *  the header like Databricks. Populated by lineage fetch when known;
+   *  the owner row is omitted when absent. */
+  owner?: string;
+  /** Storage format label (e.g. "Delta") surfaced in the detail panel.
+   *  Optional — omitted when unknown. */
+  format?: string;
 }
 
 export interface LogoNodeData {

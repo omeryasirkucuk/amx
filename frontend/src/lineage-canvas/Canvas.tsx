@@ -52,6 +52,8 @@ import "reactflow/dist/style.css";
 import { AddTableModal } from "./components/AddTableModal";
 import { NativeFetchDialog } from "./components/NativeFetchDialog";
 import { AttributeTrackerPanel } from "./components/AttributeTrackerPanel";
+import { LineageDetailPanel } from "./components/LineageDetailPanel";
+import { EdgeDetailPanel } from "./components/EdgeDetailPanel";
 import { ColumnEdgeMarkerDefs, edgeTypes } from "./components/ColumnEdge";
 import { EdgeLegendChip } from "./components/EdgeLegendChip";
 import { SearchModal } from "./components/SearchModal";
@@ -126,6 +128,11 @@ function CanvasInner() {
   const [fetchOpen, setFetchOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [trackerOpen, setTrackerOpen] = useState(false);
+  // Right-hand inspector drawers (Databricks-style). At most one is open:
+  // a node click opens the lineage detail panel; an edge midpoint-dot
+  // click opens the edge "Lineage details" panel.
+  const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
+  const [detailEdgeId, setDetailEdgeId] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [sqlImportOpen, setSqlImportOpen] = useState(false);
@@ -1124,6 +1131,51 @@ function CanvasInner() {
       })),
     );
   }
+  // Open the lineage inspector for a table / asset node. Buckets keep
+  // their own expand-on-click behaviour; comments / operators / logos
+  // have no lineage detail, so they don't open the drawer.
+  const DETAIL_NODE_KINDS = new Set([
+    "table",
+    "notebook",
+    "query",
+    "stream",
+    "pipeline",
+    "streamlit_app",
+    "job",
+    "vector_search_index",
+    "dashboard",
+    "external",
+  ]);
+  function openNodeDetail(nodeId: string) {
+    const node = nodes.find((n) => n.id === nodeId);
+    if (!node || !DETAIL_NODE_KINDS.has(node.data.kind)) return;
+    setDetailEdgeId(null);
+    setDetailNodeId(nodeId);
+    focusNode(nodeId);
+  }
+
+  // Edge midpoint dots dispatch a window event (ColumnEdge can't reach
+  // Canvas state directly through ReactFlow's edge renderer).
+  useEffect(() => {
+    function onEdgeDetails(e: Event) {
+      const id = (e as CustomEvent<{ edgeId: string }>).detail?.edgeId;
+      if (!id) return;
+      setDetailNodeId(null);
+      setDetailEdgeId(id);
+    }
+    window.addEventListener("lcv:edgeDetails", onEdgeDetails);
+    return () => window.removeEventListener("lcv:edgeDetails", onEdgeDetails);
+  }, []);
+
+  const detailNode = useMemo(
+    () => (detailNodeId ? nodes.find((n) => n.id === detailNodeId) ?? null : null),
+    [detailNodeId, nodes],
+  );
+  const detailEdge = useMemo(
+    () => (detailEdgeId ? edges.find((e) => e.id === detailEdgeId) ?? null : null),
+    [detailEdgeId, edges],
+  );
+
   function highlightAttribute(nodeId: string, column: string) {
     setNodes((nds) =>
       nds.map((n) => {
@@ -1317,6 +1369,11 @@ function CanvasInner() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          onNodeClick={(_, node) => openNodeDetail(node.id)}
+          onPaneClick={() => {
+            setDetailNodeId(null);
+            setDetailEdgeId(null);
+          }}
           fitView
           fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}
@@ -1345,6 +1402,24 @@ function CanvasInner() {
           <Background gap={20} size={1} />
           <Controls showInteractive={false} />
         </ReactFlow>
+
+        {/* Right-hand inspector drawers — node detail (Columns / Lineage)
+            and edge "Lineage details". Rendered inside the canvas shell so
+            they overlay the graph area only, like Databricks. */}
+        <LineageDetailPanel
+          node={detailNode}
+          nodes={nodes}
+          edges={edges}
+          onClose={() => setDetailNodeId(null)}
+          onOpenNeighbour={openNodeDetail}
+        />
+        <EdgeDetailPanel
+          edge={detailEdge}
+          nodes={nodes}
+          edges={edges}
+          onClose={() => setDetailEdgeId(null)}
+          onOpenNode={openNodeDetail}
+        />
       </div>
 
       <AddTableModal
