@@ -386,9 +386,19 @@ export function loadedNodeToCanvasNode(
  *  Column edges anchor to the column handle; everything else anchors
  *  to the node-level handle that always exists — ``__table__`` on table
  *  nodes, ``out``/``in`` on asset nodes — so asset↔table and columnless
- *  table edges connect instead of floating. */
-function endpointHandle(column: string, kind: string, side: "source" | "target"): string {
-  if (column) return column;
+ *  table edges connect instead of floating.
+ *
+ *  Native lineage edges are forced to the table level even when they
+ *  carry a column: the native view is table-centric, and per-column
+ *  anchoring made every column look like its own table. The richer
+ *  column-level anchoring stays for non-native (FK / manual) edges. */
+function endpointHandle(
+  column: string,
+  kind: string,
+  side: "source" | "target",
+  tableLevel: boolean,
+): string {
+  if (column && !tableLevel) return column;
   if (kind === "table") return "__table__";
   // asset kinds (notebook/job/pipeline/query/dashboard/vector_search_index/external)
   return side === "source" ? "out" : "in";
@@ -401,6 +411,7 @@ export function loadedEdgeToCanvasEdge(
   sourceKind = "table",
   targetKind = "table",
 ): CanvasEdge {
+  const tableLevel = String(e.relationship_type || "").startsWith("lineage_native");
   // Auto-derived defaults from the relationship type / score.
   const defaultColor = EDGE_COLORS[e.relationship_type] ?? EDGE_COLORS.unknown;
   const defaultDashed =
@@ -418,8 +429,8 @@ export function loadedEdgeToCanvasEdge(
     id: `e-${e.id}`,
     source,
     target,
-    sourceHandle: endpointHandle(e.from_column, sourceKind, "source"),
-    targetHandle: endpointHandle(e.to_column, targetKind, "target"),
+    sourceHandle: endpointHandle(e.from_column, sourceKind, "source", tableLevel),
+    targetHandle: endpointHandle(e.to_column, targetKind, "target", tableLevel),
     type: "column-edge",
     data: {
       relationshipType: e.relationship_type,

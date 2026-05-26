@@ -13,7 +13,7 @@
  * render — the bug the previous hidden-toggle approach had.
  */
 
-import { memo, useState } from "react";
+import { memo, useRef, useState } from "react";
 import { Handle, NodeProps, Position, useReactFlow } from "reactflow";
 import {
   Boxes,
@@ -50,7 +50,11 @@ const KIND_ICON: Record<string, LucideIcon> = {
 function AssetBucketNodeImpl({ id, data }: NodeProps<AssetBucketNodeData>) {
   const rf = useReactFlow();
   const [expanded, setExpanded] = useState(false);
-  const outward = data.direction === "producer" ? -1 : 1; // left vs right of anchor
+  // The exact nodes this bucket pushed down (and by how much) so a
+  // collapse reverses precisely, even if other buckets expanded too.
+  const shiftRef = useRef<{ ids: string[]; h: number } | null>(null);
+
+  const ROW = 116;
 
   function toggle() {
     const next = !expanded;
@@ -59,32 +63,54 @@ function AssetBucketNodeImpl({ id, data }: NodeProps<AssetBucketNodeData>) {
     const bx = self?.position.x ?? 0;
     const by = self?.position.y ?? 0;
     const childIds = new Set(data.childNodes.map((n) => n.id));
-    const childEdgeIds = new Set(data.childEdges.map((e) => e.id));
 
     if (next) {
-      // Position children in a column just outward of the bucket.
-      const n = data.childNodes.length;
+      // Children stack directly BELOW the bucket. The bucket keeps its
+      // single connector to the anchor (the "main arrow"); children
+      // carry no edges of their own — they just nest under the header.
       const placed = data.childNodes.map((node, i) => ({
         ...node,
         hidden: false,
-        position: { x: bx + outward * 340, y: by + (i - (n - 1) / 2) * 150 },
+        position: { x: bx, y: by + 64 + i * ROW },
       }));
+      const h = placed.length * ROW + 24;
+      // Push DOWN every node below the bucket in the same column so the
+      // expanded children never collide with a sibling bucket.
+      const shiftIds = rf
+        .getNodes()
+        .filter(
+          (n) =>
+            n.id !== id &&
+            !childIds.has(n.id) &&
+            Math.abs(n.position.x - bx) < 260 &&
+            n.position.y > by,
+        )
+        .map((n) => n.id);
+      const shiftSet = new Set(shiftIds);
+      shiftRef.current = { ids: shiftIds, h };
       rf.setNodes((nodes) => [
-        ...nodes.filter((nd) => !childIds.has(nd.id)),
+        ...nodes
+          .filter((nd) => !childIds.has(nd.id))
+          .map((nd) =>
+            shiftSet.has(nd.id)
+              ? { ...nd, position: { ...nd.position, y: nd.position.y + h } }
+              : nd,
+          ),
         ...placed,
       ]);
-      rf.setEdges((edges) => [
-        ...edges
-          .filter((e) => !childEdgeIds.has(e.id))
-          .map((e) => (e.id === data.connectorEdgeId ? { ...e, hidden: true } : e)),
-        ...data.childEdges.map((e) => ({ ...e, hidden: false })),
-      ]);
     } else {
-      rf.setNodes((nodes) => nodes.filter((nd) => !childIds.has(nd.id)));
-      rf.setEdges((edges) =>
-        edges
-          .filter((e) => !childEdgeIds.has(e.id))
-          .map((e) => (e.id === data.connectorEdgeId ? { ...e, hidden: false } : e)),
+      const shift = shiftRef.current;
+      shiftRef.current = null;
+      const shiftSet = new Set(shift?.ids ?? []);
+      const h = shift?.h ?? 0;
+      rf.setNodes((nodes) =>
+        nodes
+          .filter((nd) => !childIds.has(nd.id))
+          .map((nd) =>
+            shiftSet.has(nd.id)
+              ? { ...nd, position: { ...nd.position, y: nd.position.y - h } }
+              : nd,
+          ),
       );
     }
   }
