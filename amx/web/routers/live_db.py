@@ -1341,9 +1341,7 @@ def table_snapshot(
                         for c in cached_cols
                     ],
                     "source": "cache",
-                    "row_count": _cached_row_count(
-                        name, schema, table, database_scope=cache_scope
-                    ),
+                    "row_count": _cached_row_count(name, schema, table, database_scope=cache_scope),
                 },
                 schema,
                 table,
@@ -1382,9 +1380,7 @@ def table_snapshot(
                     for c in salvage
                 ],
                 "source": "cache-fallback",
-                "row_count": _cached_row_count(
-                    name, schema, table, database_scope=cache_scope
-                ),
+                "row_count": _cached_row_count(name, schema, table, database_scope=cache_scope),
             },
             schema,
             table,
@@ -1418,9 +1414,7 @@ def table_snapshot(
                         for c in salvage
                     ],
                     "source": "cache-fallback",
-                    "row_count": _cached_row_count(
-                        name, schema, table, database_scope=cache_scope
-                    ),
+                    "row_count": _cached_row_count(name, schema, table, database_scope=cache_scope),
                 },
                 schema,
                 table,

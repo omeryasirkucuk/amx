@@ -16,7 +16,6 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import pytest
 from sqlalchemy import create_engine
 
 from amx.search.catalog import SearchCatalog
@@ -72,8 +71,7 @@ def _seed_local_table(
                     search_text, updated_at, last_synced_at
                 ) VALUES (?, 'postgresql', ?, ?, ?, ?, 'column', 'table', ?, ?, '', ?, ?)
                 """,
-                (profile, database, schema, table, col, dtype, row_count,
-                 time.time(), synced_at),
+                (profile, database, schema, table, col, dtype, row_count, time.time(), synced_at),
             )
 
 
@@ -135,15 +133,23 @@ def test_pull_last_write_wins(tmp_path: Path) -> None:
 
     # A pushes an OLD snapshot (row_count 100).
     _seed_local_table(
-        local_a, profile="p", database="d", schema="s", table="t",
-        columns=[("c", "int")], row_count=100, synced_at=1_000.0,
+        local_a,
+        profile="p",
+        database="d",
+        schema="s",
+        table="t",
+        columns=[("c", "int")],
+        row_count=100,
+        synced_at=1_000.0,
     )
     push_catalog_to_shared(local_a, shared)
 
     local_b = _make_local(tmp_path, "b")
     pull_catalog_to_local(local_b, shared)
-    assert next(r for r in _local_rows(local_b, "s", "t")
-                if r["entity_kind"] == "table")["row_count"] == 100
+    assert (
+        next(r for r in _local_rows(local_b, "s", "t") if r["entity_kind"] == "table")["row_count"]
+        == 100
+    )
 
     # A re-syncs with a NEWER snapshot (row_count 999).
     with local_a._connect() as conn:  # noqa: SLF001
@@ -155,8 +161,10 @@ def test_pull_last_write_wins(tmp_path: Path) -> None:
 
     # B pulls again — the newer count wins.
     pull_catalog_to_local(local_b, shared)
-    assert next(r for r in _local_rows(local_b, "s", "t")
-                if r["entity_kind"] == "table")["row_count"] == 999
+    assert (
+        next(r for r in _local_rows(local_b, "s", "t") if r["entity_kind"] == "table")["row_count"]
+        == 999
+    )
 
 
 def test_push_empty_local_is_noop(tmp_path: Path) -> None:
@@ -170,12 +178,24 @@ def test_push_scoped_to_profile(tmp_path: Path) -> None:
     shared = _make_shared(tmp_path)
     local = _make_local(tmp_path, "a")
     _seed_local_table(
-        local, profile="p1", database="d", schema="s", table="t1",
-        columns=[("c", "int")], row_count=5, synced_at=1_000.0,
+        local,
+        profile="p1",
+        database="d",
+        schema="s",
+        table="t1",
+        columns=[("c", "int")],
+        row_count=5,
+        synced_at=1_000.0,
     )
     _seed_local_table(
-        local, profile="p2", database="d", schema="s", table="t2",
-        columns=[("c", "int")], row_count=5, synced_at=1_000.0,
+        local,
+        profile="p2",
+        database="d",
+        schema="s",
+        table="t2",
+        columns=[("c", "int")],
+        row_count=5,
+        synced_at=1_000.0,
     )
     pushed = push_catalog_to_shared(local, shared, db_profile="p1")
     assert pushed == 2  # only p1's table + column

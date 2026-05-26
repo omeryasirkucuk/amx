@@ -33,9 +33,7 @@ def _identity_mismatch() -> CollectionIdentityMismatch:
     """Build a realistic mismatch (minilm → gte-small) like the one a
     user hits after swapping the catalog embedding profile."""
     return CollectionIdentityMismatch(
-        recorded=CollectionIdentity(
-            embedding_provider="minilm", embedding_model="minilm-l6-v2"
-        ),
+        recorded=CollectionIdentity(embedding_provider="minilm", embedding_model="minilm-l6-v2"),
         active=CollectionIdentity(
             embedding_provider="sentence_transformers",
             embedding_model="thenlper/gte-small",
@@ -166,9 +164,7 @@ def test_indexing_warning_logged_once_not_per_entity(
             query_usage={},
         )
 
-    skip_warnings = [
-        r for r in caplog.records if "Semantic indexing skipped" in r.getMessage()
-    ]
+    skip_warnings = [r for r in caplog.records if "Semantic indexing skipped" in r.getMessage()]
     # One sync_table_profile call → exactly one degradation warning,
     # even though the table has multiple column entities to index.
     assert len(skip_warnings) == 1

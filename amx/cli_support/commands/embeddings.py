@@ -333,9 +333,7 @@ def cmd_embeddings_status(cfg: AMXConfig) -> None:
         if s.get("error"):
             info(f"{_SIDE_TITLE[side]:<16}{s['error']}")
             continue
-        configured = _compact_label(
-            s.get("configured_provider", ""), s.get("configured_model", "")
-        )
+        configured = _compact_label(s.get("configured_provider", ""), s.get("configured_model", ""))
         running = _compact_label(s.get("current_provider", ""), s.get("current_model", ""))
         chunks = sum(int(c.get("count") or 0) for c in s.get("collections", []))
         if s.get("fell_back"):

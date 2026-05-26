@@ -241,9 +241,7 @@ def register_docs_commands(
                     mismatch = True
                     import chromadb
 
-                    client = chromadb.PersistentClient(
-                        path=str(Path.home() / ".amx" / "chroma_db")
-                    )
+                    client = chromadb.PersistentClient(path=str(Path.home() / ".amx" / "chroma_db"))
                     try:
                         client.delete_collection(name="amx_docs")
                     except Exception:  # noqa: BLE001 - already absent is fine
