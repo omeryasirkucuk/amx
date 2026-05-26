@@ -218,6 +218,44 @@ class DatabricksWorkspaceClient:
             if not next_token:
                 return
 
+    # ---- lineage tracking (Unity Catalog) ----------------------------
+
+    def table_lineage(
+        self, *, table_name: str, include_entity_lineage: bool = True
+    ) -> dict[str, Any]:
+        """Return Unity Catalog lineage for one table.
+
+        Calls ``/api/2.0/lineage-tracking/table-lineage`` — the same
+        endpoint that powers the UC lineage UI. It authorizes on
+        ordinary table visibility (USE CATALOG / USE SCHEMA + SELECT or
+        ownership) rather than the metastore-admin grant the
+        ``system.access.*`` tables require, so an individual user can
+        read it. With ``include_entity_lineage`` the response also
+        carries the producer / consumer entities (notebooks, jobs,
+        pipelines, dashboards) — the non-table endpoints of the graph.
+
+        ``table_name`` is the 3-part ``catalog.schema.table`` FQN. The
+        raw JSON dict is returned for the provider to map; no field
+        coupling lives here.
+        """
+        params: dict[str, Any] = {"table_name": table_name}
+        if include_entity_lineage:
+            # Databricks expects the literal string "true" on this query param.
+            params["include_entity_lineage"] = "true"
+        return self._get("/api/2.0/lineage-tracking/table-lineage", params=params).json()
+
+    def column_lineage(self, *, table_name: str, column_name: str) -> dict[str, Any]:
+        """Return Unity Catalog column lineage for one column.
+
+        Calls ``/api/2.0/lineage-tracking/column-lineage`` for a single
+        ``table_name`` (3-part FQN) + ``column_name``. Returns the raw
+        JSON dict; the provider owns the field mapping.
+        """
+        return self._get(
+            "/api/2.0/lineage-tracking/column-lineage",
+            params={"table_name": table_name, "column_name": column_name},
+        ).json()
+
     # ---- internals ---------------------------------------------------
 
     def _get(self, path: str, *, params: dict[str, Any] | None = None) -> requests.Response:

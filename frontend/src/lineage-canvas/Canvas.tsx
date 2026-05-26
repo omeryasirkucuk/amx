@@ -50,6 +50,7 @@ import { Button, useToast } from "../components/ui";
 import "reactflow/dist/style.css";
 
 import { AddTableModal } from "./components/AddTableModal";
+import { NativeFetchDialog } from "./components/NativeFetchDialog";
 import { AttributeTrackerPanel } from "./components/AttributeTrackerPanel";
 import { ColumnEdgeMarkerDefs, edgeTypes } from "./components/ColumnEdge";
 import { EdgeLegendChip } from "./components/EdgeLegendChip";
@@ -122,6 +123,7 @@ function CanvasInner() {
 
   // Modals
   const [addOpen, setAddOpen] = useState(false);
+  const [fetchOpen, setFetchOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [trackerOpen, setTrackerOpen] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
@@ -704,8 +706,8 @@ function CanvasInner() {
         // streamed neighbors snap onto whatever the user already
         // dragged in (anchor added via the Add-Table modal, prior
         // LLM batches, etc.) instead of spawning duplicate copies of
-        // the same table. This is the fix for "AI Generate getiriyo
-        // ama aynı tabloyu yanına atıyo".
+        // the same table. This is the fix for "AI Generate pulls the
+        // table in but drops a duplicate of it right next to it".
         //
         // Also record a 2-part ``schema.table`` alias for any 3-part
         // FQN — the LLM almost always streams ``schema.table`` while
@@ -1287,6 +1289,7 @@ function CanvasInner() {
         activeArtifactId={activeArtifactId}
         onOpenSavedArtifact={handleOpenSavedArtifact}
         onActiveSavedArtifactDeleted={handleActiveSavedArtifactDeleted}
+        onFetchNative={() => setFetchOpen(true)}
         onDiscoverRelated={() => void handleDiscoverRelated()}
         onNewLineage={handleNewLineage}
       />
@@ -1357,6 +1360,21 @@ function CanvasInner() {
           if (n > 1) {
             window.setTimeout(() => handleAutoLayout(), 60);
           }
+        }}
+      />
+
+      <NativeFetchDialog
+        open={fetchOpen}
+        onClose={() => setFetchOpen(false)}
+        onDone={(res) => {
+          setFetchOpen(false);
+          if (res.artifact_id) {
+            setParams({ artifact: String(res.artifact_id) });
+          }
+          toast.push({
+            title: `Fetched lineage for ${res.fqn}`,
+            description: `${res.edges} edge(s) · ${res.tables} tables · ${res.assets} assets · ${res.name_only} name-only`,
+          });
         }}
       />
 

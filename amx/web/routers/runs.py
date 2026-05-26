@@ -1079,6 +1079,27 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
             if blocks_by_table:
                 orchestrator.asset_context_by_table = blocks_by_table
 
+    # Lineage-neighbour context: surface each in-scope table's upstream
+    # producers / downstream consumers (foreign keys, view deps, asset
+    # references, and ``/lineage fetch`` native edges) so the
+    # ProfileAgent can describe the table's role in the data flow.
+    # Independent of the asset-context block above — it runs on every
+    # run, not only when the user attached assets.
+    _hs_lineage = history_store()
+    if _hs_lineage is not None:
+        from amx.analyze.lineage_context import resolve_lineage_context_for_run
+
+        run_profile = body.db_profile or getattr(cfg, "active_db_profile", "") or ""
+        if run_profile:
+            try:
+                lineage_blocks = resolve_lineage_context_for_run(
+                    store=_hs_lineage, profile=run_profile, scope=dict(body.scope or {})
+                )
+            except Exception:  # noqa: BLE001 — context is best-effort, never fail a run
+                lineage_blocks = {}
+            if lineage_blocks:
+                orchestrator.lineage_context_by_table = lineage_blocks
+
     processed_assets: list[str] = []
     skipped_assets: list[str] = []
     failed_assets: list[tuple[str, str]] = []  # (asset_path, error)

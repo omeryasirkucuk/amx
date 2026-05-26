@@ -200,6 +200,15 @@ class Orchestrator:
         # referencing asset. Empty dict on normal runs preserves the
         # pre-PR4 behaviour byte-identically.
         self.asset_context_by_table: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        # Lineage-neighbour context blocks indexed by lower-cased
+        # ``(schema, table)``. Populated by the worker layer from
+        # ``catalog_relationships`` (foreign keys, view dependencies,
+        # asset references, and ``/lineage fetch`` native edges). The
+        # orchestrator copies the matching list into
+        # :class:`AgentContext.lineage_context` per-table so the
+        # ProfileAgent prompt can render a "Lineage context" section.
+        # Empty dict on normal runs preserves the prior behaviour.
+        self.lineage_context_by_table: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     _SQL_VERB_RE = re.compile(
         r"\b(select|insert|update|delete|merge|join|where|group\s+by|order\s+by)\b", re.IGNORECASE
@@ -681,6 +690,11 @@ class Orchestrator:
             },
             asset_context=list(
                 self.asset_context_by_table.get((profile.schema.lower(), profile.name.lower()), [])
+            ),
+            lineage_context=list(
+                self.lineage_context_by_table.get(
+                    (profile.schema.lower(), profile.name.lower()), []
+                )
             ),
             # Suppress table-level generation when the run didn't ask for
             # it — column-scoped, or a missing-only run over a table that

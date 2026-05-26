@@ -13,9 +13,11 @@
 import { memo } from "react";
 import { Handle, NodeProps, Position } from "reactflow";
 import {
+  Boxes,
   Code2,
   GitBranch,
   LayoutDashboard,
+  Network,
   ScrollText,
   Timer,
   Waves,
@@ -31,7 +33,10 @@ export type AssetKind =
   | "stream"
   | "pipeline"
   | "streamlit_app"
-  | "job";
+  | "job"
+  | "vector_search_index"
+  | "dashboard"
+  | "external";
 
 interface AssetNodeData {
   kind: AssetKind;
@@ -41,6 +46,9 @@ interface AssetNodeData {
   dbProfile?: string;
   /** Optional one-line subtitle (e.g. workspace path). */
   subtitle?: string;
+  /** "name_only" greys the node — discovered by native lineage fetch
+   *  without read access; only its name + relationship are known. */
+  metadataState?: "full" | "name_only";
 }
 
 const ICONS: Record<AssetKind, LucideIcon> = {
@@ -50,6 +58,9 @@ const ICONS: Record<AssetKind, LucideIcon> = {
   pipeline: GitBranch,
   streamlit_app: LayoutDashboard,
   job: Timer,
+  vector_search_index: Boxes,
+  dashboard: LayoutDashboard,
+  external: Network,
 };
 
 // Each kind picks a distinct accent so a complex graph stays readable.
@@ -62,6 +73,9 @@ const COLORS: Record<AssetKind, string> = {
   pipeline: "#fbbf24", // amber
   streamlit_app: "#f472b6", // pink
   job: "#94a3b8", // slate
+  vector_search_index: "#f97316", // orange
+  dashboard: "#60a5fa", // blue
+  external: "#9ca3af", // muted grey
 };
 
 const LABELS: Record<AssetKind, string> = {
@@ -71,17 +85,22 @@ const LABELS: Record<AssetKind, string> = {
   pipeline: "pipeline",
   streamlit_app: "streamlit",
   job: "job",
+  vector_search_index: "vector index",
+  dashboard: "dashboard",
+  external: "external",
 };
 
 function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
   const Icon = ICONS[data.kind] ?? ScrollText;
   const color = COLORS[data.kind] ?? "#a78bfa";
   const kindLabel = LABELS[data.kind] ?? data.kind;
+  const nameOnly = data.metadataState === "name_only";
   return (
     <div
       className={clsx(
         "rounded-lg border bg-surface-raised text-ink shadow-lg",
         selected ? "border-accent-default" : "border-surface-border",
+        nameOnly && "opacity-60 border-dashed",
       )}
       style={{ minWidth: 200, maxWidth: 320, borderLeft: `3px solid ${color}` }}
     >
@@ -93,6 +112,14 @@ function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
         <span className="text-[11px] font-semibold uppercase tracking-wide">
           {kindLabel}
         </span>
+        {nameOnly && (
+          <span
+            className="rounded bg-surface-subtle px-1 text-[10px] font-medium text-ink-dim"
+            title="Discovered via lineage — no read access to its contents"
+          >
+            name only
+          </span>
+        )}
         {data.dbProfile && (
           <span className="ml-auto rounded bg-surface-subtle px-1 text-[10px] font-medium text-ink-dim">
             {data.dbProfile}

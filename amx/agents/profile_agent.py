@@ -902,6 +902,21 @@ class ProfileAgent(BaseAgent):
                 for line in excerpt.splitlines():
                     lines.append(f"    {line}")
 
+        if ctx.lineage_context:
+            lines.append("")
+            lines.append(
+                "Lineage context (upstream producers feed this table; "
+                "downstream consumers read from it — use these relationships "
+                "to describe the table's role in the data flow):"
+            )
+            for block in ctx.lineage_context:
+                direction = str(block.get("direction") or "")
+                kind = str(block.get("kind") or "table")
+                name = str(block.get("name") or "")
+                rel = str(block.get("relationship") or "")
+                arrow = "←" if direction == "upstream" else "→"
+                lines.append(f"  {arrow} [{direction} {kind}] {name} ({rel})")
+
         from amx.agents.base import _user_instructions_block
 
         return "\n".join(lines) + _user_instructions_block(ctx)

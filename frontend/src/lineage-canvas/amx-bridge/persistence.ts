@@ -163,10 +163,14 @@ export interface LoadedNode {
   op_kind?: string;
   expression?: string;
   /** Asset bridge rows (entity_kind = notebook / query / stream /
-   *  pipeline / streamlit_app / job) carry the asset's display name
-   *  here so the canvas AssetNode can render it without a second
-   *  round-trip. Sourced from catalog_entities.search_text. */
+   *  pipeline / streamlit_app / job / vector_search_index / dashboard /
+   *  external) carry the asset's display name here so the canvas
+   *  AssetNode can render it without a second round-trip. Sourced from
+   *  catalog_entities.search_text. */
   label?: string;
+  /** "full" (default) or "name_only" — native lineage fetch discovered
+   *  the entity without read access, so only its name is known. */
+  metadata_state?: string;
 }
 
 export interface LoadedEdge {

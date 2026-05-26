@@ -21,6 +21,9 @@ export const nodeTypes = {
   pipeline: AssetNode,
   streamlit_app: AssetNode,
   job: AssetNode,
+  vector_search_index: AssetNode,
+  dashboard: AssetNode,
+  external: AssetNode,
 };
 
 /** Map AMX op_kind → ReactFlow node type. */
