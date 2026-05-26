@@ -150,6 +150,9 @@ function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
       if (!resp.ok) return;
       const { remote_id } = (await resp.json()) as { remote_id: number };
       openInAssets(data.kind, remote_id);
+    } catch {
+      // Network/parse failure — leave the node as-is; the finally clause
+      // clears the loading state so the control is clickable again.
     } finally {
       setIngesting(false);
     }
