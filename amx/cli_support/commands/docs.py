@@ -183,130 +183,7 @@ def register_docs_commands(
         finally:
             cleanup_scan_artifacts(documents)
 
-    @docs.command("scan")
-    @click.argument("paths", nargs=-1)
-    @click.option(
-        "--doc-profile",
-        "doc_profile",
-        default=None,
-        help="Use paths from this named document profile when no paths are given.",
-    )
-    @click.pass_obj
-    def docs_scan(cfg: AMXConfig, paths: tuple[str, ...], doc_profile: str | None) -> None:
-        """Scan document sources and show what would be ingested."""
-        from amx.docs.scanner import cleanup_scan_artifacts, scan_all_sources, total_size_mb
-
-        try:
-            all_paths = list(paths) if paths else cfg.resolve_doc_paths(doc_profile, [])
-        except KeyError as exc:
-            error(str(exc))
-            return
-        if not all_paths:
-            warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="scan")
-            return
-
-        documents = []
-        try:
-            with command_display(mode="docs-scan", provider=cfg.llm.provider, model=cfg.llm.model):
-                with step_spinner("Scanning document sources"):
-                    documents = scan_all_sources(all_paths)
-                _render_scan_failures(documents)
-                size = total_size_mb(documents)
-
-                render_table(
-                    f"Found {len(documents)} documents ({size:.1f} MB)",
-                    ["File", "Size (KB)", "Type", "Source"],
-                    [
-                        [d.path, f"{d.size_bytes / 1024:.1f}", d.extension, d.source_type]
-                        for d in documents[:50]
-                    ],
-                )
-
-                if len(documents) > 50:
-                    info(f"... and {len(documents) - 50} more files")
-
-                if size > 100:
-                    warn(f"Total size is {size:.1f} MB — ingestion may take a while.")
-                    if not confirm("Proceed with ingestion?"):
-                        return
-
-                if confirm("Ingest these documents into the RAG store?"):
-                    from amx.docs.rag import RAGStore
-
-                    store = RAGStore()
-                    with step_spinner("Ingesting scanned documents"):
-                        summary = store.ingest(documents, refresh=False)
-                    _render_ingest_summary(summary, total_files=len(documents))
-                    success(
-                        f"Ingested {summary.chunk_count} chunks from {len(documents)} documents"
-                    )
-        finally:
-            cleanup_scan_artifacts(documents)
-
-    @docs.command("ingest")
-    @click.argument("paths", nargs=-1)
-    @click.option(
-        "--doc-profile",
-        "doc_profile",
-        default=None,
-        help="Use paths from this named document profile when no paths are given.",
-    )
-    @click.option(
-        "--refresh/--no-refresh",
-        default=False,
-        help="Delete existing Chroma chunks for the same source paths before upserting.",
-    )
-    @click.pass_obj
-    def docs_ingest(
-        cfg: AMXConfig,
-        paths: tuple[str, ...],
-        doc_profile: str | None,
-        refresh: bool,
-    ) -> None:
-        """Ingest documents directly into the RAG store."""
-        from amx.docs.rag import RAGStore
-        from amx.docs.scanner import cleanup_scan_artifacts, scan_all_sources, total_size_mb
-
-        try:
-            all_paths = list(paths) if paths else cfg.resolve_doc_paths(doc_profile, [])
-        except KeyError as exc:
-            error(str(exc))
-            return
-        if not all_paths:
-            warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="ingest")
-            return
-
-        documents = []
-        try:
-            with command_display(
-                mode="docs-ingest", provider=cfg.llm.provider, model=cfg.llm.model
-            ):
-                with step_spinner("Scanning document sources"):
-                    documents = scan_all_sources(all_paths)
-                _render_scan_failures(documents)
-                size = total_size_mb(documents)
-
-                info(f"Found {len(documents)} documents ({size:.1f} MB)")
-
-                if size > 100:
-                    warn(f"Large document set ({size:.1f} MB). This will take some time.")
-                    if not confirm("Continue?"):
-                        return
-
-                store = RAGStore()
-                with step_spinner("Ingesting documents into RAG store"):
-                    summary = store.ingest(documents, refresh=refresh)
-                _render_ingest_summary(summary, total_files=len(documents))
-                if refresh:
-                    info("Refreshed: removed prior chunks for the same source paths before ingest.")
-                success(
-                    f"Ingested {summary.chunk_count} chunks into RAG store "
-                    f"({store.doc_count} total chunks)"
-                )
-        finally:
-            cleanup_scan_artifacts(documents)
-
-    @docs.command("reindex")
+    @docs.command("index")
     @click.option(
         "--doc-profile",
         "doc_profile",
@@ -315,28 +192,20 @@ def register_docs_commands(
     )
     @click.argument("paths", nargs=-1)
     @click.pass_obj
-    def docs_reindex(
-        cfg: AMXConfig,
-        paths: tuple[str, ...],
-        doc_profile: str | None,
-    ) -> None:
-        """Drop the docs vector store and re-ingest with the active
-        embedding profile.
+    def docs_index(cfg: AMXConfig, paths: tuple[str, ...], doc_profile: str | None) -> None:
+        """Build / refresh the docs RAG index under the active embedding.
 
-        Use this after ``/embeddings`` swaps the docs embedding model
-        — ``/docs ingest --refresh`` only deletes documents and
-        leaves the recorded identity intact, so the next open raises
-        ``EmbeddingProviderMismatch`` and blocks ``/ask`` retrieval.
-        Reindex drops the Chroma collection outright (and the FTS5
-        sidecar), then re-runs the full ingest so the rebuilt
-        collection is stamped with the active provider/model/dim.
+        One smart, idempotent operation that replaces ``scan`` / ``ingest``
+        / ``reindex``: it ingests new and changed files incrementally, and
+        — when the embedding model has changed (a stale collection
+        identity) — drops and rebuilds the collection so it is re-stamped
+        with the active provider/model. Run it after changing the docs
+        embedding in ``/embeddings``.
         """
+        from pathlib import Path
+
         from amx.docs.rag import EmbeddingProviderMismatch, RAGStore
-        from amx.docs.scanner import (
-            cleanup_scan_artifacts,
-            scan_all_sources,
-            total_size_mb,
-        )
+        from amx.docs.scanner import cleanup_scan_artifacts, scan_all_sources, total_size_mb
 
         try:
             all_paths = list(paths) if paths else cfg.resolve_doc_paths(doc_profile, [])
@@ -344,7 +213,7 @@ def register_docs_commands(
             error(str(exc))
             return
         if not all_paths:
-            warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="reindex")
+            warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="index")
             return
 
         documents = []
@@ -362,30 +231,37 @@ def register_docs_commands(
                     if not confirm("Continue?"):
                         return
 
-                # If the on-disk collection already has a mismatched
-                # identity stamp, ``RAGStore()`` raises on construction.
-                # In that case force-drop the collection by hand and
-                # then construct a fresh store that re-stamps with
-                # the active identity.
+                # Open the store, recovering from a stale embedding identity:
+                # on a model change the collection is force-dropped + rebuilt;
+                # otherwise we ingest incrementally into the existing one.
+                mismatch = False
                 try:
                     store = RAGStore()
                 except EmbeddingProviderMismatch:
+                    mismatch = True
                     import chromadb
 
-                    persist = str(Path.home() / ".amx" / "chroma_db")
-                    client = chromadb.PersistentClient(path=persist)
+                    client = chromadb.PersistentClient(
+                        path=str(Path.home() / ".amx" / "chroma_db")
+                    )
                     try:
                         client.delete_collection(name="amx_docs")
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - already absent is fine
                         pass
                     store = RAGStore()
+                if mismatch:
+                    store.reset_collection()
 
-                store.reset_collection()
-                with step_spinner("Re-ingesting documents into RAG store"):
+                label = (
+                    "Rebuilding index (embedding model changed)"
+                    if mismatch
+                    else "Indexing documents into RAG store"
+                )
+                with step_spinner(label):
                     summary = store.ingest(documents, refresh=False)
                 _render_ingest_summary(summary, total_files=len(documents))
                 success(
-                    f"Reindexed: {summary.chunk_count} chunks rebuilt under "
+                    f"Indexed {summary.chunk_count} chunks under "
                     f"{store.embedding_provider}/{store.embedding_model} "
                     f"({store.doc_count} total chunks)"
                 )

@@ -145,8 +145,8 @@ def _fix_codebase_cli_tail(tokens: list[str]) -> list[str]:
 
 
 def _normalize_click_argv(args: list[str], cfg: AMXConfig) -> list[str]:
-    if len(args) >= 3 and args[0] == "code" and args[1] == "scan":
-        return ["code", "scan", args[2]] + _fix_codebase_cli_tail(args[3:])
+    if len(args) >= 3 and args[0] == "code" and args[1] == "index":
+        return ["code", "index", args[2]] + _fix_codebase_cli_tail(args[3:])
     return args
 
 
@@ -190,7 +190,7 @@ def _install_embedding_provider(cfg: AMXConfig) -> None:
 def _rewrite_sys_argv_for_codebase(argv: list[str]) -> None:
     """In-place fix for `amx code scan …` when launched from a real shell."""
     for i in range(len(argv) - 2):
-        if argv[i] == "code" and argv[i + 1] == "scan":
+        if argv[i] == "code" and argv[i + 1] == "index":
             head = argv[: i + 3]
             tail = argv[i + 3 :]
             argv[:] = head + _fix_codebase_cli_tail(tail)

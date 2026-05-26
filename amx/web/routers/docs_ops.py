@@ -59,88 +59,36 @@ def _resolve_paths(body: _DocPathsRequest, cfg: AMXConfig) -> list[str]:
     return list(cfg.doc_profiles.get(profile, []))
 
 
-@router.post("/scan")
-def submit_scan(
+@router.post("/index")
+def submit_index(
     body: _DocPathsRequest,
     cfg: AMXConfig = Depends(get_cfg),
     jobs: JobRegistry = Depends(get_jobs),
 ) -> dict[str, Any]:
-    """Spawn a doc-scan worker. Streams ``activity.added`` /
-    ``activity.complete`` SSE events with the file inventory."""
-    paths = _resolve_paths(body, cfg)
-    if not paths:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No paths to scan. Pass paths=[...], profile=<name>, or activate a doc profile.",
-        )
-    job = jobs.new_job("docs_scan")
-    thread = threading.Thread(
-        target=_scan_worker,
-        args=(job, paths),
-        name=f"amx-docs-scan-{job.id}",
-        daemon=True,
-    )
-    thread.start()
-    return {"job_id": job.id, "status": job.status, "paths": paths}
-
-
-@router.post("/ingest")
-def submit_ingest(
-    body: _DocPathsRequest,
-    cfg: AMXConfig = Depends(get_cfg),
-    jobs: JobRegistry = Depends(get_jobs),
-) -> dict[str, Any]:
-    """Spawn a doc-ingest worker. Reuses the same SSE event shape as
-    ``/scan`` plus a final ``ingest.summary`` event with chunk counts."""
-    paths = _resolve_paths(body, cfg)
-    if not paths:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No paths to ingest. Pass paths=[...], profile=<name>, or activate a doc profile.",
-        )
-    profile_name = (body.profile or "").strip() or (cfg.active_doc_profile or "").strip()
-    job = jobs.new_job("docs_ingest")
-    thread = threading.Thread(
-        target=_ingest_worker,
-        args=(job, paths, bool(body.refresh), cfg, profile_name),
-        name=f"amx-docs-ingest-{job.id}",
-        daemon=True,
-    )
-    thread.start()
-    return {"job_id": job.id, "status": job.status, "paths": paths, "refresh": bool(body.refresh)}
-
-
-@router.post("/reindex")
-def submit_reindex(
-    body: _DocPathsRequest,
-    cfg: AMXConfig = Depends(get_cfg),
-    jobs: JobRegistry = Depends(get_jobs),
-) -> dict[str, Any]:
-    """Drop the docs vector store and re-ingest with the ACTIVE embedding.
-
-    The UI equivalent of the CLI ``/docs reindex``. Use this after the
-    docs embedding model changes (``Settings → Embeddings``): a plain
-    ingest/refresh keeps the collection's old identity stamp, so ``/ask``
-    retrieval stays blocked with an embedding-mismatch error. Reindex
-    drops the collection outright (handling the mismatch) and rebuilds it
-    stamped with the current provider/model.
+    """Build / refresh the doc RAG index for a profile under the active
+    embedding model. One smart, idempotent operation: it ingests new and
+    changed files incrementally, and — when the embedding model has
+    changed (a stale collection identity) — drops and rebuilds the
+    collection so it is re-stamped with the active provider/model. This is
+    the single replacement for the old scan / ingest / reindex verbs.
+    Streams the same SSE shape, ending with an ``ingest.summary`` event.
     """
     paths = _resolve_paths(body, cfg)
     if not paths:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No paths to reindex. Pass paths=[...], profile=<name>, or activate a doc profile.",
+            detail="No paths to index. Pass paths=[...], profile=<name>, or activate a doc profile.",
         )
     profile_name = (body.profile or "").strip() or (cfg.active_doc_profile or "").strip()
     job = jobs.new_job("docs_ingest")
     thread = threading.Thread(
-        target=_ingest_worker,
-        args=(job, paths, False, cfg, profile_name, True),
-        name=f"amx-docs-reindex-{job.id}",
+        target=_index_worker,
+        args=(job, paths, cfg, profile_name),
+        name=f"amx-docs-index-{job.id}",
         daemon=True,
     )
     thread.start()
-    return {"job_id": job.id, "status": job.status, "paths": paths, "reindex": True}
+    return {"job_id": job.id, "status": job.status, "paths": paths}
 
 
 @router.post("/jobs/{job_id}/cancel")
@@ -230,18 +178,18 @@ async def upload_docs(
         "count": len(results),
     }
     if ingest and results:
-        # Re-use the existing ingest worker against the upload root
-        # (which save_uploaded_batch already added to the profile's
-        # paths). Passing the directory once is enough — scanner walks
-        # children and picks up every dropped file.
+        # Re-use the smart index worker against the upload root (which
+        # save_uploaded_batch already added to the profile's paths).
+        # Passing the directory once is enough — the scanner walks children
+        # and picks up every dropped file.
         from pathlib import Path
 
         upload_root = str(Path(results[0].saved_path).parent)
         job = jobs.new_job("docs_ingest")
         thread = threading.Thread(
-            target=_ingest_worker,
-            args=(job, [upload_root], False, cfg, profile_clean),
-            name=f"amx-docs-upload-ingest-{job.id}",
+            target=_index_worker,
+            args=(job, [upload_root], cfg, profile_clean),
+            name=f"amx-docs-upload-index-{job.id}",
             daemon=True,
         )
         thread.start()
@@ -293,98 +241,36 @@ def search_docs(
     return {"hits": out, "count": len(out)}
 
 
-def _scan_worker(job: Job, paths: list[str]) -> None:
-    with quiet_console():
-        _scan_worker_body(job, paths)
-
-
-def _scan_worker_body(job: Job, paths: list[str]) -> None:
-    job.status = "running"
-    emit(job.queue, "activity.added", {"idx": 0, "label": "Scanning sources"})
-    emit(job.queue, "activity.begin", {"idx": 0})
-    try:
-        from amx.docs.scanner import scan_all_sources, total_size_mb
-
-        scan_outcome = scan_all_sources(paths)
-        # ``ScanResult`` exposes ``.documents`` and ``.failures``; if a
-        # caller has stubbed the function (tests), it may still return
-        # a bare list — ``getattr`` keeps both shapes working.
-        documents = list(getattr(scan_outcome, "documents", scan_outcome) or [])
-        failures = [
-            {"path": src, "error": reason}
-            for src, reason in (getattr(scan_outcome, "failures", None) or [])
-        ]
-        size = total_size_mb(documents)
-        emit(
-            job.queue,
-            "scan.summary",
-            {
-                "total": len(documents),
-                "size_mb": round(size, 2),
-                "files": [
-                    {
-                        "path": d.path,
-                        "size_kb": round(getattr(d, "size_bytes", 0) / 1024, 1),
-                        "type": getattr(d, "source_type", ""),
-                    }
-                    for d in documents[:200]  # cap for SSE payload size
-                ],
-                "failures": failures,
-            },
-        )
-        job.status = "done"
-        job.summary = {
-            "total": len(documents),
-            "size_mb": round(size, 2),
-            "failures": failures,
-        }
-        job.ended_at = time.time()
-        emit(
-            job.queue,
-            "activity.complete",
-            {"idx": 0, "detail": f"{len(documents)} docs · {size:.1f} MB"},
-        )
-        emit_terminal(job.queue, "job.done", {"summary": job.summary})
-    except Exception as exc:
-        log.exception("docs scan worker crashed")
-        job.status = "failed"
-        job.error = f"{exc.__class__.__name__}: {exc}"
-        job.ended_at = time.time()
-        emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
-        emit_terminal(job.queue, "job.failed", {"error": job.error})
-
-
-def _ingest_worker(
+def _index_worker(
     job: Job,
     paths: list[str],
-    refresh: bool,
     cfg: AMXConfig | None = None,
     profile_name: str | None = None,
-    reindex: bool = False,
 ) -> None:
     with quiet_console():
-        _ingest_worker_body(
-            job, paths, refresh, cfg=cfg, profile_name=profile_name, reindex=reindex
-        )
+        _index_worker_body(job, paths, cfg=cfg, profile_name=profile_name)
 
 
-def _open_docs_store_for_reindex() -> Any:
-    """Open the docs RAG store, dropping the collection first when its
-    persisted embedding identity no longer matches the active config.
+def _open_docs_store() -> tuple[Any, bool]:
+    """Open the docs RAG store, recovering from a stale embedding identity.
 
-    Mirrors the CLI ``/docs reindex``: a model swap (e.g. minilm →
-    gte-small) leaves the on-disk ``amx_docs`` collection stamped with the
-    old identity, so ``RAGStore()`` raises ``EmbeddingProviderMismatch`` on
-    open. We force-drop the collection by hand, then reconstruct so it is
-    re-stamped with the active provider/model/dim. ``reset_collection``
-    (called by the worker afterwards) clears any FTS5 sidecar too.
+    A model swap (e.g. minilm → gte-small) leaves the on-disk ``amx_docs``
+    collection stamped with the old identity, so ``RAGStore()`` raises
+    ``EmbeddingProviderMismatch`` on open. We force-drop the collection by
+    hand and reconstruct so it is re-stamped with the active
+    provider/model/dim.
+
+    Returns ``(store, mismatch_recovered)``. ``mismatch_recovered`` is True
+    when the collection had to be dropped — the caller then does a full
+    rebuild; otherwise it ingests incrementally into the existing
+    collection.
     """
     from pathlib import Path
 
     from amx.docs.rag import EmbeddingProviderMismatch, RAGStore
 
     try:
-        return RAGStore()
+        return RAGStore(), False
     except EmbeddingProviderMismatch:
         import chromadb
 
@@ -392,24 +278,21 @@ def _open_docs_store_for_reindex() -> Any:
         try:
             client.delete_collection(name="amx_docs")
         except Exception as exc:  # noqa: BLE001 - already absent is fine
-            log.debug("reindex: delete_collection(amx_docs) skipped: %s", exc)
-        return RAGStore()
+            log.debug("index: delete_collection(amx_docs) skipped: %s", exc)
+        return RAGStore(), True
 
 
-def _ingest_worker_body(
+def _index_worker_body(
     job: Job,
     paths: list[str],
-    refresh: bool,
     *,
     cfg: AMXConfig | None = None,
     profile_name: str | None = None,
-    reindex: bool = False,
 ) -> None:
     job.status = "running"
     emit(job.queue, "activity.added", {"idx": 0, "label": "Scanning"})
     emit(job.queue, "activity.begin", {"idx": 0})
     try:
-        from amx.docs.rag import RAGStore
         from amx.docs.scanner import scan_all_sources, total_size_mb
 
         scan_outcome = scan_all_sources(paths)
@@ -426,21 +309,24 @@ def _ingest_worker_body(
             "activity.complete",
             {"idx": 0, "detail": f"{len(documents)} docs · {size:.1f} MB"},
         )
-        ingest_label = "Rebuilding index" if reindex else "Ingesting into Chroma"
-        emit(job.queue, "activity.added", {"idx": 1, "label": ingest_label})
+        # Smart index: open the store, recovering from a stale embedding
+        # identity. On a model change the collection is dropped + rebuilt
+        # under the active model; otherwise we ingest incrementally into
+        # the existing collection. One safe, idempotent operation.
+        store, mismatch = _open_docs_store()
+        emit(
+            job.queue,
+            "activity.added",
+            {"idx": 1, "label": "Rebuilding index" if mismatch else "Indexing into Chroma"},
+        )
         emit(job.queue, "activity.begin", {"idx": 1})
-
-        if reindex:
-            # Drop the existing collection (handling a stale embedding-
-            # identity stamp) and clear the FTS5 sidecar, so the rebuilt
-            # collection is re-stamped with the ACTIVE provider/model. The
-            # per-doc loop below then ingests fresh (refresh has no meaning
-            # against an already-empty collection).
-            store = _open_docs_store_for_reindex()
+        if mismatch:
+            # Embedding model changed — clear the collection + FTS5 sidecar
+            # so the rebuild is stamped with the active provider/model.
             store.reset_collection()
-            refresh = False
-        else:
-            store = RAGStore()
+        # refresh=False: incremental add when the identity matched, full
+        # rebuild when we just reset to an empty collection.
+        refresh = False
         # Iterate documents one at a time so we can poll ``job.cancel``
         # between docs and exit cleanly mid-batch. Mid-document
         # cancellation is intentionally NOT supported — interrupting a

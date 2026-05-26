@@ -1688,39 +1688,17 @@ function DocProfilesSection() {
       apiFetch(`/api/profiles/docs/${encodeURIComponent(name)}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["profiles", "docs"] }),
   });
-  const scan = useMutation({
+  // One smart action: ingest new/changed files incrementally, and rebuild
+  // the collection under the active embedding when the model changed.
+  // Replaces the old Scan / Ingest / Reindex trio.
+  const index = useMutation({
     mutationFn: (profile: string) =>
-      apiFetch<{ job_id: string }>("/api/docs/scan", {
-        method: "POST",
-        body: JSON.stringify({ profile }),
-      }),
-    onSuccess: (r, profile) => setActiveOp({ jobId: r.job_id, label: `Scanning ${profile}` }),
-  });
-  const ingest = useMutation({
-    mutationFn: (vars: { profile: string; refresh: boolean }) =>
-      apiFetch<{ job_id: string }>("/api/docs/ingest", {
-        method: "POST",
-        body: JSON.stringify({ profile: vars.profile, refresh: vars.refresh }),
-      }),
-    onSuccess: (r, vars) =>
-      setActiveOp({
-        jobId: r.job_id,
-        label: `Ingesting ${vars.profile}${vars.refresh ? " (refresh)" : ""}`,
-      }),
-  });
-  // Reindex drops the docs collection and rebuilds it under the ACTIVE
-  // embedding model — the UI equivalent of `/docs reindex`. Needed after
-  // changing the docs embedding in Settings → Embeddings: a plain ingest
-  // keeps the old identity stamp and /ask retrieval stays blocked with an
-  // embedding-mismatch error.
-  const reindex = useMutation({
-    mutationFn: (profile: string) =>
-      apiFetch<{ job_id: string }>("/api/docs/reindex", {
+      apiFetch<{ job_id: string }>("/api/docs/index", {
         method: "POST",
         body: JSON.stringify({ profile }),
       }),
     onSuccess: (r, profile) =>
-      setActiveOp({ jobId: r.job_id, label: `Reindexing ${profile}` }),
+      setActiveOp({ jobId: r.job_id, label: `Indexing ${profile}` }),
   });
 
   return (
@@ -1791,32 +1769,12 @@ function DocProfilesSection() {
                       )}
                       <button
                         type="button"
-                        onClick={() => scan.mutate(p.name)}
-                        disabled={scan.isPending || !!activeOp}
-                        className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-surface-border disabled:opacity-50"
-                        title="Scan: list what would be ingested"
-                      >
-                        Scan
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          ingest.mutate({ profile: p.name, refresh: false })
-                        }
-                        disabled={ingest.isPending || !!activeOp}
+                        onClick={() => index.mutate(p.name)}
+                        disabled={index.isPending || !!activeOp}
                         className="rounded-md bg-accent-soft px-2 py-1 text-xs text-accent-ink hover:opacity-90 disabled:opacity-50"
-                        title="Ingest into Chroma RAG store"
+                        title="Index: ingest new/changed files and rebuild under the active embedding model when it changed"
                       >
-                        Ingest
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => reindex.mutate(p.name)}
-                        disabled={reindex.isPending || !!activeOp}
-                        className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-surface-border disabled:opacity-50"
-                        title="Reindex: drop the docs index and rebuild it under the current embedding model (run after changing the docs embedding)"
-                      >
-                        Reindex
+                        Index
                       </button>
                       <button
                         type="button"
@@ -2443,108 +2401,6 @@ function SearchCodeBox() {
   );
 }
 
-function CodeAnalyzeModal({
-  open,
-  onClose,
-  codeProfile,
-  onJobStarted,
-}: {
-  open: boolean;
-  onClose: () => void;
-  codeProfile: string;
-  onJobStarted: (jobId: string, label: string) => void;
-}) {
-  const [schema, setSchema] = useState("");
-  const [tablesText, setTablesText] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const run = useMutation({
-    mutationFn: () => {
-      const tables = tablesText
-        .split(/[\n,]/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      return apiFetch<{ job_id: string; tables: string[] }>(
-        "/api/code/analyze",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            schema,
-            tables,
-            code_profile: codeProfile,
-          }),
-        },
-      );
-    },
-    onSuccess: (resp) => {
-      onJobStarted(
-        resp.job_id,
-        `Code Analyze ${codeProfile} (${resp.tables.length} table${
-          resp.tables.length === 1 ? "" : "s"
-        })`,
-      );
-      onClose();
-    },
-    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
-  });
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={`Code Analyze — ${codeProfile}`}
-      description="Run the Code Agent against the cached /code-scan for the listed tables. Results write to ~/.amx/code_agent_results.json — the next /run will pick them up automatically."
-      footer={
-        <>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md bg-surface-subtle px-3 py-1.5 text-sm text-ink-muted hover:bg-surface-border"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setError(null);
-              run.mutate();
-            }}
-            disabled={!schema.trim() || !tablesText.trim() || run.isPending}
-            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
-          >
-            {run.isPending ? "Starting…" : "Run analyze"}
-          </button>
-        </>
-      }
-    >
-      <div className="space-y-4">
-        <Field label="Schema">
-          <input
-            type="text"
-            value={schema}
-            onChange={(e) => setSchema(e.target.value)}
-            placeholder="e.g. sales"
-            className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
-          />
-        </Field>
-        <Field label="Tables (comma- or newline-separated)">
-          <textarea
-            value={tablesText}
-            onChange={(e) => setTablesText(e.target.value)}
-            rows={4}
-            placeholder={"orders\ncustomers\n..."}
-            className="w-full rounded-md border border-surface-border bg-surface px-3 py-2 font-mono text-xs"
-          />
-        </Field>
-        {error && (
-          <div className="rounded-md border border-critical/40 bg-critical/5 px-3 py-2 text-xs text-critical">
-            {error}
-          </div>
-        )}
-      </div>
-    </Modal>
-  );
-}
-
 interface CodeProfileHealth {
   name: string;
   paths: string[];
@@ -2623,7 +2479,6 @@ function CodeProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [activeOp, setActiveOp] = useState<{ jobId: string; label: string } | null>(null);
 
   const profiles = useQuery({
@@ -2643,17 +2498,17 @@ function CodeProfilesSection() {
       apiFetch(`/api/profiles/code/${encodeURIComponent(name)}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["profiles", "code"] }),
   });
-  const scan = useMutation({
-    mutationFn: (vars: { profile: string; column_scan: boolean }) =>
-      apiFetch<{ job_id: string }>("/api/code/scan", {
+  // One smart action: scan the repo for table + column references and
+  // (re)build the semantic code index under the active embedding.
+  // Replaces the old Scan / +Cols verbs (columns always included).
+  const index = useMutation({
+    mutationFn: (profile: string) =>
+      apiFetch<{ job_id: string }>("/api/code/index", {
         method: "POST",
-        body: JSON.stringify({ profile: vars.profile, column_scan: vars.column_scan }),
+        body: JSON.stringify({ profile }),
       }),
-    onSuccess: (r, vars) =>
-      setActiveOp({
-        jobId: r.job_id,
-        label: `Scanning ${vars.profile}${vars.column_scan ? " (incl. columns)" : ""}`,
-      }),
+    onSuccess: (r, profile) =>
+      setActiveOp({ jobId: r.job_id, label: `Indexing ${profile}` }),
   });
 
   return (
@@ -2735,30 +2590,12 @@ function CodeProfilesSection() {
                     )}
                     <button
                       type="button"
-                      onClick={() => scan.mutate({ profile: p.name, column_scan: false })}
-                      disabled={scan.isPending || !!activeOp}
+                      onClick={() => index.mutate(p.name)}
+                      disabled={index.isPending || !!activeOp}
                       className="rounded-md bg-accent-soft px-2 py-1 text-xs text-accent-ink hover:opacity-90 disabled:opacity-50"
-                      title="Scan: walk source files for table references"
+                      title="Index: scan source files for table + column references and (re)build the semantic code index under the active embedding"
                     >
-                      Scan
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => scan.mutate({ profile: p.name, column_scan: true })}
-                      disabled={scan.isPending || !!activeOp}
-                      className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-surface-border disabled:opacity-50"
-                      title="Scan + columns: also pick up column-name references (slower)"
-                    >
-                      +Cols
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAnalyzing(p.name)}
-                      disabled={!!activeOp}
-                      className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-accent-soft hover:text-accent-ink disabled:opacity-50"
-                      title="Run the Code Agent against /code-scan output for selected tables"
-                    >
-                      Analyze
+                      Index
                     </button>
                     <button
                       type="button"
@@ -2809,14 +2646,6 @@ function CodeProfilesSection() {
               : []
           }
           onClose={() => setEditing(null)}
-        />
-      )}
-      {analyzing && (
-        <CodeAnalyzeModal
-          open
-          codeProfile={analyzing}
-          onClose={() => setAnalyzing(null)}
-          onJobStarted={(jobId, label) => setActiveOp({ jobId, label })}
         />
       )}
       <AlertDialog

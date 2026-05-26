@@ -66,7 +66,7 @@ def test_cancel_during_ingest_stops_worker_between_documents(
     monkeypatch.setattr("amx.docs.rag.RAGStore", lambda *a, **kw: fake_store)
 
     resp = client.post(
-        "/api/docs/ingest",
+        "/api/docs/index",
         headers=auth_headers,
         json={"profile": "x"},
     )
