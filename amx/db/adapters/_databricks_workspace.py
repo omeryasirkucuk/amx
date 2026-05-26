@@ -105,6 +105,44 @@ class DatabricksWorkspaceClient:
         resp = self._get("/api/2.0/workspace/get-status", params={"object_id": object_id})
         return resp.json()["path"]
 
+    def workspace_object(self, object_id: str) -> dict[str, Any]:
+        """Return the workspace get-status object (path, language, …)."""
+        return self._get("/api/2.0/workspace/get-status", params={"object_id": object_id}).json()
+
+    def query_definition(self, query_id: str) -> dict[str, Any]:
+        """Return a saved/history query's definition (query_text, name, …)."""
+        return self._get(f"/api/2.0/sql/queries/{query_id}").json()
+
+    def resolve_entity_name(self, *, kind: str, external_id: str) -> str | None:
+        """Best-effort display name for a lineage entity id.
+
+        The Unity Catalog lineage response identifies producer / consumer
+        assets by id only (notebookId / jobId / pipelineId / queryId), so
+        this turns an id into a human name via the matching REST get.
+        Returns ``None`` on any failure — the caller falls back to a
+        ``"<kind> <id>"`` placeholder rather than failing the fetch.
+        """
+        if not external_id:
+            return None
+        try:
+            if kind == "notebook":
+                path = self.path_for_object_id(external_id)
+                return path.rsplit("/", 1)[-1] if path else None
+            if kind == "job":
+                body = self._get("/api/2.2/jobs/get", params={"job_id": external_id}).json()
+                return (body.get("settings") or {}).get("name") or None
+            if kind == "pipeline":
+                body = self._get(f"/api/2.0/pipelines/{external_id}").json()
+                return body.get("name") or (body.get("spec") or {}).get("name") or None
+            if kind == "query":
+                body = self._get(f"/api/2.0/sql/queries/{external_id}").json()
+                return body.get("display_name") or body.get("name") or None
+        except (DatabricksApiError, DatabricksAuthError, KeyError, ValueError):
+            return None
+        except Exception:  # noqa: BLE001 — name resolution is best-effort
+            return None
+        return None
+
     # ---- jobs ---------------------------------------------------------
 
     def list_jobs_headers(self) -> Iterator[dict[str, Any]]:

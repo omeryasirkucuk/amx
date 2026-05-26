@@ -89,8 +89,10 @@ export function convertLoadedCanvas(loaded: LoadedCanvas): ConvertedCanvas {
   }
 
   const entityIdToNodeId = new Map<number, string>();
+  const entityIdToKind = new Map<number, string>();
   for (const n of loaded.nodes) {
     entityIdToNodeId.set(n.entity_id, nodeIdFor(n));
+    entityIdToKind.set(n.entity_id, n.kind);
   }
 
   const edges: CanvasEdge[] = [];
@@ -98,17 +100,148 @@ export function convertLoadedCanvas(loaded: LoadedCanvas): ConvertedCanvas {
     const src = entityIdToNodeId.get(e.from_entity_id);
     const tgt = entityIdToNodeId.get(e.to_entity_id);
     if (!src || !tgt) continue;
-    edges.push(loadedEdgeToCanvasEdge(e, src, tgt));
+    edges.push(
+      loadedEdgeToCanvasEdge(
+        e,
+        src,
+        tgt,
+        entityIdToKind.get(e.from_entity_id) ?? "table",
+        entityIdToKind.get(e.to_entity_id) ?? "table",
+      ),
+    );
   }
 
+  const collapsed = collapseAssetsIntoBuckets(nodes, edges);
   return {
     primaryProfile: loaded.primary_profile,
     artifactId: loaded.artifact_id,
     artifactName: loaded.name,
     anchorEntityId: loaded.anchor_entity_id,
-    nodes,
-    edges,
+    nodes: collapsed.nodes,
+    edges: collapsed.edges,
     multiProfile,
+  };
+}
+
+const _BUCKET_ASSET_KINDS = new Set([
+  "notebook",
+  "query",
+  "stream",
+  "pipeline",
+  "streamlit_app",
+  "job",
+  "vector_search_index",
+  "dashboard",
+  "external",
+]);
+
+/** Fold each table's producer / consumer asset nodes into a collapsed
+ *  "Assets that write / read data" bucket (Databricks-style lean graph).
+ *  Member asset nodes + their edges start hidden; the bucket expands
+ *  them on click. */
+function collapseAssetsIntoBuckets(
+  nodes: CanvasNode[],
+  edges: CanvasEdge[],
+): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const kindOf = (id: string): string => String((byId.get(id)?.data as { kind?: string })?.kind || "");
+  const isAsset = (id: string) => _BUCKET_ASSET_KINDS.has(kindOf(id));
+  const isTable = (id: string) => kindOf(id) === "table";
+
+  interface Grp {
+    tableId: string;
+    dir: "producer" | "consumer";
+    assetIds: Set<string>;
+    edgeIds: Set<string>;
+    kinds: Set<string>;
+  }
+  const groups = new Map<string, Grp>();
+  for (const e of edges) {
+    let tableId = "";
+    let assetId = "";
+    let dir: "producer" | "consumer" | null = null;
+    if (isAsset(e.source) && isTable(e.target)) {
+      assetId = e.source;
+      tableId = e.target;
+      dir = "producer";
+    } else if (isTable(e.source) && isAsset(e.target)) {
+      assetId = e.target;
+      tableId = e.source;
+      dir = "consumer";
+    }
+    if (!dir) continue;
+    const key = `${tableId}|${dir}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { tableId, dir, assetIds: new Set(), edgeIds: new Set(), kinds: new Set() };
+      groups.set(key, g);
+    }
+    g.assetIds.add(assetId);
+    g.edgeIds.add(e.id);
+    g.kinds.add(kindOf(assetId));
+  }
+  if (groups.size === 0) return { nodes, edges };
+
+  const hiddenAssets = new Set<string>();
+  const hiddenEdges = new Set<string>();
+  const bucketNodes: CanvasNode[] = [];
+  const connectors: CanvasEdge[] = [];
+  for (const [key, g] of groups) {
+    const table = byId.get(g.tableId);
+    if (!table) continue;
+    g.assetIds.forEach((a) => hiddenAssets.add(a));
+    g.edgeIds.forEach((x) => hiddenEdges.add(x));
+    const bucketId = `bucket-${key}`;
+    const connectorId = `bucketedge-${key}`;
+    const pos =
+      g.dir === "producer"
+        ? { x: table.position.x - 360, y: table.position.y }
+        : { x: table.position.x + 380, y: table.position.y };
+    bucketNodes.push({
+      id: bucketId,
+      type: "asset-bucket",
+      position: pos,
+      data: {
+        kind: "asset-bucket",
+        direction: g.dir,
+        count: g.assetIds.size,
+        assetKinds: [...g.kinds],
+        memberNodeIds: [...g.assetIds],
+        memberEdgeIds: [...g.edgeIds],
+        connectorEdgeId: connectorId,
+      },
+    });
+    const edgeData = {
+      relationshipType: "lineage_native_asset",
+      source: "databricks_native_lineage",
+      confidence: 1,
+      verdict: "",
+    };
+    connectors.push(
+      g.dir === "producer"
+        ? {
+            id: connectorId,
+            source: bucketId,
+            target: g.tableId,
+            sourceHandle: "out",
+            targetHandle: "__table__",
+            type: "column-edge",
+            data: edgeData,
+          }
+        : {
+            id: connectorId,
+            source: g.tableId,
+            target: bucketId,
+            sourceHandle: "__table__",
+            targetHandle: "in",
+            type: "column-edge",
+            data: edgeData,
+          },
+    );
+  }
+  return {
+    nodes: nodes.map((n) => (hiddenAssets.has(n.id) ? { ...n, hidden: true } : n)).concat(bucketNodes),
+    edges: edges.map((e) => (hiddenEdges.has(e.id) ? { ...e, hidden: true } : e)).concat(connectors),
   };
 }
 
@@ -149,6 +282,7 @@ export function loadedNodeToCanvasNode(
         dbProfile: opts.multiProfile ? n.profile : undefined,
         subtitle: n.schema && n.schema !== "__assets" ? n.schema : undefined,
         metadataState: n.metadata_state === "name_only" ? "name_only" : undefined,
+        sourceRemoteId: n.source_remote_id ?? undefined,
       } satisfies AssetNodeData,
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
@@ -208,10 +342,24 @@ export function loadedNodeToCanvasNode(
   };
 }
 
+/** Pick the ReactFlow handle id for one edge endpoint.
+ *  Column edges anchor to the column handle; everything else anchors
+ *  to the node-level handle that always exists — ``__table__`` on table
+ *  nodes, ``out``/``in`` on asset nodes — so asset↔table and columnless
+ *  table edges connect instead of floating. */
+function endpointHandle(column: string, kind: string, side: "source" | "target"): string {
+  if (column) return column;
+  if (kind === "table") return "__table__";
+  // asset kinds (notebook/job/pipeline/query/dashboard/vector_search_index/external)
+  return side === "source" ? "out" : "in";
+}
+
 export function loadedEdgeToCanvasEdge(
   e: LoadedEdge,
   source: string,
   target: string,
+  sourceKind = "table",
+  targetKind = "table",
 ): CanvasEdge {
   // Auto-derived defaults from the relationship type / score.
   const defaultColor = EDGE_COLORS[e.relationship_type] ?? EDGE_COLORS.unknown;
@@ -230,8 +378,8 @@ export function loadedEdgeToCanvasEdge(
     id: `e-${e.id}`,
     source,
     target,
-    sourceHandle: e.from_column || undefined,
-    targetHandle: e.to_column || undefined,
+    sourceHandle: endpointHandle(e.from_column, sourceKind, "source"),
+    targetHandle: endpointHandle(e.to_column, targetKind, "target"),
     type: "column-edge",
     data: {
       relationshipType: e.relationship_type,

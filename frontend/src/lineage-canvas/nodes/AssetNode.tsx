@@ -17,6 +17,7 @@ import {
   Code2,
   GitBranch,
   LayoutDashboard,
+  MoreHorizontal,
   Network,
   ScrollText,
   Timer,
@@ -49,6 +50,21 @@ interface AssetNodeData {
   /** "name_only" greys the node — discovered by native lineage fetch
    *  without read access; only its name + relationship are known. */
   metadataState?: "full" | "name_only";
+  /** remote_<kind>s.id once ingested — enables the open-in-Assets
+   *  drill-in (new tab). Undefined on name-only ghosts. */
+  sourceRemoteId?: number;
+}
+
+// Asset kinds the Assets page can open in its detail drawer.
+const ASSETS_PAGE_KINDS = new Set(["notebook", "query", "job", "pipeline", "stream"]);
+
+function openInAssets(kind: AssetKind, remoteId: number) {
+  // New tab so an unsaved lineage canvas isn't lost.
+  window.open(
+    `/assets?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(String(remoteId))}`,
+    "_blank",
+    "noopener",
+  );
 }
 
 const ICONS: Record<AssetKind, LucideIcon> = {
@@ -125,6 +141,22 @@ function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
             {data.dbProfile}
           </span>
         )}
+        {data.sourceRemoteId != null && ASSETS_PAGE_KINDS.has(data.kind) && (
+          <button
+            type="button"
+            className={clsx(
+              "inline-flex h-5 w-5 items-center justify-center rounded text-ink-dim hover:bg-surface hover:text-ink",
+              !data.dbProfile && "ml-auto",
+            )}
+            title="Open in Assets (new tab)"
+            onClick={(e) => {
+              e.stopPropagation();
+              openInAssets(data.kind, data.sourceRemoteId as number);
+            }}
+          >
+            <MoreHorizontal size={13} />
+          </button>
+        )}
       </div>
       <div className="px-3 py-2">
         <div
@@ -142,6 +174,17 @@ function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
           </div>
         )}
       </div>
+      {/* Both handles so asset↔table lineage edges connect in either
+          direction: an asset that writes a table (asset → table, uses
+          ``out``) and a table consumed by an asset (table → asset,
+          uses ``in``). */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="in"
+        className="lcv-handle"
+        style={{ background: color }}
+      />
       <Handle
         type="source"
         position={Position.Right}

@@ -40,6 +40,11 @@ class _FakeClient:
         self.column_calls.append((table_name, column_name))
         return self._column
 
+    def resolve_entity_name(self, *, kind: str, external_id: str):
+        # Mirror the real client; return a name so the provider's
+        # name-resolution post-pass has something to apply.
+        return f"{kind}-{external_id}-name"
+
 
 def test_provider_maps_tables_and_producer_consumer_assets() -> None:
     resp = {

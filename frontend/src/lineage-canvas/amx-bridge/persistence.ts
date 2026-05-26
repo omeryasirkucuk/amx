@@ -171,6 +171,9 @@ export interface LoadedNode {
   /** "full" (default) or "name_only" — native lineage fetch discovered
    *  the entity without read access, so only its name is known. */
   metadata_state?: string;
+  /** remote_<kind>s.id for ingested assets — drives the Assets deep-link
+   *  on the canvas. Absent on name-only ghosts. */
+  source_remote_id?: number | null;
 }
 
 export interface LoadedEdge {

@@ -114,6 +114,11 @@ function HiddenHandles({ columns }: { columns: TableNodeData["columns"] }) {
         visibility: "hidden",
       }}
     >
+      {/* Always-present table-level handles so columnless edges
+          (asset → table lineage, FK/native table edges) anchor to the
+          node even when per-column handles also exist. */}
+      <Handle type="target" position={Position.Left} id="__table__" className="lcv-handle" />
+      <Handle type="source" position={Position.Right} id="__table__" className="lcv-handle" />
       {columns.map((c) => (
         <div key={c.name} className="lcv-col-row" style={{ position: "relative" }}>
           <Handle

@@ -130,6 +130,28 @@ export interface AssetNodeData {
   subtitle?: string;
   /** Defaults to "full"; "name_only" greys the node. */
   metadataState?: MetadataState;
+  /** ``remote_<kind>s.id`` once the asset is ingested — lets the node
+   *  deep-link to the Assets page (new tab) for drill-in. Undefined on
+   *  name-only ghosts (nothing to inspect). */
+  sourceRemoteId?: number;
+}
+
+/** A collapsed "Assets that write / read data" bucket (Databricks-style).
+ *  Stands in for a table's producer / consumer asset nodes so the graph
+ *  stays table-centric; clicking it reveals the individual assets. */
+export interface AssetBucketNodeData {
+  kind: "asset-bucket";
+  /** "producer" = assets that write the table; "consumer" = read it. */
+  direction: "producer" | "consumer";
+  count: number;
+  /** Distinct asset kinds inside, for the logo row. */
+  assetKinds: string[];
+  /** Canvas node ids of the member asset nodes this bucket collapses. */
+  memberNodeIds: string[];
+  /** Canvas edge ids (asset↔table) hidden while collapsed. */
+  memberEdgeIds: string[];
+  /** The bucket↔table connector edge id, hidden once expanded. */
+  connectorEdgeId: string;
 }
 
 export type CanvasNodeData =
@@ -137,7 +159,8 @@ export type CanvasNodeData =
   | OperatorNodeData
   | CommentNodeData
   | LogoNodeData
-  | AssetNodeData;
+  | AssetNodeData
+  | AssetBucketNodeData;
 
 export type CanvasNode = RFNode<CanvasNodeData>;
 
