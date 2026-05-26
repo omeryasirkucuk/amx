@@ -85,10 +85,15 @@ live workspace. The codebase already assumes this in
 
 ### B. Click-to-open assets with lazy ingest (fixes problem 2b)
 
-- **Drop eager ingest from the fetch path.** Remove the `ingester` wiring in
-  `service.py` and the `self.ingester(...)` call in `materializer.py`. Asset
-  nodes are materialized as `name_only` rows that carry `kind` + `external_id`
-  and an "ingestable" flag — enough for the frontend to request ingest later.
+- **Notebooks and jobs are already lazy-ready.** The materializer already records
+  them as `name_only` ghost rows that preserve `kind` + `external_id` (the ghost
+  bridge key is `"<kind>#ext:<external_id>"`). No fetch-side content ingest exists
+  for them today, so nothing has to be removed — the fetch already does the right,
+  lean thing for the user's two problem kinds.
+- **Queries keep their existing eager ingest.** The only eager content pull on the
+  fetch path is for saved queries, which already drill in and which the user did
+  not flag. Leaving it untouched avoids a regression; lazy ingest is added for the
+  kinds that need it (notebook / job / pipeline) without disturbing queries.
 - **New endpoint:** `POST /api/lineage/asset/ingest` with body
   `{ profile, kind, external_id }`. It invokes the existing
   `IngestAssetsService` with a single-asset `selection`, creating the matching
