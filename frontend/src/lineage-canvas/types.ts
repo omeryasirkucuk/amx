@@ -68,6 +68,9 @@ export interface TableNodeData {
   /** Storage format label (e.g. "Delta") surfaced in the detail panel.
    *  Optional — omitted when unknown. */
   format?: string;
+  /** Owning host (e.g. the Databricks workspace host) used to build the
+   *  external deep-link. Undefined when unknown. */
+  host?: string;
 }
 
 export interface LogoNodeData {
@@ -144,6 +147,12 @@ export interface AssetNodeData {
    *  deep-link to the Assets page (new tab) for drill-in. Undefined on
    *  name-only ghosts (nothing to inspect). */
   sourceRemoteId?: number;
+  /** External system identifier (e.g. Databricks object id) — drives
+   *  click-to-ingest and external deep-links. Undefined when unknown. */
+  externalId?: string;
+  /** Owning host (e.g. the Databricks workspace host) used to build the
+   *  external deep-link. Undefined when unknown. */
+  host?: string;
 }
 
 /** A collapsed group node (Databricks-style "Assets that write/read

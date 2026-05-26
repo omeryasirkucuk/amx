@@ -200,6 +200,13 @@ export interface LoadedNode {
   /** remote_<kind>s.id for ingested assets — drives the Assets deep-link
    *  on the canvas. Absent on name-only ghosts. */
   source_remote_id?: number | null;
+  /** External system identifier (e.g. the Databricks object id) used to
+   *  build deep-links and resolve the asset for click-to-ingest. Null /
+   *  absent when the backend has no external handle. */
+  external_id?: string | null;
+  /** Owning host (e.g. the Databricks workspace host) used to build the
+   *  external deep-link. Empty / absent when unknown. */
+  host?: string;
 }
 
 export interface LoadedEdge {
