@@ -303,3 +303,54 @@ def test_post_fetch_400_for_unsupported_backend(seeded_hs, client, auth_headers)
         json={"profile": "local", "fqn": "public.orders"},
     )
     assert r.status_code == 400
+
+
+def test_asset_ingest_endpoint_returns_remote_id(client, auth_headers, monkeypatch):
+    import amx.web.routers.lineage as lineage_router
+
+    monkeypatch.setattr(
+        lineage_router,
+        "_ingest_one_asset_for_profile",
+        lambda *, profile, kind, external_id: 42,
+    )
+    resp = client.post(
+        "/api/lineage/asset/ingest",
+        headers=auth_headers,
+        json={"profile": "db", "kind": "notebook", "external_id": "123"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["remote_id"] == 42
+
+
+def test_asset_external_id_parse():
+    from amx.web.routers.lineage import _asset_external_id_from_table_name
+
+    assert _asset_external_id_from_table_name("notebook", "notebook#ext:123") == "123"
+    assert _asset_external_id_from_table_name("job", "job#ext:9") == "9"
+    # name-slug ghosts (no external id) and full bridges return None
+    assert _asset_external_id_from_table_name("notebook", "notebook#ext:name:Foo") is None
+    assert _asset_external_id_from_table_name("notebook", "notebook#42") is None
+
+
+def test_profile_host_normalizes():
+    from types import SimpleNamespace
+
+    from amx.web.routers.lineage import _profile_host
+
+    def cfg_with(backend, host):
+        return SimpleNamespace(db_profiles={"p": SimpleNamespace(backend=backend, host=host)})
+
+    # Databricks: scheme + trailing slash stripped to a bare host
+    assert (
+        _profile_host(cfg_with("databricks", "https://adb-1.azuredatabricks.net/"), "p")
+        == "adb-1.azuredatabricks.net"
+    )
+    # Already-bare host passes through
+    assert (
+        _profile_host(cfg_with("databricks", "adb-1.azuredatabricks.net"), "p")
+        == "adb-1.azuredatabricks.net"
+    )
+    # Non-Databricks backend → empty
+    assert _profile_host(cfg_with("snowflake", "x.snowflakecomputing.com"), "p") == ""
+    # Missing profile → empty
+    assert _profile_host(cfg_with("databricks", "h"), "missing") == ""

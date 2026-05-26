@@ -10,11 +10,13 @@
  * side.
  */
 
-import { memo } from "react";
+import { memo, useState } from "react";
 import { Handle, NodeProps, Position } from "reactflow";
 import {
   Boxes,
   Code2,
+  Download,
+  ExternalLink,
   GitBranch,
   LayoutDashboard,
   MoreHorizontal,
@@ -27,6 +29,7 @@ import {
 import clsx from "clsx";
 
 import { NodeDeleteToolbar } from "../components/NodeDeleteToolbar";
+import { databricksDeepLink } from "../logos/databricksDeepLink";
 
 export type AssetKind =
   | "notebook"
@@ -53,10 +56,23 @@ interface AssetNodeData {
   /** remote_<kind>s.id once ingested — enables the open-in-Assets
    *  drill-in (new tab). Undefined on name-only ghosts. */
   sourceRemoteId?: number;
+  /** External system identifier (e.g. Databricks object id) — drives
+   *  click-to-ingest and external deep-links. Undefined when unknown. */
+  externalId?: string;
+  /** Owning host (e.g. the Databricks workspace host) used to build the
+   *  external deep-link. Undefined when unknown. */
+  host?: string;
+  /** Real owning DB profile, always populated — used as the POST body
+   *  for click-to-ingest (unlike ``dbProfile``, which is display-only
+   *  and suppressed on single-profile canvases). */
+  profile?: string;
 }
 
 // Asset kinds the Assets page can open in its detail drawer.
 const ASSETS_PAGE_KINDS = new Set(["notebook", "query", "job", "pipeline", "stream"]);
+
+// Asset kinds that can be lazily ingested from the platform on demand.
+const INGESTABLE_KINDS = new Set<AssetKind>(["notebook", "job", "pipeline"]);
 
 function openInAssets(kind: AssetKind, remoteId: number) {
   // New tab so an unsaved lineage canvas isn't lost.
@@ -111,6 +127,44 @@ function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
   const color = COLORS[data.kind] ?? "#a78bfa";
   const kindLabel = LABELS[data.kind] ?? data.kind;
   const nameOnly = data.metadataState === "name_only";
+  const [ingesting, setIngesting] = useState(false);
+
+  // Lazy ingest: a name-only ghost we know the external id for can be
+  // pulled into AMX on demand, then opened in the Assets page.
+  const canIngest =
+    nameOnly && !!data.externalId && INGESTABLE_KINDS.has(data.kind);
+
+  async function ingestAndOpen() {
+    if (!data.externalId || !data.profile) return;
+    setIngesting(true);
+    try {
+      const resp = await fetch("/api/lineage/asset/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile: data.profile,
+          kind: data.kind,
+          external_id: data.externalId,
+        }),
+      });
+      if (!resp.ok) return;
+      const { remote_id } = (await resp.json()) as { remote_id: number };
+      openInAssets(data.kind, remote_id);
+    } catch {
+      // Network/parse failure — leave the node as-is; the finally clause
+      // clears the loading state so the control is clickable again.
+    } finally {
+      setIngesting(false);
+    }
+  }
+
+  // External deep-link (e.g. open this asset in the Databricks workspace).
+  const href = databricksDeepLink({
+    kind: data.kind,
+    host: data.host,
+    externalId: data.externalId,
+  });
+
   return (
     <div
       className={clsx(
@@ -136,27 +190,55 @@ function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
             name only
           </span>
         )}
-        {data.dbProfile && (
-          <span className="ml-auto rounded bg-surface-subtle px-1 text-[10px] font-medium text-ink-dim">
-            {data.dbProfile}
-          </span>
-        )}
-        {data.sourceRemoteId != null && ASSETS_PAGE_KINDS.has(data.kind) && (
-          <button
-            type="button"
-            className={clsx(
-              "inline-flex h-5 w-5 items-center justify-center rounded text-ink-dim hover:bg-surface hover:text-ink",
-              !data.dbProfile && "ml-auto",
-            )}
-            title="Open in Assets (new tab)"
-            onClick={(e) => {
-              e.stopPropagation();
-              openInAssets(data.kind, data.sourceRemoteId as number);
-            }}
-          >
-            <MoreHorizontal size={13} />
-          </button>
-        )}
+        <div className="ml-auto flex items-center gap-1">
+          {data.dbProfile && (
+            <span className="rounded bg-surface-subtle px-1 text-[10px] font-medium text-ink-dim">
+              {data.dbProfile}
+            </span>
+          )}
+          {href && (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open in Databricks"
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-ink-dim hover:bg-surface hover:text-ink"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <ExternalLink size={12} />
+            </a>
+          )}
+          {canIngest && (
+            <button
+              type="button"
+              disabled={ingesting}
+              className={clsx(
+                "inline-flex h-5 w-5 items-center justify-center rounded text-ink-dim hover:bg-surface hover:text-ink",
+                ingesting && "animate-pulse opacity-60",
+              )}
+              title="Fetch & open in Assets"
+              onClick={(e) => {
+                e.stopPropagation();
+                void ingestAndOpen();
+              }}
+            >
+              <Download size={13} />
+            </button>
+          )}
+          {data.sourceRemoteId != null && ASSETS_PAGE_KINDS.has(data.kind) && (
+            <button
+              type="button"
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-ink-dim hover:bg-surface hover:text-ink"
+              title="Open in Assets (new tab)"
+              onClick={(e) => {
+                e.stopPropagation();
+                openInAssets(data.kind, data.sourceRemoteId as number);
+              }}
+            >
+              <MoreHorizontal size={13} />
+            </button>
+          )}
+        </div>
       </div>
       <div className="px-3 py-2">
         <div

@@ -355,9 +355,14 @@ export function loadedNodeToCanvasNode(
         label: n.label || n.table || kind,
         entityId: n.entity_id,
         dbProfile: opts.multiProfile ? n.profile : undefined,
+        // Real profile, always populated — drives click-to-ingest
+        // (dbProfile is display-only and suppressed single-profile).
+        profile: n.profile,
         subtitle: n.schema && n.schema !== "__assets" ? n.schema : undefined,
         metadataState: n.metadata_state === "name_only" ? "name_only" : undefined,
         sourceRemoteId: n.source_remote_id ?? undefined,
+        externalId: n.external_id ?? undefined,
+        host: n.host || undefined,
       } satisfies AssetNodeData,
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
@@ -411,6 +416,7 @@ export function loadedNodeToCanvasNode(
       isAnchor: opts.isAnchor,
       logoKey: n.logo_key || undefined,
       metadataState: n.metadata_state === "name_only" ? "name_only" : undefined,
+      host: n.host || undefined,
     } satisfies TableNodeData,
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
