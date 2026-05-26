@@ -139,6 +139,10 @@ export interface AssetNodeData {
   entityId?: number;
   /** Owning DB profile chip (shown when multi-profile is in scope). */
   dbProfile?: string;
+  /** Real owning DB profile, always populated (unlike ``dbProfile``,
+   *  which is suppressed on single-profile canvases). Used as the
+   *  POST body for click-to-ingest; never shown in the UI. */
+  profile?: string;
   /** Optional one-line subtitle (e.g. workspace path). */
   subtitle?: string;
   /** Defaults to "full"; "name_only" greys the node. */
