@@ -17,6 +17,7 @@ read.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from amx.db.adapters._databricks_workspace import (
@@ -61,7 +62,32 @@ class DatabricksLineageProvider:
         if with_columns and anchor_columns:
             result.edges.extend(self._column_edges(fqn, anchor, anchor_columns))
 
+        self._resolve_entity_names(result)
         return result
+
+    def _resolve_entity_names(self, result: P.NativeLineageResult) -> None:
+        """Replace ``<kind> <id>`` placeholders with real asset names.
+
+        The lineage response only carries entity ids; one REST get per
+        distinct (kind, id) turns them into human names. Cached so a
+        notebook referenced by several edges costs one call.
+        """
+        cache: dict[tuple[str, str], str | None] = {}
+
+        def named(node: P.NativeLineageNode) -> P.NativeLineageNode:
+            if node.kind not in P.ASSET_KINDS or not node.external_id:
+                return node
+            key = (node.kind, node.external_id)
+            if key not in cache:
+                cache[key] = self._client.resolve_entity_name(
+                    kind=node.kind, external_id=node.external_id
+                )
+            name = cache[key]
+            return replace(node, name=name) if name else node
+
+        result.edges = [
+            replace(e, source=named(e.source), target=named(e.target)) for e in result.edges
+        ]
 
     # ── column lineage ───────────────────────────────────────────────
 

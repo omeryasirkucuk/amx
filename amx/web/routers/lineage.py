@@ -64,6 +64,32 @@ def _artifact_record_to_dict(record: Any) -> dict[str, Any]:
     return dict(vars(record)) if hasattr(record, "__dict__") else dict(record)
 
 
+def _columns_from_catalog_entities(
+    hs: Any, *, db_profile: str, database: str, schema: str, table: str
+) -> list[dict[str, Any]]:
+    """Column rail from catalog_entities column rows (native-fetch path).
+
+    Native lineage fetch caches columns as catalog_entities ``column``
+    rows rather than into ``column_comments_cache``; this surfaces them
+    for the by-id canvas read. Returns ``[]`` when none are cached.
+    """
+    try:
+        with hs._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT column_name, dtype FROM catalog_entities
+                WHERE db_profile = ? AND schema_name = ? AND table_name = ?
+                  AND entity_kind = 'column' AND column_name IS NOT NULL
+                  AND (database_name = ? OR ? = '')
+                ORDER BY id
+                """,
+                (db_profile, schema, table, database, database),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    return [{"name": str(r[0]), "dtype": str(r[1] or "")} for r in rows if r[0]]
+
+
 def _resolve_profile(cfg: AMXConfig, profile: str | None) -> str:
     name = (profile or getattr(cfg, "active_db_profile", "") or "").strip()
     if not name:
@@ -823,7 +849,8 @@ def get_artifact_by_id(
         with hs._connect() as conn:
             rows = conn.execute(
                 f"SELECT id, database_name, schema_name, table_name, "
-                f"       column_name, entity_kind, search_text, metadata_state "
+                f"       column_name, entity_kind, search_text, metadata_state, "
+                f"       source_remote_id "
                 f"FROM catalog_entities WHERE id IN ({placeholders})",
                 tuple(ids),
             ).fetchall()
@@ -837,6 +864,7 @@ def get_artifact_by_id(
                 "column": str(r[4] or ""),
                 "kind": kind,
                 "metadata_state": str(r[7] or "full"),
+                "source_remote_id": int(r[8]) if r[8] is not None else None,
             }
             # Operator entities stash their op_kind + expression
             # inside ``search_text`` JSON. Surface them as first-class
@@ -941,6 +969,9 @@ def get_artifact_by_id(
             node_entry["expression"] = meta.get("expression", "")
         elif meta.get("kind") in _ASSET_NODE_KINDS:
             node_entry["label"] = meta.get("label", "")
+            # remote_<kind>s.id (when ingested) so the canvas can deep-link
+            # to the Assets page for drill-in. None on name-only ghosts.
+            node_entry["source_remote_id"] = meta.get("source_remote_id")
         elif meta.get("kind") == "table":
             cols = table_columns.get(
                 (
@@ -951,6 +982,17 @@ def get_artifact_by_id(
                 ),
                 [],
             )
+            if not cols:
+                # Fallback to catalog_entities column rows — native
+                # lineage fetch writes columns there (not into the
+                # column_comments_cache the bulk read above uses).
+                cols = _columns_from_catalog_entities(
+                    hs,
+                    db_profile=str(row[1] or ""),
+                    database=meta.get("database", ""),
+                    schema=meta.get("schema", ""),
+                    table=meta.get("table", ""),
+                )
             if cols:
                 node_entry["columns"] = cols
         nodes_out.append(node_entry)
