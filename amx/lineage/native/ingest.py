@@ -38,8 +38,10 @@ def build_asset_ingester(*, profile: str, client: Any, catalog: Any) -> AssetIng
         if not node.external_id:
             return None
         try:
-            if node.kind == P.NOTEBOOK:
-                return _ingest_notebook(conn, profile, client, catalog, node.external_id)
+            # Notebooks are intentionally not content-ingested here:
+            # resolving a notebook id → path needs a full workspace scan
+            # (minutes). Notebook content comes from the normal Assets
+            # ingest; native fetch only reconciles to it.
             if node.kind == P.QUERY:
                 return _ingest_query(conn, profile, client, catalog, node.external_id)
         except Exception as exc:  # noqa: BLE001 — no access / API shape → stay name-only
@@ -53,38 +55,6 @@ def build_asset_ingester(*, profile: str, client: Any, catalog: Any) -> AssetIng
         return None
 
     return ingest
-
-
-def _ingest_notebook(
-    conn: Any, profile: str, client: Any, catalog: Any, object_id: str
-) -> int | None:
-    # Resolve id → path via the cached workspace map (get-status rejects
-    # object_id). None for deleted / non-live notebooks → stay name-only.
-    path = client.notebook_path(object_id)
-    if not path:
-        return None
-    source = client.export_notebook_source(workspace_path=path)
-    dto = SimpleNamespace(
-        platform="databricks",
-        external_id=object_id,
-        name=path.rsplit("/", 1)[-1] or path,
-        workspace_path=path,
-        qualified_name=path,
-        language="PYTHON",
-        source_text=source,
-        source_hash=hashlib.sha256(source.encode("utf-8")).hexdigest(),
-        last_modified_at=None,
-        last_modified_by=None,
-        owner=None,
-        cell_count=source.count("# COMMAND ----------") + 1,
-    )
-    catalog._upsert_remote_notebooks(conn, profile, [dto], _iso_now())
-    row = conn.execute(
-        "SELECT id FROM remote_notebooks WHERE profile_name = ? AND platform = 'databricks' "
-        "AND external_id = ?",
-        (profile, object_id),
-    ).fetchone()
-    return int(row[0]) if row else None
 
 
 def _ingest_query(conn: Any, profile: str, client: Any, catalog: Any, query_id: str) -> int | None:
