@@ -320,3 +320,13 @@ def test_asset_ingest_endpoint_returns_remote_id(client, auth_headers, monkeypat
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["remote_id"] == 42
+
+
+def test_asset_external_id_parse():
+    from amx.web.routers.lineage import _asset_external_id_from_table_name
+
+    assert _asset_external_id_from_table_name("notebook", "notebook#ext:123") == "123"
+    assert _asset_external_id_from_table_name("job", "job#ext:9") == "9"
+    # name-slug ghosts (no external id) and full bridges return None
+    assert _asset_external_id_from_table_name("notebook", "notebook#ext:name:Foo") is None
+    assert _asset_external_id_from_table_name("notebook", "notebook#42") is None
