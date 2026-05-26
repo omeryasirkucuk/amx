@@ -40,6 +40,9 @@ class DatabricksWorkspaceClient:
         self.host = stripped
         self._headers = {"Authorization": f"Bearer {token}"}
         self._timeout = timeout
+        # Lazily-built ``object_id -> path`` index for notebooks (see
+        # ``notebook_path``); None until first lookup.
+        self._notebook_path_cache: dict[str, str] | None = None
 
     # ---- workspace ----------------------------------------------------
 
@@ -105,9 +108,26 @@ class DatabricksWorkspaceClient:
         resp = self._get("/api/2.0/workspace/get-status", params={"object_id": object_id})
         return resp.json()["path"]
 
-    def workspace_object(self, object_id: str) -> dict[str, Any]:
-        """Return the workspace get-status object (path, language, …)."""
-        return self._get("/api/2.0/workspace/get-status", params={"object_id": object_id}).json()
+    def notebook_path(self, object_id: str) -> str | None:
+        """Resolve a notebook id → workspace path via a cached object map.
+
+        ``get-status`` only accepts ``path`` (not ``object_id``), and the
+        Unity Catalog lineage response identifies notebooks by id. So we
+        build an ``object_id → path`` index once from the workspace
+        listing (cached for this client's lifetime) and look the id up.
+        Returns ``None`` for ids not in the live workspace (e.g. deleted
+        notebooks) — the caller then keeps the id as a placeholder.
+        """
+        if self._notebook_path_cache is None:
+            cache: dict[str, str] = {}
+            try:
+                for obj in self.list_workspace_objects(path="/"):
+                    if obj.get("object_type") == "NOTEBOOK" and obj.get("object_id") is not None:
+                        cache[str(obj["object_id"])] = str(obj.get("path") or "")
+            except Exception:  # noqa: BLE001 — best-effort; leave cache partial/empty
+                pass
+            self._notebook_path_cache = cache
+        return self._notebook_path_cache.get(str(object_id)) or None
 
     def query_definition(self, query_id: str) -> dict[str, Any]:
         """Return a saved/history query's definition (query_text, name, …)."""
@@ -126,7 +146,9 @@ class DatabricksWorkspaceClient:
             return None
         try:
             if kind == "notebook":
-                path = self.path_for_object_id(external_id)
+                # object_id -> path via the cached workspace map (get-status
+                # rejects object_id). None for deleted / non-live ids.
+                path = self.notebook_path(external_id)
                 return path.rsplit("/", 1)[-1] if path else None
             if kind == "job":
                 body = self._get("/api/2.2/jobs/get", params={"job_id": external_id}).json()
