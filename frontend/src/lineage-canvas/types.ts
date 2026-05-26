@@ -136,21 +136,28 @@ export interface AssetNodeData {
   sourceRemoteId?: number;
 }
 
-/** A collapsed "Assets that write / read data" bucket (Databricks-style).
- *  Stands in for a table's producer / consumer asset nodes so the graph
- *  stays table-centric; clicking it reveals the individual assets. */
+/** A collapsed group node (Databricks-style "Assets that write/read
+ *  data" or a "catalog.schema (N tables)" group). Keeps the graph lean:
+ *  the canvas shows the anchor + a few buckets; clicking a bucket ADDS
+ *  its child nodes + edges to the canvas (and removes them on collapse),
+ *  so children always render fresh with measured handles. */
 export interface AssetBucketNodeData {
   kind: "asset-bucket";
-  /** "producer" = assets that write the table; "consumer" = read it. */
+  /** What the bucket groups: producer/consumer assets, or up/downstream tables. */
+  groupKind: "asset" | "schema";
+  /** "producer"/upstream feeds the anchor; "consumer"/downstream reads it. */
   direction: "producer" | "consumer";
+  /** Header text, e.g. "Assets that write data" or "sales (4 tables)". */
+  label: string;
   count: number;
-  /** Distinct asset kinds inside, for the logo row. */
-  assetKinds: string[];
-  /** Canvas node ids of the member asset nodes this bucket collapses. */
-  memberNodeIds: string[];
-  /** Canvas edge ids (asset↔table) hidden while collapsed. */
-  memberEdgeIds: string[];
-  /** The bucket↔table connector edge id, hidden once expanded. */
+  /** Distinct asset/table kinds inside, for the icon row. */
+  iconKinds: string[];
+  /** The full child nodes this bucket collapses (added to the canvas on
+   *  expand, removed on collapse). Stored as data, not on the canvas. */
+  childNodes: CanvasNode[];
+  /** The child edges (child ↔ anchor) added/removed alongside. */
+  childEdges: CanvasEdge[];
+  /** The bucket↔anchor connector edge id (hidden while expanded). */
   connectorEdgeId: string;
 }
 

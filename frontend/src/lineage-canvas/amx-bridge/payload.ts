@@ -111,7 +111,8 @@ export function convertLoadedCanvas(loaded: LoadedCanvas): ConvertedCanvas {
     );
   }
 
-  const collapsed = collapseAssetsIntoBuckets(nodes, edges);
+  const anchorNodeId = entityIdToNodeId.get(loaded.anchor_entity_id) ?? "";
+  const collapsed = collapseIntoBuckets(nodes, edges, anchorNodeId);
   return {
     primaryProfile: loaded.primary_profile,
     artifactId: loaded.artifact_id,
@@ -135,126 +136,152 @@ const _BUCKET_ASSET_KINDS = new Set([
   "external",
 ]);
 
-/** Fold each table's producer / consumer asset nodes into a collapsed
- *  "Assets that write / read data" bucket (Databricks-style lean graph).
- *  Member asset nodes + their edges start hidden; the bucket expands
- *  them on click. */
-function collapseAssetsIntoBuckets(
+interface BucketGroup {
+  groupKind: "asset" | "schema";
+  dir: "producer" | "consumer";
+  label: string;
+  nodeIds: Set<string>;
+  edgeIds: Set<string>;
+  kinds: Set<string>;
+}
+
+/** Collapse the anchor's neighbours into Databricks-style group buckets:
+ *  producer / consumer ASSETS into "Assets that write/read data", and
+ *  upstream / downstream TABLES folded by ``catalog.schema``. The canvas
+ *  then shows just the anchor + a few buckets (left = feeds, right =
+ *  consumed-by). Each bucket carries its child nodes + edges as data;
+ *  expanding ADDS them to the canvas (see AssetBucketNode), so nothing
+ *  has to be pre-rendered hidden. */
+function collapseIntoBuckets(
   nodes: CanvasNode[],
   edges: CanvasEdge[],
+  anchorNodeId: string,
 ): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  const anchor = anchorNodeId ? byId.get(anchorNodeId) : undefined;
+  if (!anchor) return { nodes, edges };
   const kindOf = (id: string): string => String((byId.get(id)?.data as { kind?: string })?.kind || "");
   const isAsset = (id: string) => _BUCKET_ASSET_KINDS.has(kindOf(id));
-  const isTable = (id: string) => kindOf(id) === "table";
 
-  interface Grp {
-    tableId: string;
-    dir: "producer" | "consumer";
-    assetIds: Set<string>;
-    edgeIds: Set<string>;
-    kinds: Set<string>;
-  }
-  const groups = new Map<string, Grp>();
+  // Which neighbours connect to the anchor, and in which direction.
+  const conn = new Map<string, { dir: "producer" | "consumer"; edgeIds: Set<string> }>();
   for (const e of edges) {
-    let tableId = "";
-    let assetId = "";
+    let other = "";
     let dir: "producer" | "consumer" | null = null;
-    if (isAsset(e.source) && isTable(e.target)) {
-      assetId = e.source;
-      tableId = e.target;
+    if (e.target === anchorNodeId && e.source !== anchorNodeId) {
+      other = e.source; // feeds the anchor
       dir = "producer";
-    } else if (isTable(e.source) && isAsset(e.target)) {
-      assetId = e.target;
-      tableId = e.source;
+    } else if (e.source === anchorNodeId && e.target !== anchorNodeId) {
+      other = e.target; // consumed by
       dir = "consumer";
     }
     if (!dir) continue;
-    const key = `${tableId}|${dir}`;
+    let c = conn.get(other);
+    if (!c) {
+      c = { dir, edgeIds: new Set() };
+      conn.set(other, c);
+    }
+    c.edgeIds.add(e.id);
+  }
+  if (conn.size === 0) return { nodes, edges };
+
+  const groups = new Map<string, BucketGroup>();
+  for (const [nid, c] of conn) {
+    const node = byId.get(nid);
+    if (!node) continue;
+    const k = kindOf(nid);
+    let key: string;
+    let groupKind: "asset" | "schema";
+    let label: string;
+    if (isAsset(nid)) {
+      groupKind = "asset";
+      key = `asset|${c.dir}`;
+      label = c.dir === "producer" ? "Assets that write data" : "Assets that read data";
+    } else {
+      groupKind = "schema";
+      const d = node.data as { database?: string; schema?: string };
+      label = [d.database, d.schema].filter(Boolean).join(".") || "tables";
+      key = `schema|${c.dir}|${label}`;
+    }
     let g = groups.get(key);
     if (!g) {
-      g = { tableId, dir, assetIds: new Set(), edgeIds: new Set(), kinds: new Set() };
+      g = { groupKind, dir: c.dir, label, nodeIds: new Set(), edgeIds: new Set(), kinds: new Set() };
       groups.set(key, g);
     }
-    g.assetIds.add(assetId);
-    g.edgeIds.add(e.id);
-    g.kinds.add(kindOf(assetId));
+    g.nodeIds.add(nid);
+    c.edgeIds.forEach((x) => g!.edgeIds.add(x));
+    g.kinds.add(k);
   }
-  if (groups.size === 0) return { nodes, edges };
 
-  const hiddenAssets = new Set<string>();
-  const hiddenEdges = new Set<string>();
-  const memberPos = new Map<string, { x: number; y: number }>();
+  const grouped = new Set<string>();
+  const groupedEdges = new Set<string>();
   const bucketNodes: CanvasNode[] = [];
   const connectors: CanvasEdge[] = [];
-  for (const [key, g] of groups) {
-    const table = byId.get(g.tableId);
-    if (!table) continue;
-    g.assetIds.forEach((a) => hiddenAssets.add(a));
-    g.edgeIds.forEach((x) => hiddenEdges.add(x));
-    const bucketId = `bucket-${key}`;
-    const connectorId = `bucketedge-${key}`;
-    const pos =
-      g.dir === "producer"
-        ? { x: table.position.x - 360, y: table.position.y }
-        : { x: table.position.x + 380, y: table.position.y };
-    // Stack the (hidden) member assets just below the bucket so an
-    // expand reveals them tidily next to it instead of at scattered
-    // seeded positions.
-    [...g.assetIds].forEach((aid, idx) => {
-      memberPos.set(aid, { x: pos.x, y: pos.y + 90 + idx * 96 });
+  const ax = anchor.position.x;
+  const ay = anchor.position.y;
+
+  const sides: Array<["producer" | "consumer", number]> = [
+    ["producer", -1],
+    ["consumer", 1],
+  ];
+  for (const [dir, outward] of sides) {
+    const sideGroups = [...groups.values()].filter((g) => g.dir === dir);
+    sideGroups.forEach((g, i) => {
+      const bucketId = `bucket-${dir}-${i}`;
+      const connectorId = `bconn-${dir}-${i}`;
+      const childNodes = [...g.nodeIds].map((id) => byId.get(id)).filter(Boolean) as CanvasNode[];
+      const childEdges = edges.filter((e) => g.edgeIds.has(e.id));
+      g.nodeIds.forEach((x) => grouped.add(x));
+      g.edgeIds.forEach((x) => groupedEdges.add(x));
+      bucketNodes.push({
+        id: bucketId,
+        type: "asset-bucket",
+        position: { x: ax + outward * 440, y: ay + (i - (sideGroups.length - 1) / 2) * 130 },
+        data: {
+          kind: "asset-bucket",
+          groupKind: g.groupKind,
+          direction: g.dir,
+          label: g.groupKind === "schema" ? `${g.label} (${g.nodeIds.size})` : g.label,
+          count: g.nodeIds.size,
+          iconKinds: [...g.kinds],
+          childNodes,
+          childEdges,
+          connectorEdgeId: connectorId,
+        },
+      });
+      const edgeData = {
+        relationshipType: "lineage_native_asset",
+        source: "databricks_native_lineage",
+        confidence: 1,
+        verdict: "",
+      };
+      connectors.push(
+        dir === "producer"
+          ? {
+              id: connectorId,
+              source: bucketId,
+              target: anchorNodeId,
+              sourceHandle: "out",
+              targetHandle: "__table__",
+              type: "column-edge",
+              data: edgeData,
+            }
+          : {
+              id: connectorId,
+              source: anchorNodeId,
+              target: bucketId,
+              sourceHandle: "__table__",
+              targetHandle: "in",
+              type: "column-edge",
+              data: edgeData,
+            },
+      );
     });
-    bucketNodes.push({
-      id: bucketId,
-      type: "asset-bucket",
-      position: pos,
-      data: {
-        kind: "asset-bucket",
-        direction: g.dir,
-        count: g.assetIds.size,
-        assetKinds: [...g.kinds],
-        memberNodeIds: [...g.assetIds],
-        memberEdgeIds: [...g.edgeIds],
-        connectorEdgeId: connectorId,
-      },
-    });
-    const edgeData = {
-      relationshipType: "lineage_native_asset",
-      source: "databricks_native_lineage",
-      confidence: 1,
-      verdict: "",
-    };
-    connectors.push(
-      g.dir === "producer"
-        ? {
-            id: connectorId,
-            source: bucketId,
-            target: g.tableId,
-            sourceHandle: "out",
-            targetHandle: "__table__",
-            type: "column-edge",
-            data: edgeData,
-          }
-        : {
-            id: connectorId,
-            source: g.tableId,
-            target: bucketId,
-            sourceHandle: "__table__",
-            targetHandle: "in",
-            type: "column-edge",
-            data: edgeData,
-          },
-    );
   }
+
   return {
-    nodes: nodes
-      .map((n) =>
-        hiddenAssets.has(n.id)
-          ? { ...n, hidden: true, position: memberPos.get(n.id) ?? n.position }
-          : n,
-      )
-      .concat(bucketNodes),
-    edges: edges.map((e) => (hiddenEdges.has(e.id) ? { ...e, hidden: true } : e)).concat(connectors),
+    nodes: nodes.filter((n) => !grouped.has(n.id)).concat(bucketNodes),
+    edges: edges.filter((e) => !groupedEdges.has(e.id)).concat(connectors),
   };
 }
 
