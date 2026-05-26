@@ -704,8 +704,7 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "schemas": ["db", "schemas"],
         "tables": ["db", "tables"],
         "profile": ["db", "profile"],
-        "scan": ["docs", "scan"],
-        "ingest": ["docs", "ingest"],
+        "index": ["docs", "index"],
         "search-docs": ["docs", "search-docs"],
         "doc-add": ["docs", "add"],
         "doc-analyze": ["docs", "analyze"],
@@ -720,11 +719,9 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         # (filter / sort / group viewer over a completed run's
         # suggestions). Routed here so it's reachable from any tab.
         "review": ["analyze", "review"],
-        "code-scan": ["code", "scan"],
+        "code-index": ["code", "index"],
         "code-search": ["code", "search"],
-        "code-refresh": ["code", "refresh"],
         "code-results": ["code", "results"],
-        "code-analyze": ["code", "analyze"],
         "export-code-report": ["code", "export-report"],
         "ask": ["search", "ask"],
         "status": ["search", "status"],
@@ -823,7 +820,7 @@ def inject_session_defaults(cfg: AMXConfig, namespace: str, args: list[str]) -> 
     if (
         len(args) >= 2
         and args[0] == "code"
-        and args[1] == "scan"
+        and args[1] == "index"
         and "--schema" not in args
         and "-s" not in args
         and cfg.current_schema
@@ -1118,11 +1115,11 @@ def run_interactive_session(
                     info('Example: /search-docs What does field "BUKRS" mean in our docs?')
                     continue
                 if (
-                    parts[0] in {"ingest", "scan"}
+                    parts[0] == "index"
                     and len(parts) == 1
                     and not cfg.effective_doc_paths()
                 ):
-                    warn_no_doc_paths_for_scan_or_ingest(cfg, cmd=parts[0])
+                    warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="index")
                     continue
             if _handle_manual_usage_shortcuts(namespace, parts):
                 continue

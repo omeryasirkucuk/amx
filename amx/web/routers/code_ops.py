@@ -85,24 +85,29 @@ def cancel_job(
     return {"job_id": job_id, "cancelled": True, "status": job.status}
 
 
-@router.post("/scan")
-def submit_scan(
+@router.post("/index")
+def submit_index(
     body: _CodeScanRequest,
     cfg: AMXConfig = Depends(get_cfg),
     jobs: JobRegistry = Depends(get_jobs),
 ) -> dict[str, Any]:
-    """Spawn a code-scan job. Returns the job id immediately so the SPA
-    can subscribe to the SSE event stream."""
+    """Build / refresh the code index for a profile: walk the source tree
+    for table + column references and upsert code chunks into the
+    semantic ``amx_code`` collection under the active embedding. Always
+    includes column references (the richer report). Idempotent —
+    re-running upserts incrementally and rebuilds the semantic index when
+    the code embedding model changed. Replaces the old scan / +cols
+    verbs. Returns the job id for the SSE stream."""
     path = _resolve_path(body, cfg)
     if not path:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No path to scan. Pass path=, profile=, or activate a code profile.",
+            detail="No path to index. Pass path=, profile=, or activate a code profile.",
         )
     # Resolve the profile name used for cache + catalog sync so the
-    # subsequent ``/api/code/analyze`` and ``/api/code/search`` calls
-    # can find the persisted report. Matches the CLI's fallback chain
-    # in ``commands/code.py`` so the two surfaces share a cache key.
+    # subsequent ``/api/code/search`` calls can find the persisted report.
+    # Matches the CLI's fallback chain in ``commands/code.py`` so the two
+    # surfaces share a cache key.
     profile_name = (
         (body.profile or "").strip() or (cfg.active_code_profile or "").strip() or "default"
     )
@@ -114,13 +119,13 @@ def submit_scan(
             job,
             path,
             body.schema_,
-            body.column_scan,
+            True,  # always include column references
             body.db_profile,
             body.db_database,
             body.db_catalog,
             profile_name,
         ),
-        name=f"amx-code-scan-{job.id}",
+        name=f"amx-code-index-{job.id}",
         daemon=True,
     )
     thread.start()

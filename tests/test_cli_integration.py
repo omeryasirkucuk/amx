@@ -588,18 +588,18 @@ class HistoryListIntegrationTests(unittest.TestCase):
 
 
 class DocsIntegrationTests(unittest.TestCase):
-    def test_docs_scan_without_paths_shows_guidance(self) -> None:
+    def test_docs_index_without_paths_shows_guidance(self) -> None:
         runner = CliRunner()
 
         result = runner.invoke(
             main,
-            ["--config", "test-config.yml", "docs", "scan"],
+            ["--config", "test-config.yml", "docs", "index"],
             env={"AMX_SESSION_CHILD": "1"},
             catch_exceptions=False,
         )
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("No document paths to scan.", result.output)
+        self.assertIn("No document paths to index.", result.output)
         self.assertIn("/add-doc-profile", result.output)
 
     def test_docs_search_docs_routes_through_cli_docs_module(self) -> None:
@@ -916,53 +916,12 @@ class SearchIntegrationTests(unittest.TestCase):
         self.assertEqual(display.stopped, 1)
         fake_catalog.finish_sync_job.assert_called_once()
 
-    def test_code_refresh_uses_resolved_active_profile_path(self) -> None:
-        runner = CliRunner()
-
-        with (
-            patch("amx.config.AMXConfig.resolve_code_path", return_value="."),
-            patch("amx.codebase.cache.invalidate_cache") as invalidate_cache,
-            patch("amx.codebase.code_rag.delete_code_collection") as delete_code_collection,
-        ):
-            result = runner.invoke(
-                main,
-                ["--config", "test-config.yml", "code", "refresh"],
-                env={"AMX_SESSION_CHILD": "1"},
-                catch_exceptions=False,
-            )
-
-        self.assertEqual(result.exit_code, 0)
-        invalidate_cache.assert_called_once_with("default", ".")
-        delete_code_collection.assert_called_once_with(source_filters=["."])
-
-    def test_code_analyze_without_cache_stops_before_db_work(self) -> None:
-        runner = CliRunner()
-        cfg = AMXConfig()
-        cfg.llm.provider = "openai"
-        cfg.llm.model = "gpt-4o-mini"
-
-        class FakeDatabaseConnector:
-            def __init__(self, cfg):
-                self.cfg = cfg
-
-            def test_connection(self) -> bool:
-                raise AssertionError("should not test DB when code cache is missing")
-
-        with (
-            patch("amx.config.AMXConfig.load", return_value=cfg),
-            patch("amx.config.AMXConfig.resolve_code_path", return_value="."),
-            patch("amx.codebase.cache.load_latest_cached_report", return_value=(None, None)),
-            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
-        ):
-            result = runner.invoke(
-                main,
-                ["--config", "test-config.yml", "code", "analyze", "--schema", "sap", "vbak"],
-                env={"AMX_SESSION_CHILD": "1"},
-                catch_exceptions=False,
-            )
-
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("No cached code-scan", result.output)
+    # ``code refresh`` and ``code analyze`` were retired: refresh folded
+    # into ``code index`` (which recovers from an embedding mismatch by
+    # dropping the whole collection), and standalone code-analyze moved to
+    # the main ``/run`` flow (the Code Agent participates automatically when
+    # an active code profile is indexed). Their integration tests are gone
+    # with the commands.
 
 
 class ManualIntegrationTests(unittest.TestCase):

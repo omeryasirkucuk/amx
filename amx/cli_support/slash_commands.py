@@ -281,8 +281,12 @@ _DOCS_COMMANDS: tuple[SlashCommand, ...] = (
         "docs",
         "Drag-drop equivalent: /doc-add <profile> <file>... [--no-ingest]",
     ),
-    SlashCommand("/scan", "docs", "Scan documents (/scan [--doc-profile NAME] [paths...])"),
-    SlashCommand("/ingest", "docs", "Ingest (/ingest [--doc-profile NAME] [--refresh] [paths...])"),
+    SlashCommand(
+        "/index",
+        "docs",
+        "Index documents: incremental ingest, rebuild on embedding change "
+        "(/index [--doc-profile NAME] [paths...])",
+    ),
     SlashCommand("/search-docs", "docs", "Similarity search (/search-docs <text>, no LLM)"),
     SlashCommand("/doc-analyze", "docs", "Run RAG Agent standalone (/doc-analyze [TABLE …])"),
     SlashCommand(
@@ -392,16 +396,17 @@ _CODE_COMMANDS: tuple[SlashCommand, ...] = (
         "Link code profile → DB profile(s) (/code-link <code-profile> [--db NAME …] [--clear])",
     ),
     SlashCommand(
-        "/code-scan", "code", "Scan codebase + save (/code-scan [path] [--code-profile NAME])"
+        "/code-index",
+        "code",
+        "Index codebase: scan table+column refs + build semantic index "
+        "(/code-index [path] [--code-profile NAME])",
     ),
     SlashCommand(
         "/code-search",
         "code",
         "Similarity search over amx_code (/code-search <text> [--code-profile NAME], no LLM)",
     ),
-    SlashCommand("/code-refresh", "code", "Clear cache + semantic code index"),
     SlashCommand("/code-results", "code", "Show last cached scan results"),
-    SlashCommand("/code-analyze", "code", "Run Code Agent standalone (/code-analyze [TABLE …])"),
     SlashCommand(
         "/export-code-report", "code", "Export scan to markdown (/export-code-report [FILE])"
     ),
