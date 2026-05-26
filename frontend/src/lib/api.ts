@@ -658,10 +658,16 @@ export const api = {
    *  schema / table / column names. Powers the sidebar's column-level
    *  search. ``profile`` narrows to a single profile; omit it to
    *  search every fully-synced profile. */
-  dbCacheSearch: (q: string, profile?: string | null, limit?: number) => {
+  dbCacheSearch: (
+    q: string,
+    profile?: string | null,
+    limit?: number,
+    includeUnsynced?: boolean,
+  ) => {
     const params = new URLSearchParams({ q });
     if (profile) params.set("profile", profile);
     if (typeof limit === "number") params.set("limit", String(limit));
+    if (includeUnsynced) params.set("include_unsynced", "true");
     return apiFetch<DbCacheSearchResponse>(
       `/api/db/cache/search?${params.toString()}`,
     );

@@ -137,6 +137,10 @@ def search(
     q: str = Query(..., description="Substring to match (case-insensitive)"),
     profile: str | None = Query(default=None),
     limit: int = Query(default=_SEARCH_LIMIT_DEFAULT, ge=1, le=_SEARCH_LIMIT_MAX),
+    include_unsynced: bool = Query(
+        default=False,
+        description="Search partially-cached profiles too (native-lineage picker).",
+    ),
 ) -> dict[str, Any]:
     """Substring search across the persistent catalog cache —
     schema / table / column names. Powers the Studio sidebar's
@@ -182,7 +186,9 @@ def search(
     if cat is None:
         return {"query": needle, "truncated": False, "results": []}
     try:
-        results, truncated = cat.search_entities(needle, db_profile=profile, limit=limit)
+        results, truncated = cat.search_entities(
+            needle, db_profile=profile, limit=limit, require_sync=not include_unsynced
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
