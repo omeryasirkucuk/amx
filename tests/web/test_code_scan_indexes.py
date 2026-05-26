@@ -64,7 +64,7 @@ def test_studio_scan_passes_index_semantic_true(client, auth_headers, cfg, monke
 
     monkeypatch.setattr("amx.codebase.analyzer.analyze_codebase", fake_analyze)
 
-    resp = client.post("/api/code/scan", headers=auth_headers, json={})
+    resp = client.post("/api/code/index", headers=auth_headers, json={})
     assert resp.status_code == 200
     job_id = resp.json()["job_id"]
     _wait_for_status(client, job_id, "done")
@@ -104,7 +104,7 @@ def test_studio_scan_persists_cached_report(client, auth_headers, cfg, monkeypat
     monkeypatch.setattr("amx.codebase.cache.save_cached_report", _fake_save)
 
     resp = client.post(
-        "/api/code/scan",
+        "/api/code/index",
         headers=auth_headers,
         json={"profile": "repo"},
     )
@@ -151,7 +151,7 @@ def test_studio_scan_syncs_search_catalog(client, auth_headers, cfg, monkeypatch
     )
 
     resp = client.post(
-        "/api/code/scan",
+        "/api/code/index",
         headers=auth_headers,
         json={"profile": "repo"},
     )
@@ -205,7 +205,7 @@ def test_studio_scan_emits_per_file_progress(client, auth_headers, cfg, monkeypa
     monkeypatch.setattr("amx.web.routers.code_ops.emit", _spy_emit)
 
     resp = client.post(
-        "/api/code/scan",
+        "/api/code/index",
         headers=auth_headers,
         json={"profile": "repo"},
     )

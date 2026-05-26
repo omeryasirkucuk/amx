@@ -72,7 +72,7 @@ def _print_namespace_hint(
             "Manage LLM profiles, metadata generation language, and cost settings. Search answers follow the user's question language."
         )
     elif namespace == "code":
-        info("Scan your codebase to find how tables are used. Run /code-scan after adding a path.")
+        info("Scan your codebase to find how tables are used. Run /code-index after adding a path.")
     elif namespace == "analyze":
         info("Run the AMX pipeline (/run) to generate metadata, or (/apply) to push to your DB.")
     elif namespace == "search":
@@ -161,18 +161,18 @@ Commands (in order):
   4) /add-doc-profile [name]       Add/update document roots (interactive)
   5) /remove-doc-profile <name>    Remove a document profile
 
-  Ingestion:
-  6) /scan [paths...]              Scan (preview); optional `--doc-profile NAME`; else active profile or paths
-  7) /ingest [paths...]            Ingest into RAG; `--doc-profile NAME`; `--refresh` replaces chunks for those sources
+  Indexing:
+  6) /index [paths...]             Build/refresh the RAG index: incremental ingest, rebuild on
+                                   embedding change; `--doc-profile NAME`; else active profile or paths
 
   Search & analysis:
-  8) /search-docs <text>           Vector similarity over ingested docs (Chroma; no LLM answer)
-  9) /doc-analyze [TABLE …]        Run RAG Agent standalone; results saved for next /run
+  7) /search-docs <text>           Vector similarity over ingested docs (Chroma; no LLM answer)
+  8) /doc-analyze [TABLE …]        Run RAG Agent standalone; results saved for next /run
 
   Export:
- 10) /export-doc-report [FILE]     Export document RAG summary to a markdown file
+  9) /export-doc-report [FILE]     Export document RAG summary to a markdown file
 
-Tip: configure sources first (steps 2–5), then scan/ingest, then /search-docs.
+Tip: configure sources first (steps 2–5), then /index, then /search-docs.
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -305,16 +305,12 @@ Commands (in order):
   4) /add-code-profile [name]      Add/update a codebase path (interactive)
   5) /remove-code-profile <name>   Remove a codebase profile
 
-  Scanning:
-  6) /code-scan [path] [--schema …] [--code-profile NAME]   Scan codebase, save results + semantic index
-  7) /code-refresh [--code-profile NAME]                    Clear cache + semantic index
-  8) /code-results [--code-profile NAME]                    Show last cached scan results
-
-  Analysis:
-  9) /code-analyze [TABLE …] [--schema …]  Run Code Agent standalone; results saved for next /run
+  Indexing:
+  6) /code-index [path] [--schema …] [--code-profile NAME]  Scan table+column refs + build semantic index
+  7) /code-results [--code-profile NAME]                    Show last cached scan results
 
   Export:
- 10) /export-code-report [FILE]    Export scan results to markdown
+  8) /export-code-report [FILE]    Export scan results to markdown
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -337,7 +333,7 @@ Commands (in order):
   3) /run-apply [ASSET …] [--schema …] [--table …]   Same as /run --apply
   4) /apply                        Write pending comments to the database
 
-Tip: scan code and docs first (`/code-scan`, `/doc-analyze`, `/code-analyze`), then `/run`.
+Tip: index code and docs first (`/code-index`, `/index`), then `/run`.
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -507,8 +503,7 @@ Examples:
   [bright_white]/tables sap_s6p[/bright_white]
   [bright_white]/profile sap_s6p t001[/bright_white]
   [bright_white]/analyze[/bright_white]
-  [bright_white]/code-scan https://github.com/org/repo --schema sap_s6p[/bright_white]
-  [bright_white]/code-analyze vbrk vbrp[/bright_white]  (run Code Agent standalone on specific tables)
+  [bright_white]/code-index https://github.com/org/repo --schema sap_s6p[/bright_white]
   [bright_white]/doc-analyze vbrk[/bright_white]  (run RAG Agent standalone)
 """
     )

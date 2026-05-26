@@ -27,44 +27,24 @@ def _wait_for_status(client, job_id: str, target: str, timeout: float = 3.0) -> 
     raise AssertionError(f"Job {job_id} never reached status {target}; last={body}")
 
 
-def test_scan_returns_400_when_no_paths(client, auth_headers) -> None:
+def test_index_returns_400_when_no_paths(client, auth_headers) -> None:
     """No paths in body, no profile flag, no active doc profile —
     bail with 400 instead of spawning an empty worker."""
-    response = client.post("/api/docs/scan", headers=auth_headers, json={})
+    response = client.post("/api/docs/index", headers=auth_headers, json={})
     assert response.status_code == 400
 
 
-def test_scan_resolves_active_profile_when_no_paths_in_body(
-    client, auth_headers, cfg, monkeypatch
-) -> None:
-    cfg.doc_profiles["handbook"] = ["/abs/docs"]
-    cfg.active_doc_profile = "handbook"
-
-    fake_doc = MagicMock(path="/abs/docs/intro.md", source_type="local")
-    fake_doc.size_bytes = 1024
-    monkeypatch.setattr(
-        "amx.docs.scanner.scan_all_sources",
-        lambda paths: [fake_doc] if paths == ["/abs/docs"] else [],
-    )
-    monkeypatch.setattr("amx.docs.scanner.total_size_mb", lambda docs: 0.001)
-
-    response = client.post("/api/docs/scan", headers=auth_headers, json={})
-    assert response.status_code == 200
-    job_id = response.json()["job_id"]
-    body = _wait_for_status(client, job_id, "done")
-    assert body["summary"]["total"] == 1
-
-
-def test_ingest_streams_chunk_count(client, auth_headers, cfg, monkeypatch) -> None:
+def test_index_streams_chunk_count(client, auth_headers, cfg, monkeypatch) -> None:
     cfg.doc_profiles["x"] = ["/abs"]
 
     monkeypatch.setattr("amx.docs.scanner.scan_all_sources", lambda paths: ["doc1", "doc2"])
     monkeypatch.setattr("amx.docs.scanner.total_size_mb", lambda docs: 0.5)
 
-    # Per-document loop (PR D): the worker calls ``ingest`` once per
-    # document so it can poll ``job.cancel`` between docs. The
-    # ``IngestSummary`` shape is faked here so ``int(...)`` still
-    # answers the chunk count.
+    # Per-document loop: the worker calls ``ingest`` once per document so it
+    # can poll ``job.cancel`` between docs. The ``IngestSummary`` shape is
+    # faked so ``int(...)`` still answers the chunk count. The store opens
+    # cleanly (no mismatch) so index ingests incrementally — reset_collection
+    # must NOT be called.
     from amx.docs.rag import IngestSummary
 
     fake_store = MagicMock()
@@ -73,11 +53,7 @@ def test_ingest_streams_chunk_count(client, auth_headers, cfg, monkeypatch) -> N
     )
     monkeypatch.setattr("amx.docs.rag.RAGStore", lambda *a, **kw: fake_store)
 
-    response = client.post(
-        "/api/docs/ingest",
-        headers=auth_headers,
-        json={"profile": "x"},
-    )
+    response = client.post("/api/docs/index", headers=auth_headers, json={"profile": "x"})
     assert response.status_code == 200
     job_id = response.json()["job_id"]
     body = _wait_for_status(client, job_id, "done")
@@ -86,11 +62,12 @@ def test_ingest_streams_chunk_count(client, auth_headers, cfg, monkeypatch) -> N
     assert body["summary"]["documents"] == 2
     assert body["summary"]["cancelled"] is False
     assert fake_store.ingest.call_count == 2
+    fake_store.reset_collection.assert_not_called()
 
 
-def test_reindex_resets_collection_then_ingests(client, auth_headers, cfg, monkeypatch) -> None:
-    """Reindex drops the docs collection (reset_collection) and re-ingests
-    with refresh forced off — the UI equivalent of `/docs reindex`."""
+def test_index_incremental_when_no_mismatch(client, auth_headers, cfg, monkeypatch) -> None:
+    """When the collection opens cleanly (active embedding matches), index
+    ingests incrementally and does NOT drop the collection."""
     cfg.doc_profiles["x"] = ["/abs"]
     monkeypatch.setattr("amx.docs.scanner.scan_all_sources", lambda paths: ["doc1"])
     monkeypatch.setattr("amx.docs.scanner.total_size_mb", lambda docs: 0.1)
@@ -103,23 +80,21 @@ def test_reindex_resets_collection_then_ingests(client, auth_headers, cfg, monke
     )
     monkeypatch.setattr("amx.docs.rag.RAGStore", lambda *a, **kw: fake_store)
 
-    response = client.post("/api/docs/reindex", headers=auth_headers, json={"profile": "x"})
+    response = client.post("/api/docs/index", headers=auth_headers, json={"profile": "x"})
     assert response.status_code == 200
-    assert response.json()["reindex"] is True
     job_id = response.json()["job_id"]
     body = _wait_for_status(client, job_id, "done")
 
-    fake_store.reset_collection.assert_called_once()
+    fake_store.reset_collection.assert_not_called()
     assert fake_store.ingest.call_count == 1
-    # refresh is meaningless against a freshly-dropped collection.
     assert fake_store.ingest.call_args.kwargs.get("refresh") is False
     assert body["summary"]["chunks"] == 7
 
 
-def test_reindex_recovers_from_embedding_mismatch(client, auth_headers, cfg, monkeypatch) -> None:
+def test_index_recovers_from_embedding_mismatch(client, auth_headers, cfg, monkeypatch) -> None:
     """When the persisted collection has a stale embedding identity,
-    RAGStore() raises on open; reindex force-drops amx_docs and retries so
-    the rebuilt collection is stamped with the active model."""
+    RAGStore() raises on open; index force-drops amx_docs, reset_collection,
+    and rebuilds so the collection is re-stamped with the active model."""
     cfg.doc_profiles["x"] = ["/abs"]
     monkeypatch.setattr("amx.docs.scanner.scan_all_sources", lambda paths: ["doc1"])
     monkeypatch.setattr("amx.docs.scanner.total_size_mb", lambda docs: 0.1)
@@ -147,7 +122,7 @@ def test_reindex_recovers_from_embedding_mismatch(client, auth_headers, cfg, mon
     fake_client = MagicMock()
     monkeypatch.setattr("chromadb.PersistentClient", lambda *a, **kw: fake_client)
 
-    response = client.post("/api/docs/reindex", headers=auth_headers, json={"profile": "x"})
+    response = client.post("/api/docs/index", headers=auth_headers, json={"profile": "x"})
     assert response.status_code == 200
     job_id = response.json()["job_id"]
     _wait_for_status(client, job_id, "done")

@@ -29,7 +29,7 @@ def _wait_for_status(client, job_id: str, target: str, timeout: float = 3.0) -> 
 def test_scan_400_when_no_path(client, auth_headers) -> None:
     """No path in body, no profile flag, no active code profile —
     bail with 400 instead of spawning an empty worker."""
-    response = client.post("/api/code/scan", headers=auth_headers, json={})
+    response = client.post("/api/code/index", headers=auth_headers, json={})
     assert response.status_code == 400
 
 
@@ -60,7 +60,7 @@ def test_scan_resolves_active_profile(client, auth_headers, cfg, monkeypatch) ->
         lambda *args, **kw: fake_report,
     )
 
-    response = client.post("/api/code/scan", headers=auth_headers, json={})
+    response = client.post("/api/code/index", headers=auth_headers, json={})
     assert response.status_code == 200
     job_id = response.json()["job_id"]
     body = _wait_for_status(client, job_id, "done")
@@ -97,7 +97,7 @@ def test_scan_explicit_path_overrides_profile(client, auth_headers, cfg, monkeyp
     monkeypatch.setattr("amx.codebase.analyzer.analyze_codebase", fake_analyze)
 
     response = client.post(
-        "/api/code/scan",
+        "/api/code/index",
         headers=auth_headers,
         json={"path": "/explicit/path"},
     )
@@ -139,7 +139,7 @@ def test_scan_with_column_scan_collects_columns(client, auth_headers, cfg, monke
     monkeypatch.setattr("amx.codebase.analyzer.analyze_codebase", fake_analyze)
 
     response = client.post(
-        "/api/code/scan",
+        "/api/code/index",
         headers=auth_headers,
         json={"profile": "repo", "column_scan": True},
     )

@@ -1622,13 +1622,13 @@ class SessionHelperTests(unittest.TestCase):
             ["analyze", "run", "--apply", "vbak"],
         )
 
-    def test_inject_session_defaults_applies_schema_to_code_scan(self) -> None:
+    def test_inject_session_defaults_applies_schema_to_code_index(self) -> None:
         cfg = AMXConfig()
         cfg.current_schema = "sap_s6p"
 
-        args = inject_session_defaults(cfg, "code", ["code", "scan", "/tmp/repo"])
+        args = inject_session_defaults(cfg, "code", ["code", "index", "/tmp/repo"])
 
-        self.assertEqual(args, ["code", "scan", "/tmp/repo", "--schema", "sap_s6p"])
+        self.assertEqual(args, ["code", "index", "/tmp/repo", "--schema", "sap_s6p"])
 
     def test_session_to_click_args_maps_metadata_shortcuts(self) -> None:
         self.assertEqual(

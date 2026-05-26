@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-import json
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,13 +16,11 @@ from amx.utils.console import (
     heading,
     info,
     render_table,
-    render_token_summary,
     step_spinner,
     success,
     warn,
 )
 from amx.utils.live_commands import command_display
-from amx.utils.token_tracker import tracker as token_tracker
 
 if TYPE_CHECKING:
     from amx.codebase.analyzer import CodebaseReport
@@ -129,7 +126,7 @@ def register_code_commands(
     def code() -> None:
         """Codebase scanning, analysis, and code profile management."""
 
-    @code.command("scan")
+    @code.command("index")
     @click.argument("path", required=False, default=None)
     @click.option(
         "--schema",
@@ -143,13 +140,16 @@ def register_code_commands(
         help="Use this named codebase profile path when no path argument is given.",
     )
     @click.pass_obj
-    def code_scan_cmd(
+    def code_index_cmd(
         cfg: AMXConfig,
         path: str | None,
         schema: str | None,
         code_profile: str | None,
     ) -> None:
-        """Scan a codebase for table/column references, save results to cache, and build the semantic code index."""
+        """Build / refresh the code index: scan the codebase for table +
+        column references and (re)build the semantic code index under the
+        active embedding. Replaces ``scan`` / ``refresh`` (columns always
+        included)."""
         from amx.codebase.analyzer import analyze_codebase
         from amx.codebase.cache import save_cached_report
         from amx.db.connector import DatabaseConnector
@@ -169,7 +169,7 @@ def register_code_commands(
         if not resolved:
             error(
                 "No codebase path given and no matching profile. "
-                "Run `/code` then `/add-code-profile`, or `/code-scan --code-profile NAME`, or pass a path."
+                "Run `/code` then `/add-code-profile`, or `/code-index --code-profile NAME`, or pass a path."
             )
             sys.exit(1)
         if not (path or "").strip():
@@ -211,8 +211,9 @@ def register_code_commands(
             )
             progress_state, scan_cb = _build_scan_progress()
             scan_failed = False
-            try:
-                report = analyze_codebase(
+
+            def _run_scan():
+                return analyze_codebase(
                     resolved,
                     tables,
                     column_names=column_names,
@@ -220,6 +221,23 @@ def register_code_commands(
                     index_semantic=True,
                     progress_callback=scan_cb,
                 )
+
+            try:
+                from amx.codebase.code_rag import CodeEmbeddingMismatch
+
+                try:
+                    report = _run_scan()
+                except CodeEmbeddingMismatch:
+                    # The code embedding model changed, so the stamped
+                    # amx_code identity no longer matches the active config.
+                    # Drop the whole collection and re-index under the active
+                    # model (the index equivalent of the old /code-refresh
+                    # recovery); a per-path delete would leave the identity).
+                    from amx.codebase.code_rag import delete_code_collection
+
+                    info("Embedding model changed — rebuilding the code index from scratch.")
+                    delete_code_collection(source_filters=None)
+                    report = _run_scan()
             except Exception as exc:
                 scan_failed = True
                 error(str(exc))
@@ -281,7 +299,7 @@ def register_code_commands(
             warn(f"Could not sync code evidence into /search catalog: {exc}")
 
         _render_code_report_summary(report)
-        info("Results saved. Next `/run` will use them from cache (use `/code-refresh` to clear).")
+        info("Results saved. Next `/run` will use them from cache (re-run `/code-index` to refresh).")
 
     @code.command("search")
     @click.argument("question")
@@ -320,7 +338,7 @@ def register_code_commands(
 
         if code_collection_count(source_filters=source_filters) == 0:
             error(
-                f"No indexed code{' for profile ' + prof if prof else ''}. Run `/code-scan` first."
+                f"No indexed code{' for profile ' + prof if prof else ''}. Run `/code-index` first."
             )
             return
 
@@ -341,93 +359,6 @@ def register_code_commands(
             text = str(hit.get("text") or "")
             console.print(f"  {text[:400]}{'…' if len(text) > 400 else ''}")
         studio_hint("code-search")
-
-    @code.command("refresh")
-    @click.option(
-        "--code-profile",
-        default=None,
-        help="Invalidate cache for this profile's path (default: active profile).",
-    )
-    @click.pass_obj
-    def code_refresh_cmd(cfg: AMXConfig, code_profile: str | None) -> None:
-        """Clear persisted codebase scan cache and the semantic ``amx_code`` Chroma index."""
-        from amx.codebase.cache import invalidate_cache
-        from amx.codebase.code_rag import (
-            CodeEmbeddingMismatch,
-            _open_collection,
-            _resolve_code_embedding,
-            delete_code_collection,
-        )
-
-        try:
-            code_path = cfg.resolve_code_path((code_profile or "").strip() or None, None)
-        except KeyError as exc:
-            error(str(exc))
-            sys.exit(1)
-        if not code_path:
-            error("No codebase path configured.")
-            sys.exit(1)
-        profile_nm = (
-            (code_profile or "").strip() or cfg.active_code_profile or "default"
-        ).strip() or "default"
-
-        # Probe the on-disk collection's identity against the active
-        # config — but only if a collection already exists. ``/embeddings``
-        # swapping the code embedding model leaves the stamped identity
-        # in place, and partial deletes never refresh it, so the next
-        # ``/ask`` keeps hitting :class:`CodeEmbeddingMismatch`. Detect
-        # that here and drop the whole collection so the next scan
-        # re-stamps cleanly. The probe must be side-effect free: if no
-        # collection exists yet (fresh install, no scan yet) we skip
-        # the probe entirely rather than risk creating one as a side
-        # effect of detection.
-        identity_mismatch = False
-        try:
-            chromadb_mod = __import__("chromadb")
-            persist_dir = str(Path.home() / ".amx" / "chroma_db")
-            client = chromadb_mod.PersistentClient(path=persist_dir)
-            existing_names = {getattr(c, "name", str(c)) for c in client.list_collections()}
-            from amx.codebase.code_rag import COLLECTION as _CODE_COLL
-
-            if _CODE_COLL in existing_names:
-                provider, model, ef = _resolve_code_embedding(cfg)
-                _open_collection(
-                    client,
-                    embedding_provider=provider,
-                    embedding_model=model,
-                    embedding_function=ef,
-                )
-        except CodeEmbeddingMismatch:
-            identity_mismatch = True
-        except Exception:
-            # Anything else (chromadb not installed, fresh install, etc.)
-            # falls back to the same per-path delete behaviour we had
-            # before; mismatch recovery is the only special case.
-            pass
-
-        with command_display(mode="code-refresh", provider=cfg.llm.provider, model=cfg.llm.model):
-            with step_spinner("Clearing cached code scan"):
-                invalidate_cache(profile_nm, code_path)
-                if identity_mismatch:
-                    # Force a full drop. The stamped identity on the
-                    # existing collection no longer matches the active
-                    # embedding profile; per-source deletes would leave
-                    # the mismatch in place and ``/ask`` would keep
-                    # failing.
-                    delete_code_collection(source_filters=None)
-                else:
-                    delete_code_collection(source_filters=[code_path])
-        try:
-            from amx.search.catalog import SearchCatalog
-
-            catalog_store = SearchCatalog.from_history_store()
-            if catalog_store is not None:
-                catalog_store.clear_code_evidence(cfg.active_db_profile or "default", code_path)
-        except Exception as exc:
-            warn(f"Could not clear /search code evidence: {exc}")
-        success(
-            f"Cleared codebase cache for profile {profile_nm!r} and reset semantic code index (`amx_code`)."
-        )
 
     @code.command("results")
     @click.option(
@@ -454,7 +385,7 @@ def register_code_commands(
 
         manifest, report = load_latest_cached_report(profile_nm, code_path)
         if report is None or manifest is None:
-            error(f"No cached code-scan for profile {profile_nm!r}. Run `/code-scan` first.")
+            error(f"No cached code-scan for profile {profile_nm!r}. Run `/code-index` first.")
             return
 
         scanned_ts = manifest.get("scanned_at", 0)
@@ -524,7 +455,7 @@ def register_code_commands(
 
         manifest, report = load_latest_cached_report(profile_nm, code_path)
         if report is None or manifest is None:
-            error(f"No cached code-scan for profile {profile_nm!r}. Run `/code-scan` first.")
+            error(f"No cached code-scan for profile {profile_nm!r}. Run `/code-index` first.")
             return
 
         scanned_ts = manifest.get("scanned_at", 0)
@@ -597,127 +528,3 @@ def register_code_commands(
 
         Path(out).write_text("\n".join(lines), encoding="utf-8")
         success(f"Exported code-scan report to {out}")
-
-    @code.command("analyze")
-    @click.argument("tables_pos", nargs=-1, metavar="[TABLE ...]")
-    @click.option("--schema", "-s", help="Schema context.")
-    @click.option("--table", "-t", multiple=True, help="Specific table(s).")
-    @click.option("--code-profile", default=None, help="Use this codebase profile.")
-    @click.pass_obj
-    def code_analyze_cmd(
-        cfg: AMXConfig,
-        tables_pos: tuple[str, ...],
-        schema: str | None,
-        table: tuple[str, ...],
-        code_profile: str | None,
-    ) -> None:
-        """Run the Code Agent standalone against the cached code-scan for the given tables.
-
-        Pass table names on the command line to skip the long interactive list, e.g.
-        ``amx code analyze vbrk`` or ``amx code analyze vbrk vbrp --schema sap_s6p``.
-
-        Results are saved to ~/.amx/code_agent_results.json and reused by the next /run.
-        """
-        from amx.cli_support.hints import studio_hint
-        from amx.codebase.agent_service import (
-            CodeAnalyzeRequest,
-            run_code_analysis,
-            serialize_suggestions,
-        )
-        from amx.codebase.cache import load_latest_cached_report
-        from amx.db.connector import DatabaseConnector
-        from amx.llm.provider import LLMProvider
-
-        if not cfg.llm.provider or not cfg.llm.model:
-            error(
-                "No active LLM profile is configured. "
-                "Use `/llm` then `/add-llm-profile`, or run `/setup`."
-            )
-            sys.exit(1)
-
-        try:
-            code_path = cfg.resolve_code_path((code_profile or "").strip() or None, None)
-        except KeyError as exc:
-            error(str(exc))
-            return
-        if not code_path:
-            error("No codebase path configured. Run `/code` then `/add-code-profile` first.")
-            return
-        profile_nm = (
-            (code_profile or "").strip() or cfg.active_code_profile or "default"
-        ).strip() or "default"
-
-        _, code_report = load_latest_cached_report(profile_nm, code_path)
-        if code_report is None:
-            error(f"No cached code-scan for profile {profile_nm!r}. Run `/code-scan` first.")
-            return
-
-        token_tracker.reset()
-
-        llm = LLMProvider(cfg.llm)
-        db = DatabaseConnector(cfg.db)
-        with command_display(
-            schema=schema or cfg.current_schema or "",
-            mode="code-analyze",
-            provider=cfg.llm.provider,
-            model=cfg.llm.model,
-        ):
-            with step_spinner("Testing database connection..."):
-                connected = db.test_connection()
-            if not connected:
-                error("Cannot connect to database.")
-                sys.exit(1)
-
-            tables_arg = list(tables_pos) + list(table)
-            scope = finalize_scope(cfg, db, schema or cfg.current_schema, tables_arg)
-            if scope is None:
-                return
-            schema_name = next(iter(scope))
-            tables = scope[schema_name]
-
-            # Shared loop with the Studio /api/code/analyze worker so the
-            # CLI and the SPA stay byte-identical on suggestions.
-            def _on_start(table_name: str, n_columns: int) -> None:
-                info(f"Code Agent: {schema_name}.{table_name} ({n_columns} columns)")
-
-            def _on_done(table_name: str, n_suggestions: int) -> None:
-                info(f"  -> {n_suggestions} suggestions")
-
-            result = run_code_analysis(
-                cfg,
-                db,
-                llm,
-                CodeAnalyzeRequest(
-                    schema=schema_name,
-                    tables=list(tables),
-                    code_profile=profile_nm,
-                    code_report=code_report,
-                ),
-                on_table_start=_on_start,
-                on_table_done=_on_done,
-            )
-            all_suggestions = result.suggestions
-
-        if not all_suggestions:
-            warn("Code Agent produced no suggestions.")
-            render_token_summary(token_tracker)
-            return
-
-        rows = [
-            [
-                s.column or s.table,
-                s.suggestions[0][:60] if s.suggestions else "",
-                s.confidence.value,
-            ]
-            for s in all_suggestions
-        ]
-        render_table("Code Agent suggestions", ["Asset", "Suggestion", "Confidence"], rows[:40])
-
-        cache_path = Path.home() / ".amx" / "code_agent_results.json"
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = serialize_suggestions(all_suggestions)
-        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        success(f"Saved {len(all_suggestions)} Code Agent suggestions to {cache_path}")
-        info("These will be available as pre-computed input for the next `/run`.")
-        render_token_summary(token_tracker)
-        studio_hint("code-analyze")
