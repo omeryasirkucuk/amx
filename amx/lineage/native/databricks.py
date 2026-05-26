@@ -21,7 +21,6 @@ from dataclasses import replace
 from typing import Any
 
 from amx.db.adapters._databricks_workspace import (
-    DatabricksAuthError,
     DatabricksWorkspaceClient,
 )
 from amx.lineage.native import provider as P
@@ -59,8 +58,13 @@ class DatabricksLineageProvider:
         for item in _as_list(raw.get("downstreams")):
             result.edges.extend(_edges_for_item(item, anchor, P.DOWNSTREAM))
 
-        if with_columns and anchor_columns:
-            result.edges.extend(self._column_edges(fqn, anchor, anchor_columns))
+        # Column-level lineage is intentionally NOT fetched: the
+        # column-lineage REST shape is unverified and mis-mapped columns
+        # onto table nodes ("every column looked like its own table").
+        # The view stays table-centric (table↔table + producer/consumer
+        # assets). ``with_columns`` / ``anchor_columns`` are accepted for
+        # the protocol but ignored.
+        _ = (with_columns, anchor_columns)
 
         self._resolve_entity_names(result)
         return result
@@ -88,51 +92,6 @@ class DatabricksLineageProvider:
         result.edges = [
             replace(e, source=named(e.source), target=named(e.target)) for e in result.edges
         ]
-
-    # ── column lineage ───────────────────────────────────────────────
-
-    def _column_edges(
-        self, fqn: str, anchor: P.NativeLineageNode, anchor_columns: tuple[str, ...]
-    ) -> list[P.NativeLineageEdge]:
-        edges: list[P.NativeLineageEdge] = []
-        for col in anchor_columns:
-            try:
-                raw = self._client.column_lineage(table_name=fqn, column_name=col)
-            except DatabricksAuthError:
-                # No column-lineage access for this column — skip it; the
-                # table-grain edges already convey the relationship.
-                continue
-            except Exception as exc:  # noqa: BLE001
-                log.info("column lineage failed for %s.%s: %s", fqn, col, exc)
-                continue
-            anchor_col_node = anchor
-            for up in _as_list(raw.get("upstream_cols") or raw.get("upstreams")):
-                node, col_name = _column_endpoint(up)
-                if node is None:
-                    continue
-                edges.append(
-                    P.NativeLineageEdge(
-                        source=node,
-                        target=anchor_col_node,
-                        direction=P.UPSTREAM,
-                        from_column=col_name,
-                        to_column=col,
-                    )
-                )
-            for down in _as_list(raw.get("downstream_cols") or raw.get("downstreams")):
-                node, col_name = _column_endpoint(down)
-                if node is None:
-                    continue
-                edges.append(
-                    P.NativeLineageEdge(
-                        source=anchor_col_node,
-                        target=node,
-                        direction=P.DOWNSTREAM,
-                        from_column=col,
-                        to_column=col_name,
-                    )
-                )
-        return edges
 
 
 # ── factory + registration ───────────────────────────────────────────
@@ -256,15 +215,6 @@ def _edges_for_item(
         else:
             edges.append(P.NativeLineageEdge(source=anchor, target=node, direction=P.DOWNSTREAM))
     return edges
-
-
-def _column_endpoint(item: dict[str, Any]) -> tuple[P.NativeLineageNode | None, str | None]:
-    """Resolve one column-lineage endpoint to (table node, column name)."""
-    info = _get_ci(item, "tableInfo", "table_info")
-    col = _get_ci(item, "name", "column_name", "columnName")
-    # Flat shape falls back to catalog/schema/table/name on the item itself.
-    node = _table_node_from_info(info if isinstance(info, dict) else item)
-    return node, (str(col) if col else None)
 
 
 __all__ = [

@@ -1802,14 +1802,12 @@ export interface NativeFetchResult {
 export async function lineageFetchNative(args: {
   profile: string;
   fqn: string;
-  withColumns?: boolean;
 }): Promise<NativeFetchResult> {
   return apiFetch<NativeFetchResult>("/api/lineage/fetch", {
     method: "POST",
     body: JSON.stringify({
       profile: args.profile,
       fqn: args.fqn,
-      with_columns: !!args.withColumns,
     }),
   });
 }

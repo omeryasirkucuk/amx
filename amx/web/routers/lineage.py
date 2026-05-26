@@ -15,8 +15,8 @@ import json
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
@@ -654,11 +654,10 @@ def post_fetch(
         )
     db_cfg = (getattr(cfg, "db_profiles", {}) or {}).get(name)
     backend = (getattr(db_cfg, "backend", "") or "").lower()
-    with_columns = bool(payload.get("with_columns"))
 
     svc = LineageFetchService(SearchCatalog(hs.db_path))
     try:
-        counts = svc.fetch(profile_name=name, backend=backend, fqn=fqn, with_columns=with_columns)
+        counts = svc.fetch(profile_name=name, backend=backend, fqn=fqn)
     except NativeLineageError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -1518,7 +1517,7 @@ def post_refresh(
         )
     artifacts = lineage_store.list_lineage_artifacts(hs, db_profile=scope.profile)
     matching = [a for a in artifacts if a["anchor_entity_id"] == anchor_id]
-    fill = "fill" if no_cache else "skip"
+    fill: Literal["fill", "skip"] = "fill" if no_cache else "skip"
     try:
         if matching:
             result = lineage_service.refresh_lineage(
@@ -1766,6 +1765,33 @@ def _resolve_entity_id_strict(hs: Any, profile: str, fqn: str) -> int:
             detail=f"FQN {fqn!r} not found in catalog under profile {profile!r}.",
         )
     return int(row[0])
+
+
+def _entity_id_if_present(hs: Any, raw: Any) -> int | None:
+    """Return ``raw`` as a catalog_entities id iff it parses and exists.
+
+    Save payloads may carry an explicit ``entity_id`` per node / edge
+    endpoint. It is the only handle some nodes have — asset nodes
+    (notebooks, jobs, dashboards, vector indexes) have no
+    ``database.schema.table`` FQN to resolve, so without this they were
+    silently dropped on save. Validating the id against the catalog
+    keeps a stale / bogus id from inserting a dangling row; ``None``
+    means "fall back to FQN resolution".
+    """
+    if raw is None:
+        return None
+    try:
+        eid = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if eid <= 0:
+        return None
+    with hs._connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM catalog_entities WHERE id = ? LIMIT 1",
+            (eid,),
+        ).fetchone()
+    return eid if row else None
 
 
 @router.post("/edges", status_code=status.HTTP_201_CREATED)
@@ -2431,6 +2457,11 @@ def post_manual_artifact(
         tgt_node_id = str(edge.get("target_node_id") or "").strip()
         src_op_id = op_node_to_entity.get(src_node_id) if src_node_id else None
         tgt_op_id = op_node_to_entity.get(tgt_node_id) if tgt_node_id else None
+        # An explicit, catalog-validated entity_id is the most reliable
+        # handle and the only one asset endpoints (notebooks, jobs, …)
+        # have — those carry no resolvable FQN.
+        src_eid = _entity_id_if_present(hs, edge.get("source_entity_id"))
+        tgt_eid = _entity_id_if_present(hs, edge.get("target_entity_id"))
         src = str(edge.get("source_fqn") or "").strip()
         tgt = str(edge.get("target_fqn") or "").strip()
         src_profile = str(edge.get("source_profile") or primary_profile).strip() or primary_profile
@@ -2438,6 +2469,9 @@ def post_manual_artifact(
         try:
             if src_op_id is not None:
                 src_id = src_op_id
+                src_col_from_fqn = ""
+            elif src_eid is not None:
+                src_id = src_eid
                 src_col_from_fqn = ""
             else:
                 if not src:
@@ -2448,6 +2482,9 @@ def post_manual_artifact(
                 )
             if tgt_op_id is not None:
                 tgt_id = tgt_op_id
+                tgt_col_from_fqn = ""
+            elif tgt_eid is not None:
+                tgt_id = tgt_eid
                 tgt_col_from_fqn = ""
             else:
                 if not tgt:
@@ -2497,47 +2534,29 @@ def post_manual_artifact(
         )
         persisted += 1
 
-    # Compute scope and render the artifact so it shows up on the
-    # browse list immediately. We re-use create_lineage so the matplotlib
-    # PNG/SVG generation, hashing, and lineage_artifacts row insert all
-    # happen through the canonical path. Scope is the primary profile;
-    # nodes from other profiles are layered in via lineage_artifact_nodes
-    # below and surface through the cross-profile read path in
-    # ``GET /api/lineage/by-id/{id}``.
-    with hs._connect() as conn:
-        row = conn.execute(
-            "SELECT database_name, schema_name, table_name FROM catalog_entities WHERE id = ?",
-            (anchor_id,),
-        ).fetchone()
-    database = str(row[0] or "")
-    schema = str(row[1] or "")
-    table = str(row[2] or "")
-    scope = Scope(
-        profile=primary_profile,
-        anchor=ColumnRef(database=database, schema=schema, table=table, column=""),
-        depth_up=1,
-        depth_down=1,
-        database=database,
-        schema=schema,
-    )
-    from pathlib import Path as _P
-
-    from amx.config import _resolve_config_dir
-
-    # Slug is used for the on-disk image path only. It never participates
-    # in re-open routing; the artifact_id is the only identifier the
-    # frontend uses to load this canvas back.
-    slug_base = re.sub(r"[^A-Za-z0-9_-]+", "_", name) or "lineage"
-    slug = f"{slug_base}_{int(now)}"
-    out = _P(_resolve_config_dir()) / "lineage" / f"{slug}.svg"
+    # Persist the artifact row directly — no image render. The canvas is
+    # always reopened from by-id data (``lineage_artifact_nodes`` joined
+    # with ``catalog_relationships``), never from the on-disk SVG, so the
+    # matplotlib render is pure overhead here. On a large native-lineage
+    # graph it is also slow enough to trip the reverse-proxy timeout and
+    # 500 the whole save. Edges are already persisted above; nodes are
+    # inserted below. The artifact still shows on the browse list because
+    # ``insert_lineage_artifact`` writes the ``lineage_artifacts`` row.
+    node_count = sum(1 for n in nodes_in if isinstance(n, dict))
 
     @dataclass
     class _ArtifactStub:
-        """Mini-LineageRunResult for the in-place update path so the
-        downstream children-insertion blocks (which all read
-        ``result.artifact_id``) stay untouched."""
+        """Mini-LineageRunResult so the downstream children-insertion
+        blocks and the final response (which read ``result.artifact_id``,
+        ``.aborted``, ``.node_count`` …) stay untouched now that the save
+        path no longer routes through ``create_lineage``."""
 
         artifact_id: int
+        node_count: int = 0
+        edge_count: int = 0
+        aborted: bool = False
+        abort_reason: str = ""
+        extractors_used: list[str] = field(default_factory=list)
 
     if update_id is not None:
         # Update-in-place: drop every child row of the existing
@@ -2545,7 +2564,6 @@ def post_manual_artifact(
         # downstream blocks re-INSERT the new children with the
         # same artifact_id so the URL ``?artifact=<id>`` stays
         # stable across saves.
-        node_count = sum(1 for n in nodes_in if isinstance(n, dict))
         edge_count = persisted
         with hs._lock, hs._connect() as conn:
             conn.execute(
@@ -2577,16 +2595,23 @@ def post_manual_artifact(
                     update_id,
                 ),
             )
-        result = _ArtifactStub(artifact_id=update_id)
+        result = _ArtifactStub(artifact_id=update_id, node_count=node_count, edge_count=edge_count)
     else:
         try:
-            result = lineage_service.create_lineage(
-                hs=hs,
-                scope=scope,
+            new_id = lineage_store.insert_lineage_artifact(
+                hs,
                 name=name,
-                output_path=out,
+                db_profile=primary_profile,
+                anchor_entity_id=int(anchor_id),
+                depth_up=1,
+                depth_down=1,
                 fmt="svg",
-                fill_decision="skip",
+                output_path="",
+                edge_set_hash="",
+                node_count=node_count,
+                edge_count=persisted,
+                extractors_used=[],
+                extractors_partial=False,
             )
         except sqlite3.IntegrityError as exc:
             # Race: another save grabbed the name between our
@@ -2607,13 +2632,13 @@ def post_manual_artifact(
                     "existing_name": name,
                 },
             ) from exc
-        except Exception as exc:  # render failure should not lose the edges
-            return {
-                "ok": True,
-                "persisted_edges": persisted,
-                "artifact_id": 0,
-                "render_error": str(exc),
-            }
+        result = _ArtifactStub(artifact_id=int(new_id), node_count=node_count, edge_count=persisted)
+
+    # Every ``lineage_artifact_nodes`` row this save inserts. The table
+    # has no UNIQUE constraint, so a duplicate entity_id would silently
+    # create a second placement for the same node (it renders twice on
+    # reopen). Dedupe across BOTH the operator and table loops below.
+    seen_entity_ids: set[int] = set()
 
     # Persist operator-node placements alongside table nodes so the
     # load endpoint can re-render the canvas exactly as it was —
@@ -2622,25 +2647,32 @@ def post_manual_artifact(
     if result.artifact_id and op_node_meta:
         with hs._connect() as conn:
             for _node_id, meta in op_node_meta.items():
-                conn.execute(
-                    """
-                    INSERT INTO lineage_artifact_nodes
-                        (artifact_id, entity_id, db_profile, x, y, width, height,
-                         z_index, logo_key)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        int(result.artifact_id),
-                        int(meta["entity_id"]),
-                        primary_profile,
-                        meta["x"],
-                        meta["y"],
-                        meta["width"],
-                        meta["height"],
-                        meta["z_index"],
-                        "",
-                    ),
-                )
+                eid = int(meta["entity_id"])
+                if eid in seen_entity_ids:
+                    continue
+                seen_entity_ids.add(eid)
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO lineage_artifact_nodes
+                            (artifact_id, entity_id, db_profile, x, y, width, height,
+                             z_index, logo_key)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            int(result.artifact_id),
+                            eid,
+                            primary_profile,
+                            meta["x"],
+                            meta["y"],
+                            meta["width"],
+                            meta["height"],
+                            meta["z_index"],
+                            "",
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 — one odd node must not 500 the save
+                    log.info("save canvas: skipped operator node %s: %s", eid, exc)
 
     # Persist per-node placements + cross-profile mapping.
     if result.artifact_id and nodes_in:
@@ -2648,35 +2680,49 @@ def post_manual_artifact(
             for node in nodes_in:
                 if not isinstance(node, dict):
                     continue
-                node_fqn = str(node.get("fqn") or "").strip()
-                if not node_fqn:
-                    continue
                 node_profile = (
                     str(node.get("profile") or primary_profile).strip() or primary_profile
                 )
-                try:
-                    entity_id = _resolve_entity_id_strict(hs, node_profile, node_fqn)
-                except HTTPException:
+                # Prefer an explicit, catalog-validated entity_id: it is
+                # the only handle asset nodes (notebooks, jobs, …) have,
+                # since they carry no database.schema.table FQN. Tables
+                # fall back to FQN resolution when no id is supplied.
+                node_fqn = str(node.get("fqn") or "").strip()
+                explicit_eid = _entity_id_if_present(hs, node.get("entity_id"))
+                if explicit_eid is not None:
+                    entity_id = explicit_eid
+                elif node_fqn:
+                    try:
+                        entity_id = _resolve_entity_id_strict(hs, node_profile, node_fqn)
+                    except HTTPException:
+                        continue
+                else:
                     continue
-                conn.execute(
-                    """
-                    INSERT INTO lineage_artifact_nodes
-                        (artifact_id, entity_id, db_profile, x, y, width, height,
-                         z_index, logo_key)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        int(result.artifact_id),
-                        entity_id,
-                        node_profile,
-                        float(node.get("x") or 0.0),
-                        float(node.get("y") or 0.0),
-                        float(node.get("width") or 240.0),
-                        float(node.get("height") or 120.0),
-                        int(node.get("z_index") or 0),
-                        str(node.get("logo_key") or ""),
-                    ),
-                )
+                if entity_id in seen_entity_ids:
+                    continue
+                seen_entity_ids.add(entity_id)
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO lineage_artifact_nodes
+                            (artifact_id, entity_id, db_profile, x, y, width, height,
+                             z_index, logo_key)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            int(result.artifact_id),
+                            entity_id,
+                            node_profile,
+                            float(node.get("x") or 0.0),
+                            float(node.get("y") or 0.0),
+                            float(node.get("width") or 240.0),
+                            float(node.get("height") or 120.0),
+                            int(node.get("z_index") or 0),
+                            str(node.get("logo_key") or ""),
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 — one odd node must not 500 the save
+                    log.info("save canvas: skipped node %s: %s", node_fqn, exc)
 
     # Persist canvas annotations — both styles share this table:
     # ``style='note'`` (default) is the colored sticky; ``style='text'``

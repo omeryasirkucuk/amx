@@ -124,6 +124,9 @@ export interface AssetNodeData {
   kind: AssetNodeKind;
   /** Display name sourced from ``catalog_entities.search_text``. */
   label: string;
+  /** ``catalog_entities.id`` — the only stable handle for an asset node
+   *  (it has no FQN). Carried through save so the node round-trips. */
+  entityId?: number;
   /** Owning DB profile chip (shown when multi-profile is in scope). */
   dbProfile?: string;
   /** Optional one-line subtitle (e.g. workspace path). */
