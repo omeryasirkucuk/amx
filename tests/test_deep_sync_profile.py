@@ -206,7 +206,10 @@ def test_deep_sync_one_table_count_fallback(
     class _ZeroConn:
         def profile_table(self, schema: str, table: str, sample_size: int = 0) -> TableProfile:
             return TableProfile(
-                schema=schema, name=table, asset_kind=AssetKind.TABLE, row_count=0,
+                schema=schema,
+                name=table,
+                asset_kind=AssetKind.TABLE,
+                row_count=0,
                 columns=[ColumnProfile(name="c", dtype="int", nullable=True, existing_comment="")],
             )
 
@@ -216,9 +219,7 @@ def test_deep_sync_one_table_count_fallback(
     monkeypatch.setattr(drift, "_scoped_connector", lambda *a, **k: _ZeroConn())
     monkeypatch.setattr(drift, "_exact_row_count", lambda *a, **k: 98765)
 
-    result = drift.deep_sync_one_table(
-        _cfg_stub(), "p", schema="s", table="t", database="d"
-    )
+    result = drift.deep_sync_one_table(_cfg_stub(), "p", schema="s", table="t", database="d")
     assert result["ok"] is True
     assert result["row_count"] == 98765
 

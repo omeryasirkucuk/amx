@@ -82,8 +82,7 @@ def test_zero_count_reported_as_unknown(seeded_history_store: Path) -> None:
         row_count=0,
     )
     assert (
-        live_db._cached_row_count("p", "airline", "Airports", database_scope="bird_train")
-        is None
+        live_db._cached_row_count("p", "airline", "Airports", database_scope="bird_train") is None
     )
 
 
@@ -107,9 +106,7 @@ def test_unscoped_lookup_prefers_counted_copy(seeded_history_store: Path) -> Non
         table="customers",
         row_count=0,
     )
-    assert (
-        live_db._cached_row_count("p", "beer_factory", "customers", database_scope=None) == 554
-    )
+    assert live_db._cached_row_count("p", "beer_factory", "customers", database_scope=None) == 554
 
 
 def test_missing_table_returns_none(seeded_history_store: Path) -> None:

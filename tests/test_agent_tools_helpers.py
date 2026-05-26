@@ -105,8 +105,7 @@ def test_safe_json_truncation_is_always_valid_json() -> None:
         "schema": "airline",
         "table": "wide",
         "columns": [
-            {"name": f"col_{i}", "type": "varchar", "comment": "x" * 80}
-            for i in range(300)
+            {"name": f"col_{i}", "type": "varchar", "comment": "x" * 80} for i in range(300)
         ],
     }
     out = _safe_json(big)

@@ -28,9 +28,7 @@ def test_every_schema_has_a_registry_binding() -> None:
     binding so dispatch never falls through to ``Unknown tool``."""
     schema_names = {entry["function"]["name"] for entry in tool_schemas()}
     missing = schema_names - set(TOOLS)
-    assert not missing, (
-        f"Tools declared in schemas but missing from registry: {sorted(missing)}"
-    )
+    assert not missing, f"Tools declared in schemas but missing from registry: {sorted(missing)}"
 
 
 def test_registry_only_contains_real_schemas() -> None:
@@ -38,9 +36,7 @@ def test_registry_only_contains_real_schemas() -> None:
     the LLM — flag the stale entry rather than carry dead weight."""
     schema_names = {entry["function"]["name"] for entry in tool_schemas()}
     stale = set(TOOLS) - schema_names
-    assert not stale, (
-        f"Tools in registry but no schema declares them: {sorted(stale)}"
-    )
+    assert not stale, f"Tools in registry but no schema declares them: {sorted(stale)}"
 
 
 def test_every_registered_tool_has_handler_method() -> None:
@@ -52,9 +48,8 @@ def test_every_registered_tool_has_handler_method() -> None:
     for name, binding in TOOLS.items():
         if not hasattr(ToolBox, binding.handler_method):
             missing.append((name, binding.handler_method))
-    assert not missing, (
-        "Tools in registry with no handler on ToolBox: "
-        + ", ".join(f"{n}→{m}" for n, m in missing)
+    assert not missing, "Tools in registry with no handler on ToolBox: " + ", ".join(
+        f"{n}→{m}" for n, m in missing
     )
 
 

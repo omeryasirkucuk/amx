@@ -71,6 +71,7 @@ _AGENT_MAX_TOKENS = 1500
 # the configured output cap on the 200K Claude / GPT-4-turbo window.
 _AGENT_INPUT_TOKEN_BUDGET = int(os.environ.get("AMX_ASK_INPUT_TOKEN_BUDGET", "100000"))
 
+
 class ToolAgentResult:
     """Container for what the agent loop produced."""
 
@@ -1031,9 +1032,7 @@ def _run_tool_loop(
                 # legacy CLI path's "swallow-and-log policy" referenced
                 # in earlier comments was actually swallow-only; this
                 # fixes the missing log without changing recovery).
-                log.warning(
-                    "lineage/pages enrichment failed: %s", exc, exc_info=True
-                )
+                log.warning("lineage/pages enrichment failed: %s", exc, exc_info=True)
     else:
         # Hit the iteration cap without a final answer — force a closing call
         # without ``tools`` so the LLM returns plain text from whatever it

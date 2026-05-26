@@ -299,7 +299,9 @@ def register_code_commands(
             warn(f"Could not sync code evidence into /search catalog: {exc}")
 
         _render_code_report_summary(report)
-        info("Results saved. Next `/run` will use them from cache (re-run `/code-index` to refresh).")
+        info(
+            "Results saved. Next `/run` will use them from cache (re-run `/code-index` to refresh)."
+        )
 
     @code.command("search")
     @click.argument("question")

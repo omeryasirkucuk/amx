@@ -326,8 +326,7 @@ def _run_pull_from_shared(shared_store) -> None:
         pulled = pull_catalog_to_local(local, shared_store)
         if pushed or pulled:
             info(
-                f"Catalog sync: pushed {pushed} local row(s) up, "
-                f"pulled {pulled} team row(s) down."
+                f"Catalog sync: pushed {pushed} local row(s) up, pulled {pulled} team row(s) down."
             )
     except Exception as exc:
         info(f"Catalog sync skipped (runs still synced): {exc}")

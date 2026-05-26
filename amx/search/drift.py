@@ -824,7 +824,10 @@ def deep_sync_profile(
                 current_container = container
             except Exception as exc:
                 log.warning(
-                    "Deep sync connector failed for %s/%s: %s", profile, container or "<default>", exc
+                    "Deep sync connector failed for %s/%s: %s",
+                    profile,
+                    container or "<default>",
+                    exc,
                 )
                 connector = None
                 failed += 1

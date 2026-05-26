@@ -104,7 +104,9 @@ def resolve_embedding(
             if embedding is not None
             else provider
         )
-        configured_model = (getattr(embedding, "model", "") or "") if embedding is not None else model
+        configured_model = (
+            (getattr(embedding, "model", "") or "") if embedding is not None else model
+        )
         fell = reason is not None
         return ResolvedEmbedding(
             side=side,
