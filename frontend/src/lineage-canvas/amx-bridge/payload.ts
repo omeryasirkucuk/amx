@@ -217,33 +217,54 @@ function collapseIntoBuckets(
   const groupedEdges = new Set<string>();
   const bucketNodes: CanvasNode[] = [];
   const connectors: CanvasEdge[] = [];
+  // Lone (single-table) neighbours stay on the canvas but get pulled into
+  // the column beside the anchor — otherwise they keep whatever far-flung
+  // position the seed gave them and their edge shoots off-screen.
+  const posOverride = new Map<string, { x: number; y: number }>();
   const ax = anchor.position.x;
   const ay = anchor.position.y;
+
+  const COL_GAP = 460;
+  const ROW_GAP = 150;
+
+  // Each side packs the anchor's neighbours into one tidy column: a slot
+  // is either a bucket (asset group, or a schema with 2+ tables) or a
+  // lone table (single-table schema). Everything sits next to the anchor.
+  type Slot = { kind: "bucket"; group: BucketGroup } | { kind: "node"; id: string };
 
   const sides: Array<["producer" | "consumer", number]> = [
     ["producer", -1],
     ["consumer", 1],
   ];
   for (const [dir, outward] of sides) {
-    const sideGroups = [...groups.values()].filter(
-      (g) =>
-        g.dir === dir &&
-        // A schema bucket only earns its own node when it folds 2+ tables;
-        // a lone table renders directly on the canvas (no "schema (1)"
-        // bucket to expand). Asset groups always bucket, Databricks-style.
-        (g.groupKind === "asset" || g.nodeIds.size >= 2),
-    );
-    sideGroups.forEach((g, i) => {
+    const slots: Slot[] = [];
+    for (const g of groups.values()) {
+      if (g.dir !== dir) continue;
+      if (g.groupKind === "schema" && g.nodeIds.size < 2) {
+        for (const id of g.nodeIds) slots.push({ kind: "node", id });
+      } else {
+        slots.push({ kind: "bucket", group: g });
+      }
+    }
+    const n = slots.length;
+    const x = ax + outward * COL_GAP;
+    slots.forEach((slot, i) => {
+      const y = ay + (i - (n - 1) / 2) * ROW_GAP;
+      if (slot.kind === "node") {
+        posOverride.set(slot.id, { x, y });
+        return;
+      }
+      const g = slot.group;
       const bucketId = `bucket-${dir}-${i}`;
       const connectorId = `bconn-${dir}-${i}`;
       const childNodes = [...g.nodeIds].map((id) => byId.get(id)).filter(Boolean) as CanvasNode[];
       const childEdges = edges.filter((e) => g.edgeIds.has(e.id));
-      g.nodeIds.forEach((x) => grouped.add(x));
-      g.edgeIds.forEach((x) => groupedEdges.add(x));
+      g.nodeIds.forEach((id) => grouped.add(id));
+      g.edgeIds.forEach((id) => groupedEdges.add(id));
       bucketNodes.push({
         id: bucketId,
         type: "asset-bucket",
-        position: { x: ax + outward * 440, y: ay + (i - (sideGroups.length - 1) / 2) * 130 },
+        position: { x, y },
         data: {
           kind: "asset-bucket",
           groupKind: g.groupKind,
@@ -287,7 +308,13 @@ function collapseIntoBuckets(
   }
 
   return {
-    nodes: nodes.filter((n) => !grouped.has(n.id)).concat(bucketNodes),
+    nodes: nodes
+      .filter((n) => !grouped.has(n.id))
+      .map((n) => {
+        const p = posOverride.get(n.id);
+        return p ? { ...n, position: p } : n;
+      })
+      .concat(bucketNodes),
     edges: edges.filter((e) => !groupedEdges.has(e.id)).concat(connectors),
   };
 }
