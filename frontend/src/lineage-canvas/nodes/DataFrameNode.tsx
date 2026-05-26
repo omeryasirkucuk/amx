@@ -35,6 +35,7 @@ import { Handle, NodeProps, Position, useReactFlow } from "reactflow";
 import { ChevronDown, ChevronRight, Search, Star } from "lucide-react";
 import clsx from "clsx";
 
+import { fetchTableColumns } from "../amx-bridge/catalog";
 import { TYPE_COLORS, normalizeType, shortTypeLabel } from "../constants";
 import { LogoBadge } from "../logos/LogoBadge";
 import { LogoPicker } from "../logos/LogoPicker";
@@ -170,6 +171,37 @@ function DataFrameNodeImpl({ id, data, selected }: NodeProps<TableNodeData>) {
     if (data.forceExpandTick && !data.expanded) writeExpanded(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.forceExpandTick]);
+
+  // Lazy column load (cache-first, else source): tables open collapsed
+  // and many arrive with no cached columns (native lineage fetch never
+  // touches the warehouse). On first expand, pull this one table's
+  // columns via the cache-first ``/api/live/...columns`` route and fold
+  // them into the node. Only the table the user opened — fetch stays
+  // fast, and the source read is the user's principle: cache then DB.
+  const [colsTried, setColsTried] = useState(false);
+  useEffect(() => {
+    if (!expanded || columns.length > 0 || colsTried || !data.profile || !data.table) return;
+    setColsTried(true);
+    void fetchTableColumns({
+      profile: data.profile,
+      database: data.database,
+      schema: data.schema,
+      table: data.table,
+    })
+      .then((cols) => {
+        if (!cols || cols.length === 0) return;
+        rf.setNodes((nodes) =>
+          nodes.map((n) =>
+            n.id === id ? { ...n, data: { ...n.data, columns: cols } } : n,
+          ),
+        );
+      })
+      .catch(() => {
+        /* cache miss + source unreachable → stay "(no columns cached)" */
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded]);
+
   const [search, setSearch] = useState<string>("");
   const [logoPickerOpen, setLogoPickerOpen] = useState(false);
 
