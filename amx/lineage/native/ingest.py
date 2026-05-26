@@ -58,8 +58,9 @@ def build_asset_ingester(*, profile: str, client: Any, catalog: Any) -> AssetIng
 def _ingest_notebook(
     conn: Any, profile: str, client: Any, catalog: Any, object_id: str
 ) -> int | None:
-    status = client.workspace_object(object_id)
-    path = str(status.get("path") or "")
+    # Resolve id → path via the cached workspace map (get-status rejects
+    # object_id). None for deleted / non-live notebooks → stay name-only.
+    path = client.notebook_path(object_id)
     if not path:
         return None
     source = client.export_notebook_source(workspace_path=path)
@@ -69,7 +70,7 @@ def _ingest_notebook(
         name=path.rsplit("/", 1)[-1] or path,
         workspace_path=path,
         qualified_name=path,
-        language=str(status.get("language") or "PYTHON"),
+        language="PYTHON",
         source_text=source,
         source_hash=hashlib.sha256(source.encode("utf-8")).hexdigest(),
         last_modified_at=None,

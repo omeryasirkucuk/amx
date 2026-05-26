@@ -184,6 +184,7 @@ function collapseAssetsIntoBuckets(
 
   const hiddenAssets = new Set<string>();
   const hiddenEdges = new Set<string>();
+  const memberPos = new Map<string, { x: number; y: number }>();
   const bucketNodes: CanvasNode[] = [];
   const connectors: CanvasEdge[] = [];
   for (const [key, g] of groups) {
@@ -197,6 +198,12 @@ function collapseAssetsIntoBuckets(
       g.dir === "producer"
         ? { x: table.position.x - 360, y: table.position.y }
         : { x: table.position.x + 380, y: table.position.y };
+    // Stack the (hidden) member assets just below the bucket so an
+    // expand reveals them tidily next to it instead of at scattered
+    // seeded positions.
+    [...g.assetIds].forEach((aid, idx) => {
+      memberPos.set(aid, { x: pos.x, y: pos.y + 90 + idx * 96 });
+    });
     bucketNodes.push({
       id: bucketId,
       type: "asset-bucket",
@@ -240,7 +247,13 @@ function collapseAssetsIntoBuckets(
     );
   }
   return {
-    nodes: nodes.map((n) => (hiddenAssets.has(n.id) ? { ...n, hidden: true } : n)).concat(bucketNodes),
+    nodes: nodes
+      .map((n) =>
+        hiddenAssets.has(n.id)
+          ? { ...n, hidden: true, position: memberPos.get(n.id) ?? n.position }
+          : n,
+      )
+      .concat(bucketNodes),
     edges: edges.map((e) => (hiddenEdges.has(e.id) ? { ...e, hidden: true } : e)).concat(connectors),
   };
 }
