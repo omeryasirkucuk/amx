@@ -68,6 +68,7 @@ class EntityCrudMixin:
         pk_flag: int = 0,
         fk_flag: int = 0,
         row_count: int = 0,
+        metadata_state: str = "full",
     ) -> int:
         now = time.time()
         # Lookup must include ``database_name`` — without it, a re-sync
@@ -99,11 +100,17 @@ class EntityCrudMixin:
             # row"; without the bump a Sync-all over an unchanged
             # catalog leaves the pill stuck on the prior timestamp
             # even though the sync actually ran.
+            # ``metadata_state`` upgrades monotonically: a caller that
+            # actually holds the metadata ('full') promotes a prior
+            # name_only ghost, but a name_only caller (native lineage
+            # discovered the entity without read access) must never
+            # downgrade a row that was genuinely synced in full.
             conn.execute(
                 """
                 UPDATE catalog_entities
                 SET db_backend = ?, database_name = ?, asset_kind = ?, dtype = ?, nullable = ?,
-                    pk_flag = ?, fk_flag = ?, row_count = ?, updated_at = ?, last_synced_at = ?
+                    pk_flag = ?, fk_flag = ?, row_count = ?, updated_at = ?, last_synced_at = ?,
+                    metadata_state = CASE WHEN ? = 'full' THEN 'full' ELSE metadata_state END
                 WHERE id = ?
                 """,
                 (
@@ -117,6 +124,7 @@ class EntityCrudMixin:
                     row_count,
                     now,
                     now,
+                    metadata_state,
                     int(row["id"]),
                 ),
             )
@@ -132,8 +140,8 @@ class EntityCrudMixin:
             INSERT INTO catalog_entities (
                 db_profile, db_backend, database_name, schema_name, table_name, column_name,
                 entity_kind, asset_kind, dtype, nullable, pk_flag, fk_flag, row_count,
-                updated_at, last_synced_at, first_synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                updated_at, last_synced_at, first_synced_at, metadata_state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 db_profile,
@@ -152,6 +160,7 @@ class EntityCrudMixin:
                 now,
                 now,
                 now,
+                metadata_state or "full",
             ),
         )
         return int(cur.lastrowid)

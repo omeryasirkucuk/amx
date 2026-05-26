@@ -58,6 +58,9 @@ export interface TableNodeData {
   /** Header badge logo (lineage_logos.key). Empty/undefined = no badge.
    *  Auto-bound from profile.backend on add; user can override. */
   logoKey?: string;
+  /** Defaults to "full"; "name_only" marks a table discovered via
+   *  native lineage fetch without read access (greyed, no drill-in). */
+  metadataState?: "full" | "name_only";
 }
 
 export interface LogoNodeData {
@@ -107,7 +110,15 @@ export type AssetNodeKind =
   | "stream"
   | "pipeline"
   | "streamlit_app"
-  | "job";
+  | "job"
+  | "vector_search_index"
+  | "dashboard"
+  | "external";
+
+/** Whether AMX holds the entity in full or discovered it by name only.
+ *  Name-only nodes (found via native lineage fetch without read access)
+ *  render greyed with a "name only" badge and no drill-in. */
+export type MetadataState = "full" | "name_only";
 
 export interface AssetNodeData {
   kind: AssetNodeKind;
@@ -117,6 +128,8 @@ export interface AssetNodeData {
   dbProfile?: string;
   /** Optional one-line subtitle (e.g. workspace path). */
   subtitle?: string;
+  /** Defaults to "full"; "name_only" greys the node. */
+  metadataState?: MetadataState;
 }
 
 export type CanvasNodeData =

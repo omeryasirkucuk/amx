@@ -569,7 +569,8 @@ class SQLiteHistoryStore:
                     updated_at REAL NOT NULL DEFAULT 0,
                     last_synced_at REAL NOT NULL DEFAULT 0,
                     last_code_sync_at REAL,
-                    first_synced_at REAL
+                    first_synced_at REAL,
+                    metadata_state TEXT NOT NULL DEFAULT 'full'
                 )
                 """
             )
@@ -616,6 +617,16 @@ class SQLiteHistoryStore:
             # every re-sync. NULL on rows that predate the column.
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute("ALTER TABLE catalog_entities ADD COLUMN first_synced_at REAL")
+            # ``metadata_state`` distinguishes entities AMX holds in full
+            # (columns profiled / source ingested) from ``name_only`` ghost
+            # rows that native lineage fetch discovered but the user lacks
+            # privileges to read. Lets the lineage canvas grey out ghost
+            # nodes. Existing rows backfill to 'full' via the default.
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "ALTER TABLE catalog_entities ADD COLUMN "
+                    "metadata_state TEXT NOT NULL DEFAULT 'full'"
+                )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_descriptions (
