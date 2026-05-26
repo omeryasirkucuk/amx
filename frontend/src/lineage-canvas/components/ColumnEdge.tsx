@@ -46,6 +46,7 @@ import { EdgeEditorPopover, type EdgeStylePatch } from "./EdgeEditorPopover";
 const MARKER_IDS = {
   one: "lcv-marker-one",
   many: "lcv-marker-many",
+  flow: "lcv-marker-flow",
 } as const;
 
 /** Pick the side of a node-rect (T/R/B/L) that faces ``target``
@@ -318,7 +319,11 @@ function ColumnEdgeImpl({
         path={edgePath}
         style={style}
         markerStart={markers.source}
-        markerEnd={markers.target}
+        // Direction is always visible: a relationship with a declared
+        // cardinality shows its crow's-foot at the target; everything
+        // else (native lineage, manual edges) falls back to a plain
+        // flow arrowhead so upstream → downstream reads unambiguously.
+        markerEnd={markers.target ?? markerUrl("flow")}
       />
       <path
         d={edgePath}
@@ -405,6 +410,19 @@ export function ColumnEdgeMarkerDefs() {
             strokeWidth="1.2"
             fill="none"
           />
+        </marker>
+        {/* Flow — a filled triangle pointing along the edge, used as
+            the default target marker so every edge shows its direction. */}
+        <marker
+          id={MARKER_IDS.flow}
+          markerWidth="12"
+          markerHeight="12"
+          refX="9"
+          refY="5"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
         </marker>
       </defs>
     </svg>

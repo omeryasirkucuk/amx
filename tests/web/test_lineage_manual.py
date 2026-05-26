@@ -158,9 +158,12 @@ def test_delete_edge_404_when_missing(seeded_hs, client, auth_headers):
     assert r.status_code == 404
 
 
-def test_post_manual_artifact_persists_edges_and_renders(seeded_hs, client, auth_headers, tmp_path):
+def test_post_manual_artifact_persists_edges_without_render(seeded_hs, client, auth_headers):
+    # The save path must NOT render an image: the canvas always reopens
+    # from by-id data (nodes + catalog_relationships), and rendering a
+    # large native-lineage graph is slow enough to trip the proxy timeout
+    # and 500 the save. So no matplotlib render should ever be invoked.
     with patch("amx.lineage.service.render_lineage_image") as fake_render:
-        fake_render.return_value = tmp_path / "manual.svg"
         r = client.post(
             "/api/lineage/manual",
             headers=auth_headers,
@@ -177,6 +180,7 @@ def test_post_manual_artifact_persists_edges_and_renders(seeded_hs, client, auth
             },
         )
     assert r.status_code == 201, r.text
+    fake_render.assert_not_called()
     body = r.json()
     assert body["ok"] is True
     assert body["persisted_edges"] == 1
@@ -191,3 +195,72 @@ def test_post_manual_artifact_persists_edges_and_renders(seeded_hs, client, auth
             """
         ).fetchone()
     assert row and row[0] == "approved"
+
+    # The artifact row exists with no on-disk image (output_path empty).
+    with seeded_hs._connect() as conn:
+        art = conn.execute(
+            "SELECT output_path FROM lineage_artifacts WHERE id = ?",
+            (int(body["artifact_id"]),),
+        ).fetchone()
+    assert art is not None
+    assert (art[0] or "") == ""
+
+
+def test_post_manual_artifact_round_trips_asset_nodes_by_entity_id(seeded_hs, client, auth_headers):
+    # Asset nodes (notebooks, jobs, …) have no FQN — they round-trip
+    # purely by entity_id. A native-lineage canvas folds them into
+    # buckets; on save they (and their edges to the anchor) must persist,
+    # not silently vanish. Seed a notebook asset + resolve the orders id.
+    with seeded_hs._connect() as conn:
+        nb_id = conn.execute(
+            "INSERT INTO catalog_entities "
+            "(db_profile, db_backend, database_name, schema_name, table_name, "
+            "entity_kind, asset_kind, search_text) VALUES (?,?,?,?,?,?,?,?)",
+            ("local", "databricks", "", "__assets", "ETL nb", "notebook", "notebook", "ETL nb"),
+        ).lastrowid
+        orders_id = conn.execute(
+            "SELECT id FROM catalog_entities WHERE table_name = 'orders'"
+        ).fetchone()[0]
+
+    r = client.post(
+        "/api/lineage/manual",
+        headers=auth_headers,
+        json={
+            "profile": "local",
+            "name": "native-flow",
+            "anchor_fqn": "public.orders",
+            "nodes": [
+                {"fqn": "public.orders", "entity_id": orders_id, "x": 0, "y": 0},
+                # The notebook carries no FQN — only its entity_id.
+                {"fqn": "", "entity_id": nb_id, "x": -300, "y": 0},
+            ],
+            "edges": [
+                {
+                    "source_entity_id": nb_id,
+                    "target_entity_id": orders_id,
+                }
+            ],
+        },
+    )
+    assert r.status_code == 201, r.text
+    artifact_id = int(r.json()["artifact_id"])
+    assert r.json()["persisted_edges"] == 1
+
+    # Both nodes (table + asset) landed as artifact placements.
+    with seeded_hs._connect() as conn:
+        placed = {
+            int(x[0])
+            for x in conn.execute(
+                "SELECT entity_id FROM lineage_artifact_nodes WHERE artifact_id = ?",
+                (artifact_id,),
+            ).fetchall()
+        }
+    assert {nb_id, orders_id} <= placed
+
+    # The asset edge round-trips through the by-id reopen path.
+    reopened = client.get(f"/api/lineage/by-id/{artifact_id}", headers=auth_headers)
+    assert reopened.status_code == 200, reopened.text
+    kinds = {n["kind"] for n in reopened.json()["nodes"]}
+    assert "notebook" in kinds
+    edge_pairs = {(e["from_entity_id"], e["to_entity_id"]) for e in reopened.json()["edges"]}
+    assert (nb_id, orders_id) in edge_pairs

@@ -96,32 +96,33 @@ def test_provider_tolerates_camelcase_and_missing_fields() -> None:
     assert any(e.source.kind == P.NOTEBOOK for e in result.edges)
 
 
-def test_provider_fetches_column_lineage_only_when_requested() -> None:
+def test_provider_never_fetches_column_lineage() -> None:
+    """Column-level lineage is intentionally disabled: its REST shape is
+    unverified and mis-mapped columns onto table nodes ("every column
+    looked like its own table"). ``with_columns`` is accepted for the
+    protocol but must be a no-op — no ``column_lineage`` calls, no
+    column-grained edges — regardless of the flag."""
     client = _FakeClient(
-        {"upstreams": []},
         {
-            "upstream_cols": [
+            "upstreams": [
                 {
                     "tableInfo": {
                         "catalog_name": "workspace",
                         "schema_name": "new_schema",
                         "name": "src_tbl",
-                    },
-                    "name": "src_col",
+                    }
                 }
             ]
         },
     )
     provider = DatabricksLineageProvider(client)
 
-    provider.fetch_table_lineage(ANCHOR_FQN, with_columns=False, anchor_columns=("id",))
-    assert client.column_calls == []
-
+    # Even when the caller asks for columns, the provider ignores it.
     result = provider.fetch_table_lineage(ANCHOR_FQN, with_columns=True, anchor_columns=("id",))
-    assert client.column_calls == [(ANCHOR_FQN, "id")]
-    col_edges = [e for e in result.edges if e.from_column]
-    assert col_edges and col_edges[0].from_column == "src_col"
-    assert col_edges[0].to_column == "id"
+    assert client.column_calls == []
+    assert all(not e.from_column and not e.to_column for e in result.edges)
+    # The table-level lineage still comes through unaffected.
+    assert any(e.source.fqn == "workspace.new_schema.src_tbl" for e in result.edges)
 
 
 # ── materializer routing ──────────────────────────────────────────────
@@ -355,9 +356,7 @@ def test_native_lineage_surfaces_in_studio_payload(hs) -> None:
 
     scope = Scope(
         profile="dbr",
-        anchor=ColumnRef(
-            database="workspace", schema="new_schema", table="dummy_table", column=""
-        ),
+        anchor=ColumnRef(database="workspace", schema="new_schema", table="dummy_table", column=""),
     )
     payload = lineage_for_studio(hs, scope=scope)
     kinds = {n["kind"] for n in payload["nodes"]}

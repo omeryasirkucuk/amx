@@ -7,12 +7,28 @@
 
 import { apiFetch } from "../../lib/api";
 import type {
+  AssetBucketNodeData,
+  AssetNodeData,
   CanvasEdge,
   CanvasNode,
   CommentNodeData,
   OperatorNodeData,
   TableNodeData,
 } from "../types";
+
+/** Asset node kinds (notebooks, jobs, …) — they have no FQN and
+ *  round-trip purely by ``entity_id``. */
+const ASSET_NODE_KINDS: ReadonlySet<string> = new Set([
+  "notebook",
+  "query",
+  "stream",
+  "pipeline",
+  "streamlit_app",
+  "job",
+  "vector_search_index",
+  "dashboard",
+  "external",
+]);
 
 export interface ManualSavePayload {
   profile: string;          // primary profile (used for AI generate/refresh)
@@ -59,6 +75,11 @@ export interface ManualSaveLogoNode {
 export interface ManualSaveNode {
   profile: string;
   fqn: string;
+  /** catalog_entities.id when known. Required for asset nodes
+   *  (notebooks, jobs, dashboards, vector indexes) — they have no
+   *  ``database.schema.table`` FQN, so the backend resolves them by id.
+   *  Tables carry it too so re-save never re-resolves by name. */
+  entity_id?: number;
   x: number;
   y: number;
   width: number;
@@ -76,9 +97,14 @@ export interface ManualSaveEdge {
   source_fqn?: string;
   source_profile?: string;
   source_node_id?: string;
+  /** catalog_entities.id for the endpoint, when known. Lets edges to
+   *  asset nodes (no FQN) round-trip; takes priority over FQN on the
+   *  backend. */
+  source_entity_id?: number;
   target_fqn?: string;
   target_profile?: string;
   target_node_id?: string;
+  target_entity_id?: number;
   source_column?: string;
   target_column?: string;
   /** Studio-canvas style override fields — round-trip with the edge
@@ -246,19 +272,68 @@ export function buildSavePayload(args: {
   const comments: ManualSaveComment[] = [];
   const logo_nodes: ManualSaveLogoNode[] = [];
   const tableIndex = new Map<string, TableNodeData>();
+  const assetIndex = new Map<string, AssetNodeData>();
   const operatorIds = new Set<string>();
 
+  // Flatten collapsed buckets back to their real members before
+  // serializing. A bucket (kind "asset-bucket") is a pure view-layer
+  // grouping; its child nodes + edges live in ``data`` whether or not
+  // the bucket is expanded. Without this, saving a collapsed native
+  // canvas would persist only the anchor and silently drop every
+  // producer / consumer asset and folded table. Dedupe by id so an
+  // already-expanded bucket (children also present in ``args.nodes``)
+  // is not counted twice. The synthetic bucket↔anchor connector edges
+  // are dropped — they have no real entity behind them; the per-child
+  // edges carried in ``childEdges`` are the truth.
+  const bucketIds = new Set<string>();
+  const effectiveNodes = new Map<string, CanvasNode>();
+  const effectiveEdges = new Map<string, CanvasEdge>();
   for (const n of args.nodes) {
+    if (n.data.kind === "asset-bucket") {
+      bucketIds.add(n.id);
+      const bucket = n.data as AssetBucketNodeData;
+      for (const child of bucket.childNodes) {
+        if (!effectiveNodes.has(child.id)) effectiveNodes.set(child.id, child);
+      }
+      for (const ce of bucket.childEdges) {
+        if (!effectiveEdges.has(ce.id)) effectiveEdges.set(ce.id, ce);
+      }
+      continue;
+    }
+    if (!effectiveNodes.has(n.id)) effectiveNodes.set(n.id, n);
+  }
+  for (const e of args.edges) {
+    if (!effectiveEdges.has(e.id)) effectiveEdges.set(e.id, e);
+  }
+
+  for (const n of effectiveNodes.values()) {
     if (n.data.kind === "table") {
       tableIndex.set(n.id, n.data);
       nodes.push({
         profile: n.data.profile || primaryProfile,
         fqn: n.data.fqn,
+        entity_id: n.data.entityId,
         x: n.position.x,
         y: n.position.y,
         width: (n.width || 240),
         height: (n.height || 120),
         logo_key: n.data.logoKey || "",
+      });
+    } else if (ASSET_NODE_KINDS.has(n.data.kind)) {
+      const a = n.data as AssetNodeData;
+      // Asset nodes have no FQN — without an entity_id the backend
+      // cannot place them, so skip ids-less ghosts rather than emit a
+      // node the save loop would drop anyway.
+      if (a.entityId == null) continue;
+      assetIndex.set(n.id, a);
+      nodes.push({
+        profile: a.dbProfile || primaryProfile,
+        fqn: "",
+        entity_id: a.entityId,
+        x: n.position.x,
+        y: n.position.y,
+        width: n.width || 240,
+        height: n.height || 120,
       });
     } else if (n.data.kind === "operator") {
       const op = n.data as OperatorNodeData;
@@ -295,24 +370,38 @@ export function buildSavePayload(args: {
     }
   }
 
-  for (const e of args.edges) {
-    const src = tableIndex.get(e.source);
-    const tgt = tableIndex.get(e.target);
+  for (const e of effectiveEdges.values()) {
+    // A synthetic bucket connector (endpoint is a bucket node) carries
+    // no real entity — its child edges were folded in above.
+    if (bucketIds.has(e.source) || bucketIds.has(e.target)) continue;
+    const srcT = tableIndex.get(e.source);
+    const tgtT = tableIndex.get(e.target);
+    const srcA = assetIndex.get(e.source);
+    const tgtA = assetIndex.get(e.target);
     const srcIsOp = operatorIds.has(e.source);
     const tgtIsOp = operatorIds.has(e.target);
-    // An endpoint must be either a known table or a known operator
-    // on this same canvas — anything else (orphan id) is dropped.
-    if ((!src && !srcIsOp) || (!tgt && !tgtIsOp)) continue;
+    // An endpoint must resolve to a table, asset, or operator that is
+    // actually on this canvas — anything else (orphan id) is dropped.
+    if ((!srcT && !srcA && !srcIsOp) || (!tgtT && !tgtA && !tgtIsOp)) continue;
     const d = e.data;
+    // A real column name only exists for a table endpoint anchored to a
+    // column handle. The synthetic node-level handles (``__table__`` on
+    // tables, ``out``/``in`` on assets) must NOT be stored as columns —
+    // doing so makes the reloaded edge fail to reconnect (an asset has
+    // no ``__table__`` handle).
+    const realColumn = (handle: string | null | undefined, isTable: boolean): string | undefined =>
+      isTable && handle && handle !== "__table__" ? handle : undefined;
     edges.push({
-      source_fqn: src?.fqn,
-      source_profile: src ? src.profile || primaryProfile : undefined,
+      source_fqn: srcT?.fqn,
+      source_profile: srcT ? srcT.profile || primaryProfile : undefined,
       source_node_id: srcIsOp ? e.source : undefined,
-      target_fqn: tgt?.fqn,
-      target_profile: tgt ? tgt.profile || primaryProfile : undefined,
+      source_entity_id: srcT?.entityId ?? srcA?.entityId,
+      target_fqn: tgtT?.fqn,
+      target_profile: tgtT ? tgtT.profile || primaryProfile : undefined,
       target_node_id: tgtIsOp ? e.target : undefined,
-      source_column: e.sourceHandle || undefined,
-      target_column: e.targetHandle || undefined,
+      target_entity_id: tgtT?.entityId ?? tgtA?.entityId,
+      source_column: realColumn(e.sourceHandle, !!srcT),
+      target_column: realColumn(e.targetHandle, !!tgtT),
       style_color: d?.styleColor ?? null,
       style_dashed: d?.styleDashed ?? null,
       cardinality: d?.cardinality ?? null,

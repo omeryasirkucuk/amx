@@ -19,7 +19,7 @@ import { useEffect, useState } from "react";
 import { Waypoints } from "lucide-react";
 
 import Modal from "../../components/Modal";
-import { Button, Checkbox } from "../../components/ui";
+import { Button } from "../../components/ui";
 import { lineageFetchNative, type NativeFetchResult } from "../../lib/api";
 import { CacheTableTreePicker } from "./CacheTableTreePicker";
 import type { PickedTable } from "./LineageMultiTablePicker";
@@ -38,14 +38,12 @@ function fqnOf(t: PickedTable): string {
 
 export function NativeFetchDialog({ open, onClose, onDone }: Props) {
   const [picked, setPicked] = useState<PickedTable | null>(null);
-  const [withColumns, setWithColumns] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (open) {
       setPicked(null);
-      setWithColumns(false);
       setError("");
     }
   }, [open]);
@@ -58,7 +56,6 @@ export function NativeFetchDialog({ open, onClose, onDone }: Props) {
       const result = await lineageFetchNative({
         profile: picked.profile,
         fqn: fqnOf(picked),
-        withColumns,
       });
       onDone(result);
     } catch (e) {
@@ -103,12 +100,6 @@ export function NativeFetchDialog({ open, onClose, onDone }: Props) {
     >
       <div className="space-y-3">
         <CacheTableTreePicker value={picked} onChange={setPicked} />
-        <Checkbox
-          label="Also fetch column-level lineage"
-          description="One extra API call per column — slower, but draws column edges."
-          checked={withColumns}
-          onChange={(e) => setWithColumns(e.target.checked)}
-        />
       </div>
     </Modal>
   );
