@@ -125,6 +125,52 @@ def test_provider_never_fetches_column_lineage() -> None:
     assert any(e.source.fqn == "workspace.new_schema.src_tbl" for e in result.edges)
 
 
+def test_workspace_index_resolves_notebook_names() -> None:
+    """Notebook ids resolve to real names via the cached workspace scan;
+    jobs/etc. are untouched, and an unknown id keeps its placeholder."""
+    from amx.lineage.native import workspace_index as wi
+
+    wi.clear_cache()
+
+    class _WsClient:
+        host = "https://dbc-test.cloud.databricks.com"
+
+        def list_workspace_objects(self):
+            yield {"object_type": "DIRECTORY", "object_id": 1, "path": "/Users/a"}
+            yield {
+                "object_type": "NOTEBOOK",
+                "object_id": 2257615622929527,
+                "path": "/Users/a/load_direct_shipment",
+            }
+
+    anchor = P.NativeLineageNode(kind=P.TABLE, name="dummy_table", fqn=ANCHOR_FQN)
+    result = P.NativeLineageResult(anchor=anchor)
+    result.edges.append(
+        P.NativeLineageEdge(
+            source=P.NativeLineageNode(
+                kind=P.NOTEBOOK, name="notebook 2257615622929527", external_id="2257615622929527"
+            ),
+            target=anchor,
+            direction=P.UPSTREAM,
+        )
+    )
+    # An unknown notebook id stays as its placeholder.
+    result.edges.append(
+        P.NativeLineageEdge(
+            source=P.NativeLineageNode(kind=P.NOTEBOOK, name="notebook 999", external_id="999"),
+            target=anchor,
+            direction=P.UPSTREAM,
+        )
+    )
+
+    wi.resolve_notebook_names(result, _WsClient(), profile="dbr")
+
+    names = {e.source.external_id: e.source.name for e in result.edges}
+    assert names["2257615622929527"] == "load_direct_shipment"
+    assert names["999"] == "notebook 999"
+    wi.clear_cache()
+
+
 # ── materializer routing ──────────────────────────────────────────────
 
 
