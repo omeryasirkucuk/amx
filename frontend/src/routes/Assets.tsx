@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Loader2, Scissors, Search, Trash2 } from "lucide-react";
 
@@ -372,6 +373,34 @@ export default function Assets() {
     setDrawerAssetId(String(row.id));
     setDrawerOpen(true);
   }
+
+  // Deep-link drill-in: ``/assets?kind=notebook&id=123`` (opened in a new
+  // tab from the lineage canvas) lands directly on that asset's detail.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const kind = searchParams.get("kind");
+    const id = searchParams.get("id");
+    const valid: RemoteAssetKind[] = [
+      "notebook",
+      "job",
+      "pipeline",
+      "streamlit",
+      "stream",
+      "query",
+    ];
+    if (kind && id && (valid as string[]).includes(kind)) {
+      setActiveTab(kind as RemoteAssetKind);
+      setDrawerKind(kind as RemoteAssetKind);
+      setDrawerAssetId(id);
+      setDrawerOpen(true);
+      // Strip the params so a refresh / closing the drawer doesn't reopen it.
+      const next = new URLSearchParams(searchParams);
+      next.delete("kind");
+      next.delete("id");
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div>
