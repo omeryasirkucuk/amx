@@ -122,12 +122,11 @@ class DatabricksWorkspaceClient:
             return None
         try:
             if kind == "notebook":
-                # No fast id→name path: get-status rejects object_id and a
-                # full workspace scan is too slow per fetch. Names for
-                # notebooks come from reconciling to an already-ingested
-                # remote_notebooks row (see the materializer); unresolved
-                # ids stay as a placeholder.
-                return None
+                # The lineage notebook id is the workspace object_id.
+                # Resolve it to a path and take the basename — one cheap
+                # REST get per notebook in this graph, no workspace scan.
+                path = self.path_for_object_id(external_id)
+                return path.rstrip("/").rsplit("/", 1)[-1] if path else None
             if kind == "job":
                 body = self._get("/api/2.2/jobs/get", params={"job_id": external_id}).json()
                 return (body.get("settings") or {}).get("name") or None
