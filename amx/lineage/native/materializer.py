@@ -235,18 +235,23 @@ class LineageMaterializer:
             # Not yet ingested — try pulling its content now so it lands
             # under Assets as a full, drillable asset.
             try:
-                remote = self.ingester(conn, node)
+                ingested_id = self.ingester(conn, node)
             except Exception:  # noqa: BLE001 — best-effort; fall back to ghost
-                remote = None
+                ingested_id = None
+            if ingested_id is not None:
+                remote = (ingested_id, "")
         if remote is not None:
-            # Reconcile against an ingested asset → full, standard
-            # bridge identity (matches the normal ingest path).
+            remote_id, remote_name = remote
+            # Reconcile against an ingested asset → full, standard bridge
+            # identity. Prefer the ingested asset's real name over the
+            # lineage placeholder ("notebook <id>"); the canvas then shows
+            # a human name and the node is drillable into Assets.
             entity_id = self.catalog._upsert_asset_entity(
                 conn,
                 profile_name=self.profile_name,
                 kind=node.kind,
-                remote_id=remote,
-                display_name=node.name,
+                remote_id=remote_id,
+                display_name=remote_name or node.name,
                 backend=self.backend,
                 metadata_state="full",
             )
@@ -258,8 +263,8 @@ class LineageMaterializer:
         counts.name_only += 1
         return entity_id
 
-    def _lookup_remote_asset(self, conn, node: P.NativeLineageNode) -> int | None:
-        """Return the remote_<kind>s.id matching this node, or ``None``."""
+    def _lookup_remote_asset(self, conn, node: P.NativeLineageNode) -> tuple[int, str] | None:
+        """Return ``(remote_<kind>s.id, display_name)`` for this node, or None."""
         if not node.external_id:
             return None
         spec = _REMOTE_TABLE_BY_KIND.get(node.kind)
@@ -267,10 +272,10 @@ class LineageMaterializer:
             return None
         table, id_col = spec
         row = conn.execute(
-            f"SELECT id FROM {table} WHERE profile_name = ? AND {id_col} = ?",  # noqa: S608
+            f"SELECT id, name FROM {table} WHERE profile_name = ? AND {id_col} = ?",  # noqa: S608
             (self.profile_name, node.external_id),
         ).fetchone()
-        return int(row[0]) if row else None
+        return (int(row[0]), str(row[1] or "")) if row else None
 
     def _upsert_ghost_asset(self, conn, node: P.NativeLineageNode) -> int:
         """Create / refresh a name-only asset bridge row.
