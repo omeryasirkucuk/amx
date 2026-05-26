@@ -330,3 +330,27 @@ def test_asset_external_id_parse():
     # name-slug ghosts (no external id) and full bridges return None
     assert _asset_external_id_from_table_name("notebook", "notebook#ext:name:Foo") is None
     assert _asset_external_id_from_table_name("notebook", "notebook#42") is None
+
+
+def test_profile_host_normalizes():
+    from types import SimpleNamespace
+
+    from amx.web.routers.lineage import _profile_host
+
+    def cfg_with(backend, host):
+        return SimpleNamespace(db_profiles={"p": SimpleNamespace(backend=backend, host=host)})
+
+    # Databricks: scheme + trailing slash stripped to a bare host
+    assert (
+        _profile_host(cfg_with("databricks", "https://adb-1.azuredatabricks.net/"), "p")
+        == "adb-1.azuredatabricks.net"
+    )
+    # Already-bare host passes through
+    assert (
+        _profile_host(cfg_with("databricks", "adb-1.azuredatabricks.net"), "p")
+        == "adb-1.azuredatabricks.net"
+    )
+    # Non-Databricks backend → empty
+    assert _profile_host(cfg_with("snowflake", "x.snowflakecomputing.com"), "p") == ""
+    # Missing profile → empty
+    assert _profile_host(cfg_with("databricks", "h"), "missing") == ""

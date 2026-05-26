@@ -21,7 +21,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from amx.config import AMXConfig
+from amx.config import AMXConfig, _normalize_db_host
 from amx.lineage import service as lineage_service
 from amx.lineage import store as lineage_store
 from amx.lineage.discover import discover_profile_lineage
@@ -2364,7 +2364,7 @@ def _profile_host(cfg: AMXConfig, profile: str) -> str:
     p = (getattr(cfg, "db_profiles", {}) or {}).get(profile)
     if p is None or (getattr(p, "backend", "") or "").lower() != "databricks":
         return ""
-    return getattr(p, "host", "") or ""
+    return _normalize_db_host(getattr(p, "host", "") or "")
 
 
 @router.post("/manual", status_code=status.HTTP_201_CREATED)
