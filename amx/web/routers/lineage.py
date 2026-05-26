@@ -951,6 +951,9 @@ def get_artifact_by_id(
                 # Surface it as ``label`` so the canvas AssetNode can
                 # render it without a second lookup.
                 meta["label"] = str(r[6] or "")
+                # Recover the platform external id from the bridge name so
+                # the canvas can lazily ingest a clicked ghost asset.
+                meta["external_id"] = _asset_external_id_from_table_name(kind, str(r[3] or ""))
             entity_meta[int(r[0])] = meta
 
     # Bulk-fetch per-table column lists from the column-comments
@@ -1042,7 +1045,12 @@ def get_artifact_by_id(
             # remote_<kind>s.id (when ingested) so the canvas can deep-link
             # to the Assets page for drill-in. None on name-only ghosts.
             node_entry["source_remote_id"] = meta.get("source_remote_id")
+            # Platform external id (for lazy ingest of a clicked ghost) and
+            # workspace host (for the "open in Databricks" deep-link).
+            node_entry["external_id"] = meta.get("external_id")
+            node_entry["host"] = _profile_host(cfg, str(row[1] or ""))
         elif meta.get("kind") == "table":
+            node_entry["host"] = _profile_host(cfg, str(row[1] or ""))
             cols = table_columns.get(
                 (
                     str(row[1] or ""),
@@ -2335,6 +2343,28 @@ def _profile_backend(cfg: AMXConfig, profile: str) -> str:
     if entry is None:
         return ""
     return str(getattr(entry, "backend", "") or "")
+
+
+def _asset_external_id_from_table_name(kind: str, table_name: str) -> str | None:
+    """Recover a ghost asset's platform external id from its bridge name.
+
+    Ghost rows are keyed ``"<kind>#ext:<external_id>"`` (or
+    ``"<kind>#ext:name:<slug>"`` when no id was known). Returns the id,
+    or ``None`` when the row carries only a name slug or another shape.
+    """
+    prefix = f"{kind}#ext:"
+    if not table_name.startswith(prefix):
+        return None
+    ref = table_name[len(prefix) :]
+    return None if ref.startswith("name:") else (ref or None)
+
+
+def _profile_host(cfg: AMXConfig, profile: str) -> str:
+    """Return the Databricks workspace host for a profile, else ``""``."""
+    p = (getattr(cfg, "db_profiles", {}) or {}).get(profile)
+    if p is None or (getattr(p, "backend", "") or "").lower() != "databricks":
+        return ""
+    return getattr(p, "host", "") or ""
 
 
 @router.post("/manual", status_code=status.HTTP_201_CREATED)
