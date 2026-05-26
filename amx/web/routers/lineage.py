@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 
 from amx.config import AMXConfig
 from amx.lineage import service as lineage_service
@@ -783,6 +784,61 @@ def _seed_native_artifact(hs: Any, *, profile: str, fqn: str) -> int | None:
             [(artifact_id, nid, profile, x, y) for (nid, x, y) in placements],
         )
     return int(artifact_id)
+
+
+class AssetIngestBody(BaseModel):
+    profile: str
+    kind: str
+    external_id: str
+
+
+def _ingest_one_asset_for_profile(*, profile: str, kind: str, external_id: str) -> int | None:
+    """Open the profile's connector + local catalog and ingest one asset.
+
+    Wraps :func:`amx.lineage.native.lazy_ingest.ingest_one_asset` with the
+    same connector/catalog wiring the bulk ingest job uses. Resolves the
+    active :class:`AMXConfig` from disk (no request context here, matching
+    the other non-request-bound router helpers). Returns the asset's
+    ``remote_<kind>s.id`` or ``None`` when it cannot be resolved.
+    """
+    from amx.cli_support.commands.db_assets_impl import _open_catalog, _open_connector
+    from amx.lineage.native.lazy_ingest import ingest_one_asset
+
+    cfg = AMXConfig.load()
+    connector = _open_connector(cfg, profile)
+    catalog = _open_catalog(cfg)
+    return ingest_one_asset(
+        connector=connector,
+        catalog=catalog,
+        profile=profile,
+        kind=kind,
+        external_id=external_id,
+    )
+
+
+@router.post("/asset/ingest")
+def post_asset_ingest(body: AssetIngestBody) -> dict[str, Any]:
+    """Ingest one native-lineage asset on demand and return its remote id.
+
+    Pulls only the clicked notebook / job / pipeline into the Assets
+    cache so its canvas node becomes full and drillable. Cached, so a
+    second open does no work.
+    """
+    try:
+        remote_id = _ingest_one_asset_for_profile(
+            profile=body.profile, kind=body.kind, external_id=body.external_id
+        )
+    except Exception as exc:  # noqa: BLE001 — surface ingest failure to the client
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Ingest of {body.kind} {body.external_id} failed: {exc}",
+        ) from exc
+    if remote_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Could not ingest {body.kind} {body.external_id} for profile {body.profile}.",
+        )
+    return {"remote_id": remote_id, "kind": body.kind}
 
 
 # ── Routes MUST come before the catch-all GET below ─────────────────────

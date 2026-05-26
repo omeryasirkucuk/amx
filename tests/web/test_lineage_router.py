@@ -303,3 +303,20 @@ def test_post_fetch_400_for_unsupported_backend(seeded_hs, client, auth_headers)
         json={"profile": "local", "fqn": "public.orders"},
     )
     assert r.status_code == 400
+
+
+def test_asset_ingest_endpoint_returns_remote_id(client, auth_headers, monkeypatch):
+    import amx.web.routers.lineage as lineage_router
+
+    monkeypatch.setattr(
+        lineage_router,
+        "_ingest_one_asset_for_profile",
+        lambda *, profile, kind, external_id: 42,
+    )
+    resp = client.post(
+        "/api/lineage/asset/ingest",
+        headers=auth_headers,
+        json={"profile": "db", "kind": "notebook", "external_id": "123"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["remote_id"] == 42
