@@ -817,7 +817,10 @@ def _ingest_one_asset_for_profile(*, profile: str, kind: str, external_id: str) 
 
 
 @router.post("/asset/ingest")
-def post_asset_ingest(body: AssetIngestBody) -> dict[str, Any]:
+def post_asset_ingest(
+    body: AssetIngestBody,
+    _: None = Depends(require_writer_role),
+) -> dict[str, Any]:
     """Ingest one native-lineage asset on demand and return its remote id.
 
     Pulls only the clicked notebook / job / pipeline into the Assets
