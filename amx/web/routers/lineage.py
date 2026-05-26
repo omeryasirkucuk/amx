@@ -684,8 +684,6 @@ def _seed_native_artifact(hs: Any, *, profile: str, fqn: str) -> int | None:
     asset / name-only nodes and the edges among them. Returns the
     artifact id, or ``None`` when the anchor can't be resolved.
     """
-    import math
-
     parts = [p for p in (fqn or "").split(".") if p]
     if len(parts) == 3:
         database, schema, table = parts
@@ -708,27 +706,32 @@ def _seed_native_artifact(hs: Any, *, profile: str, fqn: str) -> int | None:
         if anchor is None:
             return None
         anchor_id = int(anchor[0])
-        neighbour_rows = conn.execute(
+        edge_rows = conn.execute(
             """
-            SELECT DISTINCT CASE WHEN from_entity_id = ? THEN to_entity_id
-                                 ELSE from_entity_id END AS other
+            SELECT from_entity_id, to_entity_id
             FROM catalog_relationships
             WHERE source = 'databricks_native_lineage'
               AND (from_entity_id = ? OR to_entity_id = ?)
             """,
-            (anchor_id, anchor_id, anchor_id),
+            (anchor_id, anchor_id),
         ).fetchall()
-        neighbour_ids = [int(r[0]) for r in neighbour_rows if int(r[0]) != anchor_id]
-        edge_count = int(
-            conn.execute(
-                """
-                SELECT COUNT(*) FROM catalog_relationships
-                WHERE source = 'databricks_native_lineage'
-                  AND (from_entity_id = ? OR to_entity_id = ?)
-                """,
-                (anchor_id, anchor_id),
-            ).fetchone()[0]
-        )
+        # Classify each neighbour by direction relative to the anchor:
+        # an edge INTO the anchor (to == anchor) makes its source an
+        # upstream producer; an edge OUT of the anchor makes its target a
+        # downstream consumer. Drives left/right placement below.
+        upstream: list[int] = []
+        downstream: list[int] = []
+        seen: set[int] = set()
+        for f, t in edge_rows:
+            f, t = int(f), int(t)
+            if t == anchor_id and f != anchor_id and f not in seen:
+                upstream.append(f)
+                seen.add(f)
+            elif f == anchor_id and t != anchor_id and t not in seen:
+                downstream.append(t)
+                seen.add(t)
+        neighbour_ids = upstream + downstream
+        edge_count = len(edge_rows)
 
     art_name = f"Native · {fqn}"
     existing = lineage_store.lookup_lineage_artifact(hs, name_or_id=art_name)
@@ -754,14 +757,20 @@ def _seed_native_artifact(hs: Any, *, profile: str, fqn: str) -> int | None:
         extractors_partial=False,
     )
 
-    cx, cy = 480.0, 280.0
+    # Directional layout: upstream producers in a left column, the anchor
+    # in the centre, downstream consumers in a right column — so the
+    # graph reads left-to-right (feeds → anchor → consumed-by).
+    cx, cy = 640.0, 360.0
+    col_gap, row_gap = 380.0, 150.0
     placements: list[tuple[int, float, float]] = [(anchor_id, cx, cy)]
-    for i, nid in enumerate(neighbour_ids):
-        slot = i % 8
-        ring = i // 8
-        angle = slot * (math.pi / 4)
-        radius = 340.0 + ring * 220.0
-        placements.append((nid, cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+
+    def _column(ids: list[int], x: float) -> None:
+        for i, nid in enumerate(ids):
+            y = cy + (i - (len(ids) - 1) / 2.0) * row_gap
+            placements.append((nid, x, y))
+
+    _column(upstream, cx - col_gap)
+    _column(downstream, cx + col_gap)
     with hs._lock, hs._connect() as conn:
         conn.executemany(
             """
