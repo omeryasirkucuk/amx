@@ -979,6 +979,7 @@ class EntityCrudMixin:
         *,
         db_profile: str | None = None,
         limit: int = 50,
+        require_sync: bool = True,
     ) -> tuple[list[dict[str, object]], bool]:
         """Substring search across ``catalog_entities`` for schema /
         table / column names. Powers the Studio sidebar's column-level
@@ -1020,10 +1021,24 @@ class EntityCrudMixin:
         needle = f"%{q.lower()}%"
 
         with self._connect() as conn:
-            if db_profile is not None:
+            if not require_sync:
+                # Ungated: search whatever the cache holds, even on a
+                # half-synced profile. Used by the native-lineage fetch
+                # picker, which is reached for precisely before a profile
+                # is fully synced — the same rationale as the cache-tree
+                # endpoints that ignore sync state.
+                if db_profile is not None:
+                    synced_profiles: list[str] = [db_profile]
+                else:
+                    rows = conn.execute(
+                        "SELECT DISTINCT db_profile FROM catalog_entities "
+                        "WHERE db_profile IS NOT NULL AND db_profile != ''"
+                    ).fetchall()
+                    synced_profiles = [str(r["db_profile"]) for r in rows]
+            elif db_profile is not None:
                 if not self.is_profile_fully_synced(db_profile):
                     return [], False
-                synced_profiles: list[str] = [db_profile]
+                synced_profiles = [db_profile]
             else:
                 try:
                     rows = conn.execute(

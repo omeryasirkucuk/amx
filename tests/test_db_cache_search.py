@@ -188,6 +188,23 @@ def test_unsynced_profile_returns_nothing(seeded_store: Path) -> None:
     assert truncated is False
 
 
+def test_require_sync_false_searches_partially_cached_profile(seeded_store: Path) -> None:
+    # The native-lineage picker is reached for before a profile is fully
+    # synced, so its search must surface cached rows regardless of sync
+    # state. With require_sync=False the same unsynced cache is searchable
+    # down to the table / column level.
+    _seed(
+        seeded_store,
+        "prof-a",
+        schemas_tables_columns=[("public", "orders", ["customer_id"])],
+        fully_synced=False,
+    )
+    table_hits, _ = _catalog(seeded_store).search_entities("orders", require_sync=False)
+    assert any(h["match_field"] == "table" and h["table"] == "orders" for h in table_hits)
+    col_hits, _ = _catalog(seeded_store).search_entities("customer_id", require_sync=False)
+    assert any(h["match_field"] == "column" and h["table"] == "orders" for h in col_hits)
+
+
 def test_profile_filter_scopes_results(seeded_store: Path) -> None:
     _seed(
         seeded_store,

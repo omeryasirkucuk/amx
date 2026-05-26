@@ -19,7 +19,7 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Database, Search, Table2 } from "lucide-react";
 import clsx from "clsx";
 
@@ -38,17 +38,21 @@ interface Props {
 
 export function CacheTableTreePicker({ value, onChange }: Props) {
   const [filter, setFilter] = useState("");
+  // Debounce so each keystroke doesn't fire a request; the cache search
+  // is a local SQLite read but a short delay keeps it smooth.
+  const [debounced, setDebounced] = useState("");
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(filter.trim()), 200);
+    return () => clearTimeout(id);
+  }, [filter]);
+
   const profilesQ = useQuery({
     queryKey: ["native-fetch", "tree", "db-profiles"],
     queryFn: () => apiFetch<DbProfilesResponse>("/api/profiles/db"),
     staleTime: 30_000,
   });
   const profiles = profilesQ.data?.profiles ?? [];
-  const shown = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return profiles;
-    return profiles.filter((p) => p.name.toLowerCase().includes(q));
-  }, [profiles, filter]);
+  const searching = debounced.length >= 2;
 
   if (profilesQ.isLoading) return <Hint>Loading DB profiles…</Hint>;
   if (profilesQ.error) return <ErrorLine>{(profilesQ.error as Error).message}</ErrorLine>;
@@ -64,15 +68,15 @@ export function CacheTableTreePicker({ value, onChange }: Props) {
           type="text"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="Search DB profiles…"
+          placeholder="Search profiles, schemas, tables, columns…"
           className="w-full rounded-md border border-surface-border bg-surface py-1.5 pl-8 pr-2 text-[12.5px] text-ink outline-none focus:border-accent-default"
         />
       </div>
       <div className="max-h-[46vh] space-y-1.5 overflow-y-auto pr-1">
-        {shown.length === 0 ? (
-          <Hint>No DB profiles match “{filter.trim()}”.</Hint>
+        {searching ? (
+          <SearchResults query={debounced} value={value} onChange={onChange} />
         ) : (
-          shown.map((p) => (
+          profiles.map((p) => (
             <ProfileCard
               key={p.name}
               profile={p.name}
@@ -84,6 +88,86 @@ export function CacheTableTreePicker({ value, onChange }: Props) {
         )}
       </div>
     </div>
+  );
+}
+
+/** Flat, cross-tree search: matches schemas / tables / columns across
+ *  every cached profile (synced or not) and resolves each hit down to a
+ *  pickable table. A column match still points at its owning table, so
+ *  typing a column name surfaces the table to fetch lineage for. */
+function SearchResults({
+  query,
+  value,
+  onChange,
+}: { query: string } & Props) {
+  const q = useQuery({
+    queryKey: ["native-fetch", "cache-search", query],
+    // include_unsynced=true: native fetch targets partially-cached
+    // profiles, so the search must not gate on full sync.
+    queryFn: () => api.dbCacheSearch(query, null, 100, true),
+    staleTime: 15_000,
+  });
+  if (q.isLoading) return <Hint indent={1}>Searching…</Hint>;
+  if (q.error) return <ErrorLine indent={1}>{(q.error as Error).message}</ErrorLine>;
+
+  // Collapse schema/table/column hits to the unique set of tables.
+  const seen = new Set<string>();
+  const tables: Array<{ picked: PickedTable; matchedColumn?: string }> = [];
+  for (const r of q.data?.results ?? []) {
+    if (!r.table) continue; // schema-only match has no table to pick
+    const picked: PickedTable = {
+      profile: r.profile,
+      backend: r.db_backend || "unknown",
+      database: r.database,
+      schema: r.schema,
+      table: r.table,
+    };
+    const key = tableKey(picked);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tables.push({ picked, matchedColumn: r.match_field === "column" ? r.column ?? undefined : undefined });
+  }
+
+  if (tables.length === 0) return <Hint indent={1}>No tables match “{query}”.</Hint>;
+  const selectedKey = value ? tableKey(value) : "";
+  return (
+    <ul className="space-y-0.5">
+      {tables.map(({ picked, matchedColumn }) => {
+        const isSelected = tableKey(picked) === selectedKey;
+        const breadcrumb = [picked.profile, picked.database, picked.schema]
+          .filter(Boolean)
+          .join(" / ");
+        return (
+          <li key={tableKey(picked)}>
+            <button
+              type="button"
+              onClick={() => onChange(isSelected ? null : picked)}
+              className={clsx(
+                "flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left transition hover:bg-surface-raised",
+                isSelected && "bg-accent-soft hover:bg-accent-soft",
+              )}
+            >
+              <span
+                className={clsx(
+                  "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border",
+                  isSelected ? "border-accent-default bg-accent-default" : "border-surface-border",
+                )}
+              >
+                {isSelected && <span className="h-1.5 w-1.5 rounded-full bg-accent-ink" />}
+              </span>
+              <Table2 size={12} className="shrink-0 text-fg-muted" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12.5px] text-ink">{picked.table}</span>
+                <span className="block truncate text-[10.5px] text-fg-muted">
+                  {breadcrumb}
+                  {matchedColumn ? ` · column: ${matchedColumn}` : ""}
+                </span>
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
