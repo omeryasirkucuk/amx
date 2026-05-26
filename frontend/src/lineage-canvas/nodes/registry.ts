@@ -2,6 +2,7 @@
  * Single source of truth for ReactFlow's nodeTypes map.
  */
 
+import { AssetBucketNode } from "./AssetBucketNode";
 import { AssetNode } from "./AssetNode";
 import { CommentNode } from "./CommentNode";
 import { DataFrameNode } from "./DataFrameNode";
@@ -24,6 +25,7 @@ export const nodeTypes = {
   vector_search_index: AssetNode,
   dashboard: AssetNode,
   external: AssetNode,
+  "asset-bucket": AssetBucketNode,
 };
 
 /** Map AMX op_kind → ReactFlow node type. */

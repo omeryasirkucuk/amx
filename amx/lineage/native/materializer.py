@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from amx.lineage.native import provider as P
 from amx.search.catalog import SearchCatalog
@@ -75,10 +76,21 @@ class MaterializeCounts:
 class LineageMaterializer:
     """Persist a :class:`NativeLineageResult` into the local catalog."""
 
-    def __init__(self, catalog: SearchCatalog, *, profile_name: str, backend: str) -> None:
+    def __init__(
+        self,
+        catalog: SearchCatalog,
+        *,
+        profile_name: str,
+        backend: str,
+        ingester: Any = None,
+    ) -> None:
         self.catalog = catalog
         self.profile_name = profile_name
         self.backend = backend
+        # Optional ``(conn, node) -> remote_id | None`` that pulls an
+        # asset's content into remote_* so the bridge can be ``full``
+        # (drillable) instead of a name-only ghost. None = no ingest.
+        self.ingester = ingester
 
     def materialize(self, result: P.NativeLineageResult) -> MaterializeCounts:
         counts = MaterializeCounts()
@@ -219,8 +231,15 @@ class LineageMaterializer:
         self, conn, node: P.NativeLineageNode, counts: MaterializeCounts
     ) -> int | None:
         remote = self._lookup_remote_asset(conn, node)
+        if remote is None and self.ingester is not None:
+            # Not yet ingested — try pulling its content now so it lands
+            # under Assets as a full, drillable asset.
+            try:
+                remote = self.ingester(conn, node)
+            except Exception:  # noqa: BLE001 — best-effort; fall back to ghost
+                remote = None
         if remote is not None:
-            # Reconcile against an already-ingested asset → full, standard
+            # Reconcile against an ingested asset → full, standard
             # bridge identity (matches the normal ingest path).
             entity_id = self.catalog._upsert_asset_entity(
                 conn,
