@@ -355,6 +355,9 @@ export function loadedNodeToCanvasNode(
         label: n.label || n.table || kind,
         entityId: n.entity_id,
         dbProfile: opts.multiProfile ? n.profile : undefined,
+        // Real profile, always populated — drives click-to-ingest
+        // (dbProfile is display-only and suppressed single-profile).
+        profile: n.profile,
         subtitle: n.schema && n.schema !== "__assets" ? n.schema : undefined,
         metadataState: n.metadata_state === "name_only" ? "name_only" : undefined,
         sourceRemoteId: n.source_remote_id ?? undefined,
