@@ -225,7 +225,14 @@ function collapseIntoBuckets(
     ["consumer", 1],
   ];
   for (const [dir, outward] of sides) {
-    const sideGroups = [...groups.values()].filter((g) => g.dir === dir);
+    const sideGroups = [...groups.values()].filter(
+      (g) =>
+        g.dir === dir &&
+        // A schema bucket only earns its own node when it folds 2+ tables;
+        // a lone table renders directly on the canvas (no "schema (1)"
+        // bucket to expand). Asset groups always bucket, Databricks-style.
+        (g.groupKind === "asset" || g.nodeIds.size >= 2),
+    );
     sideGroups.forEach((g, i) => {
       const bucketId = `bucket-${dir}-${i}`;
       const connectorId = `bconn-${dir}-${i}`;
@@ -319,6 +326,7 @@ export function loadedNodeToCanvasNode(
         // older payloads omitted it so fall back to the bridge
         // table_name ``<kind>#<remote_id>``.
         label: n.label || n.table || kind,
+        entityId: n.entity_id,
         dbProfile: opts.multiProfile ? n.profile : undefined,
         subtitle: n.schema && n.schema !== "__assets" ? n.schema : undefined,
         metadataState: n.metadata_state === "name_only" ? "name_only" : undefined,

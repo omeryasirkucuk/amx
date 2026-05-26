@@ -19,8 +19,8 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
-import { ChevronDown, ChevronRight, Database, Table2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Database, Search, Table2 } from "lucide-react";
 import clsx from "clsx";
 
 import { api, apiFetch } from "../../lib/api";
@@ -37,26 +37,52 @@ interface Props {
 }
 
 export function CacheTableTreePicker({ value, onChange }: Props) {
+  const [filter, setFilter] = useState("");
   const profilesQ = useQuery({
     queryKey: ["native-fetch", "tree", "db-profiles"],
     queryFn: () => apiFetch<DbProfilesResponse>("/api/profiles/db"),
     staleTime: 30_000,
   });
+  const profiles = profilesQ.data?.profiles ?? [];
+  const shown = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return profiles;
+    return profiles.filter((p) => p.name.toLowerCase().includes(q));
+  }, [profiles, filter]);
+
   if (profilesQ.isLoading) return <Hint>Loading DB profiles…</Hint>;
   if (profilesQ.error) return <ErrorLine>{(profilesQ.error as Error).message}</ErrorLine>;
-  const profiles = profilesQ.data?.profiles ?? [];
   if (profiles.length === 0) return <Hint>No DB profiles configured.</Hint>;
   return (
-    <div className="max-h-[46vh] space-y-1.5 overflow-y-auto pr-1">
-      {profiles.map((p) => (
-        <ProfileCard
-          key={p.name}
-          profile={p.name}
-          backend={p.backend ?? "unknown"}
-          value={value}
-          onChange={onChange}
+    <div className="space-y-2">
+      <div className="relative">
+        <Search
+          size={13}
+          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-muted"
         />
-      ))}
+        <input
+          type="text"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Search DB profiles…"
+          className="w-full rounded-md border border-surface-border bg-surface py-1.5 pl-8 pr-2 text-[12.5px] text-ink outline-none focus:border-accent-default"
+        />
+      </div>
+      <div className="max-h-[46vh] space-y-1.5 overflow-y-auto pr-1">
+        {shown.length === 0 ? (
+          <Hint>No DB profiles match “{filter.trim()}”.</Hint>
+        ) : (
+          shown.map((p) => (
+            <ProfileCard
+              key={p.name}
+              profile={p.name}
+              backend={p.backend ?? "unknown"}
+              value={value}
+              onChange={onChange}
+            />
+          ))
+        )}
+      </div>
     </div>
   );
 }

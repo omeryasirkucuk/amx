@@ -64,10 +64,14 @@ function AssetBucketNodeImpl({ id, data }: NodeProps<AssetBucketNodeData>) {
     const by = self?.position.y ?? 0;
     const childIds = new Set(data.childNodes.map((n) => n.id));
 
+    const childEdgeIds = new Set((data.childEdges ?? []).map((e) => e.id));
+
     if (next) {
-      // Children stack directly BELOW the bucket. The bucket keeps its
-      // single connector to the anchor (the "main arrow"); children
-      // carry no edges of their own — they just nest under the header.
+      // Children stack directly BELOW the bucket. Each child also gets
+      // its OWN edge to the anchor (so "what connects to what" is real,
+      // not a single summary arrow you can drag apart). The bucket↔anchor
+      // connector is hidden while expanded — the per-child edges replace
+      // it — and restored on collapse.
       const placed = data.childNodes.map((node, i) => ({
         ...node,
         hidden: false,
@@ -98,6 +102,14 @@ function AssetBucketNodeImpl({ id, data }: NodeProps<AssetBucketNodeData>) {
           ),
         ...placed,
       ]);
+      rf.setEdges((edges) => [
+        ...edges
+          .filter((e) => !childEdgeIds.has(e.id))
+          .map((e) =>
+            e.id === data.connectorEdgeId ? { ...e, hidden: true } : e,
+          ),
+        ...(data.childEdges ?? []).map((e) => ({ ...e, hidden: false })),
+      ]);
     } else {
       const shift = shiftRef.current;
       shiftRef.current = null;
@@ -110,6 +122,13 @@ function AssetBucketNodeImpl({ id, data }: NodeProps<AssetBucketNodeData>) {
             shiftSet.has(nd.id)
               ? { ...nd, position: { ...nd.position, y: nd.position.y - h } }
               : nd,
+          ),
+      );
+      rf.setEdges((edges) =>
+        edges
+          .filter((e) => !childEdgeIds.has(e.id))
+          .map((e) =>
+            e.id === data.connectorEdgeId ? { ...e, hidden: false } : e,
           ),
       );
     }
