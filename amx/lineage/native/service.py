@@ -69,6 +69,17 @@ class LineageFetchService:
                 profile=profile_name, client=client, catalog=self.catalog
             )
 
+            # Replace bare "notebook <id>" placeholders with real names via
+            # the cached workspace index (jobs / pipelines / queries already
+            # resolved in the provider). Best-effort: a cold-cache scan is
+            # time-budgeted and any failure leaves the placeholder intact.
+            from amx.lineage.native.workspace_index import resolve_notebook_names
+
+            try:
+                resolve_notebook_names(result, client, profile=profile_name)
+            except Exception as exc:  # noqa: BLE001 — never fail the fetch on naming
+                log.debug("notebook name resolution skipped: %s", exc)
+
         materializer = LineageMaterializer(
             self.catalog, profile_name=profile_name, backend=backend, ingester=ingester
         )

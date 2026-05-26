@@ -36,10 +36,20 @@ function fqnOf(t: PickedTable): string {
   return [t.database, t.schema, t.table].filter(Boolean).join(".");
 }
 
+// Status lines cycled under the progress bar while a fetch runs, so the
+// wait reads as concrete work rather than an opaque "Fetching…".
+const FETCH_PHASES = [
+  "Reading the database's lineage…",
+  "Mapping upstream producers and downstream consumers…",
+  "Resolving notebook, job and asset names…",
+  "Building the canvas…",
+];
+
 export function NativeFetchDialog({ open, onClose, onDone }: Props) {
   const [picked, setPicked] = useState<PickedTable | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [phase, setPhase] = useState(0);
 
   useEffect(() => {
     if (open) {
@@ -47,6 +57,17 @@ export function NativeFetchDialog({ open, onClose, onDone }: Props) {
       setError("");
     }
   }, [open]);
+
+  // Advance the status line while busy (the fetch is a single request, so
+  // this is a paced narration of the steps, not a real percentage).
+  useEffect(() => {
+    if (!busy) {
+      setPhase(0);
+      return;
+    }
+    const id = setInterval(() => setPhase((p) => Math.min(p + 1, FETCH_PHASES.length - 1)), 2500);
+    return () => clearInterval(id);
+  }, [busy]);
 
   async function handleFetch() {
     if (busy || !picked) return;
@@ -81,6 +102,8 @@ export function NativeFetchDialog({ open, onClose, onDone }: Props) {
           <span className="text-[11px] text-fg-muted">
             {error ? (
               <span className="text-danger-ink">{error}</span>
+            ) : busy ? (
+              "Working…"
             ) : picked ? (
               fqnOf(picked)
             ) : (
@@ -88,19 +111,34 @@ export function NativeFetchDialog({ open, onClose, onDone }: Props) {
             )}
           </span>
           <div className="flex gap-2">
-            <Button variant="secondary" size="sm" onClick={onClose}>
+            <Button variant="secondary" size="sm" onClick={onClose} disabled={busy}>
               Cancel
             </Button>
             <Button variant="primary" size="sm" disabled={!picked || busy} onClick={handleFetch}>
-              {busy ? "Fetching…" : "Fetch lineage"}
+              {busy ? "Working…" : "Fetch lineage"}
             </Button>
           </div>
         </div>
       }
     >
-      <div className="space-y-3">
-        <CacheTableTreePicker value={picked} onChange={setPicked} />
-      </div>
+      {busy ? (
+        // While the fetch runs, replace the picker with a progress panel so
+        // the user sees concrete steps instead of a bare "Fetching…".
+        <div className="space-y-3 py-6 text-center">
+          <div className="lcv-progress-track">
+            <div className="lcv-progress-bar" />
+          </div>
+          <p className="text-[13px] font-medium text-ink">{FETCH_PHASES[phase]}</p>
+          <p className="text-[11px] text-fg-muted">
+            Reading lineage and resolving real asset names — this can take a moment the first time
+            on a large workspace.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <CacheTableTreePicker value={picked} onChange={setPicked} />
+        </div>
+      )}
     </Modal>
   );
 }

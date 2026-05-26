@@ -83,6 +83,40 @@
   pointer-events: none;
 }
 
+/* Indeterminate progress bar — shown while a native lineage fetch runs
+   (reading lineage + resolving asset names can take a moment on a large
+   workspace). No real percentage exists, so a sliding segment conveys
+   ongoing work. */
+@keyframes lcv-indeterminate {
+  0% {
+    left: -45%;
+    width: 45%;
+  }
+  50% {
+    width: 55%;
+  }
+  100% {
+    left: 100%;
+    width: 45%;
+  }
+}
+.lcv-progress-track {
+  position: relative;
+  height: 4px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--lcv-surface);
+}
+.lcv-progress-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: var(--lcv-accent, #60a5fa);
+  animation: lcv-indeterminate 1.4s ease-in-out infinite;
+}
+
 /* Edge midpoint dot — Databricks-style affordance that opens the edge
    "Lineage details" drawer. A small round chip centered on the path. */
 .lcv-edge-dot {
