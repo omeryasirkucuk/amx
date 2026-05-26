@@ -24,6 +24,11 @@ from amx.config import AMXConfig, DBConfig
 from amx.lineage import service
 from amx.lineage import store as lineage_store
 from amx.lineage.extractors.view_ddl import ConnectorHandle
+from amx.lineage.native import (
+    LineageFetchService,
+    NativeLineageError,
+    supported_backends,
+)
 from amx.lineage.render import (
     SUPPORTED_FORMATS,
     DotBinaryNotFound,
@@ -220,6 +225,111 @@ def register_lineage_commands(
                 "extractors": result.extractors_used,
                 "partial": result.extractors_partial,
             },
+        )
+
+    @lineage.command("fetch")
+    @click.argument("anchor", required=False)
+    @click.option("--profile", "profile_flag", default=None, help="Override active DB profile.")
+    @click.option(
+        "--with-columns",
+        is_flag=True,
+        help="Also fetch column-level lineage (one API call per anchor column).",
+    )
+    @pass_config
+    def lineage_fetch(
+        cfg: AMXConfig,
+        anchor: str | None,
+        profile_flag: str | None,
+        with_columns: bool,
+    ) -> None:
+        """Fetch lineage for a table from the database's own lineage system.
+
+        Reads the platform-native lineage (Unity Catalog for Databricks)
+        for a user-picked table and records the upstream / downstream
+        tables plus the producer / consumer assets it touches. Entities
+        the active token cannot read are kept as name-only nodes so the
+        relationship still shows; entities AMX already holds are linked
+        in full.
+        """
+        hs = history_store()
+        if hs is None:
+            error("History store not initialised — run /db first.")
+            return
+
+        heading("Lineage · fetch")
+        profile_name, profile_cfg = _pick_profile(cfg, profile_flag)
+        if profile_name is None:
+            return
+
+        backend = (getattr(profile_cfg, "backend", "") or "").lower()
+        if backend not in supported_backends():
+            supported = ", ".join(sorted(supported_backends())) or "none"
+            error(
+                f"Native lineage fetch is not available for backend "
+                f"{backend or '(unknown)'!r}. Supported backends: {supported}."
+            )
+            return
+
+        database, schema, table, _column = _pick_anchor_location(
+            hs,
+            profile=profile_name,
+            profile_default_db=_default_database(profile_cfg),
+            raw_anchor=anchor,
+            preset_column=None,
+            require_column=False,
+        )
+        if schema is None or table is None:
+            return
+
+        fqn = ".".join(p for p in (database, schema, table) if p)
+
+        from amx.search.catalog import SearchCatalog
+
+        catalog = SearchCatalog(hs.db_path)
+        svc = LineageFetchService(catalog)
+        try:
+            counts = svc.fetch(
+                profile_name=profile_name,
+                backend=backend,
+                fqn=fqn,
+                with_columns=with_columns,
+            )
+        except NativeLineageError as exc:
+            error(str(exc))
+            log_event(
+                event_type="lineage.fetch",
+                status="error",
+                command="/lineage fetch",
+                details={"profile": profile_name, "anchor": fqn, "error": str(exc)},
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            error(f"Native lineage fetch failed: {exc}")
+            return
+
+        success(f"Fetched native lineage for {fqn}.")
+        render_table(
+            "Fetched",
+            ["metric", "count"],
+            [
+                ["tables", str(counts.tables)],
+                ["assets", str(counts.assets)],
+                ["columns", str(counts.columns)],
+                ["edges", str(counts.edges)],
+                ["name-only nodes", str(counts.name_only)],
+            ],
+        )
+        if counts.name_only:
+            info(
+                f"{counts.name_only} node(s) recorded by name only — you can see "
+                "the relationship but not their contents (no read access)."
+            )
+        info("View the graph with /lineage show or open it in Studio.")
+        log_event(
+            event_type="lineage.fetch",
+            status="ok",
+            command="/lineage fetch",
+            details={"profile": profile_name, "anchor": fqn, **counts.as_dict()},
         )
 
     @lineage.command("list")

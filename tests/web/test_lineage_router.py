@@ -238,3 +238,68 @@ def test_suggest_lineage_llm_aborts_when_provider_init_fails(seeded_hs, monkeypa
     result = suggest_lineage_llm(hs=seeded_hs, scope=scope, cfg=cfg)
     assert result.aborted is True
     assert "init failed" in result.abort_reason
+
+
+# ── POST /fetch (native lineage) ────────────────────────────────────────
+
+
+def test_post_fetch_materializes_native_lineage(seeded_hs, client, auth_headers, monkeypatch):
+    """The /fetch route runs the native provider and returns per-fetch counts."""
+    from amx.lineage.native import provider as P
+
+    class _StubProvider:
+        backend = "databricks"
+
+        def fetch_table_lineage(self, fqn, *, with_columns, anchor_columns=()):
+            r = P.NativeLineageResult(
+                anchor=P.NativeLineageNode(kind=P.TABLE, name="orders", fqn=fqn)
+            )
+            r.edges.append(
+                P.NativeLineageEdge(
+                    source=P.NativeLineageNode(kind=P.NOTEBOOK, name="ETL", external_id="n1"),
+                    target=r.anchor,
+                    direction=P.UPSTREAM,
+                )
+            )
+            return r
+
+    monkeypatch.setattr(P, "provider_for_profile", lambda profile, backend: _StubProvider())
+    r = client.post(
+        "/api/lineage/fetch",
+        headers=auth_headers,
+        json={"profile": "local", "fqn": "public.orders"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["fqn"] == "public.orders"
+    assert body["edges"] == 1
+    assert body["name_only"] == 1  # notebook has no remote_* row → ghost
+    # A saved artifact is seeded so the canvas can render the result.
+    artifact_id = body["artifact_id"]
+    assert artifact_id and artifact_id > 0
+
+    # Opening the seeded artifact renders the anchor + the producer
+    # notebook node (name-only) and the native edge among them.
+    r2 = client.get(f"/api/lineage/by-id/{artifact_id}", headers=auth_headers)
+    assert r2.status_code == 200, r2.text
+    canvas = r2.json()
+    kinds = {n["kind"] for n in canvas["nodes"]}
+    assert "notebook" in kinds
+    nb = next(n for n in canvas["nodes"] if n["kind"] == "notebook")
+    assert nb["metadata_state"] == "name_only"
+    assert len(canvas["edges"]) >= 1
+
+
+def test_post_fetch_400_when_fqn_missing(seeded_hs, client, auth_headers):
+    r = client.post("/api/lineage/fetch", headers=auth_headers, json={"profile": "local"})
+    assert r.status_code == 400
+
+
+def test_post_fetch_400_for_unsupported_backend(seeded_hs, client, auth_headers):
+    # 'local' profile is postgresql → no native provider registered.
+    r = client.post(
+        "/api/lineage/fetch",
+        headers=auth_headers,
+        json={"profile": "local", "fqn": "public.orders"},
+    )
+    assert r.status_code == 400

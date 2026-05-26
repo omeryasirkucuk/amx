@@ -27,6 +27,11 @@ _LINEAGE_RELATIONSHIP_TYPES: tuple[str, ...] = (
     "foreign_key",
     "view_depends_on",
     "column_lineage",
+    # ``/lineage fetch`` native edges (Unity Catalog et al.) so ASK
+    # grounds answers in the database's own lineage when it's been pulled.
+    "lineage_native_table",
+    "lineage_native_column",
+    "lineage_native_asset",
 )
 
 

@@ -26,10 +26,30 @@ from amx.lineage import store as lineage_store
 from amx.lineage.discover import discover_profile_lineage
 from amx.lineage.types import ColumnRef, Scope
 from amx.storage.sqlite_store import history_store
+from amx.utils.logging import get_logger
 from amx.web.deps import get_cfg
 from amx.web.permissions import require_writer_role
 
+log = get_logger("web.routers.lineage")
+
 router = APIRouter(prefix="/api/lineage", tags=["lineage"])
+
+# Non-table catalog_entities kinds the canvas renders as AssetNodes:
+# ingested remote assets plus the native-lineage-discovered kinds
+# (vector_search_index / dashboard / external).
+_ASSET_NODE_KINDS = frozenset(
+    {
+        "notebook",
+        "query",
+        "stream",
+        "pipeline",
+        "streamlit_app",
+        "job",
+        "vector_search_index",
+        "dashboard",
+        "external",
+    }
+)
 
 
 def _artifact_record_to_dict(record: Any) -> dict[str, Any]:
@@ -575,6 +595,159 @@ def post_discover(
     }
 
 
+@router.post("/fetch")
+def post_fetch(
+    payload: dict[str, Any] = Body(...),
+    cfg: AMXConfig = Depends(get_cfg),
+    _: None = Depends(require_writer_role),
+) -> dict[str, Any]:
+    """Fetch native (database-side) lineage for one table on demand.
+
+    Reads the platform's own lineage system (Unity Catalog for
+    Databricks) for ``payload['fqn']`` and materialises the upstream /
+    downstream tables plus producer / consumer assets into the catalog.
+    Entities the active token cannot read are recorded as name-only
+    nodes. Returns the per-fetch counts; the canvas re-reads via the
+    bulk GET path to render the refreshed graph.
+    """
+    from amx.lineage.native import LineageFetchService, NativeLineageError
+    from amx.search.catalog import SearchCatalog
+
+    hs = history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised.",
+        )
+    name = _resolve_profile(cfg, payload.get("profile"))
+    fqn = str(payload.get("fqn") or "").strip()
+    if not fqn:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing 'fqn' — the catalog.schema.table to fetch lineage for.",
+        )
+    db_cfg = (getattr(cfg, "db_profiles", {}) or {}).get(name)
+    backend = (getattr(db_cfg, "backend", "") or "").lower()
+    with_columns = bool(payload.get("with_columns"))
+
+    svc = LineageFetchService(SearchCatalog(hs.db_path))
+    try:
+        counts = svc.fetch(profile_name=name, backend=backend, fqn=fqn, with_columns=with_columns)
+    except NativeLineageError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # Seed a saved artifact for the anchor + its native neighbours so the
+    # Studio canvas can render the result directly via the by-id loader
+    # (``/lineage?artifact=<id>``). Best-effort — the fetch counts are
+    # the source of truth; a seeding hiccup must not fail the request.
+    artifact_id: int | None = None
+    try:
+        artifact_id = _seed_native_artifact(hs, profile=name, fqn=fqn)
+    except Exception as exc:  # noqa: BLE001
+        log.info("native lineage: artifact seed failed for %s: %s", fqn, exc)
+
+    return {"profile": name, "fqn": fqn, "artifact_id": artifact_id, **counts.as_dict()}
+
+
+def _seed_native_artifact(hs: Any, *, profile: str, fqn: str) -> int | None:
+    """Create/refresh a saved artifact framing the native subgraph.
+
+    Persists ``lineage_artifact_nodes`` for the anchor + every entity it
+    shares a ``databricks_native_lineage`` edge with, positioned in rings
+    around the anchor. The by-id read path then renders the table /
+    asset / name-only nodes and the edges among them. Returns the
+    artifact id, or ``None`` when the anchor can't be resolved.
+    """
+    import math
+
+    parts = [p for p in (fqn or "").split(".") if p]
+    if len(parts) == 3:
+        database, schema, table = parts
+    elif len(parts) == 2:
+        database, schema, table = "", parts[0], parts[1]
+    else:
+        return None
+
+    with hs._connect() as conn:
+        anchor = conn.execute(
+            """
+            SELECT id FROM catalog_entities
+            WHERE db_profile = ? AND entity_kind = 'table'
+              AND schema_name = ? AND table_name = ?
+            ORDER BY (database_name = ?) DESC
+            LIMIT 1
+            """,
+            (profile, schema, table, database),
+        ).fetchone()
+        if anchor is None:
+            return None
+        anchor_id = int(anchor[0])
+        neighbour_rows = conn.execute(
+            """
+            SELECT DISTINCT CASE WHEN from_entity_id = ? THEN to_entity_id
+                                 ELSE from_entity_id END AS other
+            FROM catalog_relationships
+            WHERE source = 'databricks_native_lineage'
+              AND (from_entity_id = ? OR to_entity_id = ?)
+            """,
+            (anchor_id, anchor_id, anchor_id),
+        ).fetchall()
+        neighbour_ids = [int(r[0]) for r in neighbour_rows if int(r[0]) != anchor_id]
+        edge_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM catalog_relationships
+                WHERE source = 'databricks_native_lineage'
+                  AND (from_entity_id = ? OR to_entity_id = ?)
+                """,
+                (anchor_id, anchor_id),
+            ).fetchone()[0]
+        )
+
+    art_name = f"Native · {fqn}"
+    existing = lineage_store.lookup_lineage_artifact(hs, name_or_id=art_name)
+    if existing is not None:
+        lineage_store.delete_lineage_artifact(hs, artifact_id=int(existing["id"]))
+
+    # extractors_used left empty so list_artifact_edges applies no source
+    # filter — every relationship among the seeded nodes renders, native
+    # edges included.
+    artifact_id = lineage_store.insert_lineage_artifact(
+        hs,
+        name=art_name,
+        db_profile=profile,
+        anchor_entity_id=anchor_id,
+        depth_up=1,
+        depth_down=1,
+        fmt="svg",
+        output_path="",
+        edge_set_hash="",
+        node_count=len(neighbour_ids) + 1,
+        edge_count=edge_count,
+        extractors_used=[],
+        extractors_partial=False,
+    )
+
+    cx, cy = 480.0, 280.0
+    placements: list[tuple[int, float, float]] = [(anchor_id, cx, cy)]
+    for i, nid in enumerate(neighbour_ids):
+        slot = i % 8
+        ring = i // 8
+        angle = slot * (math.pi / 4)
+        radius = 340.0 + ring * 220.0
+        placements.append((nid, cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    with hs._lock, hs._connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO lineage_artifact_nodes
+                (artifact_id, entity_id, db_profile, x, y, width, height, z_index)
+            VALUES (?, ?, ?, ?, ?, 240, 120, 0)
+            """,
+            [(artifact_id, nid, profile, x, y) for (nid, x, y) in placements],
+        )
+    return int(artifact_id)
+
+
 # ── Routes MUST come before the catch-all GET below ─────────────────────
 #
 # FastAPI matches routes in registration order; the bare
@@ -650,7 +823,7 @@ def get_artifact_by_id(
         with hs._connect() as conn:
             rows = conn.execute(
                 f"SELECT id, database_name, schema_name, table_name, "
-                f"       column_name, entity_kind, search_text "
+                f"       column_name, entity_kind, search_text, metadata_state "
                 f"FROM catalog_entities WHERE id IN ({placeholders})",
                 tuple(ids),
             ).fetchall()
@@ -663,6 +836,7 @@ def get_artifact_by_id(
                 "table": str(r[3] or ""),
                 "column": str(r[4] or ""),
                 "kind": kind,
+                "metadata_state": str(r[7] or "full"),
             }
             # Operator entities stash their op_kind + expression
             # inside ``search_text`` JSON. Surface them as first-class
@@ -672,12 +846,12 @@ def get_artifact_by_id(
                 details = decode_operator_details(str(r[6] or ""))
                 meta["op_kind"] = str(details.get("op_kind") or "")
                 meta["expression"] = str(details.get("expression") or "")
-            elif kind in ("notebook", "query", "stream", "pipeline", "streamlit_app", "job"):
-                # Bridge rows for ingested remote assets store the
-                # asset's display name in ``search_text`` (set by
-                # ``SyncMixin._upsert_asset_entity``). Surface it as
-                # ``label`` so the canvas AssetNode can render it
-                # without a second lookup.
+            elif kind in _ASSET_NODE_KINDS:
+                # Bridge rows for ingested remote assets (and native
+                # lineage's vector_search_index / dashboard / external
+                # ghosts) store the display name in ``search_text``.
+                # Surface it as ``label`` so the canvas AssetNode can
+                # render it without a second lookup.
                 meta["label"] = str(r[6] or "")
             entity_meta[int(r[0])] = meta
 
@@ -760,18 +934,12 @@ def get_artifact_by_id(
                 )
                 if p
             ),
+            "metadata_state": meta.get("metadata_state", "full"),
         }
         if meta.get("kind") == "operator":
             node_entry["op_kind"] = meta.get("op_kind", "")
             node_entry["expression"] = meta.get("expression", "")
-        elif meta.get("kind") in (
-            "notebook",
-            "query",
-            "stream",
-            "pipeline",
-            "streamlit_app",
-            "job",
-        ):
+        elif meta.get("kind") in _ASSET_NODE_KINDS:
             node_entry["label"] = meta.get("label", "")
         elif meta.get("kind") == "table":
             cols = table_columns.get(
