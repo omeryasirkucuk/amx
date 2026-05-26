@@ -19,8 +19,9 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 
-from amx.config import AMXConfig
+from amx.config import AMXConfig, _normalize_db_host
 from amx.lineage import service as lineage_service
 from amx.lineage import store as lineage_store
 from amx.lineage.discover import discover_profile_lineage
@@ -785,6 +786,64 @@ def _seed_native_artifact(hs: Any, *, profile: str, fqn: str) -> int | None:
     return int(artifact_id)
 
 
+class AssetIngestBody(BaseModel):
+    profile: str
+    kind: str
+    external_id: str
+
+
+def _ingest_one_asset_for_profile(*, profile: str, kind: str, external_id: str) -> int | None:
+    """Open the profile's connector + local catalog and ingest one asset.
+
+    Wraps :func:`amx.lineage.native.lazy_ingest.ingest_one_asset` with the
+    same connector/catalog wiring the bulk ingest job uses. Resolves the
+    active :class:`AMXConfig` from disk (no request context here, matching
+    the other non-request-bound router helpers). Returns the asset's
+    ``remote_<kind>s.id`` or ``None`` when it cannot be resolved.
+    """
+    from amx.cli_support.commands.db_assets_impl import _open_catalog, _open_connector
+    from amx.lineage.native.lazy_ingest import ingest_one_asset
+
+    cfg = AMXConfig.load()
+    connector = _open_connector(cfg, profile)
+    catalog = _open_catalog(cfg)
+    return ingest_one_asset(
+        connector=connector,
+        catalog=catalog,
+        profile=profile,
+        kind=kind,
+        external_id=external_id,
+    )
+
+
+@router.post("/asset/ingest")
+def post_asset_ingest(
+    body: AssetIngestBody,
+    _: None = Depends(require_writer_role),
+) -> dict[str, Any]:
+    """Ingest one native-lineage asset on demand and return its remote id.
+
+    Pulls only the clicked notebook / job / pipeline into the Assets
+    cache so its canvas node becomes full and drillable. Cached, so a
+    second open does no work.
+    """
+    try:
+        remote_id = _ingest_one_asset_for_profile(
+            profile=body.profile, kind=body.kind, external_id=body.external_id
+        )
+    except Exception as exc:  # noqa: BLE001 — surface ingest failure to the client
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Ingest of {body.kind} {body.external_id} failed: {exc}",
+        ) from exc
+    if remote_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Could not ingest {body.kind} {body.external_id} for profile {body.profile}.",
+        )
+    return {"remote_id": remote_id, "kind": body.kind}
+
+
 # ── Routes MUST come before the catch-all GET below ─────────────────────
 #
 # FastAPI matches routes in registration order; the bare
@@ -892,6 +951,9 @@ def get_artifact_by_id(
                 # Surface it as ``label`` so the canvas AssetNode can
                 # render it without a second lookup.
                 meta["label"] = str(r[6] or "")
+                # Recover the platform external id from the bridge name so
+                # the canvas can lazily ingest a clicked ghost asset.
+                meta["external_id"] = _asset_external_id_from_table_name(kind, str(r[3] or ""))
             entity_meta[int(r[0])] = meta
 
     # Bulk-fetch per-table column lists from the column-comments
@@ -983,7 +1045,12 @@ def get_artifact_by_id(
             # remote_<kind>s.id (when ingested) so the canvas can deep-link
             # to the Assets page for drill-in. None on name-only ghosts.
             node_entry["source_remote_id"] = meta.get("source_remote_id")
+            # Platform external id (for lazy ingest of a clicked ghost) and
+            # workspace host (for the "open in Databricks" deep-link).
+            node_entry["external_id"] = meta.get("external_id")
+            node_entry["host"] = _profile_host(cfg, str(row[1] or ""))
         elif meta.get("kind") == "table":
+            node_entry["host"] = _profile_host(cfg, str(row[1] or ""))
             cols = table_columns.get(
                 (
                     str(row[1] or ""),
@@ -2276,6 +2343,28 @@ def _profile_backend(cfg: AMXConfig, profile: str) -> str:
     if entry is None:
         return ""
     return str(getattr(entry, "backend", "") or "")
+
+
+def _asset_external_id_from_table_name(kind: str, table_name: str) -> str | None:
+    """Recover a ghost asset's platform external id from its bridge name.
+
+    Ghost rows are keyed ``"<kind>#ext:<external_id>"`` (or
+    ``"<kind>#ext:name:<slug>"`` when no id was known). Returns the id,
+    or ``None`` when the row carries only a name slug or another shape.
+    """
+    prefix = f"{kind}#ext:"
+    if not table_name.startswith(prefix):
+        return None
+    ref = table_name[len(prefix) :]
+    return None if ref.startswith("name:") else (ref or None)
+
+
+def _profile_host(cfg: AMXConfig, profile: str) -> str:
+    """Return the Databricks workspace host for a profile, else ``""``."""
+    p = (getattr(cfg, "db_profiles", {}) or {}).get(profile)
+    if p is None or (getattr(p, "backend", "") or "").lower() != "databricks":
+        return ""
+    return _normalize_db_host(getattr(p, "host", "") or "")
 
 
 @router.post("/manual", status_code=status.HTTP_201_CREATED)
