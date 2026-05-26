@@ -24,10 +24,13 @@ def _msg(role: str, content: str) -> dict[str, object]:
 def test_single_profile_scope_returns_none() -> None:
     """Focus is undefined in single-profile mode — the LLM cannot
     pick between alternatives that don't exist."""
-    assert compute_focus_profile(
-        [_msg("assistant", "talking about profile prod")],
-        scope=["prod"],
-    ) is None
+    assert (
+        compute_focus_profile(
+            [_msg("assistant", "talking about profile prod")],
+            scope=["prod"],
+        )
+        is None
+    )
 
 
 def test_no_session_memory_returns_none() -> None:

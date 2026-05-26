@@ -171,9 +171,7 @@ def _resolve_code_embedding(
     # MiniLM — so the explicit-provider path + the honest fallback
     # signal are shared via resolve_embedding while the code-specialised
     # default stays in ``_default_code_embedding``.
-    return resolve_embedding(
-        "code", cfg, default_resolver=_default_code_embedding
-    ).as_tuple()
+    return resolve_embedding("code", cfg, default_resolver=_default_code_embedding).as_tuple()
 
 
 def _default_code_embedding() -> tuple[str, str, EmbeddingFunction | None]:

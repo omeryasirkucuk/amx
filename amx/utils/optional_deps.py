@@ -130,6 +130,13 @@ BUNDLES: dict[str, list[PackageSpec]] = {
         "networkx",
         "matplotlib",
     ],
+    # Model Context Protocol SDK — pulled when the user first runs /mcp
+    # or when an IDE spawns ``python -m amx.mcp``. Pure-Python with
+    # universal wheels (no C toolchain), so it installs cleanly on
+    # macOS / Windows / Linux from a vanilla ``pip install amx-cli``.
+    "mcp": [
+        "mcp",
+    ],
 }
 
 #: Human-readable labels surfaced in the install banner when a bundle
@@ -138,6 +145,7 @@ BUNDLE_LABELS: dict[str, str] = {
     "rag": "shared RAG core (/docs, /search, /code)",
     "docs-extended": "document RAG (/docs ingest)",
     "lineage": "/lineage view-DDL parser + Graphviz wrapper",
+    "mcp": "Model Context Protocol server (/mcp — connect AMX to IDE code agents)",
 }
 
 #: Bundles whose total install footprint is large enough (sentence-

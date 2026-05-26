@@ -54,7 +54,16 @@ def _insert_entity(
                 first_synced_at
             ) VALUES (?, '', '', ?, ?, ?, ?, 'table', ?, ?, ?)
             """,
-            (profile, schema, table, column, kind, first_synced_at, first_synced_at, first_synced_at),
+            (
+                profile,
+                schema,
+                table,
+                column,
+                kind,
+                first_synced_at,
+                first_synced_at,
+                first_synced_at,
+            ),
         )
 
 
@@ -154,9 +163,33 @@ def test_new_entities_since_respects_watermark_and_scope(
 ) -> None:
     store, cat = store_and_catalog
     t0 = time.time()
-    _insert_entity(cat, profile="p", schema="public", table="old", column=None, kind="table", first_synced_at=t0 - 100)
-    _insert_entity(cat, profile="p", schema="public", table="new", column=None, kind="table", first_synced_at=t0 + 100)
-    _insert_entity(cat, profile="p", schema="other", table="elsewhere", column=None, kind="table", first_synced_at=t0 + 100)
+    _insert_entity(
+        cat,
+        profile="p",
+        schema="public",
+        table="old",
+        column=None,
+        kind="table",
+        first_synced_at=t0 - 100,
+    )
+    _insert_entity(
+        cat,
+        profile="p",
+        schema="public",
+        table="new",
+        column=None,
+        kind="table",
+        first_synced_at=t0 + 100,
+    )
+    _insert_entity(
+        cat,
+        profile="p",
+        schema="other",
+        table="elsewhere",
+        column=None,
+        kind="table",
+        first_synced_at=t0 + 100,
+    )
 
     rows = cat.new_entities_since("p", t0, schemas=["public"])
     names = {r["table_name"] for r in rows}
@@ -176,8 +209,24 @@ def test_evaluate_one_fires_narrowed_run_and_advances_watermark(
     # their first_synced_at is always <= now (never in the future).
     sid = _make_change_schedule(store, profile="p", watermark=t0 - 10)
     # One pre-existing table (before watermark) + one that appeared after.
-    _insert_entity(cat, profile="p", schema="public", table="users", column=None, kind="table", first_synced_at=t0 - 50)
-    _insert_entity(cat, profile="p", schema="public", table="orders", column=None, kind="table", first_synced_at=t0 - 1)
+    _insert_entity(
+        cat,
+        profile="p",
+        schema="public",
+        table="users",
+        column=None,
+        kind="table",
+        first_synced_at=t0 - 50,
+    )
+    _insert_entity(
+        cat,
+        profile="p",
+        schema="public",
+        table="orders",
+        column=None,
+        kind="table",
+        first_synced_at=t0 - 1,
+    )
 
     captured: dict[str, Any] = {}
 
@@ -214,7 +263,15 @@ def test_evaluate_one_no_new_assets_does_not_fire(
     store, cat = store_and_catalog
     t0 = time.time()
     sid = _make_change_schedule(store, profile="p", watermark=t0)
-    _insert_entity(cat, profile="p", schema="public", table="users", column=None, kind="table", first_synced_at=t0 - 50)
+    _insert_entity(
+        cat,
+        profile="p",
+        schema="public",
+        table="users",
+        column=None,
+        kind="table",
+        first_synced_at=t0 - 50,
+    )
 
     import amx.runtime.worker as worker
 
@@ -249,12 +306,15 @@ def test_evaluate_one_matches_catalog_overlay(
         trigger="change",
     )
     with store._connect() as conn:  # noqa: SLF001
-        conn.execute(
-            "UPDATE scheduled_runs SET last_checked_at = ? WHERE id = ?", (t0 - 10, sid)
-        )
+        conn.execute("UPDATE scheduled_runs SET last_checked_at = ? WHERE id = ?", (t0 - 10, sid))
     _insert_entity(
-        cat, profile="dbr", schema="amx_test_schema", table="adr_6",
-        column="test2", kind="column", first_synced_at=t0 - 1,
+        cat,
+        profile="dbr",
+        schema="amx_test_schema",
+        table="adr_6",
+        column="test2",
+        kind="column",
+        first_synced_at=t0 - 1,
     )
     # The new column's database_name must be the catalog for the filter to
     # match — mirror how deep_sync writes Databricks rows.
@@ -265,7 +325,9 @@ def test_evaluate_one_matches_catalog_overlay(
 
     captured: dict[str, Any] = {}
     monkeypatch.setattr(
-        worker, "spawn_scheduled_worker", lambda payload, **_k: captured.update(payload=payload) or 1
+        worker,
+        "spawn_scheduled_worker",
+        lambda payload, **_k: captured.update(payload=payload) or 1,
     )
     sched = store.get_scheduled_run(sid)
     fired = _evaluate_one(store, cat, sched, databases=["amx_test"])
@@ -306,7 +368,9 @@ def test_deep_sync_one_table_dispatches_change_schedules(
     )
     cfg = SimpleNamespace(db_profiles={"dbr": SimpleNamespace(backend="databricks")}, db=None)
 
-    out = drift.deep_sync_one_table(cfg, "dbr", schema="amx_test_schema", table="adr_6", database="amx_test")
+    out = drift.deep_sync_one_table(
+        cfg, "dbr", schema="amx_test_schema", table="adr_6", database="amx_test"
+    )
     assert out["ok"] is True
     assert recorded.get("profile") == "dbr"
     assert recorded.get("databases") == ["amx_test"]

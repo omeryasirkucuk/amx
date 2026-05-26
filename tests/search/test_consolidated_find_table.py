@@ -30,15 +30,11 @@ class _RecordingToolbox:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def _tool_find_table_by_name(self, *, name: str, force_fresh: bool) -> dict[str, Any]:
-        self.calls.append(
-            ("find_table_by_name", {"name": name, "force_fresh": force_fresh})
-        )
+        self.calls.append(("find_table_by_name", {"name": name, "force_fresh": force_fresh}))
         return {"found": True, "name": name, "via": "find_table_by_name"}
 
     def _tool_search_tables_by_concept(self, *, concept: str, limit: int) -> dict[str, Any]:
-        self.calls.append(
-            ("search_tables_by_concept", {"concept": concept, "limit": limit})
-        )
+        self.calls.append(("search_tables_by_concept", {"concept": concept, "limit": limit}))
         return {"concept": concept, "limit": limit, "via": "search_tables_by_concept"}
 
     def _tool_list_tables_in_schema(
@@ -60,9 +56,7 @@ def test_exact_strategy_routes_to_find_table_by_name() -> None:
 
     result = find_table(tb, name="customers", strategy="exact", force_fresh=True)  # type: ignore[arg-type]
 
-    assert tb.calls == [
-        ("find_table_by_name", {"name": "customers", "force_fresh": True})
-    ]
+    assert tb.calls == [("find_table_by_name", {"name": "customers", "force_fresh": True})]
     # Pass-through: the dispatcher must not modify the legacy result.
     assert result == {"found": True, "name": "customers", "via": "find_table_by_name"}
 
@@ -74,9 +68,7 @@ def test_semantic_strategy_routes_to_search_tables_by_concept() -> None:
 
     result = find_table(tb, name="customer activity", strategy="semantic", limit=5)  # type: ignore[arg-type]
 
-    assert tb.calls == [
-        ("search_tables_by_concept", {"concept": "customer activity", "limit": 5})
-    ]
+    assert tb.calls == [("search_tables_by_concept", {"concept": "customer activity", "limit": 5})]
     assert result["via"] == "search_tables_by_concept"
 
 

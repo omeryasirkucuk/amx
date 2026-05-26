@@ -63,6 +63,7 @@ from amx.cli_support.commands.db import (
     cmd_use as _cmd_use,
 )
 from amx.cli_support.commands.embeddings import cmd_embeddings as _cmd_embeddings
+from amx.cli_support.commands.mcp import cmd_mcp as _cmd_mcp
 from amx.cli_support.commands.profiles import (
     cmd_add_code_profile as _cmd_add_code_profile,
 )
@@ -413,6 +414,11 @@ def _handle_session_builtin(
         error(
             f"/{head} was renamed — use /db (then /db-profiles, /use-db, /add-db-profile, /remove-db-profile)."
         )
+        return True
+    if head == "mcp":
+        if not _require_namespace(head, namespace, "llm", "mcp"):
+            return True
+        _cmd_mcp(cfg, parts[1:])
         return True
     if head == "llm-profiles":
         if not _require_namespace(head, namespace, "llm", "llm-profiles"):
@@ -1114,11 +1120,7 @@ def run_interactive_session(
                     error("Usage: /search-docs <text>")
                     info('Example: /search-docs What does field "BUKRS" mean in our docs?')
                     continue
-                if (
-                    parts[0] == "index"
-                    and len(parts) == 1
-                    and not cfg.effective_doc_paths()
-                ):
+                if parts[0] == "index" and len(parts) == 1 and not cfg.effective_doc_paths():
                     warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="index")
                     continue
             if _handle_manual_usage_shortcuts(namespace, parts):

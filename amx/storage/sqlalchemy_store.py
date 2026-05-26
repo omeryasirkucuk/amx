@@ -943,9 +943,11 @@ class SQLAlchemyHistoryStore:
                         t.c.table_name == row["table_name"],
                         t.c.column_name == (row.get("column_name") or ""),
                     )
-                    existing = conn.execute(
-                        select(t.c.id, t.c.last_synced_at).where(key)
-                    ).mappings().first()
+                    existing = (
+                        conn.execute(select(t.c.id, t.c.last_synced_at).where(key))
+                        .mappings()
+                        .first()
+                    )
                     payload = {
                         "db_profile": row["db_profile"],
                         "db_backend": row.get("db_backend"),

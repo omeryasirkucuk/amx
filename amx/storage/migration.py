@@ -647,8 +647,7 @@ def push_catalog_to_shared(
     params: tuple[Any, ...] = (db_profile,) if db_profile else ()
     with local._connect() as conn:  # noqa: SLF001
         local_rows = conn.execute(
-            f"SELECT {', '.join(_CATALOG_STRUCTURAL_COLS)} "
-            f"FROM catalog_entities {where}",
+            f"SELECT {', '.join(_CATALOG_STRUCTURAL_COLS)} FROM catalog_entities {where}",
             params,
         ).fetchall()
     if not local_rows:
@@ -658,9 +657,7 @@ def push_catalog_to_shared(
         d = {col: r[col] for col in _CATALOG_STRUCTURAL_COLS}
         d["column_name"] = d.get("column_name") or ""
         ts = d.get("last_synced_at")
-        d["last_synced_at"] = (
-            datetime.fromtimestamp(float(ts), tz=timezone.utc) if ts else None
-        )
+        d["last_synced_at"] = datetime.fromtimestamp(float(ts), tz=timezone.utc) if ts else None
         rows.append(d)
     return shared.upsert_catalog_entities(rows)
 

@@ -295,6 +295,20 @@ _DOCS_COMMANDS: tuple[SlashCommand, ...] = (
 )
 
 _LLM_COMMANDS: tuple[SlashCommand, ...] = (
+    # IDE integration
+    SlashCommand(
+        "/mcp",
+        "llm",
+        "Connect AMX's catalog to IDE code agents via MCP",
+        long_desc=(
+            "Expose AMX's read-only catalog (schemas, descriptions, join "
+            "keys, lineage, docs/code) to an IDE code agent over the Model "
+            "Context Protocol. Bare /mcp runs a wizard; subcommands: "
+            "/mcp connect [ide] · /mcp status · /mcp snippet [ide] · "
+            "/mcp disconnect [ide]. Supported IDEs: Cursor, Claude Desktop, "
+            "VS Code."
+        ),
+    ),
     # Profile management
     SlashCommand("/llm-profiles", "llm", "List LLM profiles"),
     SlashCommand("/use-llm", "llm", "Switch LLM profile (/use-llm <name>)"),

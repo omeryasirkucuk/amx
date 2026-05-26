@@ -30,9 +30,10 @@ import { AlertDialog, InfoHint, RouteState, Tabs, TabsList, Tab as TabTrigger, T
 import { StyleReferenceCard } from "../components/StyleReferenceCard";
 import EmbeddingsTab from "./settings/EmbeddingsTab";
 import TeamWorkspaceTab from "./settings/TeamWorkspaceTab";
-import { Layers as EmbeddingsIcon, Users } from "lucide-react";
+import McpTab from "./settings/McpTab";
+import { Layers as EmbeddingsIcon, Plug as McpIcon, Users } from "lucide-react";
 
-type Tab = "db" | "llm" | "docs" | "code" | "embeddings" | "team";
+type Tab = "db" | "llm" | "docs" | "code" | "embeddings" | "mcp" | "team";
 
 interface DbProfileSummary {
   name: string;
@@ -108,10 +109,11 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Database }> = [
   { id: "docs", label: "Docs", icon: FileText },
   { id: "code", label: "Code", icon: CodeIcon },
   { id: "embeddings", label: "Embeddings", icon: EmbeddingsIcon },
+  { id: "mcp", label: "MCP", icon: McpIcon },
   { id: "team", label: "Team workspace", icon: Users },
 ];
 
-const TAB_IDS: readonly Tab[] = ["db", "llm", "docs", "code", "embeddings", "team"];
+const TAB_IDS: readonly Tab[] = ["db", "llm", "docs", "code", "embeddings", "mcp", "team"];
 
 function isTab(value: string | null): value is Tab {
   return value !== null && (TAB_IDS as readonly string[]).includes(value);
@@ -163,6 +165,9 @@ export default function Settings() {
         </TabPanel>
         <TabPanel value="embeddings">
           <EmbeddingsTab />
+        </TabPanel>
+        <TabPanel value="mcp">
+          <McpTab />
         </TabPanel>
         <TabPanel value="team">
           <TeamWorkspaceTab />

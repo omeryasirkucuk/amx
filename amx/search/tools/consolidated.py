@@ -93,8 +93,5 @@ def find_table(
             force_fresh=force_fresh,
         )
     return {
-        "error": (
-            f"Unknown strategy {strategy!r}. "
-            "Use 'exact', 'semantic', or 'list_in_schema'."
-        ),
+        "error": (f"Unknown strategy {strategy!r}. Use 'exact', 'semantic', or 'list_in_schema'."),
     }
