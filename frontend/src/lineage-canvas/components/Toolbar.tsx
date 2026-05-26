@@ -32,6 +32,7 @@ import {
   Type,
   Undo2,
   Upload,
+  Waypoints,
 } from "lucide-react";
 
 import { SavedLineagesMenu } from "./SavedLineagesMenu";
@@ -81,6 +82,9 @@ interface ToolbarProps {
    *  unsaved-work confirm so this prop is just the user intent
    *  signal. */
   onNewLineage: () => void;
+  /** Open the native lineage fetch dialog — pull a table's lineage
+   *  straight from the database's own lineage system. */
+  onFetchNative: () => void;
 }
 
 interface IconButtonProps {
@@ -118,7 +122,7 @@ function Divider() {
 
 export function Toolbar(p: ToolbarProps) {
   return (
-    <div className="flex items-center gap-0.5 rounded-xl border border-surface-border bg-surface-raised px-2 py-1 shadow-lg">
+    <div className="flex flex-wrap items-center gap-0.5 rounded-xl border border-surface-border bg-surface-raised px-2 py-1 shadow-lg">
       <SavedLineagesMenu
         hasUnsavedWork={p.hasUnsavedWork}
         activeArtifactId={p.activeArtifactId}
@@ -190,6 +194,13 @@ export function Toolbar(p: ToolbarProps) {
         <Sparkles size={14} className={p.generating ? "animate-pulse" : ""} />
         {p.generating ? "Streaming…" : "AI Generate"}
       </button>
+
+      <IconBtn
+        label="Fetch lineage from the database (Unity Catalog)"
+        onClick={p.onFetchNative}
+      >
+        <Waypoints size={15} />
+      </IconBtn>
 
       <Divider />
 

@@ -1458,6 +1458,7 @@ class SyncMixin:
         display_name: str,
         backend: str,
         path: str = "",
+        metadata_state: str = "full",
     ) -> int:
         """Mirror a row from ``remote_<kind>s`` into ``catalog_entities``.
 
@@ -1486,18 +1487,23 @@ class SyncMixin:
         ).fetchone()
         now = time.time()
         if existing is not None:
+            # metadata_state upgrades monotonically (full wins) — a
+            # name_only native-lineage ghost is promoted once the asset is
+            # ingested in full, but a later name_only touch never demotes.
             conn.execute(
                 "UPDATE catalog_entities SET search_text = ?, source_remote_id = ?, "
-                "db_backend = ?, updated_at = ?, last_synced_at = ? WHERE id = ?",
-                (search_text, remote_id, backend, now, now, int(existing[0])),
+                "db_backend = ?, updated_at = ?, last_synced_at = ?, "
+                "metadata_state = CASE WHEN ? = 'full' THEN 'full' ELSE metadata_state END "
+                "WHERE id = ?",
+                (search_text, remote_id, backend, now, now, metadata_state, int(existing[0])),
             )
             return int(existing[0])
         cur = conn.execute(
             """INSERT INTO catalog_entities
                    (db_profile, db_backend, database_name, schema_name, table_name,
                     column_name, entity_kind, asset_kind, search_text, source_remote_id,
-                    updated_at, last_synced_at)
-               VALUES (?, ?, '', '__assets', ?, NULL, ?, ?, ?, ?, ?, ?)""",
+                    updated_at, last_synced_at, metadata_state)
+               VALUES (?, ?, '', '__assets', ?, NULL, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 profile_name,
                 backend,
@@ -1508,6 +1514,7 @@ class SyncMixin:
                 remote_id,
                 now,
                 now,
+                metadata_state or "full",
             ),
         )
         return int(cur.lastrowid or 0)

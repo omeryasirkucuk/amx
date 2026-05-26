@@ -735,8 +735,10 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "catalog rows, plus notebook | job | pipeline | query | stream | "
             "streamlit_app for bridge rows that mirror ingested remote "
             "assets (paired with source_remote_id pointing into the "
-            "matching remote_* table). Drives how /search interprets the "
-            "row and which COMMENT ON variant to emit."
+            "matching remote_* table), plus vector_search_index | dashboard | "
+            "external for non-table endpoints discovered by native lineage "
+            "fetch. Drives how /search interprets the row and which COMMENT ON "
+            "variant to emit."
         ),
         "asset_kind": (
             "Specific kind when entity_kind='table': table | view | "
@@ -789,6 +791,15 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "can diff newly-appeared assets against their watermark. NULL on "
             "rows that predate the column."
         ),
+        "metadata_state": (
+            "How much of this entity AMX actually holds: 'full' when its "
+            "metadata is cached locally (columns profiled for tables, source "
+            "ingested for assets), or 'name_only' when native lineage fetch "
+            "discovered the entity but the user lacks privileges to read its "
+            "contents — only its name and relationship edges are known. "
+            "Defaults to 'full'; lets the lineage canvas render name-only "
+            "ghost nodes distinctly. NULL on rows that predate the column."
+        ),
         # Attribution columns — present on the SHARED catalog_entities table
         # (team-wide structural catalog) so /history-store list-team can show
         # who profiled what. Absent from the local SQLite table.
@@ -796,13 +807,8 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "User who ran the deep sync that produced this row. Shared-store "
             "only — for team attribution."
         ),
-        "hostname": (
-            "Machine that ran the deep sync. Shared-store only — for team "
-            "attribution."
-        ),
-        "client_version": (
-            "AMX client version that wrote the row. Shared-store only."
-        ),
+        "hostname": ("Machine that ran the deep sync. Shared-store only — for team attribution."),
+        "client_version": ("AMX client version that wrote the row. Shared-store only."),
     },
     # ── catalog_descriptions (local only) ─────────────────────────────────
     "catalog_descriptions": {

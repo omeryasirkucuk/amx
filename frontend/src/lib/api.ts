@@ -1784,6 +1784,36 @@ export async function lineageFetch(
   );
 }
 
+export interface NativeFetchResult {
+  profile: string;
+  fqn: string;
+  artifact_id: number | null;
+  tables: number;
+  assets: number;
+  columns: number;
+  edges: number;
+  name_only: number;
+}
+
+/** Fetch native (database-side) lineage for one table on demand.
+ *  Materialises the upstream/downstream tables + producer/consumer
+ *  assets into the catalog and seeds a saved artifact so the canvas
+ *  can render the result via ``?artifact=<id>``. */
+export async function lineageFetchNative(args: {
+  profile: string;
+  fqn: string;
+  withColumns?: boolean;
+}): Promise<NativeFetchResult> {
+  return apiFetch<NativeFetchResult>("/api/lineage/fetch", {
+    method: "POST",
+    body: JSON.stringify({
+      profile: args.profile,
+      fqn: args.fqn,
+      with_columns: !!args.withColumns,
+    }),
+  });
+}
+
 export async function lineageRefresh(
   anchor: string,
   opts: { profile?: string; database?: string; noCache?: boolean } = {},

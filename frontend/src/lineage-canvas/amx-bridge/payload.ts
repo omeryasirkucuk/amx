@@ -129,6 +129,9 @@ export function loadedNodeToCanvasNode(
     "pipeline",
     "streamlit_app",
     "job",
+    "vector_search_index",
+    "dashboard",
+    "external",
   ]);
   if (ASSET_KINDS.has(n.kind as AssetNodeKind)) {
     const kind = n.kind as AssetNodeKind;
@@ -145,6 +148,7 @@ export function loadedNodeToCanvasNode(
         label: n.label || n.table || kind,
         dbProfile: opts.multiProfile ? n.profile : undefined,
         subtitle: n.schema && n.schema !== "__assets" ? n.schema : undefined,
+        metadataState: n.metadata_state === "name_only" ? "name_only" : undefined,
       } satisfies AssetNodeData,
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
@@ -197,6 +201,7 @@ export function loadedNodeToCanvasNode(
       showProfileChip: opts.multiProfile,
       isAnchor: opts.isAnchor,
       logoKey: n.logo_key || undefined,
+      metadataState: n.metadata_state === "name_only" ? "name_only" : undefined,
     } satisfies TableNodeData,
     sourcePosition: Position.Right,
     targetPosition: Position.Left,

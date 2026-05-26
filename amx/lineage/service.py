@@ -17,6 +17,7 @@ functions with ``fill_decision`` set explicitly.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -709,6 +710,12 @@ def lineage_for_studio(
     # v4 S5 — match synthetic operator nodes to persisted
     # catalog_entities rows so the inline editor can PATCH them.
     _attach_operator_entity_ids(hs, scope, nodes_by_id)
+    # Native lineage fetch ( /lineage fetch ) writes its edges straight
+    # into catalog_relationships with asset-kind endpoints + a
+    # metadata_state the Edge/ColumnRef model can't carry. Merge them in
+    # directly so producer/consumer assets, vector indexes, and
+    # name-only ghosts render on the same canvas.
+    _attach_native_lineage(hs, scope, nodes_by_id, edge_payloads)
 
     return {
         "anchor": {
@@ -865,6 +872,143 @@ def _attach_table_columns(
             nodes_by_id[nid]["columns"] = [
                 {"name": str(r[0]), "dtype": str(r[1] or "")} for r in rows
             ]
+
+
+_NATIVE_SOURCE = "databricks_native_lineage"  # mirrors lineage.native.materializer.SOURCE
+
+
+def _attach_native_lineage(
+    hs: Any,
+    scope: Scope,
+    nodes_by_id: dict[str, dict[str, Any]],
+    edge_payloads: list[dict[str, Any]],
+) -> None:
+    """Merge native-lineage edges (catalog_relationships) into the payload.
+
+    The ``/lineage fetch`` flow persists edges whose endpoints can be
+    asset kinds (notebook / job / pipeline / dashboard /
+    vector_search_index / external) and whose nodes carry a
+    ``metadata_state`` — neither of which the extractor ``Edge`` /
+    ``ColumnRef`` value model expresses. This reads them directly,
+    keyed on the anchor, and adds the asset / table nodes (with
+    ``metadataState``) plus their edges. Table nodes already emitted by
+    the extractors are reused (merged by FQN); their ``metadataState``
+    is back-filled from the catalog row.
+    """
+    anchor_ref = scope.anchor
+    if not anchor_ref.schema or not anchor_ref.table:
+        return
+    with hs._connect() as conn:
+        anchor_row = conn.execute(
+            """
+            SELECT id FROM catalog_entities
+            WHERE db_profile = ? AND schema_name = ? AND table_name = ?
+              AND entity_kind = 'table'
+            ORDER BY (database_name = ?) DESC
+            LIMIT 1
+            """,
+            (scope.profile, anchor_ref.schema, anchor_ref.table, anchor_ref.database or ""),
+        ).fetchone()
+        if anchor_row is None:
+            return
+        anchor_id = int(anchor_row[0])
+        rows = conn.execute(
+            """
+            SELECT cr.from_entity_id, cr.to_entity_id, cr.relationship_type,
+                   cr.from_column, cr.to_column, cr.details_json,
+                   sf.entity_kind, sf.database_name, sf.schema_name, sf.table_name,
+                   sf.search_text, sf.metadata_state,
+                   st.entity_kind, st.database_name, st.schema_name, st.table_name,
+                   st.search_text, st.metadata_state
+            FROM catalog_relationships cr
+            JOIN catalog_entities sf ON sf.id = cr.from_entity_id
+            JOIN catalog_entities st ON st.id = cr.to_entity_id
+            WHERE cr.source = ?
+              AND (cr.from_entity_id = ? OR cr.to_entity_id = ?)
+            """,
+            (_NATIVE_SOURCE, anchor_id, anchor_id),
+        ).fetchall()
+
+    for row in rows:
+        from_id = _native_node(
+            nodes_by_id, int(row[0]), row[6], row[7], row[8], row[9], row[10], row[11]
+        )
+        to_id = _native_node(
+            nodes_by_id, int(row[1]), row[12], row[13], row[14], row[15], row[16], row[17]
+        )
+        if from_id is None or to_id is None:
+            continue
+        direction = ""
+        try:
+            direction = str((json.loads(row[5] or "{}") or {}).get("direction") or "")
+        except (ValueError, TypeError):
+            direction = ""
+        edge_payloads.append(
+            {
+                "id": None,
+                "from": from_id,
+                "to": to_id,
+                "from_column": row[3] or None,
+                "to_column": row[4] or None,
+                "type": str(row[2]),
+                "extractor": "native",
+                "confidence": 1.0,
+                "evidence": f"native lineage ({direction})" if direction else "native lineage",
+                "verdict": "",
+            }
+        )
+
+
+def _native_node(
+    nodes_by_id: dict[str, dict[str, Any]],
+    entity_id: int,
+    entity_kind: Any,
+    database: Any,
+    schema: Any,
+    table: Any,
+    search_text: Any,
+    metadata_state: Any,
+) -> str | None:
+    """Ensure a node exists for a native-lineage endpoint; return its id.
+
+    Tables key on their FQN so they merge with extractor-emitted nodes;
+    asset kinds use an ``asset:<entity_id>`` id since they have no FQN.
+    """
+    kind = str(entity_kind or "table")
+    state = str(metadata_state or "full")
+    if kind == "table":
+        node_id = ".".join(str(p) for p in (database, schema, table) if p)
+        if not node_id:
+            return None
+        node = nodes_by_id.get(node_id)
+        if node is None:
+            label = ".".join(str(p) for p in (schema, table) if p) or node_id
+            nodes_by_id[node_id] = {
+                "id": node_id,
+                "label": label,
+                "kind": "table",
+                "anchor": False,
+                "described": False,
+                "metadataState": state,
+                "columns": [],
+            }
+        elif state == "name_only":
+            node["metadataState"] = state
+        else:
+            node.setdefault("metadataState", state)
+        return node_id
+
+    node_id = f"asset:{entity_id}"
+    if node_id not in nodes_by_id:
+        nodes_by_id[node_id] = {
+            "id": node_id,
+            "label": str(search_text or table or kind),
+            "kind": kind,
+            "anchor": False,
+            "described": False,
+            "metadataState": state,
+        }
+    return node_id
 
 
 def _lookup_table_columns(conn: Any, profile: str, ref: ColumnRef) -> list[tuple[Any, Any]]:
