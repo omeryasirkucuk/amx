@@ -738,9 +738,12 @@ def _seed_native_artifact(hs: Any, *, profile: str, fqn: str) -> int | None:
     if existing is not None:
         lineage_store.delete_lineage_artifact(hs, artifact_id=int(existing["id"]))
 
-    # extractors_used left empty so list_artifact_edges applies no source
-    # filter — every relationship among the seeded nodes renders, native
-    # edges included.
+    # Scope the artifact to ONLY native-lineage edges. With an empty list,
+    # list_artifact_edges applies no source filter and would also surface
+    # the table's pre-existing FK / column_lineage relationships from past
+    # syncs — those carry from_column/to_column and render an arrow per
+    # column ("every column looks like its own table"). Filtering to the
+    # native source keeps the graph at the table/asset level.
     artifact_id = lineage_store.insert_lineage_artifact(
         hs,
         name=art_name,
@@ -753,7 +756,7 @@ def _seed_native_artifact(hs: Any, *, profile: str, fqn: str) -> int | None:
         edge_set_hash="",
         node_count=len(neighbour_ids) + 1,
         edge_count=edge_count,
-        extractors_used=[],
+        extractors_used=["databricks_native_lineage"],
         extractors_partial=False,
     )
 
