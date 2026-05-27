@@ -1129,28 +1129,75 @@ class DatabricksAdapter(DatabaseAdapter):
                     "Failed to export Databricks notebook %s: %s", obj["path"], exc
                 )
                 continue
-            language = self._databricks_lang_to_amx(obj.get("language"))
-            normalized = normalize_source(
-                raw_source, hint="databricks_source", default_language=language
-            )
             modified_ms = obj.get("modified_at")
             last_modified = (
                 datetime.fromtimestamp(modified_ms / 1000, tz=timezone.utc) if modified_ms else None
             )
-            yield RemoteNotebook(
-                external_id=str(obj["object_id"]),
-                name=obj["path"].rsplit("/", 1)[-1],
-                platform="databricks",
-                language=language,
-                workspace_path=obj["path"],
-                qualified_name=None,
-                source_text=normalized,
-                source_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
-                last_modified_at=last_modified,
+            yield self._notebook_dto(
+                object_id=obj["object_id"],
+                path=obj["path"],
+                raw_source=raw_source,
+                language=obj.get("language"),
+                last_modified=last_modified,
                 last_modified_by=obj.get("modified_by"),
                 owner=obj.get("creator_user_name"),
-                cell_count=self._count_cells(normalized),
             )
+
+    def list_remote_notebooks_by_specs(self, specs):
+        """Export specific notebooks by ``(object_id, workspace_path)`` — no scan.
+
+        The path-driven counterpart of :meth:`list_remote_notebooks`. The
+        lineage lazy-ingest path already knows each notebook's workspace path
+        (from the persisted notebook index), so it pulls one notebook's source
+        directly instead of paying the minutes-long full ``workspace/list``
+        scan the ``external_id_filter`` variant incurs.
+        """
+        client = self._workspace_client
+        for object_id, path in specs:
+            try:
+                raw_source = client.export_notebook_source(workspace_path=path)
+            except Exception as exc:  # noqa: BLE001 — skip one bad notebook, keep going
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Failed to export Databricks notebook %s: %s", path, exc
+                )
+                continue
+            yield self._notebook_dto(object_id=object_id, path=path, raw_source=raw_source)
+
+    def _notebook_dto(
+        self,
+        *,
+        object_id,
+        path,
+        raw_source: str,
+        language: str | None = None,
+        last_modified=None,
+        last_modified_by=None,
+        owner=None,
+    ) -> RemoteNotebook:
+        """Build a :class:`RemoteNotebook` from an already-exported source.
+
+        Shared by the full-workspace scan and the by-path single-notebook
+        ingest so both produce an identical stored shape (``external_id`` =
+        workspace object_id, same normalisation).
+        """
+        lang = self._databricks_lang_to_amx(language)
+        normalized = normalize_source(raw_source, hint="databricks_source", default_language=lang)
+        return RemoteNotebook(
+            external_id=str(object_id),
+            name=str(path).rsplit("/", 1)[-1],
+            platform="databricks",
+            language=lang,
+            workspace_path=str(path),
+            qualified_name=None,
+            source_text=normalized,
+            source_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+            last_modified_at=last_modified,
+            last_modified_by=last_modified_by,
+            owner=owner,
+            cell_count=self._count_cells(normalized),
+        )
 
     def fetch_remote_notebook_source(self, engine=None, external_id: str = "") -> str:
         del engine
