@@ -27,6 +27,24 @@ def test_build_index_writes_only_notebooks(tmp_path):
     assert names == {"123": "My NB", "456": "Other"}
 
 
+def test_build_index_persists_paths(tmp_path):
+    path = ni.cache_path(tmp_path, "db", "h")
+    ni.build_index(_FakeClient(), path)
+    assert ni.lookup_path(path, "123") == "/Users/me/Folder/My NB"
+    assert ni.lookup_path(path, "456") == "/A/B/Other"
+    assert ni.lookup_path(path, "999") is None  # unknown id
+
+
+def test_v1_name_only_cache_is_stale(tmp_path):
+    """A pre-paths cache (no version/paths) rebuilds even if recent."""
+    path = tmp_path / "old.json"
+    path.write_text(
+        json.dumps({"built_at": time.time(), "names": {"123": "My NB"}}), encoding="utf-8"
+    )
+    assert ni.is_stale(path, ttl_s=3600)  # v1 shape → stale despite being fresh
+    assert ni.lookup_path(path, "123") is None  # no paths in v1
+
+
 def test_load_names_missing_returns_empty(tmp_path):
     assert ni.load_names(tmp_path / "nope.json") == {}
 
@@ -34,9 +52,11 @@ def test_load_names_missing_returns_empty(tmp_path):
 def test_is_stale(tmp_path):
     path = tmp_path / "idx.json"
     assert ni.is_stale(path)  # missing → stale
-    path.write_text(json.dumps({"built_at": time.time(), "names": {}}), encoding="utf-8")
+    fresh = {"version": ni.CACHE_VERSION, "built_at": time.time(), "names": {}, "paths": {}}
+    path.write_text(json.dumps(fresh), encoding="utf-8")
     assert not ni.is_stale(path, ttl_s=3600)
-    path.write_text(json.dumps({"built_at": time.time() - 10_000, "names": {}}), encoding="utf-8")
+    old = {"version": ni.CACHE_VERSION, "built_at": time.time() - 10_000, "names": {}, "paths": {}}
+    path.write_text(json.dumps(old), encoding="utf-8")
     assert ni.is_stale(path, ttl_s=3600)
 
 
