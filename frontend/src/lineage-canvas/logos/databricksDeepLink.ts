@@ -32,7 +32,9 @@ export function databricksDeepLink(args: DeepLinkArgs): string | null {
   if (!externalId) return null;
   switch (kind) {
     case "notebook":
-      return `${base}/editor/notebooks/${externalId}`;
+      // The lineage notebook id is the workspace object_id; the
+      // ``#notebook/<object_id>`` hash route opens it by id without a path.
+      return `${base}/#notebook/${externalId}`;
     case "job":
       return `${base}/jobs/${externalId}`;
     case "pipeline":
