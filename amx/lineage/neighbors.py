@@ -104,9 +104,17 @@ def lineage_neighbors(
         # An edge can touch two anchors at once; record the neighbour
         # from each in-scope endpoint's viewpoint.
         if from_id in anchor_set:
-            _add(out, seen, from_id, _neighbor(row, side="to", direction="downstream", rel=rel), fanout)
+            _add(
+                out,
+                seen,
+                from_id,
+                _neighbor(row, side="to", direction="downstream", rel=rel),
+                fanout,
+            )
         if to_id in anchor_set:
-            _add(out, seen, to_id, _neighbor(row, side="from", direction="upstream", rel=rel), fanout)
+            _add(
+                out, seen, to_id, _neighbor(row, side="from", direction="upstream", rel=rel), fanout
+            )
     return out
 
 
