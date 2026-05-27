@@ -56,25 +56,20 @@ class LineageFetchService:
         except DatabricksApiError as exc:
             raise NativeLineageError(f"Lineage fetch for {fqn} failed: {exc}") from exc
 
-        # Build a content-ingester so accessible notebooks / queries land
-        # under Assets as full, drillable assets (their edges then point
-        # at the real bridge, not a name-only ghost). Needs the provider's
-        # workspace client; absent → assets stay name-only.
-        ingester = None
+        # No content is pulled at fetch time — assets land as name-only
+        # ghosts and are ingested in full lazily, when the user clicks one
+        # (see ``lazy_ingest``). The fetch stays lean; the materializer still
+        # reconciles a node to an already-ingested ``remote_*`` row so a
+        # previously-opened asset shows up full again.
         client = getattr(provider, "_client", None)
         if client is not None:
-            from amx.lineage.native.ingest import build_asset_ingester
-
-            ingester = build_asset_ingester(
-                profile=profile_name, client=client, catalog=self.catalog
-            )
-
             # Resolve notebook names from the persisted workspace index.
             # Unity Catalog hands back only a notebook ``object_id`` and
             # Databricks has no id→name reverse lookup, so names come from
             # a cached ``workspace/list`` scan. Reading the cache is cheap
             # and best-effort (cold cache → ids stay placeholders); a
-            # cold/stale cache kicks off a background rebuild that never
+            # cold/stale cache kicks off a background rebuild that also
+            # pre-warms the path map a notebook click needs — and never
             # blocks this fetch.
             from amx.lineage.native import notebook_index
 
@@ -88,7 +83,7 @@ class LineageFetchService:
                 log.debug("notebook index resolve/build skipped: %s", exc)
 
         materializer = LineageMaterializer(
-            self.catalog, profile_name=profile_name, backend=backend, ingester=ingester
+            self.catalog, profile_name=profile_name, backend=backend, ingester=None
         )
         counts = materializer.materialize(result)
         # Columns are intentionally NOT eagerly fetched here: pulling each
