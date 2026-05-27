@@ -122,11 +122,13 @@ class DatabricksWorkspaceClient:
             return None
         try:
             if kind == "notebook":
-                # The lineage notebook id is the workspace object_id.
-                # Resolve it to a path and take the basename — one cheap
-                # REST get per notebook in this graph, no workspace scan.
-                path = self.path_for_object_id(external_id)
-                return path.rstrip("/").rsplit("/", 1)[-1] if path else None
+                # No id→name reverse lookup exists: ``workspace/get-status``
+                # requires a ``path`` and rejects an ``object_id`` (HTTP 400
+                # "Missing required field: path"). Notebook names come from
+                # the persisted ``workspace/list`` index (see
+                # ``amx.lineage.native.notebook_index``); an unresolved id
+                # stays a ``"notebook <id>"`` placeholder.
+                return None
             if kind == "job":
                 body = self._get("/api/2.2/jobs/get", params={"job_id": external_id}).json()
                 return (body.get("settings") or {}).get("name") or None

@@ -432,24 +432,23 @@ def test_service_materializes_via_registered_provider(hs, monkeypatch) -> None:
     assert counts.name_only == 1
 
 
-def test_resolve_notebook_name_uses_object_id_path(monkeypatch):
-    """notebook id resolves to the path basename via get-status?object_id."""
+def test_resolve_notebook_name_returns_none_without_rest(monkeypatch):
+    """notebook id has no cheap reverse lookup: resolve returns None, no REST call.
+
+    Databricks ``workspace/get-status`` requires a path and rejects an
+    object_id (HTTP 400), so notebook names come from the persisted
+    workspace index, not from this per-entity resolver.
+    """
     from amx.db.adapters._databricks_workspace import DatabricksWorkspaceClient
 
     client = DatabricksWorkspaceClient(host="example.cloud.databricks.com", token="t")
 
-    class _Resp:
-        def json(self):
-            return {"path": "/Users/me/Folder/My Notebook"}
+    calls = []
 
-    seen = {}
-
-    def fake_get(path, *, params=None):
-        seen["path"] = path
-        seen["params"] = params
-        return _Resp()
+    def fake_get(path, *, params=None):  # pragma: no cover - must not be reached
+        calls.append((path, params))
+        raise AssertionError("notebook resolution must not hit the REST API")
 
     monkeypatch.setattr(client, "_get", fake_get)
-    name = client.resolve_entity_name(kind="notebook", external_id="2257615622929527")
-    assert name == "My Notebook"
-    assert seen["params"] == {"object_id": "2257615622929527"}
+    assert client.resolve_entity_name(kind="notebook", external_id="2257615622929527") is None
+    assert calls == []
