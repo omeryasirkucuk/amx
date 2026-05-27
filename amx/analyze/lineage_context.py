@@ -24,6 +24,9 @@ from amx.lineage.neighbors import Neighbor, lineage_neighbors
 # Bound the work so a whole-schema run can't fan out unboundedly.
 _MAX_ANCHOR_TABLES = 300
 _MAX_BLOCKS_PER_TABLE = 12
+# Truncate a neighbour's description so a fanned-out block list stays
+# within the ProfileAgent prompt budget.
+_MAX_DETAIL_CHARS = 200
 
 
 def resolve_lineage_context_for_run(
@@ -53,20 +56,50 @@ def resolve_lineage_context_for_run(
         neighbours = lineage_neighbors(
             conn, anchor_entity_ids=list(id_to_loc), fanout=_MAX_BLOCKS_PER_TABLE
         )
-        for anchor_id, nbs in neighbours.items():
-            loc = id_to_loc.get(anchor_id)
-            if loc and nbs:
-                out[loc] = [_block(nb) for nb in nbs]
+        neighbour_ids = {nb.entity_id for nbs in neighbours.values() for nb in nbs}
+        descriptions = _descriptions_for(conn, neighbour_ids)
+    for anchor_id, nbs in neighbours.items():
+        loc = id_to_loc.get(anchor_id)
+        if loc and nbs:
+            out[loc] = [_block(nb, descriptions) for nb in nbs]
     return out
 
 
-def _block(nb: Neighbor) -> dict[str, Any]:
-    return {
+def _block(nb: Neighbor, descriptions: dict[int, str]) -> dict[str, Any]:
+    block: dict[str, Any] = {
         "direction": nb.direction,
         "kind": nb.kind,
         "name": nb.name,
         "relationship": nb.relationship,
     }
+    desc = descriptions.get(nb.entity_id)
+    if desc:
+        block["detail"] = desc[:_MAX_DETAIL_CHARS].rstrip()
+    return block
+
+
+def _descriptions_for(conn: Any, entity_ids: set[int]) -> dict[int, str]:
+    """Map ``entity_id -> effective description text`` for the ids given.
+
+    Reads the catalog's chosen description via
+    ``catalog_entities.effective_description_id``; entities without one
+    are simply absent from the result. Tables and assets are treated
+    the same -- any entity with a generated description contributes one.
+    """
+    ids = sorted(int(e) for e in entity_ids)
+    if not ids:
+        return {}
+    ph = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT ce.id, cd.description_text
+        FROM catalog_entities ce
+        JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+        WHERE ce.id IN ({ph})
+        """,  # noqa: S608 — ids are integer placeholders
+        tuple(ids),
+    ).fetchall()
+    return {int(r[0]): str(r[1]) for r in rows if r[1]}
 
 
 def _anchor_tables(
