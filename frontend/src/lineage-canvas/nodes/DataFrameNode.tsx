@@ -35,7 +35,6 @@ import { TYPE_COLORS } from "../constants";
 import { ColumnTypeGlyph } from "./ColumnTypeGlyph";
 import { LogoBadge } from "../logos/LogoBadge";
 import { LogoPicker } from "../logos/LogoPicker";
-import { databricksDeepLink } from "../logos/databricksDeepLink";
 import type { LogoRow } from "../logos/registry";
 import { NodeDeleteToolbar } from "../components/NodeDeleteToolbar";
 import type { TableNodeData } from "../types";
@@ -137,8 +136,6 @@ function DataFrameNodeImpl({ id, data, selected }: NodeProps<TableNodeData>) {
   const columns = useMemo(() => data.columns || [], [data.columns]);
   const schemaPath = [data.database, data.schema].filter(Boolean).join(".");
 
-  const dbxHref = databricksDeepLink({ kind: "table", host: data.host, fqn: data.fqn });
-
   const expanded = !!data.expanded;
   const writeExpanded = (next: boolean) => {
     rf.setNodes((nodes) =>
@@ -233,7 +230,6 @@ function DataFrameNodeImpl({ id, data, selected }: NodeProps<TableNodeData>) {
           {data.logoKey ? (
             <LogoBadge
               logoKey={data.logoKey}
-              href={dbxHref ?? undefined}
               onClick={() => setLogoPickerOpen(true)}
             />
           ) : (

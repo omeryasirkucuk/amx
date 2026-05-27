@@ -21,7 +21,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
-from amx.config import AMXConfig, _normalize_db_host
+from amx.config import AMXConfig
 from amx.lineage import service as lineage_service
 from amx.lineage import store as lineage_store
 from amx.lineage.discover import discover_profile_lineage
@@ -1054,15 +1054,12 @@ def get_artifact_by_id(
             node_entry["expression"] = meta.get("expression", "")
         elif meta.get("kind") in _ASSET_NODE_KINDS:
             node_entry["label"] = meta.get("label", "")
-            # remote_<kind>s.id (when ingested) so the canvas can deep-link
-            # to the Assets page for drill-in. None on name-only ghosts.
+            # remote_<kind>s.id (when ingested) so the canvas can drill into
+            # the Assets page. None on name-only ghosts.
             node_entry["source_remote_id"] = meta.get("source_remote_id")
-            # Platform external id (for lazy ingest of a clicked ghost) and
-            # workspace host (for the "open in Databricks" deep-link).
+            # Platform external id — drives lazy ingest of a clicked ghost.
             node_entry["external_id"] = meta.get("external_id")
-            node_entry["host"] = _profile_host(cfg, str(row[1] or ""))
         elif meta.get("kind") == "table":
-            node_entry["host"] = _profile_host(cfg, str(row[1] or ""))
             cols = table_columns.get(
                 (
                     str(row[1] or ""),
@@ -2369,14 +2366,6 @@ def _asset_external_id_from_table_name(kind: str, table_name: str) -> str | None
         return None
     ref = table_name[len(prefix) :]
     return None if ref.startswith("name:") else (ref or None)
-
-
-def _profile_host(cfg: AMXConfig, profile: str) -> str:
-    """Return the Databricks workspace host for a profile, else ``""``."""
-    p = (getattr(cfg, "db_profiles", {}) or {}).get(profile)
-    if p is None or (getattr(p, "backend", "") or "").lower() != "databricks":
-        return ""
-    return _normalize_db_host(getattr(p, "host", "") or "")
 
 
 @router.post("/manual", status_code=status.HTTP_201_CREATED)
