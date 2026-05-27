@@ -8,9 +8,9 @@ describe("databricksDeepLink", () => {
       "https://example.cloud.databricks.com/explore/data/cat/sch/tbl",
     );
   });
-  it("builds a notebook link from externalId", () => {
+  it("builds a notebook link from externalId (object_id hash route)", () => {
     expect(databricksDeepLink({ kind: "notebook", host, externalId: "123" })).toBe(
-      "https://example.cloud.databricks.com/editor/notebooks/123",
+      "https://example.cloud.databricks.com/#notebook/123",
     );
   });
   it("builds a job link", () => {
