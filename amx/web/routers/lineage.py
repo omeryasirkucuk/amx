@@ -668,14 +668,14 @@ def post_fetch(
     # the source of truth; a seeding hiccup must not fail the request.
     artifact_id: int | None = None
     try:
-        artifact_id = _seed_native_artifact(hs, profile=name, fqn=fqn)
+        artifact_id = _seed_native_artifact(hs, profile=name, fqn=fqn, backend=backend)
     except Exception as exc:  # noqa: BLE001
         log.info("native lineage: artifact seed failed for %s: %s", fqn, exc)
 
     return {"profile": name, "fqn": fqn, "artifact_id": artifact_id, **counts.as_dict()}
 
 
-def _seed_native_artifact(hs: Any, *, profile: str, fqn: str) -> int | None:
+def _seed_native_artifact(hs: Any, *, profile: str, fqn: str, backend: str = "") -> int | None:
     """Create/refresh a saved artifact framing the native subgraph.
 
     Persists ``lineage_artifact_nodes`` for the anchor + every entity it
@@ -774,14 +774,19 @@ def _seed_native_artifact(hs: Any, *, profile: str, fqn: str) -> int | None:
 
     _column(upstream, cx - col_gap)
     _column(downstream, cx + col_gap)
+    # Bind the backend's brand logo to every seeded node so a table node
+    # renders its logo badge — which doubles as the "open in Databricks"
+    # deep-link. Without this the loaded table node has no logo_key and
+    # the badge (and thus the link) never appears. Asset nodes ignore it.
+    logo_key = "databricks" if (backend or "").lower() == "databricks" else ""
     with hs._lock, hs._connect() as conn:
         conn.executemany(
             """
             INSERT INTO lineage_artifact_nodes
-                (artifact_id, entity_id, db_profile, x, y, width, height, z_index)
-            VALUES (?, ?, ?, ?, ?, 240, 120, 0)
+                (artifact_id, entity_id, db_profile, x, y, width, height, z_index, logo_key)
+            VALUES (?, ?, ?, ?, ?, 240, 120, 0, ?)
             """,
-            [(artifact_id, nid, profile, x, y) for (nid, x, y) in placements],
+            [(artifact_id, nid, profile, x, y, logo_key) for (nid, x, y) in placements],
         )
     return int(artifact_id)
 
