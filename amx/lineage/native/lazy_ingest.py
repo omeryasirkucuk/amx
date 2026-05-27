@@ -100,7 +100,7 @@ def _ingest_by_selection(
 
 
 def _ingest_query(connector: Any, catalog: Any, profile: str, external_id: str) -> IngestOutcome:
-    client = getattr(connector, "_workspace_client", None)
+    client = getattr(connector, "workspace_client", None)
     if client is None:
         return IngestOutcome("unavailable")
     with catalog._connect() as conn:
@@ -109,7 +109,7 @@ def _ingest_query(connector: Any, catalog: Any, profile: str, external_id: str) 
 
 
 def _ingest_notebook(connector: Any, catalog: Any, profile: str, external_id: str) -> IngestOutcome:
-    client = getattr(connector, "_workspace_client", None)
+    client = getattr(connector, "workspace_client", None)
     host = getattr(client, "host", "") if client is not None else ""
     idx_path = notebook_index.cache_path(catalog.db_path.parent, profile, host)
     nb_path = notebook_index.lookup_path(idx_path, external_id)

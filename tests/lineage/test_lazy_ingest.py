@@ -59,7 +59,7 @@ def test_notebook_ingest_uses_index_path(tmp_path):
         encoding="utf-8",
     )
     connector = MagicMock()
-    connector._workspace_client.host = "h"
+    connector.workspace_client.host = "h"
     connector.list_remote_notebooks_by_specs.return_value = [MagicMock()]  # one DTO
 
     out = lazy_ingest.ingest_one_asset(
@@ -73,7 +73,7 @@ def test_notebook_ingest_uses_index_path(tmp_path):
 def test_notebook_cold_index_returns_indexing(tmp_path, monkeypatch):
     catalog = _catalog(tmp_path, fetched_id=None)
     connector = MagicMock()
-    connector._workspace_client.host = "h"
+    connector.workspace_client.host = "h"
     built = {}
     monkeypatch.setattr(
         notebook_index,
