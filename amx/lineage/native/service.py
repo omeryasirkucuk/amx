@@ -15,6 +15,9 @@ from amx.db.adapters._databricks_workspace import DatabricksApiError, Databricks
 from amx.lineage.native import provider as P
 from amx.lineage.native.materializer import LineageMaterializer, MaterializeCounts
 from amx.search.catalog import SearchCatalog
+from amx.utils.logging import get_logger
+
+log = get_logger("lineage.native.service")
 
 
 class NativeLineageError(RuntimeError):
@@ -65,6 +68,24 @@ class LineageFetchService:
             ingester = build_asset_ingester(
                 profile=profile_name, client=client, catalog=self.catalog
             )
+
+            # Resolve notebook names from the persisted workspace index.
+            # Unity Catalog hands back only a notebook ``object_id`` and
+            # Databricks has no id→name reverse lookup, so names come from
+            # a cached ``workspace/list`` scan. Reading the cache is cheap
+            # and best-effort (cold cache → ids stay placeholders); a
+            # cold/stale cache kicks off a background rebuild that never
+            # blocks this fetch.
+            from amx.lineage.native import notebook_index
+
+            try:
+                idx_path = notebook_index.cache_path(
+                    self.catalog.db_path.parent, profile_name, getattr(client, "host", "")
+                )
+                notebook_index.resolve_names(result, idx_path)
+                notebook_index.ensure_background_build(client, idx_path)
+            except Exception as exc:  # noqa: BLE001 — naming is best-effort
+                log.debug("notebook index resolve/build skipped: %s", exc)
 
         materializer = LineageMaterializer(
             self.catalog, profile_name=profile_name, backend=backend, ingester=ingester
