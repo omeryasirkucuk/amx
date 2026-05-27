@@ -1676,6 +1676,23 @@ class DatabaseConnector:
             self.engine, external_id_filter=external_id_filter
         )
 
+    def list_remote_notebooks_by_specs(self, specs):
+        """Export specific notebooks by ``(object_id, workspace_path)`` — no scan.
+
+        Used by native-lineage lazy ingest, which already knows each
+        notebook's path from the workspace index.
+        """
+        return self._adapter.list_remote_notebooks_by_specs(specs)
+
+    @property
+    def workspace_client(self):
+        """The platform workspace client (Databricks) for asset content pulls.
+
+        ``None`` for backends without one — native-lineage asset ingest is
+        Databricks-only, so callers treat ``None`` as "not ingestable here".
+        """
+        return getattr(self._adapter, "_workspace_client", None)
+
     def fetch_remote_notebook_source(self, external_id: str) -> str:
         return self._adapter.fetch_remote_notebook_source(self.engine, external_id)
 
