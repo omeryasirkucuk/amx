@@ -36,6 +36,12 @@ log = get_logger("lineage.native.notebook_index")
 # How long a built index stays valid before a background rebuild.
 DEFAULT_TTL_S = 24 * 3600.0
 
+# Cache schema version. Bumped to 2 when the index began persisting the
+# workspace ``path`` (not just the name) so a single notebook can be ingested
+# by path. An older (v1, name-only) cache is treated as stale so it rebuilds
+# with paths on the next fetch.
+CACHE_VERSION = 2
+
 # Guards against two concurrent background builds for the same cache file.
 _BUILDING: set[str] = set()
 _LOCK = threading.Lock()
@@ -58,34 +64,52 @@ def cache_path(cache_dir: Path, profile: str, host: str) -> Path:
 
 def load_names(path: Path) -> dict[str, str]:
     """Return the cached ``object_id -> name`` map, or ``{}`` if absent/unreadable."""
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    names = data.get("names") if isinstance(data, dict) else None
+    names = _load(path).get("names")
     if not isinstance(names, dict):
         return {}
     return {str(k): str(v) for k, v in names.items()}
 
 
-def built_at(path: Path) -> float:
-    """Epoch seconds when the cache was last written, or ``0.0`` if absent."""
+def _load(path: Path) -> dict:
+    """Return the parsed cache dict, or ``{}`` if absent/unreadable."""
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return 0.0
-    if not isinstance(data, dict):
-        return 0.0
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def built_at(path: Path) -> float:
+    """Epoch seconds when the cache was last written, or ``0.0`` if absent."""
     try:
-        return float(data.get("built_at", 0.0))
+        return float(_load(path).get("built_at", 0.0))
     except (TypeError, ValueError):
         return 0.0
 
 
+def lookup_path(path: Path, object_id: str) -> str | None:
+    """Return the workspace path for a notebook ``object_id``, or ``None``."""
+    paths = _load(path).get("paths")
+    if not isinstance(paths, dict):
+        return None
+    val = paths.get(str(object_id))
+    return str(val) if val else None
+
+
 def is_stale(path: Path, *, ttl_s: float = DEFAULT_TTL_S) -> bool:
-    """True when the cache is missing or older than ``ttl_s`` seconds."""
-    ts = built_at(path)
-    return ts <= 0.0 or (time.time() - ts) > ttl_s
+    """True when the cache is missing, older than ``ttl_s``, or an old version.
+
+    A pre-paths (v1) cache is stale even if recent, so it rebuilds with the
+    ``paths`` map a single-notebook ingest needs.
+    """
+    data = _load(path)
+    try:
+        ts = float(data.get("built_at", 0.0))
+    except (TypeError, ValueError):
+        ts = 0.0
+    if ts <= 0.0 or (time.time() - ts) > ttl_s:
+        return True
+    return int(data.get("version", 1) or 1) < CACHE_VERSION
 
 
 def build_index(client: DatabricksWorkspaceClient, path: Path) -> int:
@@ -96,6 +120,7 @@ def build_index(client: DatabricksWorkspaceClient, path: Path) -> int:
     so a concurrent reader never sees a half-written cache.
     """
     names: dict[str, str] = {}
+    paths: dict[str, str] = {}
     try:
         for obj in client.list_workspace_objects():
             if obj.get("object_type") != "NOTEBOOK":
@@ -104,10 +129,11 @@ def build_index(client: DatabricksWorkspaceClient, path: Path) -> int:
             obj_path = obj.get("path")
             if oid is not None and obj_path:
                 names[str(oid)] = _basename(str(obj_path))
+                paths[str(oid)] = str(obj_path)
     except Exception as exc:  # noqa: BLE001 — best-effort; persist whatever we reached
         log.info("notebook index: scan stopped (%s); resolved %d so far", exc, len(names))
 
-    payload = {"built_at": time.time(), "names": names}
+    payload = {"version": CACHE_VERSION, "built_at": time.time(), "names": names, "paths": paths}
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
@@ -165,10 +191,12 @@ def resolve_names(result: P.NativeLineageResult, path: Path) -> None:
 __all__ = [
     "cache_path",
     "load_names",
+    "lookup_path",
     "built_at",
     "is_stale",
     "build_index",
     "ensure_background_build",
     "resolve_names",
     "DEFAULT_TTL_S",
+    "CACHE_VERSION",
 ]
