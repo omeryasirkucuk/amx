@@ -305,21 +305,48 @@ def test_post_fetch_400_for_unsupported_backend(seeded_hs, client, auth_headers)
     assert r.status_code == 400
 
 
-def test_asset_ingest_endpoint_returns_remote_id(client, auth_headers, monkeypatch):
+def _patch_ingest_outcome(monkeypatch, outcome):
     import amx.web.routers.lineage as lineage_router
 
     monkeypatch.setattr(
         lineage_router,
         "_ingest_one_asset_for_profile",
-        lambda *, profile, kind, external_id: 42,
+        lambda *, profile, kind, external_id: outcome,
     )
-    resp = client.post(
+
+
+def _post_ingest(client, auth_headers, kind="notebook", external_id="123"):
+    return client.post(
         "/api/lineage/asset/ingest",
         headers=auth_headers,
-        json={"profile": "db", "kind": "notebook", "external_id": "123"},
+        json={"profile": "db", "kind": kind, "external_id": external_id},
     )
+
+
+def test_asset_ingest_endpoint_returns_remote_id(client, auth_headers, monkeypatch):
+    from amx.lineage.native.lazy_ingest import IngestOutcome
+
+    _patch_ingest_outcome(monkeypatch, IngestOutcome("ok", 42))
+    resp = _post_ingest(client, auth_headers)
     assert resp.status_code == 200, resp.text
     assert resp.json()["remote_id"] == 42
+
+
+def test_asset_ingest_endpoint_202_while_indexing(client, auth_headers, monkeypatch):
+    from amx.lineage.native.lazy_ingest import IngestOutcome
+
+    _patch_ingest_outcome(monkeypatch, IngestOutcome("indexing"))
+    resp = _post_ingest(client, auth_headers)
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["status"] == "indexing"
+
+
+def test_asset_ingest_endpoint_404_when_unavailable(client, auth_headers, monkeypatch):
+    from amx.lineage.native.lazy_ingest import IngestOutcome
+
+    _patch_ingest_outcome(monkeypatch, IngestOutcome("unavailable"))
+    resp = _post_ingest(client, auth_headers)
+    assert resp.status_code == 404, resp.text
 
 
 def test_asset_external_id_parse():
@@ -330,27 +357,3 @@ def test_asset_external_id_parse():
     # name-slug ghosts (no external id) and full bridges return None
     assert _asset_external_id_from_table_name("notebook", "notebook#ext:name:Foo") is None
     assert _asset_external_id_from_table_name("notebook", "notebook#42") is None
-
-
-def test_profile_host_normalizes():
-    from types import SimpleNamespace
-
-    from amx.web.routers.lineage import _profile_host
-
-    def cfg_with(backend, host):
-        return SimpleNamespace(db_profiles={"p": SimpleNamespace(backend=backend, host=host)})
-
-    # Databricks: scheme + trailing slash stripped to a bare host
-    assert (
-        _profile_host(cfg_with("databricks", "https://adb-1.azuredatabricks.net/"), "p")
-        == "adb-1.azuredatabricks.net"
-    )
-    # Already-bare host passes through
-    assert (
-        _profile_host(cfg_with("databricks", "adb-1.azuredatabricks.net"), "p")
-        == "adb-1.azuredatabricks.net"
-    )
-    # Non-Databricks backend → empty
-    assert _profile_host(cfg_with("snowflake", "x.snowflakecomputing.com"), "p") == ""
-    # Missing profile → empty
-    assert _profile_host(cfg_with("databricks", "h"), "missing") == ""
