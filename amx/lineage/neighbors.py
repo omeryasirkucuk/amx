@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 # Relationship types that carry lineage meaning. Native edges
 # (``lineage_native_*``, from ``/lineage fetch``) plus the structural
@@ -66,10 +66,13 @@ def lineage_neighbors(
     One hop in each direction, name-resolved against
     ``catalog_entities``, deduped per anchor, capped at ``fanout``
     neighbours per anchor. Reads only local rows; never touches the
-    network. Returns ``{}`` when the kill-switch is set or no anchors
-    are given.
+    network. Returns ``{}`` when the kill-switch is set, no anchors
+    are given, or ``rel_types`` is empty. When multiple edge types
+    connect the same neighbour entity, the entity is deduplicated to
+    one ``Neighbor`` and only the first-encountered ``relationship``
+    value is kept.
     """
-    if enrichment_disabled() or not anchor_entity_ids:
+    if enrichment_disabled() or not anchor_entity_ids or not rel_types:
         return {}
     ids = sorted({int(a) for a in anchor_entity_ids})
     anchor_ph = ",".join("?" for _ in ids)
@@ -107,17 +110,19 @@ def lineage_neighbors(
     return out
 
 
-def _neighbor(row: Any, *, side: str, direction: str, rel: str) -> Neighbor:
+def _neighbor(row: Any, *, side: Literal["to", "from"], direction: str, rel: str) -> Neighbor:
     if side == "to":
         kind = str(row[8] or "table")
         name = _entity_name(row[9], row[10], row[11], kind)
         ent_id = int(row[1])
         state = str(row[12] or "full")
-    else:
+    elif side == "from":
         kind = str(row[3] or "table")
         name = _entity_name(row[4], row[5], row[6], kind)
         ent_id = int(row[0])
         state = str(row[7] or "full")
+    else:
+        raise ValueError(f"side must be 'to' or 'from', got {side!r}")
     return Neighbor(
         direction=direction,
         kind=kind,
