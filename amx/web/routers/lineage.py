@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
 from amx.config import AMXConfig, _normalize_db_host
@@ -797,14 +797,14 @@ class AssetIngestBody(BaseModel):
     external_id: str
 
 
-def _ingest_one_asset_for_profile(*, profile: str, kind: str, external_id: str) -> int | None:
+def _ingest_one_asset_for_profile(*, profile: str, kind: str, external_id: str):
     """Open the profile's connector + local catalog and ingest one asset.
 
     Wraps :func:`amx.lineage.native.lazy_ingest.ingest_one_asset` with the
     same connector/catalog wiring the bulk ingest job uses. Resolves the
     active :class:`AMXConfig` from disk (no request context here, matching
-    the other non-request-bound router helpers). Returns the asset's
-    ``remote_<kind>s.id`` or ``None`` when it cannot be resolved.
+    the other non-request-bound router helpers). Returns the lazy-ingest
+    :class:`~amx.lineage.native.lazy_ingest.IngestOutcome`.
     """
     from amx.cli_support.commands.db_assets_impl import _open_catalog, _open_connector
     from amx.lineage.native.lazy_ingest import ingest_one_asset
@@ -824,16 +824,20 @@ def _ingest_one_asset_for_profile(*, profile: str, kind: str, external_id: str) 
 @router.post("/asset/ingest")
 def post_asset_ingest(
     body: AssetIngestBody,
+    response: Response,
     _: None = Depends(require_writer_role),
 ) -> dict[str, Any]:
     """Ingest one native-lineage asset on demand and return its remote id.
 
-    Pulls only the clicked notebook / job / pipeline into the Assets
-    cache so its canvas node becomes full and drillable. Cached, so a
-    second open does no work.
+    Pulls only the clicked notebook / job / pipeline / query into the Assets
+    cache so its canvas node becomes a full, drillable, searchable asset.
+    Cached, so a second open does no work. Notebooks resolve their workspace
+    path from the background-built index; while that index is still warming,
+    the response is ``202`` with ``{"status": "indexing"}`` so the client can
+    retry shortly instead of blocking on a workspace scan.
     """
     try:
-        remote_id = _ingest_one_asset_for_profile(
+        outcome = _ingest_one_asset_for_profile(
             profile=body.profile, kind=body.kind, external_id=body.external_id
         )
     except Exception as exc:  # noqa: BLE001 — surface ingest failure to the client
@@ -841,12 +845,15 @@ def post_asset_ingest(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Ingest of {body.kind} {body.external_id} failed: {exc}",
         ) from exc
-    if remote_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Could not ingest {body.kind} {body.external_id} for profile {body.profile}.",
-        )
-    return {"remote_id": remote_id, "kind": body.kind}
+    if outcome.status == "indexing":
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {"status": "indexing", "kind": body.kind}
+    if outcome.status == "ok" and outcome.remote_id is not None:
+        return {"remote_id": outcome.remote_id, "kind": body.kind}
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Could not ingest {body.kind} {body.external_id} for profile {body.profile}.",
+    )
 
 
 # ── Routes MUST come before the catch-all GET below ─────────────────────
