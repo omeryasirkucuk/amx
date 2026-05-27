@@ -22,6 +22,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from amx.lineage.neighbors import lineage_neighbors
 from amx.lineage.store import list_artifact_edges, lookup_lineage_artifact
 from amx.storage.sqlite_store import SQLiteHistoryStore
 
@@ -156,5 +157,62 @@ def _dedup(xs: list[Any]) -> list[Any]:
     for x in xs:
         if x not in seen:
             seen.add(x)
+            out.append(x)
+    return out
+
+
+@dataclass(slots=True)
+class NativeNeighbors:
+    """Name-resolved, canvas-free lineage neighbours for ASK retrieval."""
+
+    upstream: list[dict[str, str]] = field(default_factory=list)
+    downstream: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def has_neighbors(self) -> bool:
+        return bool(self.upstream or self.downstream)
+
+
+def build_native_lineage_neighbors(
+    *,
+    store: SQLiteHistoryStore,
+    entity_ids: Iterable[int],
+    artifact_filter: list[str] | None = None,
+    max_each: int = 5,
+) -> NativeNeighbors:
+    """Return named upstream/downstream neighbours, no saved canvas needed.
+
+    Reads ``catalog_relationships`` directly through the shared
+    :func:`amx.lineage.neighbors.lineage_neighbors` core, so freshly
+    fetched native lineage informs ASK answers immediately. ``[]`` for
+    ``artifact_filter`` is the off-switch (mirrors
+    :func:`build_lineage_evidence`).
+    """
+    if artifact_filter == []:
+        return NativeNeighbors()
+    ent_set = {int(e) for e in entity_ids}
+    if not ent_set:
+        return NativeNeighbors()
+    with store._connect() as conn:  # noqa: SLF001
+        neighbours = lineage_neighbors(conn, anchor_entity_ids=list(ent_set))
+    up: list[dict[str, str]] = []
+    down: list[dict[str, str]] = []
+    for nbs in neighbours.values():
+        for nb in nbs:
+            rec = {"name": nb.name, "kind": nb.kind, "relationship": nb.relationship}
+            (up if nb.direction == "upstream" else down).append(rec)
+    out = NativeNeighbors()
+    out.upstream = _dedup_dicts(up)[:max_each]
+    out.downstream = _dedup_dicts(down)[:max_each]
+    return out
+
+
+def _dedup_dicts(xs: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict[str, str]] = []
+    for x in xs:
+        key = (x.get("name", ""), x.get("kind", ""), x.get("relationship", ""))
+        if key not in seen:
+            seen.add(key)
             out.append(x)
     return out

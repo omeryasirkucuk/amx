@@ -213,7 +213,7 @@ def enrich_retrieval_details_with_lineage_and_pages(
 
     # Anchor-based lineage retrieval. Skips silently when there are no
     # saved canvases anchored to the resolved entities.
-    from amx.lineage.evidence import build_lineage_evidence
+    from amx.lineage.evidence import build_lineage_evidence, build_native_lineage_neighbors
 
     lineage_payload = build_lineage_evidence(
         store=store,
@@ -223,13 +223,21 @@ def enrich_retrieval_details_with_lineage_and_pages(
         max_downstream=5,
         max_comments=3,
     )
-    if not lineage_payload.is_empty:
+    # Canvas-free named neighbours: always available once /lineage fetch
+    # has materialized native edges, even with no saved canvas. This is
+    # the always-on path that replaces the raw entity-id rendering.
+    named = build_native_lineage_neighbors(
+        store=store, entity_ids=entity_ids, artifact_filter=lineage_profiles
+    )
+    if not lineage_payload.is_empty or named.has_neighbors:
         retrieval_details.setdefault("evidence_sources", [])
         if "lineage" not in retrieval_details["evidence_sources"]:
             retrieval_details["evidence_sources"].append("lineage")
         retrieval_details["lineage"] = {
             "kind": "lineage",
             "artifact_names": list(lineage_payload.artifact_names),
+            "upstream": list(named.upstream),
+            "downstream": list(named.downstream),
             "upstream_entity_ids": list(lineage_payload.upstream_entity_ids),
             "downstream_entity_ids": list(lineage_payload.downstream_entity_ids),
             "external_systems": list(lineage_payload.logo_keys),
