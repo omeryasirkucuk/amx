@@ -1,12 +1,13 @@
 """Resolve per-table lineage context blocks for ``/analyze run``.
 
 The ProfileAgent describes a table better when it knows what feeds and
-consumes it. This module reads the table's immediate lineage neighbours
-straight from ``catalog_relationships`` — foreign keys, view
-dependencies, ingested-asset references, and the
-``/lineage fetch``-sourced native edges (``lineage_native_*``) — and
-returns compact ``dict[(schema, table) -> list[block]]`` the
-orchestrator attaches to :class:`AgentContext.lineage_context`.
+consumes it. This module resolves per-table lineage context blocks by
+delegating the one-hop graph walk to
+:func:`amx.lineage.neighbors.lineage_neighbors` (foreign keys, view
+dependencies, ingested-asset references, and ``/lineage fetch``-sourced
+native edges) and returns a compact
+``dict[(schema, table) -> list[block]]`` the orchestrator attaches to
+:class:`AgentContext.lineage_context`.
 
 Unlike :func:`amx.lineage.evidence.build_lineage_evidence` (which is
 saved-artifact-scoped and returns entity ids for the ASK pipeline),
@@ -19,9 +20,6 @@ from __future__ import annotations
 from typing import Any
 
 from amx.lineage.neighbors import Neighbor, lineage_neighbors
-from amx.utils.logging import get_logger
-
-log = get_logger("analyze.lineage_context")
 
 # Bound the work so a whole-schema run can't fan out unboundedly.
 _MAX_ANCHOR_TABLES = 300
@@ -41,7 +39,8 @@ def resolve_lineage_context_for_run(
     ``{"direction", "kind", "name", "relationship"}`` -- the neighbour
     as seen from the anchor table. Built on the shared
     :func:`amx.lineage.neighbors.lineage_neighbors` core so RUN and ASK
-    share one graph walk.
+    share one graph walk. Returns empty when ``AMX_LINEAGE_CONTEXT_DISABLED``
+    is set (see :func:`amx.lineage.neighbors.enrichment_disabled`).
     """
     out: dict[tuple[str, str], list[dict[str, Any]]] = {}
     if store is None or not profile:
