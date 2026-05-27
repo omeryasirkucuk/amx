@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from amx.cli_support.commands._analyze.run_loop import resolve_run_lineage_blocks
 from amx.storage.sqlite_store import SQLiteHistoryStore
@@ -59,4 +60,22 @@ def test_returns_empty_without_profile_or_store(tmp_path: Path) -> None:
     cfg = SimpleNamespace(active_db_profile="dbr")
     assert resolve_run_lineage_blocks(
         cfg=cfg, history_store_fn=lambda: None, scope={}
+    ) == {}
+
+
+def test_returns_empty_when_history_store_fn_is_none() -> None:
+    cfg = SimpleNamespace(active_db_profile="dbr")
+    assert resolve_run_lineage_blocks(
+        cfg=cfg, history_store_fn=None, scope={"sales": ["orders"]}
+    ) == {}
+
+
+def test_returns_empty_on_store_error() -> None:
+    # The resolver raising must never propagate into a run — the helper
+    # swallows it and returns an empty mapping.
+    bad_store = MagicMock()
+    bad_store._connect.side_effect = RuntimeError("corrupt db")
+    cfg = SimpleNamespace(active_db_profile="dbr")
+    assert resolve_run_lineage_blocks(
+        cfg=cfg, history_store_fn=lambda: bad_store, scope={"s": ["t"]}
     ) == {}
