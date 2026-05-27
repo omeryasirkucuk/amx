@@ -188,6 +188,10 @@ def build_native_lineage_neighbors(
     ``artifact_filter`` is the off-switch (mirrors
     :func:`build_lineage_evidence`).
     """
+    # ``artifact_filter`` with a non-empty list has no canvas-scoping
+    # meaning here -- native lineage edges are not grouped by canvas
+    # name, unlike ``build_lineage_evidence``. Only ``[]`` is the
+    # off-switch; ``None`` and any list both yield neighbours.
     if artifact_filter == []:
         return NativeNeighbors()
     ent_set = {int(e) for e in entity_ids}
