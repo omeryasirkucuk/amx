@@ -16,7 +16,6 @@ import {
   Boxes,
   Code2,
   Download,
-  ExternalLink,
   GitBranch,
   LayoutDashboard,
   MoreHorizontal,
@@ -29,7 +28,6 @@ import {
 import clsx from "clsx";
 
 import { NodeDeleteToolbar } from "../components/NodeDeleteToolbar";
-import { databricksDeepLink } from "../logos/databricksDeepLink";
 
 export type AssetKind =
   | "notebook"
@@ -57,11 +55,8 @@ interface AssetNodeData {
    *  drill-in (new tab). Undefined on name-only ghosts. */
   sourceRemoteId?: number;
   /** External system identifier (e.g. Databricks object id) — drives
-   *  click-to-ingest and external deep-links. Undefined when unknown. */
+   *  click-to-ingest. Undefined when unknown. */
   externalId?: string;
-  /** Owning host (e.g. the Databricks workspace host) used to build the
-   *  external deep-link. Undefined when unknown. */
-  host?: string;
   /** Real owning DB profile, always populated — used as the POST body
    *  for click-to-ingest (unlike ``dbProfile``, which is display-only
    *  and suppressed on single-profile canvases). */
@@ -72,7 +67,7 @@ interface AssetNodeData {
 const ASSETS_PAGE_KINDS = new Set(["notebook", "query", "job", "pipeline", "stream"]);
 
 // Asset kinds that can be lazily ingested from the platform on demand.
-const INGESTABLE_KINDS = new Set<AssetKind>(["notebook", "job", "pipeline"]);
+const INGESTABLE_KINDS = new Set<AssetKind>(["notebook", "job", "pipeline", "query"]);
 
 function openInAssets(kind: AssetKind, remoteId: number) {
   // New tab so an unsaved lineage canvas isn't lost.
@@ -128,6 +123,7 @@ function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
   const kindLabel = LABELS[data.kind] ?? data.kind;
   const nameOnly = data.metadataState === "name_only";
   const [ingesting, setIngesting] = useState(false);
+  const [notice, setNotice] = useState<string>("");
 
   // Lazy ingest: a name-only ghost we know the external id for can be
   // pulled into AMX on demand, then opened in the Assets page.
@@ -137,6 +133,7 @@ function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
   async function ingestAndOpen() {
     if (!data.externalId || !data.profile) return;
     setIngesting(true);
+    setNotice("");
     try {
       const resp = await fetch("/api/lineage/asset/ingest", {
         method: "POST",
@@ -147,23 +144,25 @@ function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
           external_id: data.externalId,
         }),
       });
-      if (!resp.ok) return;
-      const { remote_id } = (await resp.json()) as { remote_id: number };
-      openInAssets(data.kind, remote_id);
+      if (resp.status === 202) {
+        // Notebook index still building — no path yet. Ask to retry.
+        setNotice("Indexing notebooks… try again shortly");
+        return;
+      }
+      if (!resp.ok) {
+        setNotice("Couldn't fetch this asset");
+        return;
+      }
+      const { remote_id } = (await resp.json()) as { remote_id?: number };
+      if (remote_id != null) openInAssets(data.kind, remote_id);
     } catch {
       // Network/parse failure — leave the node as-is; the finally clause
       // clears the loading state so the control is clickable again.
+      setNotice("Couldn't fetch this asset");
     } finally {
       setIngesting(false);
     }
   }
-
-  // External deep-link (e.g. open this asset in the Databricks workspace).
-  const href = databricksDeepLink({
-    kind: data.kind,
-    host: data.host,
-    externalId: data.externalId,
-  });
 
   return (
     <div
@@ -195,18 +194,6 @@ function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
             <span className="rounded bg-surface-subtle px-1 text-[10px] font-medium text-ink-dim">
               {data.dbProfile}
             </span>
-          )}
-          {href && (
-            <a
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Open in Databricks"
-              className="inline-flex h-5 w-5 items-center justify-center rounded text-ink-dim hover:bg-surface hover:text-ink"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <ExternalLink size={12} />
-            </a>
           )}
           {canIngest && (
             <button
@@ -253,6 +240,11 @@ function AssetNodeImpl({ id, data, selected }: NodeProps<AssetNodeData>) {
             title={data.subtitle}
           >
             {data.subtitle}
+          </div>
+        )}
+        {notice && (
+          <div className="mt-0.5 truncate text-[10px] text-ink-dim" title={notice}>
+            {notice}
           </div>
         )}
       </div>
