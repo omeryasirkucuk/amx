@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pytest
+
 from amx.lineage.neighbors import Neighbor, enrichment_disabled, lineage_neighbors
 from amx.storage.sqlite_store import SQLiteHistoryStore
 
@@ -79,3 +81,37 @@ def test_empty_inputs_and_kill_switch(tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setenv("AMX_LINEAGE_CONTEXT_DISABLED", "1")
         assert enrichment_disabled() is True
         assert lineage_neighbors(conn, anchor_entity_ids=[anchor]) == {}
+
+
+def test_dedup_same_entity_two_rel_types(tmp_path: Path) -> None:
+    hs = _hs(tmp_path)
+    anchor = _entity(hs, schema="s", table="a")
+    parent = _entity(hs, schema="s", table="b")
+    _edge(hs, parent, anchor, "foreign_key")
+    _edge(hs, parent, anchor, "view_depends_on")
+    with hs._connect() as conn:
+        out = lineage_neighbors(conn, anchor_entity_ids=[anchor])
+    # Same entity reached via two edge types collapses to one Neighbor.
+    assert len(out[anchor]) == 1
+
+
+def test_self_loop_edge_does_not_crash(tmp_path: Path) -> None:
+    hs = _hs(tmp_path)
+    anchor = _entity(hs, schema="s", table="a")
+    _edge(hs, anchor, anchor, "lineage_native_table")
+    with hs._connect() as conn:
+        out = lineage_neighbors(conn, anchor_entity_ids=[anchor])
+    # A self-referencing edge is recorded from both viewpoints; assert it
+    # does not raise and stays bounded.
+    assert len(out[anchor]) <= 2
+
+
+@pytest.mark.parametrize("val", ["1", "true", "yes", "on", "TRUE", " 1 "])
+def test_enrichment_disabled_truthy_variants(monkeypatch, val: str) -> None:
+    monkeypatch.setenv("AMX_LINEAGE_CONTEXT_DISABLED", val)
+    assert enrichment_disabled() is True
+
+
+def test_enrichment_disabled_falsy(monkeypatch) -> None:
+    monkeypatch.delenv("AMX_LINEAGE_CONTEXT_DISABLED", raising=False)
+    assert enrichment_disabled() is False
