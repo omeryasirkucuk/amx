@@ -190,7 +190,7 @@ def _render_lineage_section(blocks: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = [
         "",
         "Lineage context (upstream producers feed this table; "
-        "downstream consumers read from it; use these relationships "
+        "downstream consumers read from it — use these relationships "
         "to describe the table's role in the data flow):",
     ]
     for block in blocks:

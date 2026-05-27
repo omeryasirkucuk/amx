@@ -29,6 +29,9 @@ def test_omits_detail_when_absent() -> None:
             "relationship": "lineage_native_asset",
         }
     ]
-    text = "\n".join(_render_lineage_section(blocks))
-    assert "ETL nb" in text
-    assert "—" not in text  # no trailing detail separator
+    lines = _render_lineage_section(blocks)
+    nb_line = next(line for line in lines if "ETL nb" in line)
+    # No detail → the neighbour line ends at the relationship, with no
+    # " — <detail>" suffix appended.
+    assert nb_line.rstrip().endswith("(lineage_native_asset)")
+    assert " — " not in nb_line
