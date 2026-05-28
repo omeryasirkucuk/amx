@@ -100,8 +100,8 @@ jobs:
         env:
           AMX_NO_NETWORK: "1"
 
-  web-build-freshness:
-    name: Web bundle freshness
+  web:
+    name: Web build & unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -114,6 +114,11 @@ jobs:
       - name: Install frontend deps
         working-directory: frontend
         run: npm ci
+      # Run the Studio unit tests (vitest). They existed but had never been
+      # wired into CI, so component regressions could land unnoticed.
+      - name: Run unit tests
+        working-directory: frontend
+        run: npm run test:run
       - name: Build SPA
         working-directory: frontend
         run: npm run build
