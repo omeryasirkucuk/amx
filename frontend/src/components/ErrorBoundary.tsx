@@ -23,6 +23,10 @@ interface ErrorBoundaryProps {
    *  Wire to ``useLocation().pathname`` so a route change resets the
    *  fallback without forcing a full page reload. */
   resetKey?: unknown;
+  /** Render a contained fallback (fits the surrounding panel) instead of
+   *  the full-viewport one. Use for per-route boundaries inside the app
+   *  shell so a route crash keeps the sidebar/top bar interactive. */
+  scoped?: boolean;
 }
 
 interface ErrorBoundaryState {
@@ -91,15 +95,19 @@ export default class ErrorBoundary extends Component<
   render(): ReactNode {
     const { error } = this.state;
     if (!error) return this.props.children;
+    const scoped = this.props.scoped;
     return (
       <div
         style={{
-          minHeight: "100vh",
+          // Scoped boundaries sit inside the app shell's main canvas, so
+          // they fill that area rather than the whole viewport and stay
+          // transparent to keep the surrounding chrome visible.
+          minHeight: scoped ? "16rem" : "100vh",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          padding: "2rem",
-          background: "#0f0f0e",
+          padding: scoped ? "1.5rem" : "2rem",
+          background: scoped ? "transparent" : "#0f0f0e",
           color: "#f5f4f2",
           fontFamily:
             '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
