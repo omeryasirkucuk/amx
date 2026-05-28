@@ -194,27 +194,42 @@ def launch_studio(
     )
 
     started = _wait_for_http(chosen_port, STARTUP_TIMEOUT_SEC)
-    if not started:
-        log.warning(
-            "AMX Studio did not respond on :%d within %.1fs; opening the browser anyway.",
-            chosen_port,
-            STARTUP_TIMEOUT_SEC,
-        )
 
-    print(  # user-facing — keep print, not log
-        f"AMX Studio running → {url}\nPress Ctrl-C in this terminal to stop AMX Studio."
-    )
     # Log path also goes to the rotating file logger so a user who
     # needs to debug can find it via ``amx doctor`` or by tailing
     # the logs directory directly. Not printed to the interactive
     # terminal because it adds visual noise for the 99% of users
     # who never need it.
     log.debug("AMX Studio logs at %s", log_path)
-    if open_browser:
-        try:
-            webbrowser.open_new_tab(url)
-        except Exception as exc:  # pragma: no cover - browser launch is best-effort
-            log.debug("Could not auto-open browser: %s", exc)
+
+    if not started:
+        # The server hasn't answered the health check yet. Do NOT fling
+        # the browser at a not-ready port — that lands a first-time user
+        # on the browser's native "connection refused" page and looks
+        # broken. Tell them what's happening and let them open it once
+        # it's up, instead of auto-opening into an error.
+        log.warning(
+            "AMX Studio did not respond on :%d within %.1fs.",
+            chosen_port,
+            STARTUP_TIMEOUT_SEC,
+        )
+        print(  # user-facing — keep print, not log
+            f"AMX Studio is still starting and didn't respond on :{chosen_port} "
+            f"within {STARTUP_TIMEOUT_SEC:.0f}s.\n"
+            f"  Open {url} in your browser once it's ready (not auto-opening to "
+            "avoid a connection-error page).\n"
+            f"  If it never comes up, check the logs at {log_path}.\n"
+            "Press Ctrl-C in this terminal to stop AMX Studio."
+        )
+    else:
+        print(  # user-facing — keep print, not log
+            f"AMX Studio running → {url}\nPress Ctrl-C in this terminal to stop AMX Studio."
+        )
+        if open_browser:
+            try:
+                webbrowser.open_new_tab(url)
+            except Exception as exc:  # pragma: no cover - browser launch is best-effort
+                log.debug("Could not auto-open browser: %s", exc)
 
     if not block:
         # Caller (tests) owns the lifecycle; leave the log file open
