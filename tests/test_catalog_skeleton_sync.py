@@ -54,6 +54,18 @@ class _StubConnector:
         self.last_warm_ttl = ttl_seconds
         return True
 
+    def _populate_catalogs_cache(
+        self, catalog: str = "", *, ttl_seconds: float | None = None
+    ) -> bool:
+        """No-op stand-in for the durable ``schemas_cache`` re-stamp the
+        warm pass now issues per container. The real connector re-runs
+        ``bulk_catalog_metadata`` and writes the rows with the durable
+        TTL; the stub just records ``ttl_seconds`` so the durable-schemas
+        regression test can assert the sync stamps schemas durably (the
+        fix for the "Catalog freshness failed on every open" bug)."""
+        self.last_schemas_ttl = ttl_seconds
+        return True
+
 
 class _StubCfg:
     """Stand-in for ``AMXConfig`` carrying just the fields the
@@ -532,6 +544,78 @@ def test_skeleton_sync_warms_comments_with_durable_ttl(
     sync_profile_skeleton(_StubCfg(), "prof-a", fresh_catalog)
 
     assert getattr(connector, "last_warm_ttl", None) == DURABLE_COMMENT_CACHE_TTL_SECONDS
+
+
+def test_skeleton_sync_restamps_schemas_with_durable_ttl(
+    fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warm pass re-stamps ``schemas_cache`` with the durable TTL,
+    not the 1-hour browse TTL ``list_schemas`` writes during enumeration.
+
+    Regression guard for the reported bug: schemas_cache rows carried
+    only a 1h TTL, so the startup ``gc_schemas_cache`` sweep emptied the
+    table within the hour while the never-expiring
+    ``is_profile_fully_synced`` markers stayed set — driving
+    ``list_schemas``'s cache-only gate to serve an empty schema list and
+    flip the freshness pill to a false "no schemas were visible" failure
+    on every open."""
+    from amx.db.connector import DURABLE_COMMENT_CACHE_TTL_SECONDS
+
+    connector = _StubConnector(schemas=["public"], assets={"public": [("users", "table")]})
+    _stub_build_connector(monkeypatch, connector)
+
+    sync_profile_skeleton(_StubCfg(), "prof-a", fresh_catalog)
+
+    assert getattr(connector, "last_schemas_ttl", None) == DURABLE_COMMENT_CACHE_TTL_SECONDS
+
+
+def test_durable_schemas_cache_survives_startup_gc_sweep(
+    fresh_catalog: SearchCatalog,
+) -> None:
+    """A schemas_cache row stamped with the durable sync TTL survives the
+    startup ``gc_schemas_cache`` sweep, while a row left on the 1-hour
+    browse TTL (here pre-expired) is purged.
+
+    This pins the other half of the fix: the durable TTL chosen by the
+    warm pass actually defeats the gc sweep that caused the bug, so a
+    fully-synced profile's schemas stay cached until the next sync."""
+    from amx.db.connector import DURABLE_COMMENT_CACHE_TTL_SECONDS
+
+    store = ss._store  # noqa: SLF001 — the fixture-bound singleton
+
+    # Durable row (what the warm pass now writes) and a browse-TTL row
+    # that has already expired (what the pre-fix sync left behind).
+    store.save_schemas_cache(
+        db_profile="prof-durable",
+        database="appdb",
+        catalog="",
+        entries={"public": None, "analytics": None},
+        bulk_filled=True,
+        ttl_seconds=DURABLE_COMMENT_CACHE_TTL_SECONDS,
+    )
+    store.save_schemas_cache(
+        db_profile="prof-expired",
+        database="appdb",
+        catalog="",
+        entries={"stale": None},
+        bulk_filled=True,
+        ttl_seconds=-1.0,  # already expired — mimics a 1h row past its window
+    )
+
+    swept = store.gc_schemas_cache()
+    assert swept == 1  # only the expired row
+
+    with fresh_catalog._connect() as conn:  # noqa: SLF001
+        durable = conn.execute(
+            "SELECT schema_name FROM schemas_cache WHERE db_profile = ? ORDER BY schema_name",
+            ("prof-durable",),
+        ).fetchall()
+        expired = conn.execute(
+            "SELECT schema_name FROM schemas_cache WHERE db_profile = ?",
+            ("prof-expired",),
+        ).fetchall()
+    assert [r["schema_name"] for r in durable] == ["analytics", "public"]
+    assert expired == []
 
 
 def _first_synced(cat: SearchCatalog, profile: str, table: str) -> float | None:
