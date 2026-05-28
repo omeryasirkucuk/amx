@@ -17,12 +17,84 @@ if TYPE_CHECKING:
     from amx.config import AMXConfig
 
 
+def _cap_names(names: list[str], *, cap: int = 12) -> str:
+    """Comma-join names, truncating to ``cap`` to protect the token budget.
+
+    Mirrors the schema-hint cap below; selection chips can carry many
+    profiles/canvases and the block is rendered every turn.
+    """
+    shown = list(names[:cap])
+    joined = ", ".join(shown)
+    if len(names) > cap:
+        joined += f", … (+{len(names) - cap} more)"
+    return joined
+
+
+def _selection_context_block(
+    *,
+    scope_profiles: list[str] | None,
+    doc_profiles: list[str] | None,
+    code_profiles: list[str] | None,
+    lineage_profiles: list[str] | None,
+    pages_enabled: bool | None,
+    asset_kinds: list[str] | None,
+) -> str:
+    """Render the SELECTION CONTEXT block from the ASK composer chips.
+
+    Each list chip has three states: ``None`` → Auto (use everything
+    available), ``[]`` → Off (the user disabled that source for this
+    question), and a non-empty list → a custom subset. ``pages_enabled``
+    is a tri-state bool (None/True/False). The block is ALWAYS rendered
+    so the agent can answer "what did I select" directly without a tool
+    call, and so it grounds retrieval in exactly what the user picked.
+    """
+
+    def _fmt_list(sel: list[str] | None) -> str:
+        if sel is None:
+            return "Auto (all available)"
+        if len(sel) == 0:
+            return "Off (disabled for this question)"
+        return "Custom: " + _cap_names(sel)
+
+    def _fmt_pages(val: bool | None) -> str:
+        if val is None:
+            return "Auto"
+        return "On" if val else "Off"
+
+    scope_label = (
+        "Custom: " + _cap_names(list(scope_profiles)) if scope_profiles else "Auto (all profiles)"
+    )
+
+    return (
+        "\nSELECTION CONTEXT — the user configured these ASK composer chips for "
+        "THIS question. This is GROUND TRUTH about what the user selected.\n"
+        '  When the user asks "what did I select", "which assets / docs / code / '
+        'lineage / profiles did I pick", or "what is my scope" — answer DIRECTLY '
+        "and ONLY from this block. Do NOT call list_past_runs or list_chat_sessions "
+        "for selection questions; those are /run and chat HISTORY, never the current "
+        "selection.\n"
+        "  Otherwise treat these as retrieval scope: surface evidence only from the "
+        "selected sources, and when a chip reads Off do not call that source's tools.\n"
+        f"  - Scope (DB profiles): {scope_label}\n"
+        f"  - Docs: {_fmt_list(doc_profiles)}\n"
+        f"  - Code: {_fmt_list(code_profiles)}\n"
+        f"  - Lineage: {_fmt_list(lineage_profiles)}\n"
+        f"  - Pages: {_fmt_pages(pages_enabled)}\n"
+        f"  - Assets (ingested asset kinds): {_fmt_list(asset_kinds)}\n"
+    )
+
+
 def agent_system_prompt(
     cfg: AMXConfig,
     schema_hint: list[str],
     *,
     scope_profiles: list[str] | None = None,
     focus_profile: str | None = None,
+    doc_profiles: list[str] | None = None,
+    code_profiles: list[str] | None = None,
+    lineage_profiles: list[str] | None = None,
+    pages_enabled: bool | None = None,
+    asset_kinds: list[str] | None = None,
 ) -> str:
     """The single system prompt the LLM sees throughout the loop.
 
@@ -35,6 +107,13 @@ def agent_system_prompt(
     ``focus_profile`` is the auto-detected conversation focus computed
     from prior turns; the LLM uses it as a soft default when the
     user's question is ambiguous about which profile to look at.
+
+    ``doc_profiles`` / ``code_profiles`` / ``lineage_profiles`` /
+    ``pages_enabled`` / ``asset_kinds`` are the ASK composer chip
+    selections. They render the SELECTION CONTEXT block so the LLM
+    knows exactly what the user picked (``None`` = Auto, ``[]`` = Off,
+    list = custom subset) and can answer "what did I select" directly
+    instead of mis-routing to run history.
     """
     db_name = cfg.db.database or cfg.db.catalog or cfg.db.project or "(active database)"
     db_unpinned_hint = ""
@@ -238,7 +317,22 @@ def agent_system_prompt(
         f"{profiles_block}\n"
         + scope_block
         + focus_block
+        + _selection_context_block(
+            scope_profiles=scope_profiles,
+            doc_profiles=doc_profiles,
+            code_profiles=code_profiles,
+            lineage_profiles=lineage_profiles,
+            pages_enabled=pages_enabled,
+            asset_kinds=asset_kinds,
+        )
         + "\nFAST-PATH ROUTING (one tool, one answer, never chain to 'verify'):\n"
+        "  * SELECTION questions ('which assets / docs / code / lineage / profiles\n"
+        "    did I select', 'what did I pick', 'what is my scope', 'can you see my\n"
+        "    selection') → answer DIRECTLY from the SELECTION CONTEXT block above. Do\n"
+        "    NOT call any tool — especially NOT list_past_runs or list_chat_sessions\n"
+        "    (those are /run and chat HISTORY, not the current selection). Only after\n"
+        "    reporting the selection should you offer to retrieve from it (e.g. run\n"
+        "    search_assets / lineage_for_table on the selected items) if the user asks.\n"
         "  * 'how many tables don't have comments' / 'coverage' /\n"
         "    'what fraction is documented' (any COUNT question about descriptions)\n"
         "      → catalog_coverage_summary. NEVER find_assets_missing_comment for counts —\n"

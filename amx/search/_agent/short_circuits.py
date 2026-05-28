@@ -210,6 +210,9 @@ class ShortCircuitsMixin:
         clean_question: str,
         question_language: str,
         cancel_token: threading.Event | None = None,
+        lineage_profiles: list[str] | None = None,
+        pages_enabled: bool | None = None,
+        asset_kinds: list[str] | None = None,
     ) -> SearchAnswer | None:
         """Run the tool-calling loop and return a SearchAnswer.
 
@@ -276,6 +279,14 @@ class ShortCircuitsMixin:
                     display=display if display.is_active else None,
                     db_profiles=list(self.db_profiles) if self.db_profiles else None,
                     cancel_token=cancel_token,
+                    # Doc / code chips are auto-derived from scope on the CLI
+                    # (no per-question picker), so they stay None (Auto). The
+                    # lineage / pages / asset chips DO flow through from
+                    # ``SearchAgent.ask`` so the SELECTION CONTEXT block and
+                    # the anchor-based enrichment honour them on the CLI too.
+                    lineage_profiles=lineage_profiles,
+                    pages_enabled=pages_enabled,
+                    asset_kinds=asset_kinds,
                 )
             elapsed = round(time.monotonic() - t0, 4)
         except RunCancelled:

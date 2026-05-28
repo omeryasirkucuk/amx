@@ -141,7 +141,7 @@ def _fetch_edges(
             {other_column_col} AS other_column,
             ce.db_profile AS other_profile,
             ce.schema_name AS other_schema,
-            COALESCE(ce.table_name, ce.name, '') AS other_name,
+            COALESCE(ce.table_name, ce.column_name, '') AS other_name,
             ce.source_remote_id AS source_remote_id,
             r.relationship_type AS rel_type
         FROM catalog_relationships r
