@@ -320,8 +320,7 @@ function DbProfilesSection() {
                             handles "last profile" + "first profile"
                             cases gracefully (the next defined profile
                             becomes the new CLI default-fallback). */}
-                        {/* eslint-disable-next-line no-constant-binary-expression -- the `true &&` is a deliberate always-on toggle; removing it changes the compiled bundle, so it is deferred to a Studio PR. */}
-                        {true && (
+                        {(
                           <button
                             type="button"
                             onClick={() => {
