@@ -330,8 +330,15 @@ def test_retrieval_includes_named_neighbours_without_canvas(tmp_path: Path) -> N
             (parent, anchor, "lineage_native_table", time.time()),
         )
 
-    rows = [{"id": anchor, "row_type": "table", "db_profile": "p1",
-             "schema_name": "s", "table_name": "customers"}]
+    rows = [
+        {
+            "id": anchor,
+            "row_type": "table",
+            "db_profile": "p1",
+            "schema_name": "s",
+            "table_name": "customers",
+        }
+    ]
     enriched = enrich_retrieval_details_with_lineage_and_pages(
         store=store,
         rows=rows,
