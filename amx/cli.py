@@ -6,6 +6,7 @@ import os
 import sys
 
 import click
+import yaml
 
 from amx import __version__
 from amx.cli_support import run_interactive_session
@@ -51,9 +52,12 @@ from amx.config import AMXConfig, ConfigSchemaTooNewError
 from amx.storage.factory import init_history_store
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import (
+    ask_choice,
+    confirm,
     error,
     info,
     show_banner,
+    success,
     warn,
 )
 from amx.utils.logging import get_logger
@@ -343,6 +347,71 @@ def _raise_open_file_limit(target: int = 4096) -> None:
         return
 
 
+def _recover_corrupt_config(cfg_path: str | None, exc: Exception) -> AMXConfig | None:
+    """Offer inline recovery when ``config.yml`` can't be parsed at startup.
+
+    Without this, a corrupt config.yml hard-exits before the REPL even
+    starts — yet the documented fix, ``/restore-config``, lives *inside*
+    the REPL that just refused to start, and the error never showed where
+    the backups live. We print the absolute config/backup path and, when
+    running interactively, let the user restore a rotated backup right
+    here, then retry the load. Returns the recovered config, or ``None``
+    when recovery wasn't possible (caller exits).
+    """
+    from pathlib import Path
+
+    from amx.config import list_config_backups, restore_config_from_backup
+
+    if cfg_path:
+        config_path = Path(cfg_path).expanduser()
+    else:
+        config_path = Path(AMXConfig().CONFIG_DIR) / "config.yml"
+
+    error(f"AMX could not read its configuration file:\n  {config_path}")
+    error(f"Reason: {exc}")
+
+    backups = list_config_backups(config_path)
+    if not backups:
+        info(
+            "No rotated backups are available to restore from. Fix the YAML by "
+            "hand, or back up and remove the file to start fresh. Backups (when "
+            f"present) live alongside it in:\n  {config_path.parent}"
+        )
+        return None
+
+    info(f"Rotated backups available in {config_path.parent}:")
+    for backup in backups:
+        info(f"  {backup.name}")
+
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if not interactive:
+        info(
+            "Restore one over the live file to recover, e.g. copy the newest "
+            f"backup above to {config_path.name}, or run /restore-config once "
+            "the CLI starts."
+        )
+        return None
+
+    if not confirm("Restore a backup now so AMX can start?", default=True):
+        info(f"Restore later with /restore-config, or manually from {config_path.parent}.")
+        return None
+
+    choices = [backup.name for backup in backups]
+    picked = ask_choice("Restore which backup?", choices)
+    backup = backups[choices.index(picked)]
+    try:
+        restore_config_from_backup(backup, config_path)
+    except Exception as restore_exc:  # noqa: BLE001 — surface any restore failure
+        error(f"Restore failed: {restore_exc}")
+        return None
+    success(f"Restored {backup.name}. Re-reading configuration...")
+    try:
+        return AMXConfig.load(cfg_path)
+    except Exception as reload_exc:  # noqa: BLE001 — the backup may also be bad
+        error(f"Configuration is still unreadable after restore: {reload_exc}")
+        return None
+
+
 @click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="amx")
 @click.option("--config", "cfg_path", default=None, help="Path to config YAML file.")
@@ -379,6 +448,15 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
             "and delete `~/.amx/config.yml` to start fresh."
         )
         sys.exit(2)
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
+        # A corrupt / unreadable config.yml used to crash before the REPL,
+        # leaving the user pointed at /restore-config — a command only
+        # reachable inside the REPL that just refused to start. Recover
+        # inline (or at least show where the backups live) instead.
+        recovered = _recover_corrupt_config(cfg_path, exc)
+        if recovered is None:
+            sys.exit(2)
+        ctx.obj = recovered
     init_history_store(ctx.obj)
     _bootstrap_scheduler_tick()
     _install_embedding_provider(ctx.obj)
