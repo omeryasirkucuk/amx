@@ -159,6 +159,30 @@ _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (
             "terminal stops the server."
         ),
     ),
+    # Real top-level operations that were invokable but invisible — absent
+    # from this registry, so they never appeared in /help or autocomplete
+    # (and /rerun + /variations were also unreachable from the REPL root
+    # until added to session._CROSS_NAMESPACE_HEADS).
+    SlashCommand(
+        "/rerun",
+        "root",
+        "Re-run a past analysis result (/rerun <result_id>)",
+        long_desc=(
+            "Re-generate descriptions for a previously analyzed asset using "
+            "the stored run context, without re-profiling from scratch. Takes "
+            "the numeric result_id shown in /history results."
+        ),
+    ),
+    SlashCommand(
+        "/variations",
+        "root",
+        "Generate alternative descriptions for a result (/variations <result_id>)",
+    ),
+    SlashCommand(
+        "/usage",
+        "root",
+        "Show LLM token/cost usage from local history (/usage [--live])",
+    ),
 )
 
 _DB_COMMANDS: tuple[SlashCommand, ...] = (

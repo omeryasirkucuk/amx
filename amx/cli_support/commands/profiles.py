@@ -99,9 +99,9 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
     elif provider == "anthropic":
         info("Anthropic model example: claude-sonnet-4-20250514")
     elif provider == "gemini":
-        info("Gemini model example: gemini-2.0-flash")
+        info("Gemini model example: gemini-2.5-flash")
     elif provider == "deepseek":
-        info("DeepSeek model example: deepseek-chat")
+        info("DeepSeek model example: deepseek-chat-v4")
     elif provider == "ollama":
         info("Ollama model example: llama3")
     elif provider == "databricks_serving":

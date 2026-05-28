@@ -699,6 +699,11 @@ _CROSS_NAMESPACE_HEADS: frozenset[str] = frozenset(
         "studio",
         "lineage",
         "pages",
+        # Real top-level Click commands that were reachable via `amx rerun`
+        # / `amx variations` but returned None here (→ "Unknown command")
+        # when typed in the REPL, because they were missing from this set.
+        "rerun",
+        "variations",
     }
 )
 
