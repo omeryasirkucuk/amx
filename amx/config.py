@@ -295,7 +295,16 @@ def has_legacy_database_default(db: DBConfig) -> bool:
 
 # Secret-bearing fields per scope. These are externalised to the OS keyring
 # on save and resolved back to plaintext on load via amx.storage.secrets.
-_DB_SECRET_FIELDS = ("password", "access_token", "jwt_token", "workspace_token")
+_DB_SECRET_FIELDS = (
+    "password",
+    "access_token",
+    "jwt_token",
+    "workspace_token",
+    # MotherDuck token is collected with a masked prompt but was absent
+    # here, so it was the one credential written in plaintext to config.yml
+    # (and its rotated .bak copies). Externalise it to the keyring too.
+    "motherduck_token",
+)
 _LLM_SECRET_FIELDS = ("api_key",)
 _EMBEDDING_SECRET_FIELDS = ("api_key",)
 

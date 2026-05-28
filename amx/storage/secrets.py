@@ -24,6 +24,10 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from amx.utils.logging import get_logger
+
+log = get_logger("storage.secrets")
+
 KEYRING_PREFIX = "keyring:"
 SERVICE_NAME = "amx"
 
@@ -148,6 +152,34 @@ def parse_reference(ref: str) -> str:
 
 
 _default_store: SecretStore | None = None
+_keyring_warning_emitted = False
+
+
+def _warn_keyring_unavailable() -> None:
+    """Warn once when no keyring backend is reachable.
+
+    Without this the fall back to plaintext storage in config.yml was
+    silent — security.md and the masked prompts promise the OS keyring,
+    so a headless-Linux / CI / Keychain-denied user was downgraded with
+    no signal except a /doctor check they had no reason to run.
+    """
+    global _keyring_warning_emitted
+    if _keyring_warning_emitted:
+        return
+    _keyring_warning_emitted = True
+    msg = (
+        "No OS keyring backend is available — database/LLM credentials will "
+        "be stored as PLAINTEXT in config.yml (and its rotated backups). "
+        "On headless Linux / CI install a keyring backend (e.g. SecretService "
+        "or keyrings.alt); run /doctor for details."
+    )
+    log.warning(msg)
+    try:
+        from amx.utils.console import warn as _console_warn
+
+        _console_warn(msg)
+    except Exception:  # pragma: no cover - console is best-effort here
+        pass
 
 
 def get_default_store() -> SecretStore:
@@ -155,6 +187,7 @@ def get_default_store() -> SecretStore:
     if _default_store is None:
         store: SecretStore = KeyringSecretStore()
         if not store.is_available():
+            _warn_keyring_unavailable()
             store = NullSecretStore()
         _default_store = store
     return _default_store
