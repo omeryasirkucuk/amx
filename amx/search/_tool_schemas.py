@@ -1735,6 +1735,36 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "freshness": FRESHNESS_CACHE_OK,
+        "function": {
+            "name": "list_db_profiles",
+            "description": (
+                "List the user's configured database profiles with their engine "
+                "type and what catalog data is available. CALL THIS FIRST when you "
+                "need to know which profile is Databricks / PostgreSQL / DuckDB / "
+                "Snowflake / BigQuery / etc., or when deciding what you can query. "
+                "Each profile returns: ``backend`` (the engine — e.g. 'databricks', "
+                "'postgresql', 'duckdb'); ``active`` (whether it is in the current "
+                "ask scope); a ``connection`` block of NON-SECRET coordinates the "
+                "user set (host, database, catalog, account, project, warehouse, … "
+                "— never passwords or tokens); and ``available_data`` summarising "
+                "what is queryable for that profile — ``synced_tables`` (count) and "
+                "``sync_state``, ``docs`` / ``code`` (whether linked doc/code RAG "
+                "is available for ``search_docs`` / ``search_code``), and counts of "
+                "ingested ``assets`` (notebooks/jobs/pipelines/queries/streams), "
+                "``lineage_graphs``, and ``past_runs``. A ``null`` data field means "
+                "the count could not be determined in this context, not zero. "
+                "Read-only; answers entirely from config and the cached catalog."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
 
 

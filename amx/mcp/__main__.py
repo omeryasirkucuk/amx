@@ -48,6 +48,23 @@ def main(argv: list[str] | None = None) -> None:
 
         cfg = AMXConfig.load()
 
+        # Bootstrap the history-store singleton, exactly as the CLI entry
+        # point and the Studio subprocess do (see
+        # ``amx/web/_studio_subprocess.py``). This is its own Python
+        # process, so the parent CLI's init does not carry over. Without
+        # it, ``history_store()`` is ``None`` and every history-backed
+        # tool (``list_past_runs``, ``search_assets``, ``list_schedules``,
+        # ``lineage_*``, ``list_chat_sessions``, and ``list_db_profiles``'s
+        # data summary) returns an empty ``no_history_store`` envelope —
+        # only the SearchCatalog-backed schema tools work. Best-effort: a
+        # failure still lets the catalog tools serve.
+        from amx.storage.factory import init_history_store
+
+        try:
+            init_history_store(cfg)
+        except Exception:
+            pass
+
     mcp_server.serve_stdio(cfg, profiles)
 
 

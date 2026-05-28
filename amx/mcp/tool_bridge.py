@@ -29,6 +29,20 @@ from typing import Any, Protocol
 # the schema module's private constant by a different name.
 FRESHNESS_CACHE_OK = "cache_ok"
 
+# Read-only behavioural hints attached to every exposed tool. The MCP
+# server only ever surfaces ``cache_ok`` tools and builds its ``ToolBox``
+# with ``allow_live_refresh=False``, so the whole surface is read-only,
+# idempotent, and answers from a local cache (never the open web). IDE
+# plan / read-only / ask modes (Cursor, VS Code Copilot, Claude Code,
+# Claude Desktop) gate tool invocation on ``readOnlyHint``: without it a
+# tool is assumed to possibly mutate state and is blocked in plan mode.
+# Advertising these hints lets those modes call AMX's catalog tools.
+READ_ONLY_ANNOTATIONS: dict[str, bool] = {
+    "readOnlyHint": True,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+
 
 class _ToolBoxLike(Protocol):
     """The slice of :class:`ToolBox` this module depends on."""
@@ -53,9 +67,10 @@ def cache_only_schemas(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def mcp_tool_payloads(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert AMX function schemas into MCP tool payloads.
 
-    Each returned dict has the three fields the MCP ``Tool`` type needs:
-    ``name``, ``description``, and ``inputSchema`` (the JSON Schema for
-    the arguments). Only ``cache_ok`` tools are included.
+    Each returned dict has the fields the MCP ``Tool`` type needs:
+    ``name``, ``description``, ``inputSchema`` (the JSON Schema for the
+    arguments), and ``annotations`` (read-only behavioural hints — see
+    :data:`READ_ONLY_ANNOTATIONS`). Only ``cache_ok`` tools are included.
 
     Returning plain dicts (rather than ``mcp.types.Tool``) keeps this
     function importable without the SDK; :mod:`amx.mcp.server` does the
@@ -73,6 +88,9 @@ def mcp_tool_payloads(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "name": name,
                 "description": (fn.get("description") or "").strip(),
                 "inputSchema": parameters,
+                # Copied per payload so a caller mutating one tool's hints
+                # cannot bleed into the shared module-level constant.
+                "annotations": dict(READ_ONLY_ANNOTATIONS),
             }
         )
     return payloads

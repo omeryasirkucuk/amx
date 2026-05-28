@@ -40,8 +40,37 @@ def test_mcp_tool_payload_shape():
             "name": "describe_column",
             "description": "desc describe_column",
             "inputSchema": {"type": "object", "properties": {}},
+            "annotations": {
+                "readOnlyHint": True,
+                "idempotentHint": True,
+                "openWorldHint": False,
+            },
         }
     ]
+
+
+def test_every_payload_is_marked_read_only():
+    """IDE plan / read-only modes gate on ``readOnlyHint``; every exposed
+    tool must advertise it (and never the open-world / destructive hints)
+    so plan mode will invoke AMX's catalog tools."""
+    from amx.search.agent_tools import ToolBox
+
+    payloads = tool_bridge.mcp_tool_payloads(ToolBox.schemas())
+    assert payloads, "expected at least one exposed tool"
+    for p in payloads:
+        ann = p["annotations"]
+        assert ann["readOnlyHint"] is True, p["name"]
+        assert ann["openWorldHint"] is False, p["name"]
+        assert ann["idempotentHint"] is True, p["name"]
+
+
+def test_annotations_are_not_shared_between_payloads():
+    """Each payload owns its annotations dict — mutating one must not
+    leak into the shared module constant or sibling payloads."""
+    payloads = tool_bridge.mcp_tool_payloads([_schema("a", "cache_ok"), _schema("b", "cache_ok")])
+    payloads[0]["annotations"]["readOnlyHint"] = False
+    assert payloads[1]["annotations"]["readOnlyHint"] is True
+    assert tool_bridge.READ_ONLY_ANNOTATIONS["readOnlyHint"] is True
 
 
 def test_payload_skips_unnamed_entries():
