@@ -44,6 +44,36 @@ class PerSchemaLoopResult:
     # the caller may need it for ``apply_results`` after the loop.
 
 
+def resolve_run_lineage_blocks(
+    *,
+    cfg: Any,
+    history_store_fn: Any,
+    scope: Any,
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """Resolve per-table lineage context for the run (Studio-parity).
+
+    Best-effort: returns ``{}`` on any failure, or when no active
+    profile / history store is available, so it can never fail a run.
+    Mirrors the Studio worker's lineage wiring in
+    ``amx/web/routers/runs.py`` so CLI and Studio runs produce the same
+    lineage-aware descriptions.
+    """
+    profile = getattr(cfg, "active_db_profile", "") or ""
+    if not profile:
+        return {}
+    store = history_store_fn() if history_store_fn else None
+    if store is None:
+        return {}
+    scope_map = {str(k): list(v) for k, v in (scope or {}).items()}
+    try:
+        from amx.analyze.lineage_context import resolve_lineage_context_for_run
+
+        return resolve_lineage_context_for_run(store=store, profile=profile, scope=scope_map)
+    except Exception:  # noqa: BLE001 — context is best-effort, never fail a run
+        log.debug("CLI run lineage context resolution failed", exc_info=True)
+        return {}
+
+
 def run_per_schema_loop(
     *,
     cfg: AMXConfig,
@@ -81,6 +111,13 @@ def run_per_schema_loop(
     rag_cfg = cfg.effective_rag_llm()
     rag_llm = LLMProvider(rag_cfg) if rag_cfg is not cfg.llm else None
 
+    # Lineage-neighbour context (parity with the Studio run path):
+    # resolved once for the whole scope and attached to every per-schema
+    # orchestrator below. Best-effort -- never fails the run.
+    lineage_blocks = resolve_run_lineage_blocks(
+        cfg=cfg, history_store_fn=history_store_fn, scope=scope
+    )
+
     for schema_name, assets in scope.items():
         asset_kinds = {name: db.resolve_asset_kind(schema_name, name) for name in assets}
         orch = Orchestrator(
@@ -93,6 +130,9 @@ def run_per_schema_loop(
             missing_only=missing_only,
             rag_llm=rag_llm,
         )
+        if lineage_blocks:
+            orch.lineage_context_by_table = lineage_blocks
+
         if dedup_outcome is not None and dedup_outcome.skip_set:
             # Tell the orchestrator which (schema, table, column)
             # tuples were already handled by the dedup pass so it
@@ -229,4 +269,4 @@ def _process_assets_chat_mode(
             continue
 
 
-__all__ = ["PerSchemaLoopResult", "run_per_schema_loop"]
+__all__ = ["PerSchemaLoopResult", "resolve_run_lineage_blocks", "run_per_schema_loop"]
