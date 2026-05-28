@@ -340,6 +340,12 @@ def ask_password(question: str) -> str:
     return _safe_pt_prompt(f"  {question}: ", is_password=True).strip()
 
 
+#: How many times ``ask_choice`` re-prompts on unrecognised input before
+#: giving up and taking the default. Bounds a non-interactive / EOF caller
+#: that keeps yielding the same invalid value so it can't loop forever.
+_ASK_CHOICE_MAX_RETRIES = 5
+
+
 def ask_choice(
     question: str,
     choices: list[str],
@@ -362,13 +368,26 @@ def ask_choice(
         console.print(f"    {i}. [bold]{c}[/bold]{desc}[dim]{mark}[/dim]")
     # Keep the prompt minimal: users can press Enter for default without extra hint text.
     # Do not pass default= to pt_prompt — it pre-fills the whole string and forces delete-before-2.
-    answer = _safe_pt_prompt("  > ", completer=completer).strip()
-    if not answer:
-        return default if default in choices else ""
-    if answer.isdigit() and 1 <= int(answer) <= len(choices):
-        return choices[int(answer) - 1]
-    if answer in choices:
-        return answer
+    # Re-prompt on unrecognised input rather than silently falling back to
+    # the default. ask_choice also gates DB writeback in the review loop,
+    # where silently accepting the top suggestion on a typo (e.g. "q"/"w")
+    # is a data-safety footgun. Empty input still accepts the default (the
+    # documented "press Enter" convention).
+    for attempt in range(_ASK_CHOICE_MAX_RETRIES):
+        answer = _safe_pt_prompt("  > ", completer=completer).strip()
+        if not answer:
+            return default if default in choices else ""
+        if answer.isdigit() and 1 <= int(answer) <= len(choices):
+            return choices[int(answer) - 1]
+        if answer in choices:
+            return answer
+        if attempt < _ASK_CHOICE_MAX_RETRIES - 1:
+            warn(
+                f"'{answer}' is not one of the options — enter a number "
+                f"1-{len(choices)} or a listed name."
+            )
+    # Exhausted retries (non-interactive / EOF garbage): take the default
+    # rather than spin forever.
     return default if default in choices else ""
 
 
