@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from amx.config import LLMConfig
+from amx.llm._provider_errors import FatalLLMError, _classify_fatal_llm_error
 from amx.llm.provider import ChatResult
 from amx.utils.console import console
 from amx.utils.logging import get_logger
@@ -445,4 +446,17 @@ def run_batch(
             f"Supported: {', '.join(supported_providers())}."
         )
 
-    return provider.submit(requests)
+    try:
+        return provider.submit(requests)
+    except FatalLLMError:
+        raise
+    except Exception as exc:
+        # Auth / quota / model-not-found surfaced by the batch submit are
+        # just as non-recoverable as in chat mode. Classify them into a
+        # FatalLLMError so the analyze_flow handler aborts the run with one
+        # actionable message instead of letting a raw provider error escape
+        # past the FatalLLMError-only catch.
+        fatal = _classify_fatal_llm_error(exc)
+        if fatal is not None:
+            raise fatal from exc
+        raise

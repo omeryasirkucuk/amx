@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     # annotations``; runtime use sites lazy-import these names below.
     from amx.search.catalog import SearchCatalog
     from amx.search.service import SearchService
+from amx.llm._provider_errors import FatalLLMError
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import (
     ask_choice,
@@ -337,6 +338,22 @@ def _run_search_ask_body(
             summary="Cancelled by user.",
             provenance=["user_cancelled"],
             details={"reason": "cancelled_by_user"},
+        )
+    except FatalLLMError as fatal:
+        # Non-recoverable LLM error (auth / quota / model-not-found). Surface
+        # the actionable message instead of letting the raw provider error
+        # crash the /ask REPL, and return a graceful low-confidence answer.
+        from amx.search.catalog import SearchAnswer
+
+        error("LLM request failed: " + fatal.user_message)
+        answer = SearchAnswer(
+            intent="error",
+            question=question_text,
+            rows=[],
+            confidence="low",
+            summary=fatal.user_message,
+            provenance=["llm_error"],
+            details={"reason": "fatal_llm_error"},
         )
     finally:
         if started_display:

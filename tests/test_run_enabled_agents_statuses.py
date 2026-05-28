@@ -27,6 +27,7 @@ import pytest
 
 from amx.agents.base import AgentContext, MetadataSuggestion
 from amx.agents.orchestrator import RunCancelled
+from amx.llm._provider_errors import FatalLLMError
 
 
 class _FakeAgent:
@@ -166,6 +167,29 @@ def test_single_agent_path_propagates_run_cancelled() -> None:
     orch = _make_orch(profile=profile)
 
     with pytest.raises(RunCancelled):
+        orch._run_enabled_agents(AgentContext())
+
+
+def test_fatal_llm_error_in_one_agent_reraises_not_swallowed() -> None:
+    """A non-recoverable LLM error (auth / quota / model-not-found) raised
+    by one sub-agent in the multi-agent ThreadPool path must propagate so
+    the run aborts at analyze_flow — NOT be swallowed like a generic
+    Exception, which would let the run churn through every table."""
+    profile = _FakeAgent(suggestions=[_make_suggestion("profile")])
+    rag = _FakeAgent(raises=FatalLLMError)
+    code = _FakeAgent(suggestions=[_make_suggestion("code")])
+    orch = _make_orch(profile=profile, rag=rag, code=code)
+
+    with pytest.raises(FatalLLMError):
+        orch._run_enabled_agents(AgentContext())
+
+
+def test_single_agent_path_propagates_fatal_llm_error() -> None:
+    """Same contract on the single-agent fast path."""
+    profile = _FakeAgent(raises=FatalLLMError)
+    orch = _make_orch(profile=profile)
+
+    with pytest.raises(FatalLLMError):
         orch._run_enabled_agents(AgentContext())
 
 
