@@ -49,6 +49,7 @@ from amx.codebase.analyzer import CodebaseReport
 from amx.config import DEFAULT_ALTERNATIVES_MODE
 from amx.db.connector import AssetKind, ColumnProfile, DatabaseConnector, TableProfile
 from amx.docs.rag import RAGStore
+from amx.llm._provider_errors import FatalLLMError
 from amx.llm.provider import LLMProvider
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import (
@@ -578,6 +579,14 @@ class Orchestrator:
             except RunCancelled:
                 statuses[label] = "cancelled"
                 raise
+            except FatalLLMError:
+                # Non-recoverable (auth / quota / model-not-found). Re-raise
+                # so the run aborts at analyze_flow with one actionable
+                # message instead of swallowing it here and churning through
+                # every remaining table, failing identically and consuming
+                # tokens each time. Mirrors the RunCancelled re-raise above.
+                statuses[label] = "failed"
+                raise
             except Exception as exc:
                 statuses[label] = "failed"
                 warn(f"{label.upper()} agent failed: {exc}")
@@ -601,6 +610,13 @@ class Orchestrator:
                 except RunCancelled:
                     statuses[label] = "cancelled"
                     cancel_observed = True
+                except FatalLLMError:
+                    # Non-recoverable LLM error — re-raise so the run aborts
+                    # with one actionable message rather than failing the
+                    # same way on every table. The ``finally`` below still
+                    # shuts the pool down cleanly before this propagates.
+                    statuses[label] = "failed"
+                    raise
                 except Exception as exc:
                     statuses[label] = "failed"
                     warn(f"{label.upper()} agent failed: {exc}")
