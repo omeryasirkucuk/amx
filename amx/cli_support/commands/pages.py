@@ -659,7 +659,12 @@ def register_pages_commands(
             return
 
         try:
-            svc.generate(page_id, now=_utcnow())
+            # LLM composition can take many seconds; without a spinner the
+            # REPL looked frozen and users assumed the page generation hung.
+            from amx.utils.console import step_spinner
+
+            with step_spinner("Composing the page with the LLM..."):
+                svc.generate(page_id, now=_utcnow())
         except Exception as exc:  # noqa: BLE001
             error(f"Generation failed: {exc}. Draft was saved; re-run with /pages edit.")
             return
