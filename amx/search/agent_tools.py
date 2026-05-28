@@ -35,6 +35,7 @@ from amx.search._agent_tools_helpers import (
     _ToolError,
 )
 from amx.search._tool_assets import _AssetsToolsMixin
+from amx.search._tool_db_profiles import _DbProfilesToolMixin
 from amx.search._tool_history import _HistoryToolsMixin
 from amx.search._tool_join_inference import _JoinInferenceMixin
 from amx.search._tool_lineage import _LineageToolsMixin
@@ -106,6 +107,7 @@ class ToolBox(
     _ScdAndRoleMixin,
     _AssetsToolsMixin,
     _LineageToolsMixin,
+    _DbProfilesToolMixin,
 ):
     """Concrete tool implementations the agent loop dispatches into."""
 

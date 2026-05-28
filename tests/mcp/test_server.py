@@ -64,5 +64,11 @@ def test_end_to_end_handshake(tmp_path):
                 names = [t.name for t in tools.tools]
                 assert len(names) >= 10
                 assert "sample_column_values" not in names
+                # Read-only hints must survive the real round-trip so IDE
+                # plan / read-only modes will invoke the tools.
+                for t in tools.tools:
+                    assert t.annotations is not None, t.name
+                    assert t.annotations.readOnlyHint is True, t.name
+                    assert t.annotations.openWorldHint is False, t.name
 
     anyio.run(run)

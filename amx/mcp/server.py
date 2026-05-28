@@ -92,6 +92,11 @@ def serve_stdio(cfg: AMXConfig, profiles: list[str] | None = None) -> None:
                 name=p["name"],
                 description=p["description"],
                 inputSchema=p["inputSchema"],
+                # Read-only hints so IDE plan / read-only modes will
+                # actually invoke these tools instead of blocking them.
+                annotations=types.ToolAnnotations(**p["annotations"])
+                if p.get("annotations")
+                else None,
             )
             for p in payloads
         ]
