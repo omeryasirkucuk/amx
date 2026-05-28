@@ -427,6 +427,48 @@ def confirm(question: str, default: bool = True) -> bool:
     return answer in ("y", "yes")
 
 
+def resolve_removal_target(
+    names: list[str],
+    item_label: str,
+    *,
+    preselected: str | None = None,
+    empty_hint: str = "",
+    confirm_removal: bool = True,
+) -> str | None:
+    """Wizard-first resolver for a ``/remove-*`` style destructive action.
+
+    With *preselected* (a name typed on the command line), validate it is one
+    of *names*. With no preselection, list *names* in an interactive picker
+    and — unless *confirm_removal* is ``False`` — ask for confirmation before
+    returning. Returns the chosen name, or ``None`` when there is nothing to
+    remove, the typed name is unknown, or the user declines/cancels; callers
+    treat ``None`` as "do nothing".
+
+    *item_label* is the human noun, e.g. ``"LLM profile"`` (pluralised with a
+    trailing ``s`` in messages). *empty_hint*, when given, is appended to the
+    "nothing configured" message, e.g. ``"Use /add-llm-profile first."``.
+    """
+    if not names:
+        message = f"No {item_label}s configured."
+        if empty_hint:
+            message = f"{message} {empty_hint}"
+        error(message)
+        return None
+    if preselected is not None:
+        if preselected not in names:
+            error(f"Unknown {item_label}: {preselected}. Available: {', '.join(names)}")
+            return None
+        return preselected
+    picked = ask_choice(f"Select a {item_label} to remove", names)
+    if not picked:
+        info(f"Nothing selected; no {item_label} removed.")
+        return None
+    if confirm_removal and not confirm(f"Remove {item_label} {picked!r}?", default=False):
+        info(f"Cancelled; no {item_label} removed.")
+        return None
+    return picked
+
+
 def render_table(title: str, columns: list[str], rows: list[list[Any]]) -> None:
     table = Table(title=title, show_lines=True)
     column_style = info_color()
