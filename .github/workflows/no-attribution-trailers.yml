@@ -1,0 +1,42 @@
+name: No attribution trailers
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: no-attribution-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-trailers:
+    name: Reject agent-attribution trailers in commit bodies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Scan commit bodies in PR range
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Compare the PR head against the base branch. We look at the
+          # commit messages introduced by this PR only — not the whole
+          # history, not file contents.
+          git fetch origin "$BASE_REF" --depth=200 --quiet
+          range="origin/${BASE_REF}..${HEAD_SHA}"
+          if git log "$range" --pretty=%B \
+              | grep -iqE 'Co-[Aa]uthored-[Bb]y:.*[Cc]laude|noreply@anthropic\.com|🤖 Generated'; then
+            echo "::error::Commit body in this PR carries an agent-attribution trailer."
+            echo "Strip the trailer line(s) before merging."
+            echo "Range scanned: $range"
+            git log "$range" --pretty='%h %s'
+            exit 1
+          fi
+          echo "Commit bodies in range are clean."
