@@ -391,11 +391,32 @@ def ask_choice(
     return default if default in choices else ""
 
 
+def _match_choice_token(token: str, choices: list[str]) -> str | None:
+    """Resolve one ``ask_multi_choice`` token to a choice, or None when it
+    doesn't match exactly one option (by number, exact name,
+    case-insensitive name, unique prefix, or unique substring)."""
+    if token.isdigit() and 1 <= int(token) <= len(choices):
+        return choices[int(token) - 1]
+    if token in choices:
+        return token
+    lower = [c for c in choices if c.lower() == token.lower()]
+    if len(lower) == 1:
+        return lower[0]
+    pref = [c for c in choices if c.lower().startswith(token.lower())]
+    if len(pref) == 1:
+        return pref[0]
+    sub = [c for c in choices if token.lower() in c.lower()]
+    if len(sub) == 1:
+        return sub[0]
+    return None
+
+
 def ask_multi_choice(question: str, choices: list[str]) -> list[str]:
     console.print(f"  [info]{question}[/info]")
     console.print(
         "  (comma-separated numbers or names; `all` = everything; "
-        "Enter alone cancels — no accidental 'run on every table'; Esc aborts the wizard)"
+        "Enter alone cancels — no accidental 'run on every table'; Esc aborts the wizard; "
+        "unrecognised tokens are reported, not silently dropped)"
     )
     for i, c in enumerate(choices, 1):
         console.print(f"    {i}. {c}")
@@ -405,30 +426,25 @@ def ask_multi_choice(question: str, choices: list[str]) -> list[str]:
     if raw.lower() == "all":
         return choices
     selected: list[str] = []
+    unmatched: list[str] = []
     for token in raw.split(","):
         token = token.strip()
         if not token:
             continue
-        if token.isdigit() and 1 <= int(token) <= len(choices):
-            selected.append(choices[int(token) - 1])
-            continue
-        if token in choices:
-            selected.append(token)
-            continue
-        lower_matches = [c for c in choices if c.lower() == token.lower()]
-        if len(lower_matches) == 1:
-            selected.append(lower_matches[0])
-            continue
-        pref = [c for c in choices if c.lower().startswith(token.lower())]
-        if len(pref) == 1:
-            selected.append(pref[0])
-            continue
-        sub = [c for c in choices if token.lower() in c.lower()]
-        if len(sub) == 1:
-            selected.append(sub[0])
-            continue
-    if not selected:
-        warn(f"No option matched {raw!r}. Use numbers from the list, exact names, or `all`.")
+        match = _match_choice_token(token, choices)
+        if match is not None:
+            selected.append(match)
+        else:
+            unmatched.append(token)
+    if unmatched:
+        # Previously typo'd / ambiguous tokens were dropped silently, so
+        # "1,3,tabl" quietly ran on 1 and 3 only. Surface the ignored
+        # inputs so a partial selection is never a surprise.
+        warn(
+            "Ignored unrecognised input: "
+            + ", ".join(repr(t) for t in unmatched)
+            + " — use numbers from the list, exact names, or `all`."
+        )
     return selected
 
 
