@@ -1378,6 +1378,31 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
     return defaults
 
 
+def _verify_saved_db_profile(name: str, db: Any) -> bool:
+    """Test a just-saved DB profile and report the result.
+
+    /add-db-profile used to print "Profile saved and activated" without
+    ever opening a connection, so a wrong password or unreachable host
+    only surfaced much later inside /run. We test now — the profile is
+    already saved (no input lost), we just tell the user whether it works
+    and how to fix it. Returns True on success. The probe is bounded by
+    DB_CONNECT_TIMEOUT_SEC so it can't hang.
+    """
+    from amx.db.connector import DatabaseConnector
+    from amx.utils.console import step_spinner
+
+    with step_spinner(f"Testing the connection for {name}..."):
+        result = DatabaseConnector(db).test_connection_result()
+    if result.ok:
+        success(f"Connection verified for {name}.")
+        return True
+    warn(f"Profile {name!r} was saved, but its connection test failed:")
+    if result.message:
+        info(f"  {result.message}")
+    info(f"Fix it with /edit-db-profile {name} (otherwise /run will fail to connect).")
+    return False
+
+
 def cmd_add_profile(
     cfg: AMXConfig,
     rest: list[str],
@@ -1415,6 +1440,7 @@ def cmd_add_profile(
         cfg.upsert_db_profile(name, db)
         cfg.set_active_db_profile(name)
     success(f"Profile saved and activated: {name} [{db.backend}]")
+    _verify_saved_db_profile(name, db)
     if log_event is not None:
         log_event(
             event_type="db_profile_upsert",
