@@ -135,6 +135,32 @@ def _resolve_codebase_for_run(
     )
 
 
+def _report_apply_failures(outcomes: list[Any]) -> None:
+    """Surface classified write failures with their per-backend remediation.
+
+    When apply captures ``outcomes_out``, the classifier computes an
+    actionable title + suggested action (e.g. the ``GRANT ALTER`` the role
+    is missing) for each failed row. The CLI used to discard all of that
+    and record only the raw driver exception, so a privilege/ALTER failure
+    printed an opaque stack message. Show the classified title once per row
+    and each distinct remediation hint once.
+    """
+    failed = [o for o in outcomes if getattr(o, "status", "") == "failed"]
+    if not failed:
+        return
+    warn(f"{len(failed)} comment(s) could not be written to the live database:")
+    for o in failed:
+        loc = ".".join(p for p in (o.schema, o.table, o.column) if p)
+        title = getattr(o, "error_title", "") or getattr(o, "error_kind", "") or "write failed"
+        error(f"  {loc}: {title}")
+    seen: set[str] = set()
+    for o in failed:
+        action = (getattr(o, "error_action", "") or "").strip()
+        if action and action not in seen:
+            seen.add(action)
+            info(f"  → {action}")
+
+
 def register_analyze_commands(
     main: click.Group,
     *,
@@ -320,6 +346,7 @@ def register_analyze_commands(
         except Exception:
             hostname = ""
 
+        outcomes: list[Any] = []
         try:
             applied_count = apply_review_results_to_db(
                 db,
@@ -331,10 +358,12 @@ def register_analyze_commands(
                 audit_profile=getattr(cfg.db, "name", "") or "",
                 audit_user=applied_by,
                 audit_host=hostname,
+                outcomes_out=outcomes,
             )
         finally:
             if pending:
                 _finish_progress()
+        _report_apply_failures(outcomes)
         clear_pending()
         success(f"Applied {applied_count} comment(s). Pending file cleared.")
         log_event(
