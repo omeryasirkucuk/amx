@@ -45,6 +45,7 @@ from amx.utils.console import (
     error,
     info,
     render_table,
+    resolve_removal_target,
     success,
     warn,
 )
@@ -1488,10 +1489,20 @@ def cmd_edit_profile(
 
 
 def cmd_remove_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) < 1:
-        error("Usage: /remove-db-profile <name>")
+    # Wizard-first: with no name, pick from the existing DB profiles.
+    # confirm_removal is left off here because the destructive confirm
+    # lives downstream (the shared-run-history guard owns the final
+    # "remove AND disable" prompt, and a normal removal matches the
+    # pre-wizard behaviour of removing without an extra prompt).
+    name = resolve_removal_target(
+        sorted(cfg.db_profiles.keys()),
+        "DB profile",
+        preselected=rest[0] if rest else None,
+        empty_hint="Use /add-db-profile first.",
+        confirm_removal=False,
+    )
+    if name is None:
         return
-    name = rest[0]
     # Guard: removing the profile that hosts the shared run-history
     # schema would orphan the connection on the next AMX startup
     # (factory falls back to local-only with a warning, but the user

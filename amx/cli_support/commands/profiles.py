@@ -22,6 +22,7 @@ from amx.utils.console import (
     info,
     info_styled,
     render_table,
+    resolve_removal_target,
     success,
     warn,
 )
@@ -642,10 +643,14 @@ def cmd_add_llm_profile(cfg: AMXConfig, rest: list[str]) -> None:
 
 
 def cmd_remove_llm_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) < 1:
-        error("Usage: /remove-llm-profile <name>")
+    name = resolve_removal_target(
+        sorted(cfg.llm_profiles.keys()),
+        "LLM profile",
+        preselected=rest[0] if rest else None,
+        empty_hint="Use /add-llm-profile first.",
+    )
+    if name is None:
         return
-    name = rest[0]
     try:
         cfg.remove_llm_profile(name)
         cfg.save()
@@ -1229,13 +1234,18 @@ def warn_no_doc_paths_for_scan_or_ingest(cfg: AMXConfig, *, cmd: str) -> None:
 
 
 def cmd_remove_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) < 1:
-        error("Usage: /remove-doc-profile <name>")
+    name = resolve_removal_target(
+        sorted(cfg.doc_profiles.keys()),
+        "document profile",
+        preselected=rest[0] if rest else None,
+        empty_hint="Use /add-doc-profile first.",
+    )
+    if name is None:
         return
     try:
-        cfg.remove_doc_profile(rest[0])
+        cfg.remove_doc_profile(name)
         cfg.save()
-        success(f"Removed document profile: {rest[0]}")
+        success(f"Removed document profile: {name}")
     except Exception as exc:
         error(str(exc))
 
@@ -1326,13 +1336,18 @@ def cmd_add_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
 
 
 def cmd_remove_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) < 1:
-        error("Usage: /remove-code-profile <name>")
+    name = resolve_removal_target(
+        sorted(cfg.code_profiles.keys()),
+        "codebase profile",
+        preselected=rest[0] if rest else None,
+        empty_hint="Use /add-code-profile first.",
+    )
+    if name is None:
         return
     try:
-        cfg.remove_code_profile(rest[0])
+        cfg.remove_code_profile(name)
         cfg.save()
-        success(f"Removed codebase profile: {rest[0]}")
+        success(f"Removed codebase profile: {name}")
     except Exception as exc:
         error(str(exc))
 
