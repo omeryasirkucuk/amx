@@ -57,6 +57,41 @@ from amx.utils.token_tracker import tracker as token_tracker
 log = get_logger("cli.analyze_flow")
 
 
+#: A /run touching at least this many assets is "large" enough to warrant a
+#: heads-up: a Database / wide scope can fan dozens-to-hundreds of assets
+#: through the LLM with no upfront "proceed?", so the user couldn't bail
+#: before spending. Below this we don't nag.
+_LARGE_RUN_ASSET_THRESHOLD = 50
+
+
+def _should_confirm_large_run(total_assets: int, *, interactive: bool) -> bool:
+    """Whether to gate a run behind a confirmation prompt.
+
+    Only large, interactive runs are gated — small runs and
+    non-interactive callers (scheduler, Studio worker, piped input) run
+    straight through so we never block automation.
+    """
+    return interactive and total_assets >= _LARGE_RUN_ASSET_THRESHOLD
+
+
+def _confirm_large_run(total_assets: int, total_schemas: int, cfg: AMXConfig) -> bool:
+    """Show the run size + that it consumes tokens, and ask to proceed.
+
+    Returns True to proceed. A precise per-run dollar figure isn't
+    available before profiling (prompt sizes aren't known yet), so we
+    surface the asset count and the token-consuming nature on the active
+    model rather than a misleading fake estimate. Default is No, so a
+    stray Enter on a 300-table run doesn't start spending.
+    """
+    where = f"across {total_schemas} schema(s)" if total_schemas > 1 else "in one schema"
+    warn(
+        f"About to analyze {total_assets} assets {where}. This makes one or "
+        f"more LLM calls per asset on {cfg.llm.provider}/{cfg.llm.model} and "
+        "consumes tokens on that model."
+    )
+    return confirm(f"Proceed with analyzing {total_assets} assets?", default=False)
+
+
 def _review_sort_keys() -> tuple[str, ...]:
     """Return the canonical bulk-review sort keys.
 
@@ -1000,6 +1035,16 @@ def execute_analyze_run(
                 scope = ScopeResult(restricted, column_overrides=columns_overrides)
 
             total_assets = sum(len(v) for v in scope.values())
+
+            # Pre-run cost gate: confirm before a large, token-consuming run
+            # so a Database / wide scope can't start spending on hundreds of
+            # assets without an upfront "proceed?". Fires only for large
+            # interactive runs (never blocks the scheduler / Studio worker),
+            # and before create_run so a declined run leaves no orphan row.
+            if _should_confirm_large_run(total_assets, interactive=sys.stdin.isatty()):
+                if not _confirm_large_run(total_assets, len(scope), cfg):
+                    info("Run cancelled — nothing was analyzed.")
+                    return
 
             # ── Comment-coverage filter ──────────────────────────────────
             # When the user picks Database / Schema / Asset scope on a DB
