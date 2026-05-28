@@ -310,6 +310,9 @@ class SearchAgent(
                     clean_question=clean_question,
                     question_language=question_language,
                     cancel_token=cancel_token,
+                    lineage_profiles=lineage_profiles,
+                    pages_enabled=pages_enabled,
+                    asset_kinds=asset_kinds,
                 )
             except RunCancelled:
                 # User pressed Ctrl-C (CLI) or hit Cancel (Studio).

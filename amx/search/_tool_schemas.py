@@ -1118,7 +1118,13 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "access to your past runs' — you DO via this tool. The returned rows "
                 "include human-readable ``started_at`` and ``duration_human`` "
                 "fields; use those (not the raw epoch / float) when rendering "
-                "tables or text answers."
+                "tables or text answers. "
+                "HISTORY ONLY: this tool has nothing to do with the user's current "
+                "ASK composer selection (the Docs / Code / Lineage / Pages / Assets / "
+                "Scope chips). When the user asks 'which assets / docs / lineage / "
+                "profiles did I select', 'what is my scope', or 'what did I pick', that "
+                "is the SELECTION CONTEXT block in the system prompt — answer from "
+                "there, NOT from run history."
             ),
             "parameters": {
                 "type": "object",
@@ -1182,7 +1188,9 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "vs lexical variations differ. `semantic` mode means paraphrase of "
                 "the seed (same factual content, different surface form); `lexical` "
                 "mode means re-use of the seed's vocabulary with a DISTINCT CANDIDATE "
-                "MEANING (a different interpretation a reviewer can tell apart)."
+                "MEANING (a different interpretation a reviewer can tell apart). "
+                "A run is /run analyze HISTORY, never an ASK composer selection; never "
+                "use this to answer 'what did I select'."
             ),
             "parameters": {
                 "type": "object",
@@ -1514,7 +1522,13 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "to read the full body. Returns reason='no_matching_assets' "
                 "when the query has no hits — surface that plainly rather "
                 "than inventing notebook names. Scope is automatic across "
-                "every DB profile in the current /ask scope."
+                "every DB profile in the current /ask scope. "
+                "This is the SELECTED-ASSETS retrieval tool: the user's Assets chip "
+                "(which asset KINDS are enabled) is reported in the system prompt's "
+                "SELECTION CONTEXT — read that to answer 'which assets did I select', "
+                "and use this tool to actually find/list the matching ingested assets. "
+                "NEVER answer an asset question with list_past_runs (that is /run "
+                "history)."
             ),
             "parameters": {
                 "type": "object",
@@ -1572,7 +1586,9 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "truncation marker so the tool result fits the input-"
                 "token budget. For jobs, the result includes a "
                 "job_details block with the full task list (key, type, "
-                "notebook_path) and the 3 most recent runs."
+                "notebook_path) and the 3 most recent runs. "
+                "For 'what assets did I select', read the SELECTION CONTEXT block; use "
+                "this tool only to read one asset's body."
             ),
             "parameters": {
                 "type": "object",
@@ -1632,7 +1648,10 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "customer_dim', 'show upstream of fact_sales', 'which "
                 "notebooks reference orders'. Pass include_inferred=true "
                 "to widen with speculative join-inference edges (off by "
-                "default — they are noisy)."
+                "default — they are noisy). "
+                "This is the SELECTED-LINEAGE retrieval tool: 'which lineage did I "
+                "select' is answered from the system prompt's SELECTION CONTEXT (the "
+                "Lineage chip); use this tool to walk the actual edges."
             ),
             "parameters": {
                 "type": "object",
@@ -1683,7 +1702,10 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "Surfaces the transform logic between source and target "
                 "columns. Use for 'where does customer_id come from in "
                 "fact_sales', 'which source column feeds "
-                "customer_dim.email'."
+                "customer_dim.email'. "
+                "This is the SELECTED-LINEAGE retrieval tool: 'which lineage did I "
+                "select' is answered from the system prompt's SELECTION CONTEXT; use "
+                "this tool to walk the actual column edges."
             ),
             "parameters": {
                 "type": "object",
