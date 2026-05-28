@@ -240,6 +240,33 @@ def _require_store():
 # ── Registration ────────────────────────────────────────────────────
 
 
+def _validate_cli_cron(expr: str | None) -> str | None:
+    """Reject a malformed cron expression at creation time.
+
+    The tick engine treats an invalid expression as one-shot (no re-arm),
+    so a typo would silently turn a "recurring" schedule into a single
+    fire that then stops — the error only ever reached a log file the user
+    never saw. Validate up front instead, mirroring the Studio route's
+    check in ``amx/web/routers/schedules.py`` so the CLI and Studio behave
+    the same. Empty / None normalises to None (a one-shot schedule).
+    """
+    if expr is None:
+        return None
+    cleaned = expr.strip()
+    if not cleaned:
+        return None
+    try:
+        from croniter import croniter
+    except Exception as exc:  # pragma: no cover - optional runtime dep
+        raise click.BadParameter(f"croniter unavailable: {exc}") from exc
+    if not croniter.is_valid(cleaned):
+        raise click.BadParameter(
+            f"invalid cron expression: {cleaned!r}. Use a 5- or 6-field cron "
+            "(e.g. '0 */6 * * *' for every 6 hours)."
+        )
+    return cleaned
+
+
 def register_schedule_commands(
     parent: click.Group,
     *,
@@ -369,6 +396,11 @@ def register_schedule_commands(
         """
         is_cache_refresh = kind == "cache_refresh"
         hs = _require_store()
+
+        # Validate the cron up front: an invalid expression is treated as
+        # one-shot by the tick engine, so without this a typo'd "recurring"
+        # schedule would fire once and silently stop. Reject it now instead.
+        cron_expr = _validate_cli_cron(cron_expr)
 
         # Resolve each field: use the flag if given, otherwise prompt.
         if not name:
