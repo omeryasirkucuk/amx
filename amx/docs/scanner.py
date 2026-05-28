@@ -238,16 +238,35 @@ def _parse_google_drive_folder_id(url: str) -> str | None:
 
 
 def _download_to_file(url: str, dest: Path, *, timeout: int = 300) -> int:
-    """Stream-download a URL to a local file; return byte count."""
+    """Stream-download a URL to a local file; return byte count.
+
+    Emits a throttled progress line every ~5 MB so a large download isn't
+    indistinguishable from a hung one (it streamed silently for up to the
+    300s timeout before, tempting a Ctrl-C). Plain ``info()`` prints are
+    used rather than a Rich progress bar so this is safe to call from
+    anywhere — including inside another live display — without risking a
+    nested-Live crash, and they short-circuit under the Studio quiet flag.
+    """
+    from amx.utils.console import info as _info
+
     r = requests.get(url, timeout=timeout, stream=True, allow_redirects=True)
     if r.status_code >= 400:
         raise RuntimeError(f"Download failed {r.status_code}: {r.text[:300]}")
+    total = int(r.headers.get("Content-Length") or 0)
+    report_every = 5 * 1024 * 1024
+    next_report = report_every
     n = 0
     with dest.open("wb") as f:
         for chunk in r.iter_content(chunk_size=1024 * 256):
             if chunk:
                 f.write(chunk)
                 n += len(chunk)
+                if n >= next_report:
+                    if total:
+                        _info(f"Downloading {dest.name}: {n / 1e6:.1f} / {total / 1e6:.1f} MB")
+                    else:
+                        _info(f"Downloading {dest.name}: {n / 1e6:.1f} MB")
+                    next_report += report_every
     return n
 
 
