@@ -22,12 +22,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install ruff
-        run: uv pip install --system ruff
+        run: python -m pip install --upgrade pip ruff
       - name: ruff check
         run: ruff check amx tests
       - name: ruff format check
@@ -41,21 +39,21 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install
-        run: uv pip install --system -e . mypy
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . mypy
       - name: mypy
         run: mypy amx
         continue-on-error: true
 
   # Resolve the test matrix in a tiny prep job and feed it to the test
-  # job via fromJSON(needs...). PRs validate on one version for fast
-  # feedback; pushes to main (the only ref a release tag is cut from)
-  # run the full support matrix. This output-driven form is the matrix
-  # pattern GitHub's expander accepts reliably.
+  # job via fromJSON(needs...). PRs validate on a single version for fast
+  # feedback; pushes to main (the only ref a release tag is cut from) run
+  # the full support matrix. This output-driven form is the matrix pattern
+  # GitHub's expander accepts reliably.
   matrix-prep:
     name: Resolve test matrix
     runs-on: ubuntu-latest
@@ -83,12 +81,16 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install
-        run: uv pip install --system -e ".[all,code-intel]" pytest pytest-cov pytest-xdist
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[all,code-intel]" pytest pytest-cov pytest-xdist
+      # -n auto parallelises across CPUs. The suite is isolation-clean
+      # (function-scoped fixtures, monkeypatched HOME, per-test cache
+      # resets), so parallel runs add no failures. The flag lives here,
+      # not in addopts, so local pytest stays serial and debuggable.
       - name: Run tests
         run: pytest -ra -n auto
         env:
@@ -99,35 +101,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      # The job always runs so the status check always reports, but it
-      # does the expensive npm work only when the frontend (or its
-      # vendored bundle) actually changed. Python-only PRs finish this
-      # in seconds instead of running a full npm ci + build.
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            frontend:
-              - 'frontend/**'
-              - 'amx/web/static/**'
-              - '.github/workflows/ci.yml'
       - name: Set up Node
-        if: steps.filter.outputs.frontend == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install frontend deps
-        if: steps.filter.outputs.frontend == 'true'
         working-directory: frontend
         run: npm ci
       - name: Build SPA
-        if: steps.filter.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run build
       - name: Verify amx/web/static is up-to-date
-        if: steps.filter.outputs.frontend == 'true'
         run: |
           # The SPA dist is committed (vendored) so end users don't
           # need Node. This step blocks PRs that change the frontend
@@ -154,15 +140,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install project + pip-audit
         run: |
+          python -m pip install --upgrade pip pip-audit
           # Install the same surface the test job exercises so audit
           # sees every transitive dep AMX actually pulls in.
-          uv pip install --system -e ".[all,code-intel]" pip-audit
+          python -m pip install -e ".[all,code-intel]"
       - name: Run pip-audit
         run: pip-audit --strict --progress-spinner off
 
@@ -182,12 +167,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install
-        run: uv pip install --system -e ".[all,code-intel,perf]"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[all,code-intel,perf]"
       - name: Run cold-path benchmarks
         # ``-m perf`` flips the marker filter from the default exclude
         # to include. Bench file is ``bench_*.py`` so default test
@@ -209,16 +194,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
       - name: Install build
-        run: uv pip install --system build twine
+        run: python -m pip install --upgrade pip build
       - name: Build sdist + wheel
         run: python -m build
       - name: Check distribution
-        run: twine check dist/*
+        run: |
+          python -m pip install twine
+          twine check dist/*
       - uses: actions/upload-artifact@v7
         with:
           name: dist
