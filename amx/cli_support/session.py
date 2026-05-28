@@ -699,6 +699,10 @@ _CROSS_NAMESPACE_HEADS: frozenset[str] = frozenset(
         "studio",
         "lineage",
         "pages",
+        # /admin is now wired (register_admin_commands is called in cli.py);
+        # without this it stayed a dead tab — advertised everywhere but
+        # "Unknown command" when entered.
+        "admin",
         # Real top-level Click commands that were reachable via `amx rerun`
         # / `amx variations` but returned None here (→ "Unknown command")
         # when typed in the REPL, because they were missing from this set.
