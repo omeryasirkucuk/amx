@@ -131,9 +131,7 @@ def test_fetch_resolves_notebook_without_workspace_scan():
     mechanism has been removed; this locks in that the fetch path does
     not list workspace objects."""
     table_resp = {
-        "upstreams": [
-            {"notebookInfos": [{"notebook_id": "2257615622929527"}]}
-        ],
+        "upstreams": [{"notebookInfos": [{"notebook_id": "2257615622929527"}]}],
         "downstreams": [],
     }
 

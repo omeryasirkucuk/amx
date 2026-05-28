@@ -54,20 +54,19 @@ def test_resolves_blocks_for_scope(tmp_path: Path) -> None:
 
 def test_returns_empty_without_profile_or_store(tmp_path: Path) -> None:
     cfg_noprofile = SimpleNamespace(active_db_profile="")
-    assert resolve_run_lineage_blocks(
-        cfg=cfg_noprofile, history_store_fn=lambda: None, scope={}
-    ) == {}
+    assert (
+        resolve_run_lineage_blocks(cfg=cfg_noprofile, history_store_fn=lambda: None, scope={}) == {}
+    )
     cfg = SimpleNamespace(active_db_profile="dbr")
-    assert resolve_run_lineage_blocks(
-        cfg=cfg, history_store_fn=lambda: None, scope={}
-    ) == {}
+    assert resolve_run_lineage_blocks(cfg=cfg, history_store_fn=lambda: None, scope={}) == {}
 
 
 def test_returns_empty_when_history_store_fn_is_none() -> None:
     cfg = SimpleNamespace(active_db_profile="dbr")
-    assert resolve_run_lineage_blocks(
-        cfg=cfg, history_store_fn=None, scope={"sales": ["orders"]}
-    ) == {}
+    assert (
+        resolve_run_lineage_blocks(cfg=cfg, history_store_fn=None, scope={"sales": ["orders"]})
+        == {}
+    )
 
 
 def test_returns_empty_on_store_error() -> None:
@@ -76,6 +75,7 @@ def test_returns_empty_on_store_error() -> None:
     bad_store = MagicMock()
     bad_store._connect.side_effect = RuntimeError("corrupt db")
     cfg = SimpleNamespace(active_db_profile="dbr")
-    assert resolve_run_lineage_blocks(
-        cfg=cfg, history_store_fn=lambda: bad_store, scope={"s": ["t"]}
-    ) == {}
+    assert (
+        resolve_run_lineage_blocks(cfg=cfg, history_store_fn=lambda: bad_store, scope={"s": ["t"]})
+        == {}
+    )

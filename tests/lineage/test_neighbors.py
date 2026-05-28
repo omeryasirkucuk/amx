@@ -44,18 +44,14 @@ def test_resolves_upstream_and_downstream_names(tmp_path: Path) -> None:
     parent = _entity(hs, schema="sales", table="customers")
     nb = _entity(hs, schema="__assets", table="nb#1", kind="notebook", search_text="ETL nb")
     _edge(hs, parent, anchor, "lineage_native_table")  # parent feeds anchor -> upstream
-    _edge(hs, anchor, nb, "lineage_native_asset")       # anchor feeds nb -> downstream
+    _edge(hs, anchor, nb, "lineage_native_asset")  # anchor feeds nb -> downstream
 
     with hs._connect() as conn:
         out = lineage_neighbors(conn, anchor_entity_ids=[anchor])
 
     nbs = out[anchor]
-    assert ("upstream", "sales.customers", "table") in {
-        (n.direction, n.name, n.kind) for n in nbs
-    }
-    assert ("downstream", "ETL nb", "notebook") in {
-        (n.direction, n.name, n.kind) for n in nbs
-    }
+    assert ("upstream", "sales.customers", "table") in {(n.direction, n.name, n.kind) for n in nbs}
+    assert ("downstream", "ETL nb", "notebook") in {(n.direction, n.name, n.kind) for n in nbs}
     assert all(isinstance(n, Neighbor) for n in nbs)
 
 
