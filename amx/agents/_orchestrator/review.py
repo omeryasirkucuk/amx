@@ -39,6 +39,11 @@ def human_review(
     asset_kind: str = "table",
     result_id_map: dict[str | None, int] | None = None,
 ) -> list[ReviewResult]:
+    # Deferred import — see review_single for why this can't live at
+    # module top (circular with ``orchestrator``). The accept-all /
+    # reject-all branches below construct ReviewResult at runtime.
+    from amx.agents.orchestrator import ReviewResult
+
     results: list[ReviewResult] = []
     result_id_map = result_id_map or {}
 
@@ -138,6 +143,15 @@ def review_single(
     asset_kind: str = "table",
     result_id: int | None = None,
 ) -> ReviewResult:
+    # Runtime import: ReviewResult lives in ``orchestrator`` which imports
+    # this module's functions lazily, so a module-top import would be
+    # circular — hence the TYPE_CHECKING-only import above. By call time
+    # ``orchestrator`` is fully loaded, so this deferred import is safe.
+    # Without it the accept / skip / custom branches below raised
+    # ``NameError: name 'ReviewResult' is not defined`` the moment a user
+    # picked anything in the one-by-one review.
+    from amx.agents.orchestrator import ReviewResult
+
     kind_label = asset_kind.replace("_", " ").title() if is_table else "Column"
     asset = f"{kind_label}: {s.schema}.{s.table}" if is_table else f"Column: {s.table}.{s.column}"
     console.print(f"\n  [heading]{asset}[/heading]")
