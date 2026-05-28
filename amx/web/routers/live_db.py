@@ -27,6 +27,7 @@ browse requests can't race each other.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import replace
 from typing import Any
 
@@ -49,6 +50,14 @@ router = APIRouter(prefix="/api/live", tags=["live-db"])
 #: is still well within file-descriptor budget.
 _CONNECTOR_CACHE: dict[tuple, DatabaseConnector] = {}
 _CONNECTOR_CACHE_MAX = 32
+
+#: Guards every read/mutation of ``_CONNECTOR_CACHE``. FastAPI runs sync route
+#: handlers in a threadpool, so concurrent requests would otherwise insert,
+#: evict, and iterate the dict at the same time — yielding duplicate
+#: connectors, a double ``close()`` on the same engine, or a "dict changed
+#: size during iteration" error. Reentrant so the insert path can call
+#: :func:`_evict_oldest` while already holding the lock.
+_CONNECTOR_CACHE_LOCK = threading.RLock()
 
 
 def _profile_key(db: DBConfig) -> tuple:
@@ -75,13 +84,14 @@ def _profile_key(db: DBConfig) -> tuple:
 
 def _evict_oldest() -> None:
     """Drop the oldest cache entry and close its connector."""
-    if not _CONNECTOR_CACHE:
-        return
-    oldest_key = next(iter(_CONNECTOR_CACHE))
-    try:
-        _CONNECTOR_CACHE.pop(oldest_key).close()
-    except Exception:  # pragma: no cover - defensive
-        pass
+    with _CONNECTOR_CACHE_LOCK:
+        if not _CONNECTOR_CACHE:
+            return
+        oldest_key = next(iter(_CONNECTOR_CACHE))
+        try:
+            _CONNECTOR_CACHE.pop(oldest_key).close()
+        except Exception:  # pragma: no cover - defensive
+            pass
 
 
 def evict_connector_cache(profile_name: str) -> int:
@@ -106,15 +116,15 @@ def evict_connector_cache(profile_name: str) -> int:
     name = (profile_name or "").strip()
     if not name:
         return 0
-    removed_keys: list[tuple] = []
-    for key in list(_CONNECTOR_CACHE.keys()):
-        if key and key[0] == name:
-            removed_keys.append(key)
-    for key in removed_keys:
-        try:
-            _CONNECTOR_CACHE.pop(key).close()
-        except Exception:  # pragma: no cover - defensive
-            pass
+    with _CONNECTOR_CACHE_LOCK:
+        removed_keys: list[tuple] = [
+            key for key in list(_CONNECTOR_CACHE.keys()) if key and key[0] == name
+        ]
+        for key in removed_keys:
+            try:
+                _CONNECTOR_CACHE.pop(key).close()
+            except Exception:  # pragma: no cover - defensive
+                pass
     return len(removed_keys)
 
 
@@ -159,14 +169,27 @@ def _connector_for_scope(
         overlay["catalog"] = catalog
     scoped: DBConfig = replace(base, **overlay) if overlay else base
     key = (profile_name,) + _profile_key(scoped)
-    cached = _CONNECTOR_CACHE.get(key)
-    if cached is not None:
-        return cached
-    if len(_CONNECTOR_CACHE) >= _CONNECTOR_CACHE_MAX:
-        _evict_oldest()
+    with _CONNECTOR_CACHE_LOCK:
+        cached = _CONNECTOR_CACHE.get(key)
+        if cached is not None:
+            return cached
+    # Build outside the lock: connector construction can touch the driver
+    # and must not serialise every other cache reader behind it.
     connector = DatabaseConnector(scoped, profile_name=profile_name)
-    _CONNECTOR_CACHE[key] = connector
-    return connector
+    with _CONNECTOR_CACHE_LOCK:
+        # A concurrent request may have created the same connector while we
+        # were building ours — keep the cached one and drop the duplicate.
+        existing = _CONNECTOR_CACHE.get(key)
+        if existing is not None:
+            try:
+                connector.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
+            return existing
+        if len(_CONNECTOR_CACHE) >= _CONNECTOR_CACHE_MAX:
+            _evict_oldest()
+        _CONNECTOR_CACHE[key] = connector
+        return connector
 
 
 def _coerce_or_500(action: str, fn):
