@@ -101,7 +101,7 @@ jobs:
           AMX_NO_NETWORK: "1"
 
   web:
-    name: Web build & unit tests
+    name: Web lint, tests & build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -114,6 +114,11 @@ jobs:
       - name: Install frontend deps
         working-directory: frontend
         run: npm ci
+      # ESLint gates on errors only (warnings stay advisory while the
+      # existing backlog is worked down), so a clean run keeps PRs green.
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
       # Run the Studio unit tests (vitest). They existed but had never been
       # wired into CI, so component regressions could land unnoticed.
       - name: Run unit tests

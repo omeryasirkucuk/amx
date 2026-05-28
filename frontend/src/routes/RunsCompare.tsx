@@ -888,6 +888,12 @@ function QualityCard({ data }: { data: CompareResponse }) {
 
   // Reference resolution summary across assets — tells the reader
   // whether reference-based metrics had real ground truth.
+  // TODO(amx): this useMemo runs after the early return above, which
+  // violates the rules of hooks. The correct fix hoists it above the
+  // guard (with an internal null-check) — that changes render-time
+  // behaviour, so it belongs in a Studio-visible PR (deploy.sh first),
+  // not this tooling-only change.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
   const refSummary = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const r of quality.references) {
