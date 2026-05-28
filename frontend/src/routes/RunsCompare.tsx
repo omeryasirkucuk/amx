@@ -884,17 +884,13 @@ function renderTokensCostBadge(row: RunRow) {
 
 function QualityCard({ data }: { data: CompareResponse }) {
   const quality = data.quality_metrics;
-  if (!quality || !quality.per_run.length) return null;
 
-  // Reference resolution summary across assets — tells the reader
-  // whether reference-based metrics had real ground truth.
-  // TODO(amx): this useMemo runs after the early return above, which
-  // violates the rules of hooks. The correct fix hoists it above the
-  // guard (with an internal null-check) — that changes render-time
-  // behaviour, so it belongs in a Studio-visible PR (deploy.sh first),
-  // not this tooling-only change.
-  // eslint-disable-next-line react-hooks/rules-of-hooks
+  // Reference resolution summary across assets — tells the reader whether
+  // reference-based metrics had real ground truth. Computed above the early
+  // return below so the hook runs unconditionally (rules of hooks); it
+  // no-ops when there is no quality payload.
   const refSummary = useMemo(() => {
+    if (!quality) return "";
     const counts: Record<string, number> = {};
     for (const r of quality.references) {
       counts[r.source] = (counts[r.source] ?? 0) + 1;
@@ -915,7 +911,9 @@ function QualityCard({ data }: { data: CompareResponse }) {
       if (counts[src]) parts.push(`${counts[src]} ${labels[src]}`);
     }
     return parts.join(" · ");
-  }, [quality.references]);
+  }, [quality]);
+
+  if (!quality || !quality.per_run.length) return null;
 
   const fmt = (v: number | null | undefined): string =>
     v == null ? "—" : `${(v * 100).toFixed(0)}%`;

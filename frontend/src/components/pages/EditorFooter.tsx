@@ -19,10 +19,7 @@ function wordCount(markdown: string): number {
   const stripped = markdown
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`]*`/g, " ")
-    // The \- escape is harmless; fixing it would change the compiled
-    // bundle, so it is deferred to a Studio PR.
-    // eslint-disable-next-line no-useless-escape
-    .replace(/[#>*_~`|\-]/g, " ");
+    .replace(/[#>*_~`|-]/g, " ");
   const matches = stripped.match(/\b[\w'-]+\b/g);
   return matches ? matches.length : 0;
 }
