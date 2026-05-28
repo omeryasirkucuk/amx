@@ -229,10 +229,36 @@ def _handle_manual_usage_shortcuts(namespace: str, parts: list[str]) -> bool:
     return False
 
 
+def _did_you_mean(token: str) -> str:
+    """Return a ' Did you mean /X?' suffix for a mistyped command, else ''.
+
+    Matches the offending token against every known command head + namespace
+    so a typo (e.g. /dbb, /db tabels) gets a pointer instead of a flat
+    'Unknown command'. The candidate set is the single-source slash-command
+    registry, so it stays correct as commands are added/renamed.
+    """
+    import difflib
+
+    cleaned = (token or "").lstrip("/").strip()
+    if not cleaned:
+        return ""
+    head = cleaned.split()[0]
+    from amx.cli_support.slash_commands import ALL_COMMANDS, all_namespaces
+
+    candidates = {c.head for c in ALL_COMMANDS}
+    candidates.update(all_namespaces())
+    matches = difflib.get_close_matches(head, sorted(candidates), n=1, cutoff=0.6)
+    return f" Did you mean /{matches[0]}?" if matches else ""
+
+
 def _format_session_click_error(cmdline: str, exc: click.ClickException) -> str:
     """Render slash-session-friendly Click errors."""
     if isinstance(exc, click.UsageError) and "No such command" in str(exc):
-        return f"Unknown command: /{cmdline}. Type /help."
+        import re as _re
+
+        m = _re.search(r"No such command '([^']+)'", str(exc))
+        bad = m.group(1) if m else cmdline
+        return f"Unknown command: /{cmdline}.{_did_you_mean(bad)} Type /help."
     return str(exc)
 
 
@@ -1152,7 +1178,7 @@ def run_interactive_session(
                 # walking — bubble it out, print a single note, and
                 # drop back to the namespace prompt with no partial
                 # state saved.
-                info("Cancelled.")
+                info("Cancelled — no changes were saved.")
                 continue
             if handled == "exit":
                 success("Session closed.")
@@ -1162,7 +1188,7 @@ def run_interactive_session(
 
             args = session_to_click_args(namespace, parts)
             if args is None:
-                error(f"Unknown command: /{cmdline}. Type /help.")
+                error(f"Unknown command: /{cmdline}.{_did_you_mean(cmdline)} Type /help.")
                 continue
 
             args = normalize_click_argv(args, cfg)
@@ -1177,7 +1203,7 @@ def run_interactive_session(
             except PromptCancelled:
                 # Same Esc-aborts-the-wizard pathway as the builtin
                 # dispatcher above, for Click-routed commands.
-                info("Cancelled.")
+                info("Cancelled — no changes were saved.")
             except KeyboardInterrupt:
                 # Ctrl-C interrupts a running command but must NOT exit
                 # the session. KeyboardInterrupt is a BaseException
