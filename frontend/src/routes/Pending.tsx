@@ -67,6 +67,9 @@ export default function Pending() {
   const [query, setQuery] = useState("");
   const [previewEvents, setPreviewEvents] = useState<PreviewEvent[] | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  // When true the preview modal is acting as the Apply confirmation gate
+  // (it shows a danger "Apply" button); when false it's a read-only dry-run.
+  const [applyMode, setApplyMode] = useState(false);
 
   const pending = useQuery({
     queryKey: ["pending"],
@@ -135,13 +138,14 @@ export default function Pending() {
     }
   }
 
-  async function handlePreview() {
+  async function handlePreview(confirmApply = false) {
     setPreviewing(true);
     try {
       const res = await apiFetch<PreviewResponse>("/api/pending/preview", {
         method: "POST",
         body: JSON.stringify({}),
       });
+      setApplyMode(confirmApply);
       setPreviewEvents(res.events);
     } catch (err) {
       toast.push({
@@ -152,6 +156,19 @@ export default function Pending() {
     } finally {
       setPreviewing(false);
     }
+  }
+
+  function closePreview() {
+    setPreviewEvents(null);
+    setApplyMode(false);
+  }
+
+  // The preview modal's Apply button is the explicit confirmation: the
+  // user is looking at the exact SQL that will run against the live
+  // database. Only here do we actually write.
+  async function confirmApplyFromPreview() {
+    closePreview();
+    await handleApply();
   }
 
   const filtered = useMemo(() => {
@@ -197,7 +214,7 @@ export default function Pending() {
               size="md"
               leadingIcon={<Eye size={14} />}
               disabled={!total || previewing}
-              onClick={handlePreview}
+              onClick={() => handlePreview(false)}
             >
               {previewing ? "Previewing…" : "Preview SQL"}
             </Button>
@@ -205,8 +222,8 @@ export default function Pending() {
               variant="primary"
               size="md"
               leadingIcon={<Play size={14} />}
-              disabled={!total || applyInFlight}
-              onClick={handleApply}
+              disabled={!total || applyInFlight || previewing}
+              onClick={() => handlePreview(true)}
             >
               Apply ({total})
             </Button>
@@ -217,7 +234,9 @@ export default function Pending() {
       {previewEvents !== null && (
         <PreviewModal
           events={previewEvents}
-          onClose={() => setPreviewEvents(null)}
+          onClose={closePreview}
+          onApply={applyMode ? confirmApplyFromPreview : undefined}
+          applying={applyInFlight}
         />
       )}
 
@@ -443,9 +462,15 @@ function PendingItem({
 function PreviewModal({
   events,
   onClose,
+  onApply,
+  applying = false,
 }: {
   events: PreviewEvent[];
   onClose: () => void;
+  // When provided, the modal is the Apply confirmation gate and renders a
+  // danger "Apply" button. The exact SQL above it is what will run.
+  onApply?: () => void;
+  applying?: boolean;
 }) {
   const writeable = events.filter((e) => e.sql_template);
   const skipped = events.filter((e) => e.skipped_reason || e.error);
@@ -467,8 +492,10 @@ function PreviewModal({
             </h2>
             <p className="text-xs text-text-soft">
               {writeable.length} statement{writeable.length === 1 ? "" : "s"} would
-              run; {skipped.length} skipped. Nothing has been written to the
-              database.
+              run; {skipped.length} skipped.{" "}
+              {onApply
+                ? "Review the exact SQL below, then Apply to write it to the live database."
+                : "Nothing has been written to the database."}
             </p>
           </div>
           <button
@@ -508,6 +535,26 @@ function PreviewModal({
             </ul>
           )}
         </div>
+        {onApply && (
+          <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
+            <Button variant="subtle" size="md" onClick={onClose} disabled={applying}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              leadingIcon={<Play size={14} />}
+              disabled={applying || writeable.length === 0}
+              onClick={onApply}
+            >
+              {applying
+                ? "Applying…"
+                : `Apply ${writeable.length} statement${
+                    writeable.length === 1 ? "" : "s"
+                  } to the live database`}
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );
