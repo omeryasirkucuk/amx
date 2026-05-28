@@ -22,10 +22,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
       - name: Install ruff
-        run: python -m pip install --upgrade pip ruff
+        run: uv pip install --system ruff
       - name: ruff check
         run: ruff check amx tests
       - name: ruff format check
@@ -39,12 +41,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
       - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e . mypy
+        run: uv pip install --system -e . mypy
       - name: mypy
         run: mypy amx
         continue-on-error: true
@@ -55,20 +57,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        # PRs validate on a single version for fast feedback; pushes to
+        # main (the only ref a release tag is ever cut from) run the full
+        # support matrix.
+        python-version: ${{ github.event_name == 'pull_request'
+          && fromJSON('["3.11"]')
+          || fromJSON('["3.10", "3.11", "3.12", "3.13", "3.14"]') }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
       - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[all,code-intel]" pytest pytest-cov
+        run: uv pip install --system -e ".[all,code-intel]" pytest pytest-cov pytest-xdist
       - name: Run tests
-        run: pytest -ra
+        run: pytest -ra -n auto
         env:
           AMX_NO_NETWORK: "1"
 
@@ -77,19 +84,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # The job always runs so the status check always reports, but it
+      # does the expensive npm work only when the frontend (or its
+      # vendored bundle) actually changed. Python-only PRs finish this
+      # in seconds instead of running a full npm ci + build.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+              - 'amx/web/static/**'
+              - '.github/workflows/ci.yml'
       - name: Set up Node
+        if: steps.filter.outputs.frontend == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install frontend deps
+        if: steps.filter.outputs.frontend == 'true'
         working-directory: frontend
         run: npm ci
       - name: Build SPA
+        if: steps.filter.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run build
       - name: Verify amx/web/static is up-to-date
+        if: steps.filter.outputs.frontend == 'true'
         run: |
           # The SPA dist is committed (vendored) so end users don't
           # need Node. This step blocks PRs that change the frontend
@@ -106,20 +129,25 @@ jobs:
     # Advisory-only for now: surfaces CVEs in dependencies without
     # blocking PRs. Drop ``continue-on-error`` once the baseline is
     # clean and the team is ready to gate merges on advisories.
+    # Runs on push-to-main only — a CVE scan does not need to gate every
+    # PR, and keeping it off the PR path avoids reinstalling the heavy
+    # dependency tree on every change.
+    if: github.event_name == 'push'
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
       - name: Install project + pip-audit
         run: |
-          python -m pip install --upgrade pip pip-audit
           # Install the same surface the test job exercises so audit
           # sees every transitive dep AMX actually pulls in.
-          python -m pip install -e ".[all,code-intel]"
+          uv pip install --system -e ".[all,code-intel]" pip-audit
       - name: Run pip-audit
         run: pip-audit --strict --progress-spinner off
 
@@ -129,18 +157,22 @@ jobs:
     # Advisory by default — the run still surfaces regressions in the
     # log without blocking merges. Flip ``continue-on-error`` to false
     # once the baseline is stable and the team wants the gate hard.
+    # Runs on push-to-main only; there is no baseline-compare gate on the
+    # PR path today, so this loses no protection while saving a heavy
+    # reinstall per PR.
+    if: github.event_name == 'push'
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
       - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[all,code-intel,perf]"
+        run: uv pip install --system -e ".[all,code-intel,perf]"
       - name: Run cold-path benchmarks
         # ``-m perf`` flips the marker filter from the default exclude
         # to include. Bench file is ``bench_*.py`` so default test
@@ -162,14 +194,16 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
       - name: Install build
-        run: python -m pip install --upgrade pip build
+        run: uv pip install --system build twine
       - name: Build sdist + wheel
         run: python -m build
       - name: Check distribution
-        run: |
-          python -m pip install twine
-          twine check dist/*
+        run: twine check dist/*
       - uses: actions/upload-artifact@v7
         with:
           name: dist

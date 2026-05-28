@@ -318,6 +318,11 @@ all = [
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    # Parallel test runner. CI passes ``-n auto`` explicitly; the default
+    # ``pytest`` invocation stays serial so local ``-s`` / ``pdb`` debugging
+    # is unaffected. The suite is isolation-clean (function-scoped fixtures,
+    # monkeypatched HOME, per-test cache resets) so parallel runs are safe.
+    "pytest-xdist>=3.6",
     "ruff>=0.6",
     "mypy>=1.10",
     "pre-commit>=3.7",
