@@ -307,3 +307,41 @@ def test_retrieval_respects_lineage_profiles_empty_off(tmp_path: Path) -> None:
 
     assert "lineage" not in (enriched.get("evidence_sources") or [])
     assert "lineage" not in enriched
+
+
+def test_retrieval_includes_named_neighbours_without_canvas(tmp_path: Path) -> None:
+    store = SQLiteHistoryStore(tmp_path / "history.db")
+    store.init()
+    anchor = _seed_minimal(store)
+
+    # A native upstream edge with NO saved canvas at all.
+    with store._connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO catalog_entities (db_profile, db_backend, database_name, "
+            "schema_name, table_name, entity_kind, asset_kind, search_text, metadata_state) "
+            "VALUES ('p1','postgresql','db','s','suppliers','table','table','','full')"
+        )
+        parent = int(cur.lastrowid)
+        conn.execute(
+            "INSERT INTO catalog_relationships (from_entity_id, to_entity_id, "
+            "relationship_type, score, source, details_json, last_seen, "
+            "from_entity_kind, to_entity_kind) "
+            "VALUES (?,?,?,1.0,'native','{}',?, 'table','table')",
+            (parent, anchor, "lineage_native_table", time.time()),
+        )
+
+    rows = [{"id": anchor, "row_type": "table", "db_profile": "p1",
+             "schema_name": "s", "table_name": "customers"}]
+    enriched = enrich_retrieval_details_with_lineage_and_pages(
+        store=store,
+        rows=rows,
+        retrieval_details={"evidence_sources": []},
+        question="where does the customers table come from?",
+        plan=_make_fake_plan(),
+        lineage_profiles=None,
+        pages_enabled=None,
+    )
+    lineage = enriched.get("lineage") or {}
+    assert "lineage" in (enriched.get("evidence_sources") or [])
+    names = {r["name"] for r in (lineage.get("upstream") or [])}
+    assert "s.suppliers" in names

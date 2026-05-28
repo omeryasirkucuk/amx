@@ -381,16 +381,29 @@ def _format_lineage_pages_appendix(
     lines: list[str] = []
     if lineage:
         artifact_names = lineage.get("artifact_names") or []
-        upstream_ids = lineage.get("upstream_entity_ids") or []
-        downstream_ids = lineage.get("downstream_entity_ids") or []
+        upstream = lineage.get("upstream") or []
+        downstream = lineage.get("downstream") or []
         external = lineage.get("external_systems") or []
-        lines.append("Lineage evidence (from saved canvases anchored to these tables):")
+        lines.append(
+            "Lineage evidence (from the database's own lineage graph and "
+            "any saved canvases anchored to these tables):"
+        )
         if artifact_names:
             lines.append(f"  Canvases: {', '.join(str(n) for n in artifact_names)}")
-        if upstream_ids:
-            lines.append(f"  Upstream entity ids: {', '.join(str(i) for i in upstream_ids)}")
-        if downstream_ids:
-            lines.append(f"  Downstream entity ids: {', '.join(str(i) for i in downstream_ids)}")
+        if upstream:
+            lines.append("  Upstream (feeds these tables):")
+            for rec in upstream:
+                name = str(rec.get("name") or "")
+                kind = str(rec.get("kind") or "table")
+                rel = str(rec.get("relationship") or "")
+                lines.append(f"    ← {name} [{kind}] ({rel})")
+        if downstream:
+            lines.append("  Downstream (reads from these tables):")
+            for rec in downstream:
+                name = str(rec.get("name") or "")
+                kind = str(rec.get("kind") or "table")
+                rel = str(rec.get("relationship") or "")
+                lines.append(f"    → {name} [{kind}] ({rel})")
         if external:
             lines.append(f"  External systems: {', '.join(str(n) for n in external)}")
         comments = lineage.get("comments") or []

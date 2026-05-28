@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 from amx.agents._prompt_helpers import alternatives_mode_directive
 from amx.agents.base import (
@@ -176,6 +177,34 @@ def _build_system_prompt(
         + "\n"
         + render_style_section(style_profile)
     )
+
+
+def _render_lineage_section(blocks: list[dict[str, Any]]) -> list[str]:
+    """Render lineage-neighbour blocks as ProfileAgent prompt lines.
+
+    Each block is ``{direction, kind, name, relationship}`` plus an
+    optional ``detail`` (a truncated description of the neighbour). The
+    arrow marks data-flow direction relative to the table being
+    described.
+    """
+    lines: list[str] = [
+        "",
+        "Lineage context (upstream producers feed this table; "
+        "downstream consumers read from it — use these relationships "
+        "to describe the table's role in the data flow):",
+    ]
+    for block in blocks:
+        direction = str(block.get("direction") or "")
+        kind = str(block.get("kind") or "table")
+        name = str(block.get("name") or "")
+        rel = str(block.get("relationship") or "")
+        arrow = "←" if direction == "upstream" else "→"
+        line = f"  {arrow} [{direction} {kind}] {name} ({rel})"
+        detail = str(block.get("detail") or "").strip()
+        if detail:
+            line += f" — {detail}"
+        lines.append(line)
+    return lines
 
 
 class ProfileAgent(BaseAgent):
@@ -903,19 +932,7 @@ class ProfileAgent(BaseAgent):
                     lines.append(f"    {line}")
 
         if ctx.lineage_context:
-            lines.append("")
-            lines.append(
-                "Lineage context (upstream producers feed this table; "
-                "downstream consumers read from it — use these relationships "
-                "to describe the table's role in the data flow):"
-            )
-            for block in ctx.lineage_context:
-                direction = str(block.get("direction") or "")
-                kind = str(block.get("kind") or "table")
-                name = str(block.get("name") or "")
-                rel = str(block.get("relationship") or "")
-                arrow = "←" if direction == "upstream" else "→"
-                lines.append(f"  {arrow} [{direction} {kind}] {name} ({rel})")
+            lines.extend(_render_lineage_section(ctx.lineage_context))
 
         from amx.agents.base import _user_instructions_block
 
