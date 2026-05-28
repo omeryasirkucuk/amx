@@ -49,13 +49,33 @@ jobs:
         run: mypy amx
         continue-on-error: true
 
+  # Resolve the test matrix in a tiny prep job and feed it to the test
+  # job via fromJSON(needs...). PRs validate on a single version for fast
+  # feedback; pushes to main (the only ref a release tag is cut from) run
+  # the full support matrix. This output-driven form is the matrix pattern
+  # GitHub's expander accepts reliably.
+  matrix-prep:
+    name: Resolve test matrix
+    runs-on: ubuntu-latest
+    outputs:
+      python-versions: ${{ steps.resolve.outputs.versions }}
+    steps:
+      - id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo 'versions=["3.11"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'versions=["3.10","3.11","3.12","3.13","3.14"]' >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     name: Test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    needs: matrix-prep
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ${{ fromJSON(needs.matrix-prep.outputs.python-versions) }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -63,12 +83,20 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: pyproject.toml
+      # uv installs the heavy dependency tree far faster than pip. It is
+      # pip-installed here (not the astral-sh/setup-uv action) because the
+      # repo's Actions allowlist permits only GitHub-owned + verified
+      # actions. uv --system targets the setup-python interpreter.
       - name: Install
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[all,code-intel]" pytest pytest-cov
+          python -m pip install --upgrade pip uv
+          uv pip install --system -e ".[all,code-intel]" pytest pytest-cov pytest-xdist
+      # -n auto parallelises across CPUs. The suite is isolation-clean
+      # (function-scoped fixtures, monkeypatched HOME, per-test cache
+      # resets), so parallel runs add no failures. The flag lives here,
+      # not in addopts, so local pytest stays serial and debuggable.
       - name: Run tests
-        run: pytest -ra
+        run: pytest -ra -n auto
         env:
           AMX_NO_NETWORK: "1"
 
@@ -106,6 +134,10 @@ jobs:
     # Advisory-only for now: surfaces CVEs in dependencies without
     # blocking PRs. Drop ``continue-on-error`` once the baseline is
     # clean and the team is ready to gate merges on advisories.
+    # Runs on push-to-main only — a CVE scan does not need to gate every
+    # PR, and keeping it off the PR path avoids reinstalling the heavy
+    # dependency tree on every change.
+    if: github.event_name == 'push'
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
@@ -116,10 +148,10 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install project + pip-audit
         run: |
-          python -m pip install --upgrade pip pip-audit
+          python -m pip install --upgrade pip uv
           # Install the same surface the test job exercises so audit
           # sees every transitive dep AMX actually pulls in.
-          python -m pip install -e ".[all,code-intel]"
+          uv pip install --system -e ".[all,code-intel]" pip-audit
       - name: Run pip-audit
         run: pip-audit --strict --progress-spinner off
 
@@ -129,6 +161,10 @@ jobs:
     # Advisory by default — the run still surfaces regressions in the
     # log without blocking merges. Flip ``continue-on-error`` to false
     # once the baseline is stable and the team wants the gate hard.
+    # Runs on push-to-main only; there is no baseline-compare gate on the
+    # PR path today, so this loses no protection while saving a heavy
+    # reinstall per PR.
+    if: github.event_name == 'push'
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
@@ -139,8 +175,8 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[all,code-intel,perf]"
+          python -m pip install --upgrade pip uv
+          uv pip install --system -e ".[all,code-intel,perf]"
       - name: Run cold-path benchmarks
         # ``-m perf`` flips the marker filter from the default exclude
         # to include. Bench file is ``bench_*.py`` so default test
