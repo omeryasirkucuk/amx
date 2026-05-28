@@ -102,10 +102,12 @@ class _RaisingConnector(DatabaseConnector):
     must short-circuit BEFORE any fallback runs — if the gate is
     broken, the test sees the raising side."""
 
-    def _populate_catalogs_cache(self, catalog: str) -> bool:
+    def _populate_catalogs_cache(self, catalog: str, *, ttl_seconds: float | None = None) -> bool:
         raise AssertionError("live DB fallback was reached")
 
-    def _populate_schema_metadata_cache(self, schema: str) -> bool:
+    def _populate_schema_metadata_cache(
+        self, schema: str, *, ttl_seconds: float | None = None
+    ) -> bool:
         raise AssertionError("live DB fallback was reached")
 
     @property
@@ -113,14 +115,49 @@ class _RaisingConnector(DatabaseConnector):
         raise AssertionError("live DB engine was opened")
 
 
-def test_list_schemas_cache_only_when_warm(store: SQLiteHistoryStore) -> None:
-    """Empty schemas_cache + warm profile = return [], no live DB."""
+def test_list_schemas_cache_only_when_warm_and_populated(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Warm profile + NON-EMPTY schemas_cache = serve cached rows, no
+    live DB. The cache-only gate is honored when there is something to
+    serve."""
+    _mark_profile_fully_synced(store, "warm")
+    # Populate the schemas_cache for the connector's exact keys:
+    # profile='warm', database=':memory:', catalog='' (duckdb).
+    store.save_schemas_cache(
+        db_profile="warm",
+        database=":memory:",
+        catalog="",
+        entries={"public": None, "analytics": "the analytics schema"},
+        bulk_filled=True,
+    )
+    conn = _RaisingConnector(
+        DBConfig(backend="duckdb", database=":memory:"),
+        profile_name="warm",
+    )
+    # No live fallback runs (would raise); cached schemas come back.
+    assert sorted(conn.list_schemas()) == ["analytics", "public"]
+
+
+def test_list_schemas_warm_but_empty_falls_through_to_live(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Warm profile + EMPTY schemas_cache = self-heal by falling through
+    to the live path, NOT returning []. A successful sync provably
+    produced >=1 schema, so an empty cache here means the rows were
+    gc-swept while the never-expiring sync markers stayed set; serving
+    [] would flip the freshness pill to a false "no schemas" failure.
+
+    Regression guard for the "Catalog freshness failed on every open"
+    bug. With the old gate this returned ``[]``; now it must attempt the
+    live path (which the raising connector surfaces)."""
     _mark_profile_fully_synced(store, "warm")
     conn = _RaisingConnector(
         DBConfig(backend="duckdb", database=":memory:"),
         profile_name="warm",
     )
-    assert conn.list_schemas() == []
+    with pytest.raises(AssertionError, match="live DB"):
+        conn.list_schemas()
 
 
 def test_get_column_comments_cache_only_when_warm(

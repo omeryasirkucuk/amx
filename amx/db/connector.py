@@ -441,14 +441,30 @@ class DatabaseConnector:
         # path so non-synced profiles behave exactly as before.
         if live is None and self._is_cache_warm():
             cached = self._list_schemas_from_cache(catalog)
-            log.info(
-                "list_schemas: cache-only mode for profile=%r catalog=%r - "
-                "served %d cached rows, no live DB query",
+            if cached:
+                log.info(
+                    "list_schemas: cache-only mode for profile=%r catalog=%r - "
+                    "served %d cached rows, no live DB query",
+                    self.profile_name,
+                    catalog,
+                    len(cached),
+                )
+                return self._apply_pinned_schema_filter([name for name, _ in cached])
+            # Warm-but-empty: the profile is marked fully synced yet the
+            # schemas_cache holds no rows for this catalog. A successful
+            # sync provably produced >=1 schema, so an empty cache here is
+            # never legitimate — it means the rows were swept (e.g. the
+            # startup ``gc_schemas_cache`` purge of expired rows) while the
+            # never-expiring ``is_profile_fully_synced`` markers stayed
+            # set. Fall through to the live path below to self-heal and
+            # repopulate the cache rather than serving an empty list that
+            # would flip the freshness pill to a false "no schemas" failure.
+            log.warning(
+                "list_schemas: profile=%r catalog=%r is marked fully synced but "
+                "schemas_cache is empty - falling through to live DB to self-heal",
                 self.profile_name,
                 catalog,
-                len(cached),
             )
-            return self._apply_pinned_schema_filter([name for name, _ in cached])
         if live is None and self._populate_catalogs_cache(catalog):
             cached = self._list_schemas_from_cache(catalog)
             if cached:
@@ -1160,7 +1176,19 @@ class DatabaseConnector:
         entries: dict[str, str | None],
         *,
         bulk_filled: bool = False,
+        ttl_seconds: float | None = None,
     ) -> None:
+        """Persist schema-level entries for ``catalog`` to the cache.
+
+        ``ttl_seconds`` overrides the store's default browse TTL. The
+        skeleton-sync warm pass passes
+        :data:`DURABLE_COMMENT_CACHE_TTL_SECONDS` so sync-imported schema
+        rows persist instead of evaporating an hour later — otherwise the
+        startup ``gc_schemas_cache`` sweep empties the table while the
+        ``is_profile_fully_synced`` markers stay set, and the cache-only
+        read gate in :meth:`list_schemas` then serves an empty schema list
+        with no live fallback. ``None`` keeps the store default.
+        """
         if not entries:
             return
         try:
@@ -1170,24 +1198,33 @@ class DatabaseConnector:
         store = history_store()
         if store is None:
             return
+        kwargs: dict[str, Any] = {
+            "db_profile": self._cache_profile_key,
+            "database": self._cache_database_key(),
+            "catalog": catalog,
+            "entries": entries,
+            "bulk_filled": bulk_filled,
+        }
+        if ttl_seconds is not None:
+            kwargs["ttl_seconds"] = ttl_seconds
         try:
-            store.save_schemas_cache(
-                db_profile=self._cache_profile_key,
-                database=self._cache_database_key(),
-                catalog=catalog,
-                entries=entries,
-                bulk_filled=bulk_filled,
-            )
+            store.save_schemas_cache(**kwargs)
         except Exception as exc:
             log.debug("schemas cache save failed: %s", exc)
 
-    def _populate_catalogs_cache(self, catalog: str) -> bool:
+    def _populate_catalogs_cache(self, catalog: str, *, ttl_seconds: float | None = None) -> bool:
         """Run the adapter's ``bulk_catalog_metadata`` and cache it.
 
         Returns ``True`` when the adapter delivered a non-empty dict
         (every reachable schema in the catalog) and ``False`` when the
         backend has no bulk source — the caller then falls back to
         per-schema enumeration + per-schema comment lookups.
+
+        ``ttl_seconds`` is forwarded to :meth:`_save_schemas_cache`; the
+        skeleton-sync warm pass passes
+        :data:`DURABLE_COMMENT_CACHE_TTL_SECONDS` so the freshly cached
+        schema rows survive the next startup cache sweep. ``None`` keeps
+        the store's 1-hour browse default for read-path callers.
         """
         try:
             payload = self._adapter.bulk_catalog_metadata(self.engine, catalog)
@@ -1201,7 +1238,7 @@ class DatabaseConnector:
             return False
         if not payload:
             return False
-        self._save_schemas_cache(catalog, payload, bulk_filled=True)
+        self._save_schemas_cache(catalog, payload, bulk_filled=True, ttl_seconds=ttl_seconds)
         return True
 
     def _populate_schema_metadata_cache(

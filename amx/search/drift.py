@@ -648,8 +648,10 @@ def sync_profile_skeleton(
     # hit live DB to fetch table + column comments. We walk per
     # (container, schema) and let the connector's bulk helper fill
     # the cache one round-trip at a time.
-    schemas_warmed_ok = reached_any
+    schemas_warmed_ok: bool = reached_any
     columns_warmed_ok = True
+    from amx.db.connector import DURABLE_COMMENT_CACHE_TTL_SECONDS
+
     for container, schema_assets in per_container_plan:
         if cancel_event.is_set():
             break
@@ -664,6 +666,29 @@ def sync_profile_skeleton(
             )
             columns_warmed_ok = False
             continue
+        # Re-stamp schemas_cache durably for this container. Pass 1
+        # populated it as a side effect of ``list_schemas`` with the
+        # 1-hour browse TTL; without this the startup
+        # ``gc_schemas_cache`` sweep empties the table within the hour
+        # while the never-expiring ``is_profile_fully_synced`` markers
+        # stay set, which drives ``list_schemas``'s cache-only gate to
+        # serve an empty schema list and flips the freshness pill to a
+        # false "no schemas were visible" failure on the next open. The
+        # 30-day durable TTL keeps the rows past the sweep — mirrors the
+        # column_comments durable warm below.
+        try:
+            cat = getattr(getattr(connector, "cfg", None), "catalog", "") or ""
+            connector._populate_catalogs_cache(  # noqa: SLF001
+                cat, ttl_seconds=DURABLE_COMMENT_CACHE_TTL_SECONDS
+            )
+        except Exception as exc:
+            log.debug(
+                "Durable schemas re-stamp raised for %s/%s: %s",
+                profile,
+                container or "<default>",
+                exc,
+            )
+            schemas_warmed_ok = False
         for schema, _assets in schema_assets:
             if cancel_event.is_set():
                 break
@@ -676,8 +701,6 @@ def sync_profile_skeleton(
                 # gate (get_column_comments / get_table_comment) starts
                 # returning empty an hour after every sync and Studio
                 # silently loses every comment this pass just imported.
-                from amx.db.connector import DURABLE_COMMENT_CACHE_TTL_SECONDS
-
                 connector._populate_schema_metadata_cache(  # noqa: SLF001
                     schema, ttl_seconds=DURABLE_COMMENT_CACHE_TTL_SECONDS
                 )
