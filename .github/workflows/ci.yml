@@ -59,10 +59,9 @@ jobs:
       matrix:
         # PRs validate on a single version for fast feedback; pushes to
         # main (the only ref a release tag is ever cut from) run the full
-        # support matrix.
-        python-version: ${{ github.event_name == 'pull_request'
-          && fromJSON('["3.11"]')
-          || fromJSON('["3.10", "3.11", "3.12", "3.13", "3.14"]') }}
+        # support matrix. One fromJSON() around a string-selecting ternary
+        # is the form GitHub's matrix expander accepts reliably.
+        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.11"]' || '["3.10", "3.11", "3.12", "3.13", "3.14"]') }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
