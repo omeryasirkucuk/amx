@@ -5,6 +5,7 @@ Supports multiple backends via the adapter layer in ``amx.db.adapters``.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -22,6 +23,9 @@ from amx.db._connector_types import (
 )
 from amx.db._connector_types import (  # noqa: PLC0414
     CONNECTION_RETRY_BACKOFF_SEC as CONNECTION_RETRY_BACKOFF_SEC,
+)
+from amx.db._connector_types import (
+    DB_CONNECT_TIMEOUT_SEC,
 )
 from amx.db._connector_types import (
     MAX_CONNECTION_RETRIES as MAX_CONNECTION_RETRIES,
@@ -51,6 +55,16 @@ from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperati
 from amx.utils.logging import get_logger
 
 log = get_logger("db.connector")
+
+
+class _ConnectTimeout(Exception):
+    """Raised when a connectivity probe exceeds ``DB_CONNECT_TIMEOUT_SEC``.
+
+    Distinct from a transient connection error: a probe that blew the
+    timeout means the host is effectively unreachable, so retrying just
+    burns another full timeout. ``test_connection_result`` returns
+    immediately with the actionable host/network message instead.
+    """
 
 
 #: TTL stamped on comment-cache rows written by a deliberate *sync*
@@ -210,6 +224,47 @@ class DatabaseConnector:
         except Exception:
             return value
 
+    def _probe_connection_bounded(self) -> None:
+        """Run the backend connectivity check, but stop waiting after
+        :data:`DB_CONNECT_TIMEOUT_SEC`.
+
+        The native driver connect blocks inside C code holding the GIL, so
+        it cannot be cancelled and Ctrl-C cannot interrupt it. Running it in
+        a *daemon* worker thread means the main thread parks in
+        ``Event.wait(timeout=...)`` instead — which IS interruptible by
+        Ctrl-C and returns control to the user within the timeout rather
+        than the OS TCP default (~75-130s, doubled by the retry layer).
+
+        On timeout we raise :class:`_ConnectTimeout` and leave the daemon
+        thread to die on its own when the OS finally gives up; a daemon
+        thread never blocks interpreter exit, so AMX stays responsive. Any
+        real connect error is re-raised unchanged so the existing
+        transient-retry and actionable-message classification still apply.
+        """
+        outcome: dict[str, BaseException | None] = {"exc": None}
+        done = threading.Event()
+
+        def _probe() -> None:
+            try:
+                self._adapter.test_connection(self._engine)
+            except BaseException as exc:  # noqa: BLE001 — re-raised on the caller thread
+                outcome["exc"] = exc
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=_probe, name="amx-db-connect", daemon=True)
+        worker.start()
+        if not done.wait(timeout=DB_CONNECT_TIMEOUT_SEC):
+            raise _ConnectTimeout(
+                f"Connection timed out after {DB_CONNECT_TIMEOUT_SEC:.0f}s. The "
+                f"[{self.backend}] host may be unreachable — check the host and "
+                "port, that you are on the right network/VPN, and that a firewall "
+                "is not silently dropping the connection. Open the profile with "
+                "/edit to review the connection details."
+            )
+        if outcome["exc"] is not None:
+            raise outcome["exc"]
+
     def test_connection_result(self) -> ConnectionTestResult:
         """Test the active connection, retrying once on transient failures.
 
@@ -223,8 +278,14 @@ class DatabaseConnector:
         last_exc: Exception | None = None
         for attempt in range(MAX_CONNECTION_RETRIES + 1):
             try:
-                self._adapter.test_connection(self._engine)
+                self._probe_connection_bounded()
                 return ConnectionTestResult(ok=True)
+            except _ConnectTimeout as exc:
+                # An unreachable host won't recover on retry — that would
+                # just burn another full timeout while the user waits.
+                # Return immediately with the actionable host/network hint.
+                log.error("Connection timed out: %s", exc)
+                return ConnectionTestResult(ok=False, message=str(exc), exception=exc)
             except Exception as exc:
                 last_exc = exc
                 if attempt < MAX_CONNECTION_RETRIES and _is_transient_db_connection_error(exc):

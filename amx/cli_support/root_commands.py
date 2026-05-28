@@ -95,11 +95,18 @@ def register_root_commands(
         db = DatabaseConnector(cfg.db)
         with command_display(mode="setup-db", provider=cfg.llm.provider, model=cfg.llm.model):
             with step_spinner("Testing database connection..."):
-                connected = db.test_connection()
-        if connected:
+                result = db.test_connection_result()
+        if result.ok:
             success(f"Database connection successful! (backend: {cfg.db.backend})")
         else:
-            error("Database connection failed. Check credentials and try again.")
+            # Surface the categorised cause (wrong password / SSL / timeout /
+            # missing driver / unknown database) instead of a fixed
+            # credentials-only hint — the LLM step below already shows its
+            # real error via test_result().
+            if result.message:
+                error(f"Database connection failed: {result.message}")
+            else:
+                error("Database connection failed. Check credentials and try again.")
             if not confirm("Continue anyway?", default=False):
                 sys.exit(1)
 
@@ -265,11 +272,19 @@ def register_root_commands(
         db_conn = DatabaseConnector(cfg.db)
         with command_display(mode="db-connect", provider=cfg.llm.provider, model=cfg.llm.model):
             with step_spinner("Testing database connection..."):
-                connected = db_conn.test_connection()
-        if connected:
+                result = db_conn.test_connection_result()
+        if result.ok:
             success(f"Connected to [{cfg.db.backend}] {cfg.db.display_summary}")
         else:
-            error("Connection failed.")
+            # Surface the categorised, actionable cause (wrong password /
+            # SSL / timeout / missing driver / unknown database) that
+            # test_connection_result already built. The bool
+            # test_connection() path threw it away and printed a bare
+            # "Connection failed.", so every non-Databricks backend hit a
+            # dead end while Databricks showed the cause.
+            error(
+                f"Connection failed: {result.message}" if result.message else "Connection failed."
+            )
             sys.exit(1)
 
     @db.command("tls")

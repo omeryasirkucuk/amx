@@ -159,6 +159,18 @@ MAX_CONNECTION_RETRIES = 1
 CONNECTION_RETRY_BACKOFF_SEC = 1.5
 
 
+# Upper bound on how long a single connectivity probe may block before we
+# stop waiting and report an actionable host/network error. Without this,
+# an unreachable host (off-VPN, wrong host/port, firewalled SYN drop) hangs
+# for the OS TCP default (~75-130s), doubled by the retry layer above —
+# and because the native driver connect holds the GIL in C, Ctrl-C cannot
+# break it. Running the probe in a daemon thread bounded by this timeout
+# returns control to the user promptly and keeps Ctrl-C responsive. Only
+# Databricks set its own connect timeout before; this makes the bound
+# uniform across every backend.
+DB_CONNECT_TIMEOUT_SEC = 15.0
+
+
 _TRANSIENT_DB_PATTERNS: tuple[str, ...] = (
     "could not connect",
     "connection refused",
