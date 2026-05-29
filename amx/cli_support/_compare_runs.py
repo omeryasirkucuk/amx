@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from amx.config import AMXConfig
+from amx.storage.run_kinds import is_comparable_command
 from amx.utils.console import error, warn
 
 _BY_DIMENSIONS: tuple[str, ...] = (
@@ -86,6 +87,13 @@ def _resolve_runs(
             if row is None:
                 warn(f"Run #{rid} not found — skipping.")
                 continue
+            if not is_comparable_command(row.get("command")):
+                warn(
+                    f"Run #{rid} ({row.get('command') or '—'}) isn't comparable — "
+                    "only analyze / rerun / generate / schedule runs produce "
+                    "per-asset descriptions. Skipping."
+                )
+                continue
             out.append(row)
         # Newest-first to match the --last path.
         out.sort(key=lambda r: float(r.get("started_at") or 0.0), reverse=True)
@@ -102,9 +110,14 @@ def _resolve_runs(
         )
         return []
 
+    # ``comparable_only`` keeps non-description runs (Ask, etc.) out of the
+    # auto-resolved set so ``/compare --last N`` only ever pivots runs that
+    # produced per-asset descriptions. An explicit ``--command`` still
+    # narrows within the comparable set.
     return hs.find_runs_for_scope(
         schema=eff_schema or None,
         table=eff_table or None,
         command_filter=cmd,
+        comparable_only=True,
         limit=max(1, int(last_n)),
     )

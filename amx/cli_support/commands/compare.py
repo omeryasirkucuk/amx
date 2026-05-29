@@ -1855,9 +1855,14 @@ def register_compare_command(
     @click.option(
         "--command",
         "command_filter",
-        type=click.Choice(["analyze.run", "search.ask", "all"]),
+        type=click.Choice(["analyze.run", "rerun", "all"]),
         default="all",
-        help="Restrict to /run results, /ask results, or both (default).",
+        help=(
+            "Narrow auto-resolved runs to a command kind. ``all`` (default) "
+            "keeps every comparable run (analyze / rerun / generate / "
+            "schedule); Ask and other non-description runs are never "
+            "comparable and are always excluded."
+        ),
     )
     @click.option(
         "--by",

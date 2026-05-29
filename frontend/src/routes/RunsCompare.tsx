@@ -1,26 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import {
-  ChevronLeft,
-  ChevronRight,
-  Download,
-  GitCompare,
-  Search,
-  Sparkles,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, GitCompare, Search, Sparkles } from "lucide-react";
 
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import Dialog from "../components/ui/Dialog";
-import { RouteState, useToast } from "../components/ui";
-import {
-  AltScoreBadge,
-  ConfidencePill,
-  LogprobBadge,
-} from "../components/ui/InsightBadges";
+import { RouteState } from "../components/ui";
+import { AltScoreBadge, ConfidencePill, LogprobBadge } from "../components/ui/InsightBadges";
 import AlternativesModeBadge from "../components/ui/AlternativesModeBadge";
 import {
   apiFetch,
@@ -113,10 +102,7 @@ const AGGREGATE_LABEL: Record<string, string> = {
  *  ``null`` for neutral metrics / when every cell is missing. Skips
  *  ``null`` and non-finite values so a missing reading on one run
  *  doesn't accidentally win as the smallest "0". */
-function pickWinnerRunId(
-  metric: string,
-  vals: Map<number, number | null>,
-): number | null {
+function pickWinnerRunId(metric: string, vals: Map<number, number | null>): number | null {
   const direction = AGGREGATE_DIRECTION[metric] ?? "neutral";
   if (direction === "neutral") return null;
   let bestId: number | null = null;
@@ -146,9 +132,7 @@ const PAGE_SIZE_STORAGE_KEY = "amx.compare.pickerPageSize";
 function readStoredPageSize(): PageSize {
   if (typeof window === "undefined") return 20;
   const raw = Number(window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY));
-  return (PAGE_SIZE_OPTIONS as readonly number[]).includes(raw)
-    ? (raw as PageSize)
-    : 20;
+  return (PAGE_SIZE_OPTIONS as readonly number[]).includes(raw) ? (raw as PageSize) : 20;
 }
 
 /** Compose the seed prompt the Ask AMX modal hand-off pushes into the
@@ -168,7 +152,6 @@ function buildCompareSeedPrompt(data: CompareResponse): string {
 
 export default function RunsCompare() {
   const navigate = useNavigate();
-  const toast = useToast();
   // PR C — top-of-page tab between the existing run-id-level picker
   // ("By Run") and the new cell-mode view ("By Cell"). The mode is
   // mirrored to the URL so deep-links from the pinned-cells drawer
@@ -194,73 +177,34 @@ export default function RunsCompare() {
   // in the backend when null.
   const [groundTruthRunId, setGroundTruthRunId] = useState<number | null>(null);
   // Cost-preview dialog for the Tier 2 LLM-as-judge run.
-  const [deepAnalysisConfirmOpen, setDeepAnalysisConfirmOpen] =
-    useState<boolean>(false);
+  const [deepAnalysisConfirmOpen, setDeepAnalysisConfirmOpen] = useState<boolean>(false);
   const recent = useQuery({
     queryKey: ["recent-runs", "compare"],
     // 200 is the server-side max. Paging is now client-side: with
     // 100/page the user can scroll their full recent history without
     // a second round trip. If the wall ever creeps past 200, switch
     // /api/history/runs to offset/limit and page server-side.
-    queryFn: () => api.recentRuns(200, "all"),
+    //
+    // ``comparable`` restricts the feed to description-producing runs
+    // (analyze / rerun / generate / schedule). Ask sessions and other
+    // non-description commands can't be pivoted side-by-side, so the
+    // server drops them and the picker never lists a run the user
+    // can't actually compare.
+    queryFn: () => api.recentRuns(200, "comparable"),
     retry: false,
     // Errors render inline via RouteState in the picker body.
     meta: { silentError: true },
   });
 
-  // ``compareableIds(): {ids, droppedAsks}`` filters Ask sessions out
-  // of the user's selection before any /compare call. Ask runs are
-  // free-text Q&A turns — they don't produce per-asset descriptions
-  // the way analyze / generate / rerun runs do, so a side-by-side
-  // pivot of them is meaningless. The picker still LISTS them under
-  // the "ask" kind chip so the user can preview them, but the
-  // submit-time filter quietly drops them and surfaces a toast so
-  // the exclusion is visible.
-  function compareableSelection(): {
-    ids: number[];
-    droppedAsks: number[];
-  } {
-    const allRows = (recent.data?.runs as RunRow[] | undefined) ?? [];
-    const askIds = new Set(
-      allRows
-        .filter((r) => commandKind(r.command) === "ask")
-        .map((r) => r.id),
-    );
-    const ids = selected.filter((id) => !askIds.has(id));
-    const droppedAsks = selected.filter((id) => askIds.has(id));
-    return { ids, droppedAsks };
-  }
-
-  function notifyDroppedAsks(droppedAsks: number[]) {
-    if (droppedAsks.length === 0) return;
-    const idsLabel = droppedAsks.map((id) => `#${id}`).join(", ");
-    toast.push({
-      title: `Excluded ${droppedAsks.length} Ask session${droppedAsks.length === 1 ? "" : "s"} from the comparison`,
-      description: (
-        `Ask runs (${idsLabel}) are conversational Q&A turns and don't ` +
-        "produce per-asset descriptions; comparing them isn't meaningful. " +
-        "The remaining analyze / generate / rerun selections were compared."
-      ),
-      tone: "warning",
-      duration: 5000,
-    });
-  }
-
   const compare = useMutation({
     mutationFn: () => {
-      const { ids, droppedAsks } = compareableSelection();
-      if (ids.length < 2) {
-        throw new Error(
-          droppedAsks.length > 0
-            ? "Comparison needs at least 2 non-Ask runs. Pick more analyze / generate / rerun runs."
-            : "Pick at least 2 runs to compare.",
-        );
+      if (selected.length < 2) {
+        throw new Error("Pick at least 2 runs to compare.");
       }
-      notifyDroppedAsks(droppedAsks);
       return apiFetch<CompareResponse>("/api/history/compare", {
         method: "POST",
         body: JSON.stringify({
-          run_ids: ids,
+          run_ids: selected,
           quality_tier: 1, // Tier 0 metrics auto-shown in the modal
           ground_truth_run_id: groundTruthRunId,
         }),
@@ -276,14 +220,10 @@ export default function RunsCompare() {
   // re-renders with the enriched quality_metrics.
   const deepAnalysis = useMutation({
     mutationFn: () => {
-      const { ids, droppedAsks } = compareableSelection();
-      if (ids.length < 2) {
-        throw new Error(
-          "Deep analysis needs at least 2 non-Ask runs.",
-        );
+      if (selected.length < 2) {
+        throw new Error("Deep analysis needs at least 2 runs.");
       }
-      notifyDroppedAsks(droppedAsks);
-      return api.runDeepAnalysis(ids, { groundTruthRunId });
+      return api.runDeepAnalysis(selected, { groundTruthRunId });
     },
     onSuccess: (next) => {
       compare.reset();
@@ -303,10 +243,8 @@ export default function RunsCompare() {
 
   // Once Tier 2 runs, override the displayed payload without losing
   // the cheap Tier 0 result we already had.
-  const [deepAnalysisOverride, setDeepAnalysisOverride] =
-    useState<CompareResponse | null>(null);
-  const compareData: CompareResponse | null =
-    deepAnalysisOverride ?? compare.data ?? null;
+  const [deepAnalysisOverride, setDeepAnalysisOverride] = useState<CompareResponse | null>(null);
+  const compareData: CompareResponse | null = deepAnalysisOverride ?? compare.data ?? null;
 
   const pdf = useMutation({
     mutationFn: () => {
@@ -337,9 +275,7 @@ export default function RunsCompare() {
   });
 
   function toggle(id: number) {
-    setSelected((curr) =>
-      curr.includes(id) ? curr.filter((x) => x !== id) : [...curr, id],
-    );
+    setSelected((curr) => (curr.includes(id) ? curr.filter((x) => x !== id) : [...curr, id]));
   }
 
   function clearSelection() {
@@ -374,11 +310,7 @@ export default function RunsCompare() {
         // Also search by the actual processed schema.table.column
         // tuples so the user can find "the run that touched
         // sales.orders.status" by typing any one of those parts.
-        ...(row.processed_assets?.sample ?? []).flatMap((a) => [
-          a.schema,
-          a.table,
-          a.column ?? "",
-        ]),
+        ...(row.processed_assets?.sample ?? []).flatMap((a) => [a.schema, a.table, a.column ?? ""]),
         shortModel(row.llm_model),
         row.llm_model ?? "",
         row.db_profile ?? "",
@@ -439,404 +371,378 @@ export default function RunsCompare() {
       {mode === "cell" ? (
         <CellCompareView cellsParam={cellsParam} />
       ) : (
-      <>
-      <Card className="mb-4">
-        <div className="sticky top-0 z-10 bg-surface">
-          <CardHeader
-            title={`${selected.length} run${selected.length === 1 ? "" : "s"} selected`}
-            description="Click a row to toggle. The compare button is enabled once you've picked at least two."
-            actions={
-              <div className="flex items-center gap-2">
-                {selected.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={clearSelection}
-                    className="text-[11px] text-ink-dim underline-offset-2 hover:text-ink hover:underline"
-                  >
-                    Clear selection
-                  </button>
-                )}
-                {compareData && !viewerOpen && (
-                  <button
-                    type="button"
-                    onClick={() => setViewerOpen(true)}
-                    className="text-[11px] text-ink-dim underline-offset-2 hover:text-ink hover:underline"
-                  >
-                    Re-open last comparison
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => compare.mutate()}
-                  disabled={selected.length < 2 || compare.isPending}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
-                >
-                  <GitCompare size={14} />
-                  {compare.isPending ? "Comparing…" : "Compare"}
-                </button>
-              </div>
-            }
-          />
-          <div className="flex flex-wrap items-center gap-3 border-t border-surface-border bg-surface-subtle/30 px-5 py-2">
-            <div className="inline-flex items-center gap-1.5 rounded-md border border-surface-border bg-surface px-2 py-1">
-              <Search size={12} className="text-ink-dim" />
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search id, scope, model…"
-                className="w-60 bg-transparent text-xs outline-none placeholder:text-ink-dim"
-              />
-            </div>
-            <div className="flex flex-wrap items-center gap-1">
-              {(["all", "analyze", "rerun", "generate", "ask"] as const).map(
-                (kind) => {
-                  const active = kindFilter === kind;
-                  return (
-                    <button
-                      key={kind}
-                      type="button"
-                      onClick={() => setKindFilter(kind)}
-                      className={cn(
-                        "rounded-md px-2 py-0.5 text-[11px] capitalize transition",
-                        active
-                          ? "bg-accent-soft/60 text-accent-ink"
-                          : "bg-surface text-ink-muted hover:bg-surface-subtle",
-                      )}
-                    >
-                      {kind}
-                    </button>
-                  );
-                },
-              )}
-            </div>
-            <div className="ml-auto flex items-center gap-3">
-              <span className="text-[11px] text-ink-dim tabular-nums">
-                {filteredRows.length === 0
-                  ? "0 of 0"
-                  : `${safePage * pageSize + 1}–${Math.min(
-                      (safePage + 1) * pageSize,
-                      filteredRows.length,
-                    )} of ${filteredRows.length}`}
-              </span>
-              <label className="inline-flex items-center gap-1 text-[11px] text-ink-dim">
-                Page size
-                <select
-                  value={pageSize}
-                  onChange={(e) =>
-                    changePageSize(Number(e.target.value) as PageSize)
-                  }
-                  className="rounded-md border border-surface-border bg-surface px-1.5 py-0.5 text-[11px] text-ink outline-none"
-                >
-                  {PAGE_SIZE_OPTIONS.map((size) => (
-                    <option key={size} value={size}>
-                      {size}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="inline-flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  disabled={safePage === 0}
-                  className="rounded-md border border-surface-border bg-surface p-1 text-ink-muted transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-                  aria-label="Previous page"
-                >
-                  <ChevronLeft size={12} />
-                </button>
-                <span className="min-w-[3.5rem] text-center text-[11px] text-ink-dim tabular-nums">
-                  {safePage + 1} / {totalPages}
-                </span>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPage((p) => Math.min(totalPages - 1, p + 1))
-                  }
-                  disabled={safePage >= totalPages - 1}
-                  className="rounded-md border border-surface-border bg-surface p-1 text-ink-muted transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-                  aria-label="Next page"
-                >
-                  <ChevronRight size={12} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <CardBody className="p-0">
-          {recent.isLoading ? (
-            <div className="px-5 py-6">
-              <RouteState
-                status="loading"
-                hideLoadingTitle
-                loadingBlocks={3}
-              />
-            </div>
-          ) : recent.isError ? (
-            <div className="px-5 py-6">
-              <RouteState
-                status="error"
-                error={recent.error}
-                onRetry={() => recent.refetch()}
-              />
-            </div>
-          ) : filteredRows.length ? (
-            <ul className="divide-y divide-surface-border">
-              {pagedRows.map((row) => {
-                const isPicked = selected.includes(row.id);
-                const kind = commandKind(row.command);
-                const scope = row.scope_json ?? row.scope;
-                const modelLabel = shortModel(row.llm_model);
-                const tokensCostBadge = renderTokensCostBadge(row);
-                return (
-                  <li
-                    key={row.id}
-                    onClick={() => toggle(row.id)}
-                    className={cn(
-                      "flex cursor-pointer flex-wrap items-center gap-3 px-5 py-2.5 text-sm transition hover:bg-surface-subtle/40",
-                      isPicked && "bg-accent-soft/30",
-                    )}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isPicked}
-                      readOnly
-                      className="h-3.5 w-3.5 cursor-pointer accent-current"
-                    />
-                    {isPicked && (
+        <>
+          <Card className="mb-4">
+            <div className="sticky top-0 z-10 bg-surface">
+              <CardHeader
+                title={`${selected.length} run${selected.length === 1 ? "" : "s"} selected`}
+                description="Click a row to toggle. The compare button is enabled once you've picked at least two."
+                actions={
+                  <div className="flex items-center gap-2">
+                    {selected.length > 0 && (
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setGroundTruthRunId((curr) =>
-                            curr === row.id ? null : row.id,
-                          );
-                        }}
-                        title={
-                          groundTruthRunId === row.id
-                            ? "This run is the ground truth baseline. Click to unpin."
-                            : "Set this run as the ground-truth baseline for reference-based quality metrics."
-                        }
-                        className={cn(
-                          "rounded-md border px-1.5 py-0.5 text-[10px] uppercase tracking-wider transition",
-                          groundTruthRunId === row.id
-                            ? "border-accent bg-accent-soft/40 text-accent-ink"
-                            : "border-surface-border text-ink-dim hover:border-accent/40 hover:text-ink",
-                        )}
+                        onClick={clearSelection}
+                        className="text-[11px] text-ink-dim underline-offset-2 hover:text-ink hover:underline"
                       >
-                        {groundTruthRunId === row.id ? "Ground truth" : "Set baseline"}
+                        Clear selection
                       </button>
                     )}
-                    <span className="font-mono text-xs text-ink-dim">
-                      #{row.id}
-                    </span>
-                    <span
-                      className={cn(
-                        "rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
-                        commandChipClass(kind),
-                      )}
-                      title={row.command ?? undefined}
+                    {compareData && !viewerOpen && (
+                      <button
+                        type="button"
+                        onClick={() => setViewerOpen(true)}
+                        className="text-[11px] text-ink-dim underline-offset-2 hover:text-ink hover:underline"
+                      >
+                        Re-open last comparison
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => compare.mutate()}
+                      disabled={selected.length < 2 || compare.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
                     >
-                      {humanizeCommand(row.command, row.scope_json ?? row.scope)}
+                      <GitCompare size={14} />
+                      {compare.isPending ? "Comparing…" : "Compare"}
+                    </button>
+                  </div>
+                }
+              />
+              <div className="flex flex-wrap items-center gap-3 border-t border-surface-border bg-surface-subtle/30 px-5 py-2">
+                <div className="inline-flex items-center gap-1.5 rounded-md border border-surface-border bg-surface px-2 py-1">
+                  <Search size={12} className="text-ink-dim" />
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search id, scope, model…"
+                    className="w-60 bg-transparent text-xs outline-none placeholder:text-ink-dim"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  {(["all", "analyze", "rerun", "generate", "schedule"] as const).map((kind) => {
+                    const active = kindFilter === kind;
+                    return (
+                      <button
+                        key={kind}
+                        type="button"
+                        onClick={() => setKindFilter(kind)}
+                        className={cn(
+                          "rounded-md px-2 py-0.5 text-[11px] capitalize transition",
+                          active
+                            ? "bg-accent-soft/60 text-accent-ink"
+                            : "bg-surface text-ink-muted hover:bg-surface-subtle",
+                        )}
+                      >
+                        {kind}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="ml-auto flex items-center gap-3">
+                  <span className="text-[11px] text-ink-dim tabular-nums">
+                    {filteredRows.length === 0
+                      ? "0 of 0"
+                      : `${safePage * pageSize + 1}–${Math.min(
+                          (safePage + 1) * pageSize,
+                          filteredRows.length,
+                        )} of ${filteredRows.length}`}
+                  </span>
+                  <label className="inline-flex items-center gap-1 text-[11px] text-ink-dim">
+                    Page size
+                    <select
+                      value={pageSize}
+                      onChange={(e) => changePageSize(Number(e.target.value) as PageSize)}
+                      className="rounded-md border border-surface-border bg-surface px-1.5 py-0.5 text-[11px] text-ink outline-none"
+                    >
+                      {PAGE_SIZE_OPTIONS.map((size) => (
+                        <option key={size} value={size}>
+                          {size}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="inline-flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setPage((p) => Math.max(0, p - 1))}
+                      disabled={safePage === 0}
+                      className="rounded-md border border-surface-border bg-surface p-1 text-ink-muted transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label="Previous page"
+                    >
+                      <ChevronLeft size={12} />
+                    </button>
+                    <span className="min-w-[3.5rem] text-center text-[11px] text-ink-dim tabular-nums">
+                      {safePage + 1} / {totalPages}
                     </span>
-                    {(() => {
-                      // Prefer the concrete-asset label from
-                      // ``processed_assets`` so column-level runs show
-                      // ``sales.orders.status`` instead of the
-                      // schema-level scope (``sales · 1 table``) the
-                      // user picked. Fall back to the legacy scope
-                      // summary for runs whose worker hasn't yet
-                      // written any ``run_results`` rows.
-                      const concrete = summarizeProcessedAssets(row.processed_assets);
-                      const label = concrete ?? summarizeScope(scope);
-                      const tooltip =
-                        processedAssetsTooltip(row.processed_assets) ??
-                        Object.keys(scope ?? {}).join(", ");
-                      return (
+                    <button
+                      type="button"
+                      onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                      disabled={safePage >= totalPages - 1}
+                      className="rounded-md border border-surface-border bg-surface p-1 text-ink-muted transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label="Next page"
+                    >
+                      <ChevronRight size={12} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <CardBody className="p-0">
+              {recent.isLoading ? (
+                <div className="px-5 py-6">
+                  <RouteState status="loading" hideLoadingTitle loadingBlocks={3} />
+                </div>
+              ) : recent.isError ? (
+                <div className="px-5 py-6">
+                  <RouteState
+                    status="error"
+                    error={recent.error}
+                    onRetry={() => recent.refetch()}
+                  />
+                </div>
+              ) : filteredRows.length ? (
+                <ul className="divide-y divide-surface-border">
+                  {pagedRows.map((row) => {
+                    const isPicked = selected.includes(row.id);
+                    const kind = commandKind(row.command);
+                    const scope = row.scope_json ?? row.scope;
+                    const modelLabel = shortModel(row.llm_model);
+                    const tokensCostBadge = renderTokensCostBadge(row);
+                    return (
+                      <li
+                        key={row.id}
+                        onClick={() => toggle(row.id)}
+                        className={cn(
+                          "flex cursor-pointer flex-wrap items-center gap-3 px-5 py-2.5 text-sm transition hover:bg-surface-subtle/40",
+                          isPicked && "bg-accent-soft/30",
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isPicked}
+                          readOnly
+                          className="h-3.5 w-3.5 cursor-pointer accent-current"
+                        />
+                        {isPicked && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setGroundTruthRunId((curr) => (curr === row.id ? null : row.id));
+                            }}
+                            title={
+                              groundTruthRunId === row.id
+                                ? "This run is the ground truth baseline. Click to unpin."
+                                : "Set this run as the ground-truth baseline for reference-based quality metrics."
+                            }
+                            className={cn(
+                              "rounded-md border px-1.5 py-0.5 text-[10px] uppercase tracking-wider transition",
+                              groundTruthRunId === row.id
+                                ? "border-accent bg-accent-soft/40 text-accent-ink"
+                                : "border-surface-border text-ink-dim hover:border-accent/40 hover:text-ink",
+                            )}
+                          >
+                            {groundTruthRunId === row.id ? "Ground truth" : "Set baseline"}
+                          </button>
+                        )}
+                        <span className="font-mono text-xs text-ink-dim">#{row.id}</span>
                         <span
-                          className="min-w-0 truncate text-ink-muted"
-                          title={tooltip || undefined}
+                          className={cn(
+                            "rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+                            commandChipClass(kind),
+                          )}
+                          title={row.command ?? undefined}
                         >
-                          {label}
+                          {humanizeCommand(row.command, row.scope_json ?? row.scope)}
                         </span>
-                      );
-                    })()}
-                    {modelLabel && (
-                      <span
-                        className="hidden font-mono text-[11px] text-ink-dim md:inline"
-                        title={row.llm_model ?? undefined}
-                      >
-                        {modelLabel}
-                      </span>
-                    )}
-                    {tokensCostBadge}
-                    {row.started_at != null && (
-                      <span
-                        className="hidden font-mono text-[11px] text-ink-dim md:inline"
-                        title={String(row.started_at)}
-                      >
-                        {relativeTime(row.started_at)}
-                      </span>
-                    )}
-                    <span className="ml-auto inline-flex items-center gap-2">
-                      <span className="font-mono text-[11px] text-ink-dim tabular-nums">
-                        {row.duration_sec != null
-                          ? `${row.duration_sec.toFixed(1)}s`
-                          : "—"}
-                      </span>
-                      <StatusPill tone={statusTone(row.status)}>
-                        {row.status}
-                      </StatusPill>
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          ) : (
-            <EmptyState
-              icon={GitCompare}
-              title={
-                recent.data?.runs?.length
-                  ? "No runs match the current filters"
-                  : "No runs yet"
-              }
-              description={
-                recent.data?.runs?.length
-                  ? "Clear the search or relax the kind filter."
-                  : "Trigger /run from the Runs page to populate this list."
-              }
-            />
+                        {(() => {
+                          // Prefer the concrete-asset label from
+                          // ``processed_assets`` so column-level runs show
+                          // ``sales.orders.status`` instead of the
+                          // schema-level scope (``sales · 1 table``) the
+                          // user picked. Fall back to the legacy scope
+                          // summary for runs whose worker hasn't yet
+                          // written any ``run_results`` rows.
+                          const concrete = summarizeProcessedAssets(row.processed_assets);
+                          const label = concrete ?? summarizeScope(scope);
+                          const tooltip =
+                            processedAssetsTooltip(row.processed_assets) ??
+                            Object.keys(scope ?? {}).join(", ");
+                          return (
+                            <span
+                              className="min-w-0 truncate text-ink-muted"
+                              title={tooltip || undefined}
+                            >
+                              {label}
+                            </span>
+                          );
+                        })()}
+                        {modelLabel && (
+                          <span
+                            className="hidden font-mono text-[11px] text-ink-dim md:inline"
+                            title={row.llm_model ?? undefined}
+                          >
+                            {modelLabel}
+                          </span>
+                        )}
+                        {tokensCostBadge}
+                        {row.started_at != null && (
+                          <span
+                            className="hidden font-mono text-[11px] text-ink-dim md:inline"
+                            title={String(row.started_at)}
+                          >
+                            {relativeTime(row.started_at)}
+                          </span>
+                        )}
+                        <span className="ml-auto inline-flex items-center gap-2">
+                          <span className="font-mono text-[11px] text-ink-dim tabular-nums">
+                            {row.duration_sec != null ? `${row.duration_sec.toFixed(1)}s` : "—"}
+                          </span>
+                          <StatusPill tone={statusTone(row.status)}>{row.status}</StatusPill>
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <EmptyState
+                  icon={GitCompare}
+                  title={
+                    recent.data?.runs?.length ? "No runs match the current filters" : "No runs yet"
+                  }
+                  description={
+                    recent.data?.runs?.length
+                      ? "Clear the search or relax the kind filter."
+                      : "Trigger /run from the Runs page to populate this list."
+                  }
+                />
+              )}
+            </CardBody>
+          </Card>
+
+          {compare.isError && (
+            <div className="mb-4 rounded-md border border-critical/40 bg-critical/5 p-3 text-sm text-critical">
+              {compare.error instanceof Error ? compare.error.message : "Compare failed."}
+            </div>
           )}
-        </CardBody>
-      </Card>
 
-      {compare.isError && (
-        <div className="mb-4 rounded-md border border-critical/40 bg-critical/5 p-3 text-sm text-critical">
-          {compare.error instanceof Error
-            ? compare.error.message
-            : "Compare failed."}
-        </div>
-      )}
+          {compareData && (
+            <Dialog
+              open={viewerOpen}
+              onClose={() => setViewerOpen(false)}
+              size="xl"
+              title={`Comparison · ${compareData.runs.length} run${compareData.runs.length === 1 ? "" : "s"}`}
+              description={`Run ids: ${compareData.runs.map((r) => `#${r.id}`).join(", ")}`}
+              footer={
+                <>
+                  {pdf.isError && (
+                    <span className="mr-auto text-xs text-critical">
+                      {pdf.error instanceof Error ? pdf.error.message : "PDF export failed."}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setViewerOpen(false)}
+                    className="rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink"
+                  >
+                    Close
+                  </button>
+                  {!compareData?.quality_metrics?.judge_outcomes?.length && (
+                    <button
+                      type="button"
+                      onClick={() => setDeepAnalysisConfirmOpen(true)}
+                      disabled={deepAnalysis.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink disabled:opacity-40"
+                      title="Run Tier 1 embeddings + Tier 2 LLM-as-judge tournament for academic quality scores."
+                    >
+                      <Sparkles size={14} />
+                      {deepAnalysis.isPending ? "Analysing…" : "Run deeper analysis"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const seedPrompt = buildCompareSeedPrompt(compareData!);
+                      setViewerOpen(false);
+                      navigate("/ask", { state: { seedPrompt } });
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink"
+                  >
+                    <Sparkles size={14} />
+                    Ask AMX
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => pdf.mutate()}
+                    disabled={pdf.isPending}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
+                  >
+                    <Download size={14} />
+                    {pdf.isPending ? "Generating PDF…" : "Download PDF"}
+                  </button>
+                </>
+              }
+            >
+              <CompareResults data={compareData} />
+            </Dialog>
+          )}
 
-      {compareData && (
-        <Dialog
-          open={viewerOpen}
-          onClose={() => setViewerOpen(false)}
-          size="xl"
-          title={`Comparison · ${compareData.runs.length} run${compareData.runs.length === 1 ? "" : "s"}`}
-          description={`Run ids: ${compareData.runs.map((r) => `#${r.id}`).join(", ")}`}
-          footer={
-            <>
-              {pdf.isError && (
-                <span className="mr-auto text-xs text-critical">
-                  {pdf.error instanceof Error
-                    ? pdf.error.message
-                    : "PDF export failed."}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() => setViewerOpen(false)}
-                className="rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink"
-              >
-                Close
-              </button>
-              {!compareData?.quality_metrics?.judge_outcomes?.length && (
-                <button
-                  type="button"
-                  onClick={() => setDeepAnalysisConfirmOpen(true)}
-                  disabled={deepAnalysis.isPending}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink disabled:opacity-40"
-                  title="Run Tier 1 embeddings + Tier 2 LLM-as-judge tournament for academic quality scores."
-                >
-                  <Sparkles size={14} />
-                  {deepAnalysis.isPending ? "Analysing…" : "Run deeper analysis"}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  const seedPrompt = buildCompareSeedPrompt(compareData!);
-                  setViewerOpen(false);
-                  navigate("/ask", { state: { seedPrompt } });
-                }}
-                className="inline-flex items-center gap-1.5 rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink"
-              >
-                <Sparkles size={14} />
-                Ask AMX
-              </button>
-              <button
-                type="button"
-                onClick={() => pdf.mutate()}
-                disabled={pdf.isPending}
-                className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
-              >
-                <Download size={14} />
-                {pdf.isPending ? "Generating PDF…" : "Download PDF"}
-              </button>
-            </>
-          }
-        >
-          <CompareResults data={compareData} />
-        </Dialog>
-      )}
-
-      {/* Cost preview for the LLM-as-judge tournament. We only roughly
+          {/* Cost preview for the LLM-as-judge tournament. We only roughly
           estimate cost here — actual usage is captured in tokens_json
           server-side and surfaced once the tournament finishes. */}
-      <Dialog
-        open={deepAnalysisConfirmOpen}
-        onClose={() => setDeepAnalysisConfirmOpen(false)}
-        size="md"
-        title="Run deeper quality analysis?"
-        description={
-          "Tier 1 (sentence-transformer embeddings) + Tier 2 (G-Eval " +
-          "LLM-as-judge tournament). The judge runs C(N,2) calls per " +
-          "asset using the active LLM profile — token cost rolls into " +
-          "the active run's tokens_json."
-        }
-        footer={
-          <>
-            {deepAnalysis.isError && (
-              <span className="mr-auto text-xs text-critical">
-                {deepAnalysis.error instanceof Error
-                  ? deepAnalysis.error.message
-                  : "Deep analysis failed."}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={() => setDeepAnalysisConfirmOpen(false)}
-              className="rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => deepAnalysis.mutate()}
-              disabled={deepAnalysis.isPending}
-              className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
-            >
-              {deepAnalysis.isPending ? "Running…" : "Run analysis"}
-            </button>
-          </>
-        }
-      >
-        <p className="text-sm text-ink-muted">
-          Estimated cost depends on the number of assets × number of run
-          pairs and your active LLM's per-token rate. A typical 50-column
-          × 3-run comparison runs ~150 judge calls; on{" "}
-          <span className="font-mono">gpt-4o-mini</span> that's roughly{" "}
-          <span className="font-semibold">$0.01–$0.02</span>. The result
-          replaces the current Tier 0 view in this modal.
-        </p>
-        <p className="mt-3 text-xs text-ink-dim">
-          Methods cited in the resulting Quality card: chrF (Popović 2015),
-          ROUGE-L (Lin 2004), G-Eval (Liu et al. 2023), Prometheus 2 (Kim
-          et al. 2024).
-        </p>
-      </Dialog>
-      </>
+          <Dialog
+            open={deepAnalysisConfirmOpen}
+            onClose={() => setDeepAnalysisConfirmOpen(false)}
+            size="md"
+            title="Run deeper quality analysis?"
+            description={
+              "Tier 1 (sentence-transformer embeddings) + Tier 2 (G-Eval " +
+              "LLM-as-judge tournament). The judge runs C(N,2) calls per " +
+              "asset using the active LLM profile — token cost rolls into " +
+              "the active run's tokens_json."
+            }
+            footer={
+              <>
+                {deepAnalysis.isError && (
+                  <span className="mr-auto text-xs text-critical">
+                    {deepAnalysis.error instanceof Error
+                      ? deepAnalysis.error.message
+                      : "Deep analysis failed."}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setDeepAnalysisConfirmOpen(false)}
+                  className="rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deepAnalysis.mutate()}
+                  disabled={deepAnalysis.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
+                >
+                  {deepAnalysis.isPending ? "Running…" : "Run analysis"}
+                </button>
+              </>
+            }
+          >
+            <p className="text-sm text-ink-muted">
+              Estimated cost depends on the number of assets × number of run pairs and your active
+              LLM's per-token rate. A typical 50-column × 3-run comparison runs ~150 judge calls; on{" "}
+              <span className="font-mono">gpt-4o-mini</span> that's roughly{" "}
+              <span className="font-semibold">$0.01–$0.02</span>. The result replaces the current
+              Tier 0 view in this modal.
+            </p>
+            <p className="mt-3 text-xs text-ink-dim">
+              Methods cited in the resulting Quality card: chrF (Popović 2015), ROUGE-L (Lin 2004),
+              G-Eval (Liu et al. 2023), Prometheus 2 (Kim et al. 2024).
+            </p>
+          </Dialog>
+        </>
       )}
     </>
   );
@@ -851,21 +757,13 @@ function renderTokensCostBadge(row: RunRow) {
   const metrics = row.metrics as Record<string, unknown> | undefined;
   if (!metrics) return null;
   const tokens = metrics.tokens as Record<string, unknown> | undefined;
-  const totalTokens =
-    typeof tokens?.total_tokens === "number"
-      ? Number(tokens.total_tokens)
-      : null;
-  const costUsd =
-    typeof tokens?.total_cost_usd === "number"
-      ? Number(tokens.total_cost_usd)
-      : null;
+  const totalTokens = typeof tokens?.total_tokens === "number" ? Number(tokens.total_tokens) : null;
+  const costUsd = typeof tokens?.total_cost_usd === "number" ? Number(tokens.total_cost_usd) : null;
   if (totalTokens == null && costUsd == null) return null;
   const pieces: string[] = [];
   if (totalTokens != null && totalTokens > 0) {
     pieces.push(
-      totalTokens >= 1000
-        ? `${(totalTokens / 1000).toFixed(1)}k tok`
-        : `${totalTokens} tok`,
+      totalTokens >= 1000 ? `${(totalTokens / 1000).toFixed(1)}k tok` : `${totalTokens} tok`,
     );
   }
   if (costUsd != null && costUsd > 0) {
@@ -902,12 +800,7 @@ function QualityCard({ data }: { data: CompareResponse }) {
       none: "no reference",
     };
     const parts: string[] = [];
-    for (const src of [
-      "user_pinned",
-      "db_comment",
-      "catalog_applied",
-      "none",
-    ] as const) {
+    for (const src of ["user_pinned", "db_comment", "catalog_applied", "none"] as const) {
       if (counts[src]) parts.push(`${counts[src]} ${labels[src]}`);
     }
     return parts.join(" · ");
@@ -941,25 +834,11 @@ function QualityCard({ data }: { data: CompareResponse }) {
               <th className="px-5 py-2 text-left font-semibold">Run</th>
               <th className="px-5 py-2 text-right font-semibold">Diversity</th>
               <th className="px-5 py-2 text-right font-semibold">Schema grounding</th>
-              {hasChrf && (
-                <th className="px-5 py-2 text-right font-semibold">chrF</th>
-              )}
-              {hasRouge && (
-                <th className="px-5 py-2 text-right font-semibold">ROUGE-L</th>
-              )}
-              {hasBert && (
-                <th className="px-5 py-2 text-right font-semibold">BERTScore</th>
-              )}
-              {hasEmbed && (
-                <th className="px-5 py-2 text-right font-semibold">
-                  Embed. agree.
-                </th>
-              )}
-              {hasJudge && (
-                <th className="px-5 py-2 text-right font-semibold">
-                  Judge win-rate
-                </th>
-              )}
+              {hasChrf && <th className="px-5 py-2 text-right font-semibold">chrF</th>}
+              {hasRouge && <th className="px-5 py-2 text-right font-semibold">ROUGE-L</th>}
+              {hasBert && <th className="px-5 py-2 text-right font-semibold">BERTScore</th>}
+              {hasEmbed && <th className="px-5 py-2 text-right font-semibold">Embed. agree.</th>}
+              {hasJudge && <th className="px-5 py-2 text-right font-semibold">Judge win-rate</th>}
             </tr>
           </thead>
           <tbody>
@@ -973,19 +852,13 @@ function QualityCard({ data }: { data: CompareResponse }) {
                   {fmt(row.schema_grounding)}
                 </td>
                 {hasChrf && (
-                  <td className="px-5 py-2 text-right font-mono text-xs">
-                    {fmt(row.chrf)}
-                  </td>
+                  <td className="px-5 py-2 text-right font-mono text-xs">{fmt(row.chrf)}</td>
                 )}
                 {hasRouge && (
-                  <td className="px-5 py-2 text-right font-mono text-xs">
-                    {fmt(row.rouge_l)}
-                  </td>
+                  <td className="px-5 py-2 text-right font-mono text-xs">{fmt(row.rouge_l)}</td>
                 )}
                 {hasBert && (
-                  <td className="px-5 py-2 text-right font-mono text-xs">
-                    {fmt(row.bertscore)}
-                  </td>
+                  <td className="px-5 py-2 text-right font-mono text-xs">{fmt(row.bertscore)}</td>
                 )}
                 {hasEmbed && (
                   <td className="px-5 py-2 text-right font-mono text-xs">
@@ -1011,9 +884,7 @@ function QualityCard({ data }: { data: CompareResponse }) {
               entries stacked under the table on every compare. The
               full citations live at /cli/history/#academic-methods on
               amxcli.com for anyone who wants them. */}
-          <span className="font-semibold uppercase tracking-wider">
-            Methods
-          </span>
+          <span className="font-semibold uppercase tracking-wider">Methods</span>
           <span>
             {": "}
             {quality.citations.map((c) => c.label).join(" · ")} ·{" "}
@@ -1038,8 +909,7 @@ function CompareResults({ data }: { data: CompareResponse }) {
     <div className="space-y-4">
       {data.missing.length > 0 && (
         <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
-          {data.missing.length} run id(s) not found:{" "}
-          {data.missing.map((m) => `#${m}`).join(", ")}
+          {data.missing.length} run id(s) not found: {data.missing.map((m) => `#${m}`).join(", ")}
         </div>
       )}
 
@@ -1065,12 +935,8 @@ function CompareResults({ data }: { data: CompareResponse }) {
                       #{s.run_id}
                     </Link>
                   </td>
-                  <td className="px-5 py-2 font-mono text-xs">
-                    {String(s.command ?? "")}
-                  </td>
-                  <td className="px-5 py-2 font-mono text-xs">
-                    {String(s.llm_model ?? "—")}
-                  </td>
+                  <td className="px-5 py-2 font-mono text-xs">{String(s.command ?? "")}</td>
+                  <td className="px-5 py-2 font-mono text-xs">{String(s.llm_model ?? "—")}</td>
                   <td className="px-5 py-2 text-xs text-ink-muted">
                     {[s.doc_profile, s.code_profile].filter(Boolean).join(" / ") || "—"}
                   </td>
@@ -1120,13 +986,7 @@ function CompareResults({ data }: { data: CompareResponse }) {
   );
 }
 
-function AggregatesPivot({
-  rows,
-  runIds,
-}: {
-  rows: AggregateRow[];
-  runIds: number[];
-}) {
+function AggregatesPivot({ rows, runIds }: { rows: AggregateRow[]; runIds: number[] }) {
   const byMetric = new Map<string, Map<number, number | null>>();
   for (const r of rows) {
     const inner = byMetric.get(r.metric) ?? new Map<number, number | null>();
@@ -1150,23 +1010,18 @@ function AggregatesPivot({
           const winnerRunId = pickWinnerRunId(metric, vals);
           return (
             <tr key={metric} className="border-t border-surface-border">
-              <td
-                className="px-5 py-2 text-xs font-medium"
-                title={metric}
-              >
+              <td className="px-5 py-2 text-xs font-medium" title={metric}>
                 {AGGREGATE_LABEL[metric] ?? metric}
               </td>
               {runIds.map((id) => {
                 const v = vals.get(id);
-                const isWinner =
-                  winnerRunId != null && id === winnerRunId;
+                const isWinner = winnerRunId != null && id === winnerRunId;
                 return (
                   <td
                     key={id}
                     className={cn(
                       "px-5 py-2 text-right font-mono text-xs tabular-nums",
-                      isWinner &&
-                        "bg-accent-soft/20 ring-1 ring-inset ring-accent/50",
+                      isWinner && "bg-accent-soft/20 ring-1 ring-inset ring-accent/50",
                     )}
                   >
                     {formatAggregateCell(metric, v)}
@@ -1211,13 +1066,7 @@ function formatAggregateCell(metric: string, value: number | null | undefined): 
  *  "Compare" actually useful for. The previous render kept reading
  *  ``r["run_<id>"]`` (a key the backend never produced) so every
  *  cell was the empty-state dash. */
-function PerColumnPivot({
-  rows,
-  runIds,
-}: {
-  rows: PerColumnRow[];
-  runIds: number[];
-}) {
+function PerColumnPivot({ rows, runIds }: { rows: PerColumnRow[]; runIds: number[] }) {
   // Group by (schema, table, column). Each cell now holds an ordered
   // list of versions (v1 + any v2/v3+ descendants for that asset
   // within this run) rather than a single row, so Variations /
@@ -1238,10 +1087,7 @@ function PerColumnPivot({
     }
     byAsset.set(key, inner);
     if (!labelByAsset.has(key)) {
-      labelByAsset.set(
-        key,
-        [schema, table, column].filter(Boolean).join(".") || "—",
-      );
+      labelByAsset.set(key, [schema, table, column].filter(Boolean).join(".") || "—");
     }
   }
   // Stable per-cell sort: v1 first, then descendants chronologically
@@ -1352,10 +1198,8 @@ function PerColumnPivot({
               {runIds.map((id) => {
                 const versions = cells.get(id) ?? [];
                 const hasContent =
-                  versions.length > 0 &&
-                  (versions[0]?.description?.trim() || "").length > 0;
-                const isWinner =
-                  bestRunId != null && id === bestRunId && hasContent;
+                  versions.length > 0 && (versions[0]?.description?.trim() || "").length > 0;
+                const isWinner = bestRunId != null && id === bestRunId && hasContent;
                 return (
                   <td
                     key={id}
@@ -1417,9 +1261,7 @@ function PerColumnPivot({
                                   </span>
                                 ) : null}
                               </div>
-                              <div className="text-ink">
-                                {cell.description}
-                              </div>
+                              <div className="text-ink">{cell.description}</div>
                               <div className="flex flex-wrap items-center gap-2 text-[10px]">
                                 {cell.confidence ? (
                                   <ConfidencePill
@@ -1428,8 +1270,7 @@ function PerColumnPivot({
                                   />
                                 ) : null}
                                 <LogprobBadge score={cell.logprob_score ?? null} />
-                                {typeof cell.token_count === "number" &&
-                                cell.token_count > 0 ? (
+                                {typeof cell.token_count === "number" && cell.token_count > 0 ? (
                                   <span
                                     className="font-mono text-ink-dim"
                                     title="Output tokens for this asset's chosen description."
@@ -1442,31 +1283,26 @@ function PerColumnPivot({
                                   version's headline so semantic /
                                   lexical divergence stays visible
                                   per-version, not just per-run. */}
-                              {Array.isArray(cell.alternatives) &&
-                              cell.alternatives.length > 1 ? (
+                              {Array.isArray(cell.alternatives) && cell.alternatives.length > 1 ? (
                                 <div className="mt-1 space-y-0.5 border-t border-surface-border/40 pt-1">
-                                  {cell.alternatives
-                                    .slice(1)
-                                    .map((alt, idx) => (
-                                      <div
-                                        key={idx}
-                                        className="flex items-start justify-between gap-2 text-[11px] leading-snug"
-                                      >
-                                        <div className="min-w-0 flex-1">
-                                          <span className="mr-1.5 inline-block w-3 text-[10px] text-ink-dim">
-                                            {String.fromCharCode(66 + idx)}
-                                          </span>
-                                          <span className="text-ink-muted">
-                                            {alt.text}
-                                          </span>
-                                        </div>
-                                        <AltScoreBadge
-                                          band={alt.band ?? null}
-                                          score={alt.score ?? null}
-                                          signal={alt.signal ?? null}
-                                        />
+                                  {cell.alternatives.slice(1).map((alt, idx) => (
+                                    <div
+                                      key={idx}
+                                      className="flex items-start justify-between gap-2 text-[11px] leading-snug"
+                                    >
+                                      <div className="min-w-0 flex-1">
+                                        <span className="mr-1.5 inline-block w-3 text-[10px] text-ink-dim">
+                                          {String.fromCharCode(66 + idx)}
+                                        </span>
+                                        <span className="text-ink-muted">{alt.text}</span>
                                       </div>
-                                    ))}
+                                      <AltScoreBadge
+                                        band={alt.band ?? null}
+                                        score={alt.score ?? null}
+                                        signal={alt.signal ?? null}
+                                      />
+                                    </div>
+                                  ))}
                                 </div>
                               ) : null}
                             </div>
@@ -1522,9 +1358,7 @@ interface CellCompareSingleResponse {
  *  drawer emits via ``pinnedCellToToken``. Returns ``[]`` on a missing
  *  or malformed param so the panel renders an empty state instead of
  *  crashing on a manually-edited URL. */
-function parseCellsParam(
-  raw: string | null,
-): Array<{ path: string; run_id: number }> {
+function parseCellsParam(raw: string | null): Array<{ path: string; run_id: number }> {
   if (!raw) return [];
   return raw
     .split(",")
@@ -1580,13 +1414,7 @@ function CellCompareView({ cellsParam }: { cellsParam: string }) {
   );
 }
 
-function CellCompareSection({
-  path,
-  runs,
-}: {
-  path: string;
-  runs: number[];
-}) {
+function CellCompareSection({ path, runs }: { path: string; runs: number[] }) {
   // We don't actually know the database segment client-side — the
   // pin tokens elide it. The endpoint accepts any non-empty string
   // there, so we pass a placeholder; the response echoes ``null``
@@ -1609,12 +1437,8 @@ function CellCompareSection({
   return (
     <Card>
       <CardHeader
-        title={
-          <span className="font-mono text-sm">{path}</span>
-        }
-        description={
-          isColumnLevel ? "Column-level cell" : "Table-level cell"
-        }
+        title={<span className="font-mono text-sm">{path}</span>}
+        description={isColumnLevel ? "Column-level cell" : "Table-level cell"}
       />
       <CardBody className="p-0 overflow-x-auto">
         {query.isLoading ? (
@@ -1658,19 +1482,11 @@ function CellCompareTable({ data }: { data: CellCompareSingleResponse }) {
             );
           }
           const isBest = data.best_run_id === entry.run_id;
-          const citeCount = Array.isArray(entry.citations)
-            ? entry.citations.length
-            : 0;
+          const citeCount = Array.isArray(entry.citations) ? entry.citations.length : 0;
           return (
-            <tr
-              key={entry.run_id}
-              className={cn(isBest && "bg-positive/5")}
-            >
+            <tr key={entry.run_id} className={cn(isBest && "bg-positive/5")}>
               <td className="px-3 py-2 font-mono">
-                <Link
-                  to={`/runs/${entry.run_id}`}
-                  className="text-accent hover:underline"
-                >
+                <Link to={`/runs/${entry.run_id}`} className="text-accent hover:underline">
                   #{entry.run_id}
                 </Link>
                 {isBest && (
@@ -1684,9 +1500,7 @@ function CellCompareTable({ data }: { data: CellCompareSingleResponse }) {
               </td>
               <td className="px-3 py-2">
                 <p className="whitespace-pre-line">
-                  {entry.description || (
-                    <span className="text-ink-dim">(empty)</span>
-                  )}
+                  {entry.description || <span className="text-ink-dim">(empty)</span>}
                 </p>
               </td>
               <td className="px-3 py-2">
@@ -1698,9 +1512,7 @@ function CellCompareTable({ data }: { data: CellCompareSingleResponse }) {
               <td className="px-3 py-2">
                 <LogprobBadge score={entry.logprob_score ?? null} />
               </td>
-              <td className="px-3 py-2 text-ink-dim">
-                {entry.source ?? "—"}
-              </td>
+              <td className="px-3 py-2 text-ink-dim">{entry.source ?? "—"}</td>
               <td className="px-3 py-2 text-ink-dim">{citeCount}</td>
               <td className="px-3 py-2 text-right">
                 <button

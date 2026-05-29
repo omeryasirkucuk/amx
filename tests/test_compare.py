@@ -192,6 +192,107 @@ class FindRunsForScopeTests(unittest.TestCase):
             self.assertEqual(ask_only[0]["llm_profile"], "claude")
 
 
+class ComparableRunsTests(unittest.TestCase):
+    """The comparable-only filter that keeps Ask / non-description runs
+    out of the Compare picker feed and the CLI auto-resolution."""
+
+    def test_is_comparable_command_truth_table(self) -> None:
+        from amx.storage.run_kinds import is_comparable_command
+
+        for cmd in ("analyze.run", "analyze.apply", "rerun", "schedule",
+                    "generate.table", "generate.column", "GENERATE.SCHEMA"):
+            self.assertTrue(is_comparable_command(cmd), cmd)
+        for cmd in ("search.ask", "ask.run", "search.sync", "search.compare",
+                    "", None, "something.else"):
+            self.assertFalse(is_comparable_command(cmd), cmd)
+
+    def test_find_runs_for_scope_comparable_only_drops_ask(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            s = _fresh_store(tmp)
+            _seed_run(s, schema="sales", table="orders", command="analyze.run")
+            _seed_run(s, schema="sales", table="orders", command="rerun")
+            _seed_run(s, schema="sales", table="orders", command="generate.table")
+            _seed_run(s, schema="sales", table="orders", command="schedule")
+            _seed_run(s, schema="sales", table="orders", command="search.ask")
+            comparable = s.find_runs_for_scope(
+                schema="sales", comparable_only=True, limit=10
+            )
+            commands = {r["command"] for r in comparable}
+            self.assertEqual(
+                commands, {"analyze.run", "rerun", "generate.table", "schedule"}
+            )
+            self.assertNotIn("search.ask", commands)
+
+    def test_find_runs_for_scope_comparable_only_ands_command_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            s = _fresh_store(tmp)
+            _seed_run(s, schema="sales", table="orders", command="analyze.run")
+            _seed_run(s, schema="sales", table="orders", command="rerun")
+            _seed_run(s, schema="sales", table="orders", command="search.ask")
+            only_analyze = s.find_runs_for_scope(
+                schema="sales",
+                comparable_only=True,
+                command_filter="analyze.run",
+                limit=10,
+            )
+            self.assertEqual({r["command"] for r in only_analyze}, {"analyze.run"})
+
+    def test_list_recent_runs_comparable_only_drops_ask(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            s = _fresh_store(tmp)
+            _seed_run(s, command="analyze.run")
+            _seed_run(s, command="generate.column")
+            _seed_run(s, command="search.ask")
+            rows = s.list_recent_runs(limit=10, command_filter=None, comparable_only=True)
+            commands = {r["command"] for r in rows}
+            self.assertEqual(commands, {"analyze.run", "generate.column"})
+
+    def test_resolve_scope_excludes_ask(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            _seed_run(store, schema="sales", table="orders", command="analyze.run")
+            _seed_run(store, schema="sales", table="orders", command="rerun")
+            _seed_run(store, schema="sales", table="orders", command="search.ask")
+            cfg = AMXConfig()
+            with patch(
+                "amx.cli_support.commands.compare.history_store",
+                return_value=store,
+            ):
+                runs = _resolve_runs(
+                    cfg=cfg,
+                    run_ids=(),
+                    schema="sales",
+                    table="orders",
+                    last_n=10,
+                    command_filter="all",
+                )
+            self.assertEqual(
+                {r["command"] for r in runs}, {"analyze.run", "rerun"}
+            )
+
+    def test_resolve_explicit_ids_skips_non_comparable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            analyze_id = _seed_run(store, command="analyze.run")
+            ask_id = _seed_run(store, command="search.ask")
+            cfg = AMXConfig()
+            with patch(
+                "amx.cli_support.commands.compare.history_store",
+                return_value=store,
+            ):
+                runs = _resolve_runs(
+                    cfg=cfg,
+                    run_ids=(str(analyze_id), str(ask_id)),
+                    schema="",
+                    table="",
+                    last_n=5,
+                    command_filter="all",
+                )
+            self.assertEqual({int(r["id"]) for r in runs}, {analyze_id})
+
+
 class CompareHelpersTests(unittest.TestCase):
     def test_detect_by_picks_first_varying_dimension(self) -> None:
         runs = [
