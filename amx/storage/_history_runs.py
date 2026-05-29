@@ -209,6 +209,7 @@ def list_recent_runs(
     limit: int = 20,
     *,
     command_filter: str | None = "analyze.run",
+    comparable_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the most-recent runs, optionally filtered by ``command``.
 
@@ -219,9 +220,20 @@ def list_recent_runs(
     rows). Per the 2026-05-02 user feedback: ``/ask`` chat sessions
     belong in ``/session list`` (with resume), not in the
     analyze-run history list.
+
+    ``comparable_only=True`` restricts the result to the
+    description-producing commands the Compare picker can pivot (see
+    :mod:`amx.storage.run_kinds`). It combines (AND) with
+    ``command_filter`` when both are given.
     """
     clauses: list[str] = []
     params: list[Any] = []
+    if comparable_only:
+        from amx.storage.run_kinds import comparable_sql
+
+        frag, frag_params = comparable_sql("command")
+        clauses.append(frag)
+        params.extend(frag_params)
     if command_filter:
         clauses.append("command = ?")
         params.append(str(command_filter))
@@ -349,6 +361,7 @@ def find_runs_for_scope(
     schema: str | None = None,
     table: str | None = None,
     command_filter: str | None = None,
+    comparable_only: bool = False,
     limit: int = 5,
 ) -> list[dict[str, Any]]:
     """Return runs whose scope_json mentions ``schema`` (and optionally ``table``).
@@ -359,9 +372,21 @@ def find_runs_for_scope(
     ``{"<schema>": ["<table>", ...]}`` shape produced by AMX.
     ``command_filter`` accepts ``"analyze.run"``, ``"search.ask"``,
     or ``None`` (any).
+
+    ``comparable_only=True`` restricts the result to the
+    description-producing commands the Compare picker can pivot (see
+    :mod:`amx.storage.run_kinds`) so ``/compare --last N`` never
+    auto-resolves a non-comparable run. It combines (AND) with
+    ``command_filter`` when both are given.
     """
     clauses: list[str] = []
     params: list[Any] = []
+    if comparable_only:
+        from amx.storage.run_kinds import comparable_sql
+
+        frag, frag_params = comparable_sql("command")
+        clauses.append(frag)
+        params.extend(frag_params)
     if command_filter:
         clauses.append("command = ?")
         params.append(command_filter)
@@ -496,7 +521,10 @@ def stats(hs: SQLiteHistoryStore, command_filter: str | None = "analyze.run") ->
 
 
 def count_pending_review_runs(
-    hs: SQLiteHistoryStore, command_filter: str | None = "analyze.run"
+    hs: SQLiteHistoryStore,
+    command_filter: str | None = "analyze.run",
+    *,
+    comparable_only: bool = False,
 ) -> int:
     """Global count of runs that still have unreviewed result rows.
 
@@ -505,12 +533,23 @@ def count_pending_review_runs(
     two terminal states where human review work remains. Used by
     the Studio Landing "pending review" chip so the badge reflects
     the whole table, not just the most-recent feed slice.
+
+    ``comparable_only=True`` mirrors the comparable-runs filter used by
+    the Compare picker feed so the ``/api/history/runs`` endpoint can
+    report a count consistent with the rows it returns. It combines (AND)
+    with ``command_filter`` when both are given.
     """
     where = "status IN ('ready_for_review','applied_partial')"
     params: tuple[Any, ...] = ()
+    if comparable_only:
+        from amx.storage.run_kinds import comparable_sql
+
+        frag, frag_params = comparable_sql("command")
+        where += f" AND {frag}"
+        params = params + tuple(frag_params)
     if command_filter:
         where += " AND command = ?"
-        params = (command_filter,)
+        params = params + (command_filter,)
     with hs._connect() as conn:
         row = conn.execute(
             f"SELECT COUNT(*) AS n FROM analysis_runs WHERE {where}", params

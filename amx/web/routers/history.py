@@ -56,7 +56,11 @@ def list_recent_runs(
 ) -> dict[str, Any]:
     """Most-recent runs filtered by command. ``command=all`` includes
     every kind (analyze.run + search.ask + …) so the SPA's "All
-    activity" view can render them together.
+    activity" view can render them together. ``command=comparable``
+    restricts the feed to the description-producing runs the Compare
+    picker can pivot (analyze / rerun / generate / schedule) — Ask and
+    other non-description commands are dropped so the picker never lists
+    a run the user can't actually compare.
 
     Each row carries a ``live_job_id`` when its worker thread is still
     alive in the registry. The Studio uses that id to render an inline
@@ -64,14 +68,20 @@ def list_recent_runs(
     stop a stuck worker was to know the SSE job id off-hand and POST
     ``/api/runs/{job}/cancel`` by hand.
     """
-    cmd_filter = None if (command or "").strip().lower() in {"", "all"} else command
+    normalized = (command or "").strip().lower()
+    comparable_only = normalized == "comparable"
+    cmd_filter = None if normalized in {"", "all", "comparable"} else command
     store = _store()
-    rows = store.list_recent_runs(limit=limit, command_filter=cmd_filter)
+    rows = store.list_recent_runs(
+        limit=limit, command_filter=cmd_filter, comparable_only=comparable_only
+    )
     # Global "pending review" tally — runs still holding unreviewed
     # result rows (``ready_for_review`` + ``applied_partial``). The
     # Studio Landing chip reads this so its count reflects the whole
     # table, not the (necessarily small) recent-feed window.
-    pending_review_total = store.count_pending_review_runs(command_filter=cmd_filter)
+    pending_review_total = store.count_pending_review_runs(
+        command_filter=cmd_filter, comparable_only=comparable_only
+    )
     # Build a {run_id: job_id} index in O(active jobs) so the per-row
     # lookup below is O(1). ``apply`` jobs don't carry a run_id and
     # are skipped; ``run``, ``rerun``, and ``variations`` jobs each
