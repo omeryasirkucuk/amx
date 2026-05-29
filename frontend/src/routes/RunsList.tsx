@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -101,12 +101,27 @@ const KIND_FILTER_OPTIONS: ReadonlyArray<{
   { value: "schedule", label: "Schedule" },
 ];
 
+const PAGE_SIZE = 50;
+
 export default function RunsList() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useToast();
   const [confirmCancelRow, setConfirmCancelRow] = useState<Row | null>(null);
   const [kindFilter, setKindFilter] = useState<CommandKindFilter>(readStoredKindFilter);
+  // Server-driven controls. The list is paged on the server, so search,
+  // status filter, and sort must travel to the API too — otherwise they'd
+  // only see the current page. ``searchInput`` is debounced into
+  // ``debouncedSearch`` before it hits the query so each keystroke doesn't
+  // fire a request.
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("__all");
+  const [sort, setSort] = useState<{ id: string; direction: "asc" | "desc" } | null>({
+    id: "id",
+    direction: "desc",
+  });
+  const [page, setPage] = useState(0);
 
   function changeKindFilter(next: CommandKindFilter) {
     setKindFilter(next);
@@ -114,15 +129,48 @@ export default function RunsList() {
       window.localStorage.setItem(KIND_FILTER_STORAGE_KEY, next);
     }
   }
+
+  // Debounce the search box (200ms) so typing doesn't fire a request per
+  // keystroke — mirrors the Assets page's server-search pattern.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchInput.trim()), 200);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  // Any filter/search/sort change resets to the first page so the user
+  // doesn't land on an out-of-range page after the result set shrinks.
+  useEffect(() => {
+    setPage(0);
+  }, [debouncedSearch, statusFilter, kindFilter, sort]);
+
   const runs = useQuery({
-    queryKey: ["recent-runs", "all"],
-    queryFn: () => api.recentRuns(50, "all"),
+    // Every server-driven param is in the key so a change refetches the
+    // matching page (and the live poll re-pulls the current view).
+    queryKey: [
+      "recent-runs",
+      "list",
+      kindFilter,
+      debouncedSearch,
+      statusFilter,
+      sort?.id ?? "",
+      sort?.direction ?? "",
+      page,
+    ],
+    queryFn: () =>
+      api.recentRuns(PAGE_SIZE, "all", {
+        offset: page * PAGE_SIZE,
+        q: debouncedSearch || undefined,
+        status: statusFilter !== "__all" ? statusFilter : undefined,
+        kind: kindFilter !== "all" ? kindFilter : undefined,
+        sortBy: sort?.id,
+        sortDir: sort?.direction,
+      }),
     retry: false,
-    // Poll while there's at least one running row so a freshly
-    // cancelled job's status flips on screen without the user
-    // refreshing the page. Backend's ``live_job_id`` is what drives
-    // the inline Cancel icon — when the worker exits, the next poll
-    // returns the row with ``live_job_id=null`` and the icon hides.
+    // Poll while there's at least one running row on the current page so a
+    // freshly cancelled job's status flips on screen without the user
+    // refreshing. Backend's ``live_job_id`` drives the inline Cancel icon —
+    // when the worker exits, the next poll returns the row with
+    // ``live_job_id=null`` and the icon hides.
     refetchInterval: (query) => {
       const data = (query.state.data as { runs?: Row[] } | undefined)?.runs;
       const stillRunning = (data ?? []).some(
@@ -136,16 +184,27 @@ export default function RunsList() {
     },
   });
 
-  // /runs defaults to "Analyze" so the page reads as the "what AMX
-  // did to the database" log. The kind chip group above the table
-  // lets the user widen to All activity, narrow to Ask sessions /
-  // Generate / Rerun. ``commandKind`` buckets each row's raw
-  // ``command`` field; "other" survives only under "all".
-  const allRows: Row[] = (runs.data?.runs as Row[] | undefined) ?? [];
-  const rows: Row[] = useMemo(() => {
-    if (kindFilter === "all") return allRows;
-    return allRows.filter((r) => commandKind(r.command) === kindFilter);
-  }, [allRows, kindFilter]);
+  // The page is already the server-resolved slice — no client-side kind
+  // filtering. Counts come from the full-dataset facets so the chips stay
+  // honest across pages.
+  const rows: Row[] = useMemo(
+    () => (runs.data?.runs as Row[] | undefined) ?? [],
+    [runs.data],
+  );
+  // Memoized so the empty-object fallback isn't a fresh reference each
+  // render (which would churn the `filters` useMemo below).
+  const kindCounts = useMemo<Record<string, number>>(
+    () => runs.data?.kind_counts ?? {},
+    [runs.data],
+  );
+  const statusCounts = useMemo<Record<string, number>>(
+    () => runs.data?.status_counts ?? {},
+    [runs.data],
+  );
+  const totalRows = runs.data?.total ?? rows.length;
+  // Grand total across statuses (under the active search + kind) for the
+  // status chip group's "All" badge.
+  const statusTotal = Object.values(statusCounts).reduce((a, b) => a + b, 0);
 
   const cancelRun = useMutation({
     mutationFn: (jobId: string) => api.cancelRun(jobId),
@@ -318,34 +377,38 @@ export default function RunsList() {
     [cancelRun.isPending],
   );
 
+  // Status filter chips. Server-side now, so the predicates are unused (the
+  // API applies the filter); the badge counts come from the full-dataset
+  // ``status_counts`` facet so they reflect every matching run, not just
+  // this page. ``running`` covers queued workers too, matching the backend.
   const filters: DataTableFilter<Row>[] = useMemo(
     () => [
       {
         id: "success",
         label: "Succeeded",
-        predicate: (r) => r.status === "success",
-        badge: rows.filter((r) => r.status === "success").length,
+        predicate: () => true,
+        badge: statusCounts.success ?? 0,
       },
       {
         id: "failed",
         label: "Failed",
-        predicate: (r) => r.status === "failed",
-        badge: rows.filter((r) => r.status === "failed").length,
+        predicate: () => true,
+        badge: statusCounts.failed ?? 0,
       },
       {
         id: "running",
         label: "Running",
-        predicate: (r) => r.status === "running" || r.status === "queued",
-        badge: rows.filter((r) => r.status === "running" || r.status === "queued").length,
+        predicate: () => true,
+        badge: statusCounts.running ?? 0,
       },
       {
         id: "cancelled",
         label: "Cancelled",
-        predicate: (r) => r.status === "cancelled",
-        badge: rows.filter((r) => r.status === "cancelled").length,
+        predicate: () => true,
+        badge: statusCounts.cancelled ?? 0,
       },
     ],
-    [rows],
+    [statusCounts],
   );
 
   return (
@@ -401,9 +464,10 @@ export default function RunsList() {
         </span>
         {KIND_FILTER_OPTIONS.map(({ value, label }) => {
           const active = kindFilter === value;
-          const count = value === "all"
-            ? allRows.length
-            : allRows.filter((r) => commandKind(r.command) === value).length;
+          // Counts come from the server's full-dataset ``kind_counts``
+          // facet (keyed by bucket, plus an ``all`` total), so they reflect
+          // every matching run regardless of the current page.
+          const count = kindCounts[value] ?? 0;
           return (
             <button
               key={value}
@@ -431,14 +495,6 @@ export default function RunsList() {
         onRowClick={(r) => navigate(`/runs/${r.id}`)}
         searchable
         searchPlaceholder="Search by id, command, or scope…"
-        searchAccessor={(r) =>
-          [
-            String(r.id),
-            r.command,
-            Object.keys(r.scope_json || r.scope || {}).join(" "),
-            r.status,
-          ].join(" ")
-        }
         filters={filters}
         isLoading={runs.isLoading}
         error={runs.error ? (runs.error as Error).message : null}
@@ -448,7 +504,21 @@ export default function RunsList() {
             ? "warning"
             : "critical"
         }
-        initialSort={{ id: "id", direction: "desc" }}
+        pageSize={PAGE_SIZE}
+        // Server-driven: search, status filter, sort, and paging all travel
+        // to the API so they span the whole history, not just this page.
+        server={{
+          query: searchInput,
+          onQueryChange: setSearchInput,
+          activeFilter: statusFilter,
+          onFilterChange: setStatusFilter,
+          allFilterBadge: statusTotal,
+          sort,
+          onSortChange: setSort,
+          page,
+          totalRows,
+          onPageChange: setPage,
+        }}
         emptyState={
           <EmptyState
             icon={History}

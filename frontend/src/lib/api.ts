@@ -426,6 +426,19 @@ export interface RecentRunsResponse {
   runs: RunRow[];
   count: number;
   /**
+   * Server-side pagination facets for the Runs page. ``total`` is the
+   * full count matching the active search / kind / status filters (drives
+   * the pager); ``has_more`` is true when rows beyond this page exist.
+   * ``kind_counts`` (keyed by analyze / generate / rerun / ask / schedule /
+   * other / all) and ``status_counts`` (success / failed / running /
+   * cancelled) reflect the whole dataset so the chips stay accurate across
+   * pages. All optional for forward-compatibility with older API revisions.
+   */
+  total?: number;
+  has_more?: boolean;
+  kind_counts?: Record<string, number>;
+  status_counts?: Record<string, number>;
+  /**
    * Global count of runs whose status is ``ready_for_review`` or
    * ``applied_partial`` — i.e. runs that still have unreviewed result
    * rows. Computed against the full ``analysis_runs`` table on the
@@ -718,9 +731,26 @@ export const api = {
       ),
       { method: "POST" },
     ),
-  recentRuns: (limit = 20, command: string | null = "analyze.run") => {
+  recentRuns: (
+    limit = 20,
+    command: string | null = "analyze.run",
+    opts: {
+      offset?: number;
+      q?: string;
+      status?: string;
+      kind?: string;
+      sortBy?: string;
+      sortDir?: "asc" | "desc";
+    } = {},
+  ) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (command) params.set("command", command);
+    if (opts.offset != null) params.set("offset", String(opts.offset));
+    if (opts.q) params.set("q", opts.q);
+    if (opts.status) params.set("status", opts.status);
+    if (opts.kind) params.set("kind", opts.kind);
+    if (opts.sortBy) params.set("sort_by", opts.sortBy);
+    if (opts.sortDir) params.set("sort_dir", opts.sortDir);
     return apiFetch<RecentRunsResponse>(`/api/history/runs?${params.toString()}`);
   },
   /** Trigger Tier 1+2 quality analysis on an existing comparison.

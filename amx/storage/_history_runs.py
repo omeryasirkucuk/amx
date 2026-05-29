@@ -204,14 +204,90 @@ def update_run_status(
         )
 
 
+# Allow-list mapping a DataTable column id -> the SQL column it sorts by.
+# Anything outside this map falls back to ``started_at`` so a crafted
+# ``sort_by`` can never inject SQL.
+_RUNS_SORT_COLUMNS: dict[str, str] = {
+    "id": "id",
+    "status": "status",
+    "duration": "duration_sec",
+    "duration_sec": "duration_sec",
+    "started": "started_at",
+    "started_at": "started_at",
+    "db": "db_profile",
+    "db_profile": "db_profile",
+    "model": "llm_model",
+    "llm_model": "llm_model",
+    "command": "command",
+}
+
+# Status filter id -> the stored status values it covers. "running" also
+# covers freshly-queued workers, matching the frontend status chip.
+_STATUS_GROUPS: dict[str, tuple[str, ...]] = {
+    "success": ("success",),
+    "failed": ("failed",),
+    "running": ("running", "queued"),
+    "cancelled": ("cancelled",),
+}
+
+
+def _runs_where(
+    *,
+    q: str | None = None,
+    status: str | None = None,
+    kind: str | None = None,
+    command_filter: str | None = None,
+    comparable_only: bool = False,
+) -> tuple[str, list[Any]]:
+    """Build the shared WHERE body (no ``WHERE`` keyword) for the Runs list
+    and its facet counts. Returns ``(sql, params)``; ``sql`` is the AND-joined
+    clause body, empty when no filter applies. Reused by ``list_recent_runs``
+    and ``runs_facets`` so the page and its counts stay consistent."""
+    from amx.storage.run_kinds import comparable_sql, kind_bucket_sql
+
+    clauses: list[str] = []
+    params: list[Any] = []
+    if comparable_only:
+        frag, frag_params = comparable_sql("command")
+        clauses.append(frag)
+        params.extend(frag_params)
+    if command_filter:
+        clauses.append("command = ?")
+        params.append(str(command_filter))
+    if kind:
+        frag, frag_params = kind_bucket_sql(kind, "command")
+        if frag:
+            clauses.append(frag)
+            params.extend(frag_params)
+    if status:
+        values = _STATUS_GROUPS.get(str(status).strip().lower())
+        if values:
+            placeholders = ",".join("?" for _ in values)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(values)
+    if q and str(q).strip():
+        needle = f"%{str(q).strip()}%"
+        clauses.append(
+            "(CAST(id AS TEXT) LIKE ? OR command LIKE ? OR scope_json LIKE ? OR status LIKE ?)"
+        )
+        params.extend([needle, needle, needle, needle])
+    return " AND ".join(clauses), params
+
+
 def list_recent_runs(
     hs: SQLiteHistoryStore,
     limit: int = 20,
     *,
+    offset: int = 0,
     command_filter: str | None = "analyze.run",
     comparable_only: bool = False,
+    q: str | None = None,
+    status: str | None = None,
+    kind: str | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = "desc",
 ) -> list[dict[str, Any]]:
-    """Return the most-recent runs, optionally filtered by ``command``.
+    """Return one page of runs, optionally filtered by ``command``.
 
     ``command_filter`` defaults to ``"analyze.run"`` so ``/history list``
     shows only ``/run`` invocations — the historical "what data
@@ -225,20 +301,28 @@ def list_recent_runs(
     description-producing commands the Compare picker can pivot (see
     :mod:`amx.storage.run_kinds`). It combines (AND) with
     ``command_filter`` when both are given.
-    """
-    clauses: list[str] = []
-    params: list[Any] = []
-    if comparable_only:
-        from amx.storage.run_kinds import comparable_sql
 
-        frag, frag_params = comparable_sql("command")
-        clauses.append(frag)
-        params.extend(frag_params)
-    if command_filter:
-        clauses.append("command = ?")
-        params.append(str(command_filter))
-    where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    The Runs page drives server-side pagination through ``offset`` plus the
+    ``q`` (free-text over id / command / scope / status), ``status``,
+    ``kind`` (bucket), ``sort_by`` (allow-listed column id), and ``sort_dir``
+    (``"asc"``/``"desc"``) arguments. All default to the legacy
+    newest-first-by-``started_at`` behavior so other callers are unchanged.
+    """
+    where_body, params = _runs_where(
+        q=q,
+        status=status,
+        kind=kind,
+        command_filter=command_filter,
+        comparable_only=comparable_only,
+    )
+    where_sql = ("WHERE " + where_body) if where_body else ""
+    sort_col = _RUNS_SORT_COLUMNS.get((sort_by or "").strip().lower(), "started_at")
+    direction = "ASC" if (sort_dir or "").strip().lower() == "asc" else "DESC"
+    # Tie-break by id so rows with equal sort keys (same status, same
+    # duration) page deterministically instead of drifting between fetches.
+    order_sql = f"ORDER BY {sort_col} {direction}, id DESC"
     params.append(max(1, int(limit)))
+    params.append(max(0, int(offset)))
     # ``tokens_json`` joins the SELECT so /api/usage's aggregator
     # (and any future caller that reasons about per-run cost) can
     # read the per-call records without a second round-trip. The
@@ -259,8 +343,8 @@ def list_recent_runs(
                    created_by, hostname, client_version, shared_uuid
             FROM analysis_runs
             {where_sql}
-            ORDER BY started_at DESC
-            LIMIT ?
+            {order_sql}
+            LIMIT ? OFFSET ?
             """,
             tuple(params),
         ).fetchall()
@@ -353,6 +437,79 @@ def list_recent_runs(
         )
         out.append(d)
     return out
+
+
+def runs_facets(
+    hs: SQLiteHistoryStore,
+    *,
+    q: str | None = None,
+    status: str | None = None,
+    kind: str | None = None,
+) -> dict[str, Any]:
+    """Full-dataset facets for the Runs page so its chips stay accurate
+    regardless of the current page.
+
+    Returns ``{"total", "kind_counts", "status_counts"}`` where:
+
+    * ``total`` — rows matching the active ``q + kind + status`` (drives the
+      pager).
+    * ``kind_counts`` — per-bucket counts over the ``q``-filtered set only, so
+      each KIND chip shows its own total and responds to search independently
+      of the selected kind. Includes an ``"all"`` total.
+    * ``status_counts`` — per-status-group counts over the ``q + kind``-filtered
+      set, so the status chips reflect the active kind (as the page did when it
+      computed badges client-side).
+    """
+    from amx.storage.run_kinds import KIND_BUCKETS, command_bucket
+
+    def _count_where(**kw: Any) -> tuple[str, list[Any]]:
+        body, params = _runs_where(**kw)
+        return (("WHERE " + body) if body else ""), params
+
+    with hs._connect() as conn:
+        # total — every active filter applied.
+        total_where, total_params = _count_where(q=q, status=status, kind=kind)
+        total = conn.execute(
+            f"SELECT COUNT(*) AS n FROM analysis_runs {total_where}",
+            tuple(total_params),
+        ).fetchone()["n"]
+
+        # kind_counts — group by raw command over the q-filtered set, then
+        # bucket in Python so the map matches the frontend exactly.
+        kind_where, kind_params = _count_where(q=q)
+        kind_rows = conn.execute(
+            f"SELECT command, COUNT(*) AS n FROM analysis_runs {kind_where} GROUP BY command",
+            tuple(kind_params),
+        ).fetchall()
+        kind_counts: dict[str, int] = dict.fromkeys((*KIND_BUCKETS, "other"), 0)
+        kind_total = 0
+        for r in kind_rows:
+            n = int(r["n"] or 0)
+            kind_counts[command_bucket(r["command"])] += n
+            kind_total += n
+        kind_counts["all"] = kind_total
+
+        # status_counts — group by status over the q + kind-filtered set,
+        # collapsing into the four chip groups (running ⊃ queued).
+        status_where, status_params = _count_where(q=q, kind=kind)
+        status_rows = conn.execute(
+            f"SELECT status, COUNT(*) AS n FROM analysis_runs {status_where} GROUP BY status",
+            tuple(status_params),
+        ).fetchall()
+        status_counts: dict[str, int] = dict.fromkeys(_STATUS_GROUPS, 0)
+        for r in status_rows:
+            st = str(r["status"] or "").strip().lower()
+            n = int(r["n"] or 0)
+            for group, members in _STATUS_GROUPS.items():
+                if st in members:
+                    status_counts[group] += n
+                    break
+
+    return {
+        "total": int(total or 0),
+        "kind_counts": kind_counts,
+        "status_counts": status_counts,
+    }
 
 
 def find_runs_for_scope(
