@@ -58,9 +58,85 @@ def comparable_sql(column: str = "command") -> tuple[str, list[str]]:
     return fragment, params
 
 
+# ── Kind buckets ──────────────────────────────────────────────────────
+#
+# The Runs page groups every ``analysis_runs.command`` into one of these
+# user-visible buckets. This is the Python mirror of the frontend
+# ``commandKind`` in ``frontend/src/lib/runDisplay.ts`` — keep the two
+# in sync if a new command kind is added.
+
+# Bucket -> exact ``command`` values that map into it.
+_KIND_EXACT: dict[str, tuple[str, ...]] = {
+    "analyze": ("analyze.run", "analyze.apply"),
+    "rerun": ("rerun",),
+    "ask": ("search.ask", "ask.run"),
+    "schedule": ("schedule",),
+}
+# Bucket -> command prefixes that map into it.
+_KIND_PREFIXES: dict[str, tuple[str, ...]] = {
+    "generate": ("generate.",),
+}
+# Buckets a user can filter by (everything else falls into "other").
+KIND_BUCKETS: tuple[str, ...] = ("analyze", "generate", "rerun", "ask", "schedule")
+
+
+def command_bucket(command: str | None) -> str:
+    """Bucket a raw ``command`` into analyze / generate / rerun / ask /
+    schedule / other — the Python mirror of the frontend ``commandKind``."""
+    cmd = (command or "").strip().lower()
+    for bucket, values in _KIND_EXACT.items():
+        if cmd in values:
+            return bucket
+    for bucket, prefixes in _KIND_PREFIXES.items():
+        if any(cmd.startswith(p) for p in prefixes):
+            return bucket
+    return "other"
+
+
+def kind_bucket_sql(kind: str | None, column: str = "command") -> tuple[str, list[str]]:
+    """Return a ``(where_fragment, params)`` pair selecting rows in one kind
+    bucket, mirroring :func:`comparable_sql`.
+
+    ``kind`` is one of :data:`KIND_BUCKETS`, ``"other"``, or ``"all"``/``None``
+    (no filter — returns ``("", [])``). ``"other"`` is the negation of every
+    known bucket so unmapped commands (sync, scan, …) stay reachable.
+    """
+    key = (kind or "").strip().lower()
+    if key in {"", "all"}:
+        return "", []
+    if key == "other":
+        # NOT in any known exact value AND NOT matching any known prefix.
+        all_exact = [v for values in _KIND_EXACT.values() for v in values]
+        all_prefixes = [p for prefixes in _KIND_PREFIXES.values() for p in prefixes]
+        placeholders = ",".join("?" for _ in all_exact)
+        not_likes = " AND ".join(f"{column} NOT LIKE ?" for _ in all_prefixes)
+        fragment = f"({column} NOT IN ({placeholders}) AND {not_likes})"
+        params: list[str] = [*all_exact, *(f"{p}%" for p in all_prefixes)]
+        return fragment, params
+    exact = _KIND_EXACT.get(key, ())
+    prefixes = _KIND_PREFIXES.get(key, ())
+    clauses: list[str] = []
+    params = []
+    if exact:
+        placeholders = ",".join("?" for _ in exact)
+        clauses.append(f"{column} IN ({placeholders})")
+        params.extend(exact)
+    for p in prefixes:
+        clauses.append(f"{column} LIKE ?")
+        params.append(f"{p}%")
+    if not clauses:
+        # Unknown bucket name — match nothing rather than everything.
+        return "1 = 0", []
+    fragment = "(" + " OR ".join(clauses) + ")"
+    return fragment, params
+
+
 __all__ = [
     "COMPARABLE_EXACT",
     "COMPARABLE_PREFIXES",
+    "KIND_BUCKETS",
     "is_comparable_command",
     "comparable_sql",
+    "command_bucket",
+    "kind_bucket_sql",
 ]

@@ -2156,6 +2156,11 @@ class SQLiteHistoryStore:
 
         return list_recent_runs(self, *args, **kwargs)
 
+    def runs_facets(self, *args, **kwargs):
+        from amx.storage._history_runs import runs_facets
+
+        return runs_facets(self, *args, **kwargs)
+
     def find_runs_for_scope(self, *args, **kwargs):
         from amx.storage._history_runs import find_runs_for_scope
 

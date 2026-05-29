@@ -25,21 +25,81 @@ def test_missing_store_returns_503(client, auth_headers, monkeypatch) -> None:
     assert "history store" in response.json()["detail"].lower()
 
 
+def _stub_facets(total: int = 0) -> dict:
+    return {"total": total, "kind_counts": {}, "status_counts": {}}
+
+
 def test_list_recent_runs_filters_default_to_analyze_run(client, auth_headers, stub_store) -> None:
     stub_store.list_recent_runs.return_value = [{"id": 7, "command": "analyze.run"}]
+    stub_store.runs_facets.return_value = _stub_facets(total=1)
     response = client.get("/api/history/runs", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["command_filter"] == "analyze.run"
     assert payload["runs"][0]["id"] == 7
-    stub_store.list_recent_runs.assert_called_once_with(limit=20, command_filter="analyze.run")
+    stub_store.list_recent_runs.assert_called_once_with(
+        limit=20,
+        offset=0,
+        command_filter="analyze.run",
+        comparable_only=False,
+        q=None,
+        status=None,
+        kind=None,
+        sort_by=None,
+        sort_dir="desc",
+    )
 
 
 def test_list_recent_runs_command_all_disables_filter(client, auth_headers, stub_store) -> None:
     stub_store.list_recent_runs.return_value = []
+    stub_store.runs_facets.return_value = _stub_facets()
     response = client.get("/api/history/runs?command=all&limit=5", headers=auth_headers)
     assert response.status_code == 200
-    stub_store.list_recent_runs.assert_called_once_with(limit=5, command_filter=None)
+    stub_store.list_recent_runs.assert_called_once_with(
+        limit=5,
+        offset=0,
+        command_filter=None,
+        comparable_only=False,
+        q=None,
+        status=None,
+        kind=None,
+        sort_by=None,
+        sort_dir="desc",
+    )
+
+
+def test_list_recent_runs_server_paging_params(client, auth_headers, stub_store) -> None:
+    """Server-side pagination params flow through to the store and the
+    facet totals surface in the response."""
+    stub_store.list_recent_runs.return_value = []
+    stub_store.runs_facets.return_value = {
+        "total": 186,
+        "kind_counts": {"all": 186, "ask": 169},
+        "status_counts": {"success": 178},
+    }
+    response = client.get(
+        "/api/history/runs?command=all&limit=50&offset=50&q=nyc&status=success"
+        "&kind=ask&sort_by=duration&sort_dir=asc",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 186
+    assert payload["has_more"] is True  # offset 50 + page rows still < 186
+    assert payload["kind_counts"]["ask"] == 169
+    assert payload["status_counts"]["success"] == 178
+    stub_store.list_recent_runs.assert_called_once_with(
+        limit=50,
+        offset=50,
+        command_filter=None,
+        comparable_only=False,
+        q="nyc",
+        status="success",
+        kind="ask",
+        sort_by="duration",
+        sort_dir="asc",
+    )
+    stub_store.runs_facets.assert_called_once_with(q="nyc", status="success", kind="ask")
 
 
 def test_get_run_404_when_missing(client, auth_headers, stub_store) -> None:

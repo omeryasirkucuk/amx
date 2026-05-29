@@ -33,6 +33,34 @@ export interface DataTableFilter<T> {
   badge?: ReactNode;
 }
 
+/**
+ * Opt-in controlled / server-driven mode. When supplied, DataTable stops
+ * filtering, searching, sorting, and slicing the passed `rows` itself —
+ * it renders them verbatim and delegates every operation to the parent
+ * (which typically refetches a server page). The toolbar, sortable
+ * headers, filter chips, and pager all stay; only the data source moves.
+ * Leave this `undefined` for the default fully client-side behavior.
+ */
+export interface DataTableServerMode {
+  /** Controlled search text. */
+  query: string;
+  onQueryChange: (query: string) => void;
+  /** Controlled active filter id ("__all" or a `DataTableFilter.id`). */
+  activeFilter: string;
+  onFilterChange: (id: string) => void;
+  /** Badge for the auto-rendered "All" filter chip (e.g. grand total
+   *  across statuses). Falls back to `totalRows` when omitted. */
+  allFilterBadge?: ReactNode;
+  /** Controlled sort, or null for unsorted. */
+  sort: { id: string; direction: "asc" | "desc" } | null;
+  onSortChange: (sort: { id: string; direction: "asc" | "desc" } | null) => void;
+  /** Controlled 0-based page index. */
+  page: number;
+  /** Full row count matching the active filters (drives the pager). */
+  totalRows: number;
+  onPageChange: (page: number) => void;
+}
+
 interface Props<T> {
   columns: DataTableColumn<T>[];
   rows: T[];
@@ -65,6 +93,9 @@ interface Props<T> {
   initialSort?: { id: string; direction: "asc" | "desc" };
   /** Toolbar slot (right of search). */
   toolbar?: ReactNode;
+  /** Opt into controlled / server-driven mode. See
+   *  {@link DataTableServerMode}. Omit for client-side behavior. */
+  server?: DataTableServerMode;
 }
 
 /**
@@ -90,22 +121,44 @@ export default function DataTable<T>({
   className,
   initialSort,
   toolbar,
+  server,
 }: Props<T>) {
-  const [query, setQuery] = useState("");
-  const [activeFilter, setActiveFilter] = useState<string>("__all");
-  const [sort, setSort] = useState<{ id: string; direction: "asc" | "desc" } | null>(
-    initialSort ?? null,
-  );
-  const [page, setPage] = useState(0);
+  const isServer = !!server;
+  const [queryInternal, setQueryInternal] = useState("");
+  const [activeFilterInternal, setActiveFilterInternal] = useState<string>("__all");
+  const [sortInternal, setSortInternal] = useState<
+    { id: string; direction: "asc" | "desc" } | null
+  >(initialSort ?? null);
+  const [pageInternal, setPageInternal] = useState(0);
+
+  // Effective values read from the parent in server mode, internal state
+  // otherwise. The JSX below reads these so a single render path covers
+  // both modes.
+  const query = isServer ? server!.query : queryInternal;
+  const activeFilter = isServer ? server!.activeFilter : activeFilterInternal;
+  const sort = isServer ? server!.sort : sortInternal;
+  const effPage = isServer ? server!.page : pageInternal;
+
+  const setQuery = (v: string) =>
+    isServer ? server!.onQueryChange(v) : setQueryInternal(v);
+  const setActiveFilter = (id: string) =>
+    isServer ? server!.onFilterChange(id) : setActiveFilterInternal(id);
+  const setPage = (next: number | ((p: number) => number)) => {
+    const resolved = typeof next === "function" ? next(effPage) : next;
+    if (isServer) server!.onPageChange(resolved);
+    else setPageInternal(resolved);
+  };
 
   const haystack = useMemo(() => {
-    if (!searchable || !query) return null;
+    if (isServer || !searchable || !query) return null;
     const q = query.trim().toLowerCase();
     if (!q) return null;
     return q;
-  }, [searchable, query]);
+  }, [isServer, searchable, query]);
 
   const filtered = useMemo(() => {
+    // Server mode: rows are already the filtered/sorted page from the API.
+    if (isServer) return rows;
     let acc = rows;
     if (filters && activeFilter !== "__all") {
       const f = filters.find((f) => f.id === activeFilter);
@@ -140,22 +193,27 @@ export default function DataTable<T>({
       }
     }
     return acc;
-  }, [rows, filters, activeFilter, haystack, sort, columns, searchAccessor]);
+  }, [isServer, rows, filters, activeFilter, haystack, sort, columns, searchAccessor]);
 
+  // Pager math: in server mode the full count comes from the API
+  // (`totalRows`); otherwise it's the client-filtered length.
+  const totalRows = isServer ? server!.totalRows : filtered.length;
   const totalPages =
-    pageSize > 0 ? Math.max(1, Math.ceil(filtered.length / pageSize)) : 1;
-  const safePage = Math.min(page, totalPages - 1);
+    pageSize > 0 ? Math.max(1, Math.ceil(totalRows / pageSize)) : 1;
+  const safePage = Math.min(effPage, totalPages - 1);
   const visible =
-    pageSize > 0
-      ? filtered.slice(safePage * pageSize, (safePage + 1) * pageSize)
-      : filtered;
+    isServer || pageSize <= 0
+      ? filtered
+      : filtered.slice(safePage * pageSize, (safePage + 1) * pageSize);
 
   function toggleSort(colId: string) {
-    setSort((cur) => {
-      if (!cur || cur.id !== colId) return { id: colId, direction: "desc" };
-      if (cur.direction === "desc") return { id: colId, direction: "asc" };
+    const next = (() => {
+      if (!sort || sort.id !== colId) return { id: colId, direction: "desc" as const };
+      if (sort.direction === "desc") return { id: colId, direction: "asc" as const };
       return null;
-    });
+    })();
+    if (isServer) server!.onSortChange(next);
+    else setSortInternal(next);
     setPage(0);
   }
 
@@ -205,7 +263,7 @@ export default function DataTable<T>({
                 label="All"
                 isActive={activeFilter === "__all"}
                 onClick={() => handleFilter("__all")}
-                badge={rows.length}
+                badge={isServer ? (server!.allFilterBadge ?? server!.totalRows) : rows.length}
               />
               {filters.map((f) => (
                 <FilterChip
@@ -305,12 +363,15 @@ export default function DataTable<T>({
                   >
                     {(() => {
                       const filtersActive =
-                        !!haystack || activeFilter !== "__all";
+                        (isServer ? !!query.trim() : !!haystack) ||
+                        activeFilter !== "__all";
                       // Distinguish "no data at all" (use the caller's
                       // emptyState slot when supplied) from "filter
                       // eliminated every row" (always show a Clear-
                       // filters affordance so the user isn't stranded).
-                      if (filtersActive && rows.length > 0) {
+                      // In server mode `rows` is just the current page, so
+                      // gate only on whether filters are active.
+                      if (filtersActive && (isServer || rows.length > 0)) {
                         return (
                           <div className="flex flex-col items-center gap-2 text-sm">
                             <span className="text-ink-muted">
@@ -379,9 +440,9 @@ export default function DataTable<T>({
             <span>
               Showing{" "}
               <span className="font-medium text-ink">
-                {safePage * pageSize + 1}–{Math.min((safePage + 1) * pageSize, filtered.length)}
+                {safePage * pageSize + 1}–{Math.min((safePage + 1) * pageSize, totalRows)}
               </span>{" "}
-              of <span className="font-medium text-ink">{filtered.length}</span>
+              of <span className="font-medium text-ink">{totalRows}</span>
             </span>
             <div className="flex items-center gap-1">
               <button

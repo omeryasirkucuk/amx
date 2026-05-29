@@ -51,7 +51,13 @@ def _store() -> Any:
 @router.get("/runs")
 def list_recent_runs(
     limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     command: str | None = Query(default="analyze.run"),
+    q: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    kind: str | None = Query(default=None),
+    sort_by: str | None = Query(default=None),
+    sort_dir: str | None = Query(default="desc"),
     jobs: JobRegistry = Depends(get_jobs),
 ) -> dict[str, Any]:
     """Most-recent runs filtered by command. ``command=all`` includes
@@ -61,6 +67,14 @@ def list_recent_runs(
     picker can pivot (analyze / rerun / generate / schedule) — Ask and
     other non-description commands are dropped so the picker never lists
     a run the user can't actually compare.
+
+    The Runs page drives **server-side pagination** through ``offset`` plus
+    ``q`` (free-text over id / command / scope / status), ``status``, ``kind``
+    (one of analyze / generate / rerun / ask / schedule / other), ``sort_by``
+    (a DataTable column id), and ``sort_dir``. The response then carries
+    ``total`` + ``has_more`` for the pager and ``kind_counts`` /
+    ``status_counts`` so the chips reflect the whole dataset, not just the
+    current page.
 
     Each row carries a ``live_job_id`` when its worker thread is still
     alive in the registry. The Studio uses that id to render an inline
@@ -73,8 +87,20 @@ def list_recent_runs(
     cmd_filter = None if normalized in {"", "all", "comparable"} else command
     store = _store()
     rows = store.list_recent_runs(
-        limit=limit, command_filter=cmd_filter, comparable_only=comparable_only
+        limit=limit,
+        offset=offset,
+        command_filter=cmd_filter,
+        comparable_only=comparable_only,
+        q=q,
+        status=status,
+        kind=kind,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
     )
+    # Full-dataset facets so the Runs page's KIND / status chips and pager
+    # reflect every matching run, not just this page's slice.
+    facets = store.runs_facets(q=q, status=status, kind=kind)
+    total = int(facets.get("total", 0))
     # Global "pending review" tally — runs still holding unreviewed
     # result rows (``ready_for_review`` + ``applied_partial``). The
     # Studio Landing chip reads this so its count reflects the whole
@@ -107,6 +133,10 @@ def list_recent_runs(
         "command_filter": cmd_filter,
         "runs": rows,
         "count": len(rows),
+        "total": total,
+        "has_more": offset + len(rows) < total,
+        "kind_counts": facets.get("kind_counts", {}),
+        "status_counts": facets.get("status_counts", {}),
         "pending_review_total": pending_review_total,
     }
 
