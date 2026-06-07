@@ -63,9 +63,7 @@ def write_discovery(port: int, token: str, *, owner: str = "cli") -> StudioDisco
     )
     path = discovery_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{_DISCOVERY_FILENAME}.", dir=str(path.parent)
-    )
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{_DISCOVERY_FILENAME}.", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(asdict(record), handle, indent=2)

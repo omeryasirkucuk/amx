@@ -63,9 +63,7 @@ def test_read_non_dict_returns_none(isolated_config_dir) -> None:
 
 
 def test_read_missing_required_field_returns_none(isolated_config_dir) -> None:
-    discovery.discovery_path().write_text(
-        json.dumps({"port": 1, "pid": 2}), encoding="utf-8"
-    )
+    discovery.discovery_path().write_text(json.dumps({"port": 1, "pid": 2}), encoding="utf-8")
     assert discovery.read_discovery() is None
 
 
@@ -97,9 +95,7 @@ def test_clear_with_stale_pid_keeps_newer_record() -> None:
 def test_no_temp_file_left_behind(isolated_config_dir) -> None:
     discovery.write_discovery(1234, "tok")
     temp_leftovers = [
-        p.name
-        for p in isolated_config_dir.iterdir()
-        if p.name.startswith(".studio.json.")
+        p.name for p in isolated_config_dir.iterdir() if p.name.startswith(".studio.json.")
     ]
     assert temp_leftovers == []
     assert discovery.discovery_path().exists()

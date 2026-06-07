@@ -199,11 +199,25 @@ class ComparableRunsTests(unittest.TestCase):
     def test_is_comparable_command_truth_table(self) -> None:
         from amx.storage.run_kinds import is_comparable_command
 
-        for cmd in ("analyze.run", "analyze.apply", "rerun", "schedule",
-                    "generate.table", "generate.column", "GENERATE.SCHEMA"):
+        for cmd in (
+            "analyze.run",
+            "analyze.apply",
+            "rerun",
+            "schedule",
+            "generate.table",
+            "generate.column",
+            "GENERATE.SCHEMA",
+        ):
             self.assertTrue(is_comparable_command(cmd), cmd)
-        for cmd in ("search.ask", "ask.run", "search.sync", "search.compare",
-                    "", None, "something.else"):
+        for cmd in (
+            "search.ask",
+            "ask.run",
+            "search.sync",
+            "search.compare",
+            "",
+            None,
+            "something.else",
+        ):
             self.assertFalse(is_comparable_command(cmd), cmd)
 
     def test_find_runs_for_scope_comparable_only_drops_ask(self) -> None:
@@ -214,13 +228,9 @@ class ComparableRunsTests(unittest.TestCase):
             _seed_run(s, schema="sales", table="orders", command="generate.table")
             _seed_run(s, schema="sales", table="orders", command="schedule")
             _seed_run(s, schema="sales", table="orders", command="search.ask")
-            comparable = s.find_runs_for_scope(
-                schema="sales", comparable_only=True, limit=10
-            )
+            comparable = s.find_runs_for_scope(schema="sales", comparable_only=True, limit=10)
             commands = {r["command"] for r in comparable}
-            self.assertEqual(
-                commands, {"analyze.run", "rerun", "generate.table", "schedule"}
-            )
+            self.assertEqual(commands, {"analyze.run", "rerun", "generate.table", "schedule"})
             self.assertNotIn("search.ask", commands)
 
     def test_find_runs_for_scope_comparable_only_ands_command_filter(self) -> None:
@@ -267,9 +277,7 @@ class ComparableRunsTests(unittest.TestCase):
                     last_n=10,
                     command_filter="all",
                 )
-            self.assertEqual(
-                {r["command"] for r in runs}, {"analyze.run", "rerun"}
-            )
+            self.assertEqual({r["command"] for r in runs}, {"analyze.run", "rerun"})
 
     def test_resolve_explicit_ids_skips_non_comparable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
