@@ -8,6 +8,7 @@ import type { ScheduleSummary } from "../api/types";
 import type { ExtensionServices } from "../services";
 import { getViews, refreshViews } from "../views";
 import { showStatusMenu } from "../views/statusBar";
+import { registerManagement } from "../management";
 import { registerOpenPanelCommands } from "./openPanels";
 import { registerProfileCommands } from "./profileCommands";
 import { registerReplCommand } from "./repl";
@@ -22,6 +23,7 @@ export function registerCommands(services: ExtensionServices): void {
   registerRuntimeCommands(services);
   registerViewGlueCommands(services);
   registerScheduleCommands(services);
+  registerManagement(services);
 }
 
 function registerViewGlueCommands(services: ExtensionServices): void {
