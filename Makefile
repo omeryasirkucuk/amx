@@ -3,7 +3,7 @@
 # strictly developer ergonomics.
 
 .PHONY: help install test lint format type web-build web-dev web-clean \
-        perf-install perf-baseline perf-compare perf-clean
+        vsix perf-install perf-baseline perf-compare perf-clean
 
 help:
 	@echo "AMX make targets:"
@@ -15,6 +15,7 @@ help:
 	@echo "  make web-build    Build the /studio SPA into amx/web/static/."
 	@echo "  make web-dev      Run uvicorn + Vite dev server side-by-side."
 	@echo "  make web-clean    Wipe amx/web/static/ (will need rebuild)."
+	@echo "  make vsix         Build the editor extension VSIX into amx/assets/vsix/."
 	@echo "  make perf-install Install the optional [perf] extra."
 	@echo "  make perf-baseline Capture a benchmark baseline JSON."
 	@echo "  make perf-compare  Compare current benchmarks against the latest baseline."
@@ -64,6 +65,22 @@ web-clean:
 	  find amx/web/static -mindepth 1 -not -name 'index.html' -delete; \
 	  echo "Wiped amx/web/static/ (kept index.html placeholder)."; \
 	fi
+
+# ── Editor extension VSIX ────────────────────────────────────────────
+# The TypeScript project under vscode-extension/ is repo-only — only
+# the built VSIX ships in the wheel (amx/assets/vsix/, committed so
+# end users need no Node). ``vsix`` stamps the extension's version to
+# the current amx version before packaging so the two never drift.
+
+vsix:
+	cd vscode-extension && npm ci --no-audit --no-fund && \
+	node -e "const f='package.json',p=require('./'+f);p.version=process.argv[1];require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')" $$(python3 -c "import amx; print(amx.__version__)") && \
+	rm -f amx-vscode-*.vsix && \
+	npm run package && \
+	mkdir -p ../amx/assets/vsix && \
+	cp amx-vscode-*.vsix ../amx/assets/vsix/amx-vscode.vsix && \
+	rm -f amx-vscode-*.vsix
+	@echo "VSIX vendored at amx/assets/vsix/amx-vscode.vsix."
 
 # ── Performance benchmarks (opt-in) ──────────────────────────────────
 # The ``perf`` extras and tests/perf/ tree are not part of the wheel

@@ -76,14 +76,21 @@ _CSP_BASE = (
 _CSP = _CSP_BASE + "; frame-ancestors 'none'"
 
 # Embedded mode — opted into by IDE hosts (e.g. the VS Code
-# extension) that render Studio inside a webview iframe. The iframe
-# parent is an opaque ``vscode-webview://`` origin, so there is no
-# stable value to allowlist; ``frame-ancestors *`` is acceptable here
-# because the server still binds to 127.0.0.1 only and every ``/api/*``
-# request still requires the bearer token — framing alone grants an
-# attacker nothing without the token, and the token never leaves the
-# host that spawned the server.
-_CSP_EMBEDDED = _CSP_BASE + "; frame-ancestors *"
+# extension) that render Studio inside a webview iframe. Permissive
+# framing is acceptable here because the server still binds to
+# 127.0.0.1 only and every ``/api/*`` request still requires the
+# bearer token — framing alone grants an attacker nothing without the
+# token, and the token never leaves the host that spawned the server.
+#
+# The CSP ``*`` source matches **network schemes only** (http/https/
+# ws/wss), so it does NOT cover IDE webview ancestor chains: VS Code
+# frames sit under ``vscode-webview://`` (the webview wrapper) and
+# ``vscode-file://`` (the desktop workbench window), and Chromium
+# checks *every* ancestor against this directive. Without the
+# explicit scheme sources the browser rejects the iframe with
+# ``ERR_BLOCKED_BY_RESPONSE`` and the panel renders blank — verified
+# empirically against VS Code 1.123 (vscode-extension's diag suite).
+_CSP_EMBEDDED = _CSP_BASE + "; frame-ancestors * vscode-webview: vscode-file:"
 
 
 def _headers_for(embedded: bool) -> dict[str, str]:

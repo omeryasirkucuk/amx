@@ -10,6 +10,7 @@ import { DisposableStore } from "../util/disposables";
 import { log } from "../util/log";
 import { registerGenerateDescription } from "./actions/generateDescription";
 import { DocumentStateStore } from "./documentState";
+import { registerSelectionLookup } from "./selectionLookup";
 import { AmxCodeLensProvider } from "./providers/codeLensProvider";
 import { createCompletionProvider } from "./providers/completionProvider";
 import { AmxDiagnostics } from "./providers/diagnosticsProvider";
@@ -51,11 +52,18 @@ export function registerLanguageFeatures(services: ExtensionServices): void {
     }
   };
 
+  const warmAll = (): void => {
+    services.client.profiles
+      .listDb()
+      .then((profiles) => resolver.ensureWarmAll(profiles.map((profile) => profile.name)))
+      .catch((error: unknown) => {
+        log(`catalog warm-up for language features failed: ${String(error)}`);
+      });
+  };
+
   const warmFor = (document: vscode.TextDocument): void => {
     if (vscode.languages.match(selector, document) === 0) return;
-    resolver.ensureWarm().catch((error: unknown) => {
-      log(`catalog warm-up for language features failed: ${String(error)}`);
-    });
+    warmAll();
   };
 
   registerProviders();
@@ -68,6 +76,11 @@ export function registerLanguageFeatures(services: ExtensionServices): void {
     // amx.openAsset is registered once in commands/openPanels.ts;
     // hovers and lenses invoke it by id.
     registerGenerateDescription(services),
+  );
+  // Selection-driven lookup works in EVERY file type (lightbulb +
+  // editor context menu) — registered outside the SQL selector.
+  registerSelectionLookup(services, resolver);
+  context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("amx.editor")) registerProviders();
     }),

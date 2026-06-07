@@ -31,14 +31,18 @@ type Listener = (scope: CatalogScope | undefined) => void;
 
 const DEFAULT_TTL_MS = 300_000;
 
+interface TableCacheEntry {
+  tables: TableMeta[];
+  fetchedAt: number;
+}
+
 export class CatalogCache {
-  private tables: TableMeta[] = [];
-  private tablesFetchedAt = 0;
-  private tablesScope: CatalogScope = {};
+  /** Per-profile table cache; key "" is the active-profile scope. */
+  private readonly tablesByScope = new Map<string, TableCacheEntry>();
+  private readonly tableFetches = new Map<string, Promise<TableMeta[]>>();
   private readonly columnsByTable = new Map<string, ColumnMeta[]>();
   private readonly columnFetches = new Map<string, Promise<ColumnMeta[]>>();
   private readonly listeners = new Set<Listener>();
-  private tableFetch: Promise<TableMeta[]> | undefined;
 
   constructor(
     private readonly client: AmxClient,
@@ -60,25 +64,39 @@ export class CatalogCache {
   }
 
   /**
-   * All indexed tables for the scope (TTL-cached, deduped in-flight).
-   * The inventory endpoint already carries effective descriptions, so
-   * table-level features need no further calls.
+   * All indexed tables for the scope (TTL-cached per profile, deduped
+   * in-flight). The inventory endpoint already carries effective
+   * descriptions, so table-level features need no further calls.
    */
   async getTables(scope: CatalogScope = {}): Promise<readonly TableMeta[]> {
-    const fresh =
-      Date.now() - this.tablesFetchedAt < this.ttlMs &&
-      sameScope(scope, this.tablesScope) &&
-      this.tables.length > 0;
-    if (fresh) return this.tables;
-    this.tableFetch ??= this.fetchTables(scope).finally(() => {
-      this.tableFetch = undefined;
-    });
-    return this.tableFetch;
+    const key = scopeKey(scope);
+    const entry = this.tablesByScope.get(key);
+    if (entry && Date.now() - entry.fetchedAt < this.ttlMs) return entry.tables;
+    let inFlight = this.tableFetches.get(key);
+    if (!inFlight) {
+      inFlight = this.fetchTables(scope, key).finally(() => {
+        this.tableFetches.delete(key);
+      });
+      this.tableFetches.set(key, inFlight);
+    }
+    return inFlight;
   }
 
-  /** Warmed tables only — synchronous, for the hover hot path. */
+  /** Warmed tables across every fetched scope — synchronous, for the
+   *  hover hot path. Profiles can index the same schema.table, so the
+   *  union is deduped on profile+schema+name. */
   get warmTables(): readonly TableMeta[] {
-    return this.tables;
+    const seen = new Set<string>();
+    const union: TableMeta[] = [];
+    for (const entry of this.tablesByScope.values()) {
+      for (const table of entry.tables) {
+        const key = `${table.profile ?? ""}|${table.schema.toLowerCase()}|${table.name.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        union.push(table);
+      }
+    }
+    return union;
   }
 
   /** Columns for one table, lazily fetched and cached. */
@@ -106,17 +124,24 @@ export class CatalogCache {
   }
 
   invalidate(scope?: CatalogScope): void {
-    this.tablesFetchedAt = 0;
+    // Mark stale rather than delete: warmTables keeps answering from
+    // the previous snapshot (hover stays responsive) while the next
+    // getTables() refetches fresh data.
+    if (scope) {
+      const entry = this.tablesByScope.get(scopeKey(scope));
+      if (entry) entry.fetchedAt = 0;
+    } else {
+      for (const entry of this.tablesByScope.values()) entry.fetchedAt = 0;
+    }
     this.columnsByTable.clear();
     for (const listener of this.listeners) listener(scope);
   }
 
-  private async fetchTables(scope: CatalogScope): Promise<TableMeta[]> {
+  private async fetchTables(scope: CatalogScope, key: string): Promise<TableMeta[]> {
     const rows = await this.client.catalog.inventory(scope);
-    this.tables = rows.map((row) => toTableMeta(row));
-    this.tablesFetchedAt = Date.now();
-    this.tablesScope = scope;
-    return this.tables;
+    const tables = rows.map((row) => toTableMeta(row, scope.profile));
+    this.tablesByScope.set(key, { tables, fetchedAt: Date.now() });
+    return tables;
   }
 
   private async fetchColumns(
@@ -132,16 +157,22 @@ export class CatalogCache {
   }
 }
 
-function sameScope(a: CatalogScope, b: CatalogScope): boolean {
-  return a.profile === b.profile && a.database === b.database && a.schema === b.schema;
+function scopeKey(scope: CatalogScope): string {
+  // Database participates in the key so per-database inventories
+  // (profile → database → schema tree level) cache independently.
+  return `${scope.profile ?? ""}|${scope.database ?? ""}`;
 }
 
-function toTableMeta(row: InventoryTable): TableMeta {
+function toTableMeta(row: InventoryTable, scopeProfile?: string): TableMeta {
   const meta: TableMeta = {
     schema: row.schema_name,
     name: row.table_name,
   };
-  if (row.db_profile) meta.profile = row.db_profile;
+  // Inventory rows don't always echo the profile back — fall back to
+  // the scope the fetch was made for so tree nodes and deep links
+  // stay profile-qualified.
+  const profile = row.db_profile || scopeProfile;
+  if (profile) meta.profile = profile;
   if (row.database_name) meta.database = row.database_name;
   if (row.effective_description) meta.description = row.effective_description;
   if (row.asset_kind) meta.assetKind = row.asset_kind;

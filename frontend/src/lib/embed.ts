@@ -18,6 +18,11 @@ const STORAGE_KEY = "amx.studio.embed";
 /** Message type the embedding shell listens for to open external URLs. */
 export const OPEN_EXTERNAL_MESSAGE = "amx:openExternal";
 
+/** Posted to the embedding shell once the SPA's JS is executing, so
+ *  the host can distinguish "SPA booted" from "iframe was blocked"
+ *  (a blocked iframe still fires `load` but never runs script). */
+export const EMBED_READY_MESSAGE = "amx:embedReady";
+
 /**
  * Capture `?embed=1` into sessionStorage and strip it from the URL.
  * Call before the React tree mounts, alongside captureTokenFromUrl().
@@ -56,6 +61,9 @@ export function isEmbedded(): boolean {
  */
 export function installExternalLinkBridge(): void {
   if (!isEmbedded() || window.parent === window) return;
+  // Boot signal for the host's loading overlay — sent immediately
+  // (script is executing, which a blocked iframe never reaches).
+  window.parent.postMessage({ type: EMBED_READY_MESSAGE }, "*");
   document.addEventListener(
     "click",
     (event) => {

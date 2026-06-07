@@ -2,9 +2,10 @@
   "name": "amx-vscode",
   "displayName": "AMX",
   "description": "Manage AMX database metadata, runs, lineage, and documentation from VS Code.",
-  "version": "0.1.0",
+  "version": "0.18.0",
   "publisher": "amx",
   "license": "Apache-2.0",
+  "icon": "media/amx.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/omeryasirkucuk/amx",
@@ -27,7 +28,7 @@
         {
           "id": "amx",
           "title": "AMX",
-          "icon": "media/amx.svg"
+          "icon": "media/amx.png"
         }
       ]
     },
@@ -160,6 +161,143 @@
         "command": "amx.openAsset",
         "title": "Open Asset in Studio",
         "category": "AMX"
+      },
+      {
+        "command": "amx.profiles.addDb",
+        "title": "Add DB Profile",
+        "category": "AMX",
+        "icon": "$(add)"
+      },
+      {
+        "command": "amx.profiles.addLlm",
+        "title": "Add LLM Profile",
+        "category": "AMX",
+        "icon": "$(add)"
+      },
+      {
+        "command": "amx.profiles.addDocs",
+        "title": "Add Docs Profile",
+        "category": "AMX",
+        "icon": "$(add)"
+      },
+      {
+        "command": "amx.profiles.addCode",
+        "title": "Add Code Profile",
+        "category": "AMX",
+        "icon": "$(add)"
+      },
+      {
+        "command": "amx.profiles.editProfile",
+        "title": "Edit Profile…",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.profiles.deleteProfile",
+        "title": "Delete Profile",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.profiles.testDb",
+        "title": "Test Connection",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.profiles.setActive",
+        "title": "Set Active",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.catalog.sync",
+        "title": "Sync Catalog",
+        "category": "AMX",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "amx.catalog.deepSync",
+        "title": "Deep Sync Catalog…",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.catalog.editDescription",
+        "title": "Edit Description…",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.catalog.generateDescription",
+        "title": "Generate Description",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.catalog.copyName",
+        "title": "Copy Qualified Name",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.catalog.analyzeTable",
+        "title": "Analyze This Table…",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.runs.start",
+        "title": "Start Run…",
+        "category": "AMX",
+        "icon": "$(play)"
+      },
+      {
+        "command": "amx.runs.cancel",
+        "title": "Cancel Run",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.runs.rerun",
+        "title": "Re-run",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.schedules.create",
+        "title": "New Schedule…",
+        "category": "AMX",
+        "icon": "$(add)"
+      },
+      {
+        "command": "amx.schedules.edit",
+        "title": "Edit Schedule…",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.schedules.delete",
+        "title": "Delete Schedule",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.schedules.pause",
+        "title": "Pause Schedule",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.schedules.resume",
+        "title": "Resume Schedule",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.schedules.runNow",
+        "title": "Run Now",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.catalog.analyzeSchema",
+        "title": "Analyze This Schema…",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.catalog.analyzeScope",
+        "title": "Start Run Here…",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.searchSelection",
+        "title": "Search Selection in Catalog",
+        "category": "AMX"
       }
     ],
     "menus": {
@@ -183,6 +321,16 @@
           "command": "amx.schedules.refresh",
           "when": "view == amx.schedules",
           "group": "navigation"
+        },
+        {
+          "command": "amx.runs.start",
+          "when": "view == amx.history",
+          "group": "navigation"
+        },
+        {
+          "command": "amx.schedules.create",
+          "when": "view == amx.schedules",
+          "group": "navigation"
         }
       ],
       "commandPalette": [
@@ -197,6 +345,216 @@
         {
           "command": "amx.openAsset",
           "when": "false"
+        },
+        {
+          "command": "amx.profiles.editProfile",
+          "when": "false"
+        },
+        {
+          "command": "amx.profiles.deleteProfile",
+          "when": "false"
+        },
+        {
+          "command": "amx.profiles.testDb",
+          "when": "false"
+        },
+        {
+          "command": "amx.profiles.setActive",
+          "when": "false"
+        },
+        {
+          "command": "amx.catalog.editDescription",
+          "when": "false"
+        },
+        {
+          "command": "amx.catalog.generateDescription",
+          "when": "false"
+        },
+        {
+          "command": "amx.catalog.copyName",
+          "when": "false"
+        },
+        {
+          "command": "amx.catalog.analyzeTable",
+          "when": "false"
+        },
+        {
+          "command": "amx.catalog.deepSync",
+          "when": "false"
+        },
+        {
+          "command": "amx.runs.cancel",
+          "when": "false"
+        },
+        {
+          "command": "amx.runs.rerun",
+          "when": "false"
+        },
+        {
+          "command": "amx.schedules.edit",
+          "when": "false"
+        },
+        {
+          "command": "amx.schedules.delete",
+          "when": "false"
+        },
+        {
+          "command": "amx.schedules.pause",
+          "when": "false"
+        },
+        {
+          "command": "amx.schedules.resume",
+          "when": "false"
+        },
+        {
+          "command": "amx.schedules.runNow",
+          "when": "false"
+        },
+        {
+          "command": "amx.catalog.analyzeSchema",
+          "when": "false"
+        },
+        {
+          "command": "amx.catalog.analyzeScope",
+          "when": "false"
+        },
+        {
+          "command": "amx.searchSelection",
+          "when": "editorHasSelection"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "amx.searchSelection",
+          "when": "editorHasSelection",
+          "group": "9_amx@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "amx.profiles.addDb",
+          "when": "view == amx.profiles && viewItem == amx.profileGroup.db",
+          "group": "inline"
+        },
+        {
+          "command": "amx.profiles.addLlm",
+          "when": "view == amx.profiles && viewItem == amx.profileGroup.llm",
+          "group": "inline"
+        },
+        {
+          "command": "amx.profiles.addDocs",
+          "when": "view == amx.profiles && viewItem == amx.profileGroup.docs",
+          "group": "inline"
+        },
+        {
+          "command": "amx.profiles.addCode",
+          "when": "view == amx.profiles && viewItem == amx.profileGroup.code",
+          "group": "inline"
+        },
+        {
+          "command": "amx.profiles.setActive",
+          "when": "view == amx.profiles && viewItem =~ /amx\\.(db|llm)Profile/",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "amx.profiles.testDb",
+          "when": "view == amx.profiles && viewItem =~ /amx\\.dbProfile/",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "amx.profiles.editProfile",
+          "when": "view == amx.profiles && viewItem =~ /amx\\.(db|llm|docs|code)Profile/",
+          "group": "2_modify@1"
+        },
+        {
+          "command": "amx.profiles.deleteProfile",
+          "when": "view == amx.profiles && viewItem =~ /amx\\.(db|llm|docs|code)Profile/",
+          "group": "2_modify@2"
+        },
+        {
+          "command": "amx.catalog.sync",
+          "when": "view == amx.catalog && viewItem == amx.catalogProfile",
+          "group": "inline"
+        },
+        {
+          "command": "amx.catalog.sync",
+          "when": "view == amx.catalog && viewItem == amx.catalogProfile",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "amx.catalog.deepSync",
+          "when": "view == amx.catalog && viewItem == amx.catalogProfile",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "amx.catalog.analyzeScope",
+          "when": "view == amx.catalog && viewItem == amx.catalogProfile",
+          "group": "1_actions@3"
+        },
+        {
+          "command": "amx.catalog.analyzeScope",
+          "when": "view == amx.catalog && viewItem == amx.catalogDatabase",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "amx.catalog.analyzeSchema",
+          "when": "view == amx.catalog && viewItem == amx.catalogSchema",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "amx.catalog.analyzeTable",
+          "when": "view == amx.catalog && viewItem == amx.catalogTable",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "amx.catalog.editDescription",
+          "when": "view == amx.catalog && viewItem =~ /amx\\.catalog(Table|Column)/",
+          "group": "2_modify@1"
+        },
+        {
+          "command": "amx.catalog.generateDescription",
+          "when": "view == amx.catalog && viewItem =~ /amx\\.catalog(Table|Column)/",
+          "group": "2_modify@2"
+        },
+        {
+          "command": "amx.catalog.copyName",
+          "when": "view == amx.catalog && viewItem =~ /amx\\.catalog(Table|Column)/",
+          "group": "3_copy@1"
+        },
+        {
+          "command": "amx.runs.rerun",
+          "when": "view == amx.history && viewItem == amx.run",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "amx.runs.cancel",
+          "when": "view == amx.history && viewItem == amx.run.running",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "amx.schedules.edit",
+          "when": "view == amx.schedules && viewItem =~ /^amx\\.schedule($|\\.)/",
+          "group": "2_modify@1"
+        },
+        {
+          "command": "amx.schedules.delete",
+          "when": "view == amx.schedules && viewItem =~ /^amx\\.schedule($|\\.)/",
+          "group": "2_modify@2"
+        },
+        {
+          "command": "amx.schedules.pause",
+          "when": "view == amx.schedules && viewItem =~ /^amx\\.schedule($|\\.)/",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "amx.schedules.resume",
+          "when": "view == amx.schedules && viewItem =~ /^amx\\.schedule($|\\.)/",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "amx.schedules.runNow",
+          "when": "view == amx.schedules && viewItem =~ /^amx\\.schedule($|\\.)/",
+          "group": "1_actions@3"
         }
       ]
     },
@@ -296,6 +654,11 @@
           ],
           "default": "tables",
           "description": "Whether coverage diagnostics check tables only or tables and columns."
+        },
+        "amx.editor.selectionLookup.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Offer the 'Search Selection in Catalog' lightbulb action for text selections in any file."
         }
       }
     }

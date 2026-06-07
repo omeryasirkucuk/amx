@@ -52,6 +52,19 @@ export class CatalogResolver {
     this.rebuildIfDirty();
   }
 
+  /**
+   * Warm every given profile's tables in one sweep, then rebuild the
+   * index once. Assets live across profiles (e.g. a Databricks table
+   * referenced from a SQL file while a Postgres profile is active),
+   * so language features index the union, not just the active scope.
+   */
+  async ensureWarmAll(profiles: readonly string[]): Promise<void> {
+    if (profiles.length === 0) return this.ensureWarm();
+    await Promise.allSettled(profiles.map((profile) => this.catalog.getTables({ profile })));
+    this.dirty = true;
+    this.rebuildIfDirty();
+  }
+
   /** Resolve one scanner token against the warmed catalog. */
   resolve(scan: ScanResult, token: SqlToken): ResolvedRef | undefined {
     this.rebuildIfDirty();

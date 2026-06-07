@@ -6,16 +6,23 @@ import type { ServerManager } from "../server/serverManager";
 import { errorFromResponse } from "./errors";
 import { streamSse, type SseOptions } from "./sse";
 import type {
+  BackendSpec,
   CatalogScope,
+  CatalogSearchHit,
   ContextInfo,
   DbProfileSummary,
   GenerateResult,
   Health,
   InventoryTable,
+  JobRef,
   LlmProfileSummary,
+  LlmProviderSpec,
   NamedProfileSummary,
+  RunResultRow,
   RunsPage,
+  RunSubmitBody,
   RunSummary,
+  ScheduleCreateBody,
   ScheduleSummary,
   SseEvent,
   TableExplain,
@@ -89,6 +96,12 @@ export class AmxClient {
     return this.request<T>("PUT", path, options);
   }
 
+  del<T>(path: string, query?: Query): Promise<T> {
+    const options: { query?: Query } = {};
+    if (query) options.query = query;
+    return this.request<T>("DELETE", path, options);
+  }
+
   /** Stream an SSE endpoint with reconnect + Last-Event-ID resume. */
   async *sse(path: string, options: SseOptions = {}): AsyncGenerator<SseEvent> {
     const { baseUrl, token } = await this.server.ensure();
@@ -118,6 +131,24 @@ export class AmxClient {
       this.post(`/api/profiles/llm/${encodeURIComponent(name)}/activate`),
     testDb: (name: string): Promise<unknown> =>
       this.post(`/api/profiles/db/${encodeURIComponent(name)}/test`),
+    listBackends: async (): Promise<BackendSpec[]> =>
+      (await this.get<{ backends: BackendSpec[] }>("/api/profiles/db/backends")).backends,
+    listProviders: async (): Promise<LlmProviderSpec[]> =>
+      (await this.get<{ providers: LlmProviderSpec[] }>("/api/profiles/llm/providers")).providers,
+    upsertDb: (name: string, body: Record<string, unknown>): Promise<unknown> =>
+      this.put(`/api/profiles/db/${encodeURIComponent(name)}`, body),
+    upsertLlm: (name: string, body: Record<string, unknown>): Promise<unknown> =>
+      this.put(`/api/profiles/llm/${encodeURIComponent(name)}`, body),
+    upsertDocs: (name: string, body: { paths: string[] }): Promise<unknown> =>
+      this.put(`/api/profiles/docs/${encodeURIComponent(name)}`, body),
+    upsertCode: (name: string, body: { path: string }): Promise<unknown> =>
+      this.put(`/api/profiles/code/${encodeURIComponent(name)}`, body),
+    getDb: (name: string): Promise<Record<string, unknown>> =>
+      this.get(`/api/profiles/db/${encodeURIComponent(name)}`),
+    getLlm: (name: string): Promise<Record<string, unknown>> =>
+      this.get(`/api/profiles/llm/${encodeURIComponent(name)}`),
+    deleteProfile: (kind: "db" | "llm" | "docs" | "code", name: string): Promise<unknown> =>
+      this.del(`/api/profiles/${kind}/${encodeURIComponent(name)}`),
   };
 
   readonly catalog = {
@@ -153,6 +184,28 @@ export class AmxClient {
       ).tables,
     explain: (path: string, profile?: string): Promise<TableExplain> =>
       this.get("/api/catalog/explain", { path, profile }),
+    searchTables: async (q: string, profile?: string, limit = 8): Promise<CatalogSearchHit[]> =>
+      (
+        await this.get<{ rows: CatalogSearchHit[] }>("/api/catalog/search/tables", {
+          q,
+          profile,
+          limit,
+        })
+      ).rows,
+    searchColumns: async (q: string, profile?: string, limit = 8): Promise<CatalogSearchHit[]> =>
+      (
+        await this.get<{ rows: CatalogSearchHit[] }>("/api/catalog/search/columns", {
+          q,
+          profile,
+          limit,
+        })
+      ).rows,
+    sync: (profile?: string, database?: string): Promise<unknown> =>
+      this.post("/api/catalog/sync", undefined, { profile, database }),
+    deepSync: (profile?: string, database?: string): Promise<unknown> =>
+      this.post("/api/catalog/deep-sync", undefined, { profile, database }),
+    // The server ignores any profile filter; callers filter client-side.
+    freshness: (): Promise<Record<string, unknown>> => this.get("/api/catalog/freshness"),
   };
 
   readonly history = {
@@ -160,6 +213,23 @@ export class AmxClient {
       this.get("/api/history/runs", { limit, offset, command: "all" }),
     run: (runId: string): Promise<RunSummary> =>
       this.get(`/api/history/runs/${encodeURIComponent(runId)}`),
+  };
+
+  readonly runs = {
+    submit: (body: RunSubmitBody): Promise<JobRef> => this.post("/api/runs", body),
+    cancel: (jobId: string): Promise<unknown> =>
+      this.post(`/api/runs/${encodeURIComponent(jobId)}/cancel`),
+    rerunItems: (resultIds: number[], instructions?: string): Promise<JobRef> =>
+      this.post("/api/runs/rerun-item", {
+        result_ids: resultIds,
+        ...(instructions ? { user_instructions: instructions } : {}),
+      }),
+    results: async (runId: number): Promise<RunResultRow[]> => {
+      const payload = await this.get<{ results?: RunResultRow[] } | RunResultRow[]>(
+        `/api/history/runs/${runId}/results`,
+      );
+      return Array.isArray(payload) ? payload : (payload.results ?? []);
+    },
   };
 
   readonly schedules = {
@@ -172,6 +242,10 @@ export class AmxClient {
     pause: (id: string | number): Promise<unknown> => this.post(`/api/schedules/${id}/pause`),
     resume: (id: string | number): Promise<unknown> => this.post(`/api/schedules/${id}/resume`),
     runNow: (id: string | number): Promise<unknown> => this.post(`/api/schedules/${id}/run-now`),
+    create: (body: ScheduleCreateBody): Promise<unknown> => this.post("/api/schedules", body),
+    patch: (id: string | number, body: Partial<ScheduleCreateBody>): Promise<unknown> =>
+      this.request("PATCH", `/api/schedules/${id}`, { body }),
+    remove: (id: string | number): Promise<unknown> => this.del(`/api/schedules/${id}`),
   };
 
   readonly comments = {

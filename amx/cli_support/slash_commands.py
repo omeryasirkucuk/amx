@@ -333,6 +333,19 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
             "VS Code."
         ),
     ),
+    SlashCommand(
+        "/vscode",
+        "llm",
+        "Install the AMX editor extension into VS Code/Cursor",
+        long_desc=(
+            "Install the AMX editor extension — the VSIX bundled inside "
+            "amx-cli, always matching this server's version — into a "
+            "detected editor. Bare /vscode runs a wizard; subcommands: "
+            "/vscode install [editor] · /vscode status · "
+            "/vscode uninstall [editor]. Supported editors: VS Code, "
+            "VS Code Insiders, Cursor, Windsurf, VSCodium."
+        ),
+    ),
     # Profile management
     SlashCommand("/llm-profiles", "llm", "List LLM profiles"),
     SlashCommand("/use-llm", "llm", "Switch LLM profile (/use-llm <name>)"),

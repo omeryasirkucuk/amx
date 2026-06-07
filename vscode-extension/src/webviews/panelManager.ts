@@ -50,6 +50,13 @@ export class PanelManager implements vscode.Disposable {
     );
   }
 
+  /** Areas whose embedded SPA has confirmed boot — test/diag hook. */
+  readyAreas(): PanelArea[] {
+    return [...this.panels.entries()]
+      .filter(([, panel]) => panel.isReady)
+      .map(([area]) => area);
+  }
+
   dispose(): void {
     for (const panel of this.panels.values()) panel.dispose();
     this.panels.clear();

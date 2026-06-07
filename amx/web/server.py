@@ -46,6 +46,7 @@ from amx.web.routers import (
     system,
     system_ops,
     variations,
+    vscode_ext,
 )
 from amx.web.routers import (
     assets as assets_router,
@@ -157,6 +158,7 @@ def create_app(
     app.include_router(schedules.scheduler_router)
     app.include_router(pages.router)
     app.include_router(mcp.router)
+    app.include_router(vscode_ext.router)
 
     # Re-Run snapshots are short-lived (worker deletes them in finally).
     # On startup, sweep anything older than 1h that a previous crashed

@@ -79,16 +79,35 @@ export interface TableExplain {
   relationships?: unknown[];
 }
 
+/** Row from `GET /api/catalog/search/{tables|columns}` (verified live:
+ *  hybrid search rows carry the full entity record). */
+export interface CatalogSearchHit {
+  db_profile: string;
+  database_name?: string | null;
+  schema_name: string;
+  table_name: string;
+  column_name?: string | null;
+  effective_description?: string | null;
+  [key: string]: unknown;
+}
+
 // --- /api/history (history.py) ---
 
 export interface RunSummary {
-  run_id: string;
+  /** Numeric run id — the SPA's /runs/:runId deep-link segment. */
+  id: number;
   command?: string;
   status?: string;
-  kind?: string;
-  scope?: string;
-  started_at?: string;
-  finished_at?: string | null;
+  mode?: string;
+  /** Epoch seconds. */
+  started_at?: number;
+  ended_at?: number | null;
+  duration_sec?: number | null;
+  /** `{schema: [tables]}` — for ask runs the keys are profiles. */
+  scope_json?: Record<string, string[]> | null;
+  db_profile?: string | null;
+  db_backend?: string | null;
+  llm_model?: string | null;
   live_job_id?: string | null;
   [key: string]: unknown;
 }
@@ -138,4 +157,68 @@ export interface CatalogScope {
   profile?: string;
   database?: string;
   schema?: string;
+}
+
+// --- /api/profiles wizard metadata (profiles.py) ---
+
+export interface BackendSpec {
+  id: string;
+  label: string;
+  fields: string[];
+  field_specs: Array<{
+    name: string;
+    kind: "text" | "int" | "password" | "select" | "bool";
+    label: string;
+    help: string;
+    secret: boolean;
+    required: boolean;
+    group: "basic" | "advanced";
+    options: string[];
+  }>;
+  default_port?: number;
+  supports_catalog?: boolean;
+  [key: string]: unknown;
+}
+
+export interface LlmProviderSpec {
+  id: string;
+  label: string;
+  needs_key: boolean;
+  needs_base: boolean;
+}
+
+// --- /api/schedules create/patch (schedules.py) ---
+
+export interface ScheduleCreateBody {
+  name: string;
+  fire_at_local: string;
+  fire_at_tz: string;
+  db_profile: string;
+  database?: string | null;
+  catalog?: string | null;
+  scope: Record<string, unknown>;
+  llm_profile: string;
+  review_strategy: "auto" | "manual";
+  kind: "analyze" | "cache_refresh";
+  cron_expr?: string | null;
+  trigger: "time" | "change";
+}
+
+// --- /api/runs submit (runs.py) ---
+
+export interface RunSubmitBody {
+  scope: Record<string, string[]>;
+  db_profile?: string;
+  database?: string;
+  catalog?: string;
+}
+
+export interface JobRef {
+  job_id: string;
+  status?: string;
+}
+
+export interface RunResultRow {
+  id: number;
+  [key: string]: unknown;
 }

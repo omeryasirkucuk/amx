@@ -127,6 +127,47 @@ def test_returns_404_for_missing_table(tmp_path):
     assert resp.status_code == 404
 
 
+def test_provided_database_accepts_legacy_empty_database_rows(tmp_path):
+    """Catalog rows synced before multi-database walks carry an empty
+    database_name while deep links pass the live database — the lookup
+    must fall back to those rows instead of 404ing the table the
+    caller is looking at."""
+    client, db_path = _make_client(tmp_path)
+    _seed_table(db_path, catalog="", schema="AMX", name="analysis_runs")
+    resp = client.get(
+        "/api/assets/by-table?profile=prod&schema=AMX&table=analysis_runs&database=bird_train",
+        headers=_AUTH,
+    )
+    assert resp.status_code == 200
+
+
+def test_provided_database_prefers_exact_match_over_empty_rows(tmp_path):
+    """When both an exact-database row and a legacy empty row exist,
+    the exact one wins."""
+    client, db_path = _make_client(tmp_path)
+    _seed_table(db_path, catalog="", schema="sales", name="orders")
+    exact_id = _seed_table(db_path, catalog="bird_train", schema="sales", name="orders")
+    query_id = _seed_query(db_path)
+    _seed_edge(
+        db_path,
+        profile="prod",
+        from_kind="query",
+        from_id=query_id,
+        to_id=exact_id,
+        edge_type="reads",
+        direction="read",
+    )
+    resp = client.get(
+        "/api/assets/by-table?profile=prod&schema=sales&table=orders&database=bird_train",
+        headers=_AUTH,
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    # The edge hangs off the exact-database row — its presence proves
+    # the lookup resolved that row, not the legacy empty one.
+    assert len(payload["reads"]) == 1
+
+
 def test_groups_reads_and_writes_by_direction(tmp_path):
     client, db_path = _make_client(tmp_path)
     table_id = _seed_table(db_path, name="orders")

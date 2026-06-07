@@ -8,6 +8,8 @@ import type { ScheduleSummary } from "../api/types";
 import type { ExtensionServices } from "../services";
 import { getViews, refreshViews } from "../views";
 import { showStatusMenu } from "../views/statusBar";
+import { registerManagement } from "../management";
+import { pickSchedule } from "../management/schedules";
 import { registerOpenPanelCommands } from "./openPanels";
 import { registerProfileCommands } from "./profileCommands";
 import { registerReplCommand } from "./repl";
@@ -22,6 +24,7 @@ export function registerCommands(services: ExtensionServices): void {
   registerRuntimeCommands(services);
   registerViewGlueCommands(services);
   registerScheduleCommands(services);
+  registerManagement(services);
 }
 
 function registerViewGlueCommands(services: ExtensionServices): void {
@@ -42,17 +45,31 @@ const SCHEDULE_ACTION_LABELS: Record<ScheduleAction, string> = {
   runNow: "$(run) Run Now",
 };
 
-// Invoked programmatically (TreeItem.command / action picker), so no
-// package.json contribution is needed.
+/**
+ * Normalize a command argument into a ScheduleSummary. Context-menu
+ * invocations pass the tree ELEMENT (`{type: "schedule", schedule}`),
+ * programmatic callers pass the summary itself, and palette
+ * invocations pass nothing.
+ */
+const unwrap = (arg?: unknown): ScheduleSummary | undefined => {
+  if (!arg || typeof arg !== "object") return undefined;
+  const o = arg as Record<string, unknown>;
+  if (o["schedule"]) return o["schedule"] as ScheduleSummary;
+  if ("id" in o) return arg as ScheduleSummary;
+  return undefined;
+};
+
+// Invoked from tree context menus (which pass the tree element),
+// TreeItem.command, the action picker, and the palette.
 function registerScheduleCommands(services: ExtensionServices): void {
-  const run = (action: ScheduleAction) => (schedule?: ScheduleSummary) =>
-    runScheduleAction(services, action, schedule);
+  const run = (action: ScheduleAction) => (arg?: unknown) =>
+    runScheduleAction(services, action, unwrap(arg));
   services.context.subscriptions.push(
     vscode.commands.registerCommand("amx.schedules.pause", run("pause")),
     vscode.commands.registerCommand("amx.schedules.resume", run("resume")),
     vscode.commands.registerCommand("amx.schedules.runNow", run("runNow")),
-    vscode.commands.registerCommand("amx.schedules.actions", (schedule?: ScheduleSummary) =>
-      pickScheduleAction(services, schedule),
+    vscode.commands.registerCommand("amx.schedules.actions", (arg?: unknown) =>
+      pickScheduleAction(services, unwrap(arg)),
     ),
   );
 }
@@ -86,21 +103,4 @@ async function runScheduleAction(
     const message = error instanceof Error ? error.message : String(error);
     void vscode.window.showErrorMessage(`AMX: schedule action failed: ${message}`);
   }
-}
-
-async function pickSchedule(services: ExtensionServices): Promise<ScheduleSummary | undefined> {
-  const schedules = await services.client.schedules.list();
-  if (schedules.length === 0) {
-    void vscode.window.showInformationMessage("AMX: no schedules configured.");
-    return undefined;
-  }
-  const pick = await vscode.window.showQuickPick(
-    schedules.map((schedule) => ({
-      label: schedule.name ?? `Schedule ${schedule.id}`,
-      description: schedule.cron ?? "",
-      schedule,
-    })),
-    { placeHolder: "Select a schedule" },
-  );
-  return pick?.schedule;
 }

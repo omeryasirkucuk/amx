@@ -153,6 +153,7 @@ from amx.cli_support.commands.profiles import (
 )
 from amx.cli_support.commands.style import cmd_style as _cmd_style
 from amx.cli_support.commands.usage import cmd_usage as _cmd_usage
+from amx.cli_support.commands.vscode_ext import cmd_vscode as _cmd_vscode
 from amx.cli_support.slash_commands import (
     cmd_heads_for_namespace as _registry_cmd_heads,
 )
@@ -445,6 +446,11 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "llm", "mcp"):
             return True
         _cmd_mcp(cfg, parts[1:])
+        return True
+    if head == "vscode":
+        if not _require_namespace(head, namespace, "llm", "vscode"):
+            return True
+        _cmd_vscode(cfg, parts[1:])
         return True
     if head == "llm-profiles":
         if not _require_namespace(head, namespace, "llm", "llm-profiles"):

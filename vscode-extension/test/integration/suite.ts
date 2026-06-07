@@ -2,7 +2,18 @@
 // assert-based runner (no mocha dependency): @vscode/test-electron
 // just needs an exported run() that resolves on success.
 import * as assert from "node:assert";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import * as vscode from "vscode";
+
+/** Read the fake-studio port from the discovery file written by runTests.ts. */
+async function readFakePort(): Promise<number> {
+  const configDir = process.env["AMX_CONFIG_DIR"];
+  assert.ok(configDir, "AMX_CONFIG_DIR env var is not set");
+  const raw = await readFile(join(configDir, "studio.json"), "utf-8");
+  const parsed = JSON.parse(raw) as { port: number };
+  return parsed.port;
+}
 
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension("amx.amx-vscode");
@@ -23,15 +34,62 @@ export async function run(): Promise<void> {
     assert.ok(commands.includes(expected), `command ${expected} is not registered`);
   }
 
+  // All 21 new management command ids must be registered.
+  const newCommandIds = [
+    "amx.profiles.addDb",
+    "amx.profiles.addLlm",
+    "amx.profiles.addDocs",
+    "amx.profiles.addCode",
+    "amx.profiles.editProfile",
+    "amx.profiles.deleteProfile",
+    "amx.profiles.testDb",
+    "amx.profiles.setActive",
+    "amx.catalog.sync",
+    "amx.catalog.deepSync",
+    "amx.catalog.editDescription",
+    "amx.catalog.generateDescription",
+    "amx.catalog.copyName",
+    "amx.catalog.analyzeTable",
+    "amx.runs.start",
+    "amx.runs.cancel",
+    "amx.runs.rerun",
+    "amx.schedules.create",
+    "amx.schedules.edit",
+    "amx.schedules.delete",
+    "amx.schedules.pause",
+    "amx.catalog.analyzeSchema",
+    "amx.catalog.analyzeScope",
+    "amx.searchSelection",
+  ];
+  for (const id of newCommandIds) {
+    assert.ok(commands.includes(id), `management command ${id} is not registered`);
+  }
+
   // The server manager adopts the fake Studio recorded in the
   // discovery file (AMX_CONFIG_DIR points at it) and the catalog
   // populates from the fake inventory.
   await vscode.commands.executeCommand("amx.server.start");
   await vscode.commands.executeCommand("amx.catalog.refresh");
 
-  // Opening a panel must create a webview without throwing; with the
-  // fake server adopted this exercises ensure() + iframe HTML build.
+  // Opening a panel must create a webview AND the real SPA inside the
+  // iframe must boot: the fake server serves the built bundle from
+  // amx/web/static with the embedded-mode headers, and the SPA posts
+  // amx:embedReady once its JS executes — a blocked iframe never
+  // does, which is exactly the regression this guards against
+  // (CSP frame-ancestors must include the vscode-webview:/vscode-file:
+  // scheme sources; `*` alone does not match them).
   await vscode.commands.executeCommand("amx.openAsk");
+  const readyDeadline = Date.now() + 20_000;
+  let readyAreas: string[] = [];
+  while (Date.now() < readyDeadline) {
+    readyAreas = (await vscode.commands.executeCommand<string[]>("amx.panel.readyAreas")) ?? [];
+    if (readyAreas.includes("ask")) break;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+  assert.ok(
+    readyAreas.includes("ask"),
+    `the Ask panel SPA never reported amx:embedReady (ready: ${JSON.stringify(readyAreas)})`,
+  );
 
   // Hover pipeline sanity: open a SQL doc referencing the fake table
   // and ask for hovers at the table name.
@@ -55,5 +113,112 @@ export async function run(): Promise<void> {
   assert.ok(
     hoverText.includes("All customer orders"),
     `hover did not surface the catalog description (got: ${hoverText || "<empty>"})`,
+  );
+
+  // catalog.sync integration: invoke the command with a profileScope node
+  // (matching the shape catalogArgFromNode expects) and confirm the fake
+  // server recorded a POST /api/catalog/sync with profile=warehouse.
+  const fakePort = await readFakePort();
+  await vscode.commands.executeCommand("amx.catalog.sync", {
+    type: "profileScope",
+    profile: "warehouse",
+  });
+  // Give the async command a moment to complete the HTTP call.
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, 3000));
+
+  interface ReceivedEntry {
+    method: string;
+    path: string;
+    query: Record<string, string>;
+    body: unknown;
+  }
+
+  const pollDeadline = Date.now() + 10_000;
+  let syncEntry: ReceivedEntry | undefined;
+  while (Date.now() < pollDeadline) {
+    const resp = await fetch(`http://127.0.0.1:${fakePort}/__test/received`);
+    const entries = (await resp.json()) as ReceivedEntry[];
+    syncEntry = entries.find(
+      (e) => e.method === "POST" && e.path === "/api/catalog/sync" && e.query["profile"] === "warehouse",
+    );
+    if (syncEntry) break;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+  assert.ok(
+    syncEntry !== undefined,
+    "POST /api/catalog/sync with profile=warehouse was not recorded by the fake server",
+  );
+
+  // Drive the add-DB-profile wizard end-to-end through a scripted
+  // prompt port. The fake backend's field_specs are: host (text,
+  // required, basic), port (int, required, basic), sslmode (select,
+  // advanced) — so the wizard asks: backend pick, profile name, host,
+  // port, advanced gate ("no" skips sslmode). Exactly five answers.
+  await vscode.commands.executeCommand("amx.test.setScriptedAnswers", [
+    "postgresql",
+    "itest-profile",
+    "db.example.com",
+    "5433",
+    "no",
+  ]);
+  // The command awaits a post-save information toast ("Test
+  // Connection" | "Done") that nobody clicks in test mode, so do not
+  // await its completion; the PUT lands before the toast. Poll the
+  // fake server's recorder instead.
+  const addDbDone = vscode.commands.executeCommand("amx.profiles.addDb");
+  addDbDone.then(undefined, () => {});
+
+  const wizardDeadline = Date.now() + 15_000;
+  let putEntry: ReceivedEntry | undefined;
+  while (Date.now() < wizardDeadline) {
+    const resp = await fetch(`http://127.0.0.1:${fakePort}/__test/received`);
+    const entries = (await resp.json()) as ReceivedEntry[];
+    putEntry = entries.find(
+      (e) => e.method === "PUT" && e.path === "/api/profiles/db/itest-profile",
+    );
+    if (putEntry) break;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+  assert.ok(
+    putEntry !== undefined,
+    "PUT /api/profiles/db/itest-profile was not recorded by the fake server",
+  );
+  assert.deepStrictEqual(
+    putEntry.body,
+    { backend: "postgresql", host: "db.example.com", port: 5433 },
+    `wizard submitted an unexpected body: ${JSON.stringify(putEntry.body)}`,
+  );
+
+  // Selection lookup: select SQL inside a PYTHON document (the
+  // spark.sql use case) and run amx.searchSelection. The single local
+  // match (sales.orders from the fake inventory) opens the table
+  // panel directly; assert the panel's SPA boots via the readiness
+  // hook — proving lookup works outside .sql files end-to-end.
+  const pyDoc = await vscode.workspace.openTextDocument({
+    language: "python",
+    content: 'spark.sql("""SELECT * FROM sales.orders""").show()',
+  });
+  const pyEditor = await vscode.window.showTextDocument(pyDoc);
+  const sqlStart = pyDoc.getText().indexOf("SELECT");
+  const sqlEnd = pyDoc.getText().indexOf('"""', sqlStart);
+  pyEditor.selection = new vscode.Selection(
+    pyDoc.positionAt(sqlStart),
+    pyDoc.positionAt(sqlEnd),
+  );
+  await vscode.commands.executeCommand("amx.searchSelection");
+  const tableDeadline = Date.now() + 20_000;
+  let tableReady = false;
+  while (Date.now() < tableDeadline) {
+    const ready =
+      (await vscode.commands.executeCommand<string[]>("amx.panel.readyAreas")) ?? [];
+    if (ready.includes("table")) {
+      tableReady = true;
+      break;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+  assert.ok(
+    tableReady,
+    "selection lookup did not open a booted table panel for sales.orders",
   );
 }
