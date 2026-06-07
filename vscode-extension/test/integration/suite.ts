@@ -29,9 +29,25 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand("amx.server.start");
   await vscode.commands.executeCommand("amx.catalog.refresh");
 
-  // Opening a panel must create a webview without throwing; with the
-  // fake server adopted this exercises ensure() + iframe HTML build.
+  // Opening a panel must create a webview AND the real SPA inside the
+  // iframe must boot: the fake server serves the built bundle from
+  // amx/web/static with the embedded-mode headers, and the SPA posts
+  // amx:embedReady once its JS executes — a blocked iframe never
+  // does, which is exactly the regression this guards against
+  // (CSP frame-ancestors must include the vscode-webview:/vscode-file:
+  // scheme sources; `*` alone does not match them).
   await vscode.commands.executeCommand("amx.openAsk");
+  const readyDeadline = Date.now() + 20_000;
+  let readyAreas: string[] = [];
+  while (Date.now() < readyDeadline) {
+    readyAreas = (await vscode.commands.executeCommand<string[]>("amx.panel.readyAreas")) ?? [];
+    if (readyAreas.includes("ask")) break;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+  assert.ok(
+    readyAreas.includes("ask"),
+    `the Ask panel SPA never reported amx:embedReady (ready: ${JSON.stringify(readyAreas)})`,
+  );
 
   // Hover pipeline sanity: open a SQL doc referencing the fake table
   // and ask for hovers at the table name.

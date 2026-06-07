@@ -57,6 +57,11 @@ export function buildFrameHtml(options: FrameHtmlOptions): string {
   <style>
     ${SHARED_STYLE}
     iframe { display: block; height: 100%; width: 100%; border: none; }
+    .hidden { display: none; }
+    .message { max-width: 480px; text-align: center; white-space: pre-wrap; word-break: break-word; opacity: 0.9; }
+    button { padding: 6px 16px; border: none; border-radius: 2px; cursor: pointer; color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, #0e639c); font-family: inherit; font-size: 13px; }
+    button:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+    .actions { display: flex; gap: 8px; }
   </style>
 </head>
 <body>
@@ -65,23 +70,50 @@ export function buildFrameHtml(options: FrameHtmlOptions): string {
     <div class="spinner" role="presentation"></div>
     <p>Loading AMX Studio…</p>
   </div>
+  <div id="stalled" class="overlay hidden">
+    <h3>AMX Studio did not load</h3>
+    <p class="message">The Studio page never reported in. The server may still be starting, or the installed AMX version may not support embedded panels.</p>
+    <div class="actions">
+      <button id="retry" type="button">Retry</button>
+      <button id="browser" type="button">Open in Browser</button>
+    </div>
+  </div>
   <script nonce="${nonce}">
     (function () {
       const vscode = acquireVsCodeApi();
       vscode.setState(${scriptJson(options.state)});
-      // The SPA's embed bridge posts to window.parent with
-      // targetOrigin "*"; filter on the message shape before
-      // relaying to the extension host.
+      let ready = false;
+      // A blocked iframe still fires \`load\` but never executes the
+      // SPA, so the overlay waits for the SPA's explicit boot signal
+      // (amx:embedReady) rather than the load event.
+      const stallTimer = setTimeout(() => {
+        if (ready) return;
+        document.getElementById("loading").classList.add("hidden");
+        document.getElementById("stalled").classList.remove("hidden");
+      }, 12000);
       window.addEventListener("message", (event) => {
         const data = event.data;
-        if (data && typeof data === "object" && data.type === "amx:openExternal" && typeof data.url === "string") {
+        if (!data || typeof data !== "object") return;
+        if (data.type === "amx:embedReady") {
+          ready = true;
+          clearTimeout(stallTimer);
+          const overlay = document.getElementById("loading");
+          if (overlay) overlay.remove();
+          document.getElementById("stalled").classList.add("hidden");
+          // Relay to the extension host: panels track SPA readiness
+          // for logging and the integration suite asserts on it.
+          vscode.postMessage({ type: "amx:embedReady" });
+          return;
+        }
+        if (data.type === "amx:openExternal" && typeof data.url === "string") {
           vscode.postMessage({ type: "amx:openExternal", url: data.url });
         }
       });
-      const frame = document.getElementById("studio");
-      frame.addEventListener("load", () => {
-        const overlay = document.getElementById("loading");
-        if (overlay) overlay.remove();
+      document.getElementById("retry").addEventListener("click", () => {
+        vscode.postMessage({ type: "amx:retry" });
+      });
+      document.getElementById("browser").addEventListener("click", () => {
+        vscode.postMessage({ type: "amx:openBrowser" });
       });
     })();
   </script>

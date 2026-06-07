@@ -91,20 +91,26 @@ export class CatalogTreeProvider implements vscode.TreeDataProvider<CatalogNode>
     if (!this.serverReachable()) {
       return [{ type: "placeholder", message: "Start AMX server…", startServer: true }];
     }
-    const tables = await this.services.catalog.getTables();
-    if (tables.length === 0) {
-      return [{ type: "placeholder", message: "No tables indexed yet", startServer: false }];
+    // One root per configured DB profile — not just the active one.
+    // Each root lazily pulls its own inventory on expand.
+    const profiles = await this.services.client.profiles.listDb();
+    if (profiles.length === 0) {
+      return [{ type: "placeholder", message: "No DB profiles configured", startServer: false }];
     }
-    const profiles = distinct(tables.map((table) => table.profile));
-    return profiles.map((profile) => {
-      const node: ProfileScopeNode = { type: "profileScope" };
-      if (profile !== undefined) node.profile = profile;
-      return node;
-    });
+    return profiles.map((profile) => ({ type: "profileScope", profile: profile.name }));
   }
 
   private async schemaNodes(profile: string | undefined): Promise<CatalogNode[]> {
     const tables = await this.tablesForProfile(profile);
+    if (tables.length === 0) {
+      return [
+        {
+          type: "placeholder",
+          message: "No tables indexed — run /search sync for this profile",
+          startServer: false,
+        },
+      ];
+    }
     const schemas = [...new Set(tables.map((table) => table.schema))].sort();
     return schemas.map((schema) => {
       const node: SchemaNode = { type: "schema", schema };
@@ -127,8 +133,8 @@ export class CatalogTreeProvider implements vscode.TreeDataProvider<CatalogNode>
   }
 
   private async tablesForProfile(profile: string | undefined): Promise<readonly TableMeta[]> {
-    const tables = await this.services.catalog.getTables();
-    return tables.filter((table) => table.profile === profile);
+    const scope = profile !== undefined ? { profile } : {};
+    return this.services.catalog.getTables(scope);
   }
 
   private serverReachable(): boolean {
@@ -137,21 +143,10 @@ export class CatalogTreeProvider implements vscode.TreeDataProvider<CatalogNode>
   }
 }
 
-function distinct(values: readonly (string | undefined)[]): (string | undefined)[] {
-  const seen = new Set<string | undefined>();
-  const result: (string | undefined)[] = [];
-  for (const value of values) {
-    if (seen.has(value)) continue;
-    seen.add(value);
-    result.push(value);
-  }
-  return result;
-}
-
 function profileScopeItem(node: ProfileScopeNode): vscode.TreeItem {
   const item = new vscode.TreeItem(
     node.profile ?? "Active profile",
-    vscode.TreeItemCollapsibleState.Expanded,
+    vscode.TreeItemCollapsibleState.Collapsed,
   );
   item.iconPath = new vscode.ThemeIcon("plug");
   item.contextValue = "amx.catalogProfile";
@@ -173,11 +168,14 @@ function tableItem(meta: TableMeta): vscode.TreeItem {
     item.description = `${meta.columnCount} columns`;
   }
   if (meta.description) item.tooltip = truncate(meta.description, TOOLTIP_MAX_CHARS);
-  const args: { schema: string; table: string; profile?: string } = {
+  const args: { schema: string; table: string; profile?: string; database?: string } = {
     schema: meta.schema,
     table: meta.name,
   };
   if (meta.profile !== undefined) args.profile = meta.profile;
+  // 3-level backends (Databricks UC, BigQuery) need the database /
+  // catalog segment for the SPA's table-detail route.
+  if (meta.database !== undefined) args.database = meta.database;
   item.command = { command: "amx.openAsset", title: "Open Asset in Studio", arguments: [args] };
   return item;
 }

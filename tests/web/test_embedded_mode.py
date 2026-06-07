@@ -30,7 +30,10 @@ def embedded_auth() -> dict[str, str]:
 def test_embedded_relaxes_frame_ancestors(embedded_client, embedded_auth) -> None:
     r = embedded_client.get("/api/system", headers=embedded_auth)
     csp = r.headers["Content-Security-Policy"]
-    assert "frame-ancestors *" in csp
+    # The IDE scheme sources are load-bearing: CSP's `*` matches
+    # network schemes only, so without them Chromium blocks the
+    # webview iframe chain (vscode-webview:// + vscode-file://).
+    assert "frame-ancestors * vscode-webview: vscode-file:" in csp
     assert "frame-ancestors 'none'" not in csp
 
 

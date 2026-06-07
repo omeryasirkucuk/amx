@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "amx",
   "license": "Apache-2.0",
+  "icon": "media/amx.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/omeryasirkucuk/amx",
@@ -27,7 +28,7 @@
         {
           "id": "amx",
           "title": "AMX",
-          "icon": "media/amx.svg"
+          "icon": "media/amx.png"
         }
       ]
     },

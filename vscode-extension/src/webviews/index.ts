@@ -20,6 +20,9 @@ export function registerWebviews(services: ExtensionServices): void {
       }
       manager.open(area, coercePanelArgs(args));
     }),
+    // Programmatic-only readiness probe (integration suite + doctor
+    // diagnostics): which open panels have a booted SPA inside.
+    vscode.commands.registerCommand("amx.panel.readyAreas", () => manager.readyAreas()),
     ...manager.registerSerializers(),
   );
 }

@@ -1,9 +1,35 @@
 // Minimal in-process stand-in for the AMX Studio server: just enough
 // REST surface for the extension to adopt it (health), populate the
 // trees (profiles/catalog/history/schedules), and build panel URLs.
+// Non-API paths serve the REAL built SPA from amx/web/static with the
+// embedded-mode headers, so panel tests exercise the actual iframe
+// boot path (CSP frame-ancestors scheme sources included — see
+// amx/web/security_headers.py for why vscode-webview:/vscode-file:
+// are load-bearing).
+import { createReadStream, existsSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { extname, join, normalize, resolve } from "node:path";
 
 export const FAKE_TOKEN = "integration-fake-token";
+
+const STATIC_ROOT = resolve(__dirname, "..", "..", "..", "..", "amx", "web", "static");
+
+const EMBEDDED_HEADERS: Record<string, string> = {
+  "Content-Security-Policy":
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; connect-src 'self'; font-src 'self' data:; " +
+    "base-uri 'self'; form-action 'self'; " +
+    "frame-ancestors * vscode-webview: vscode-file:",
+};
+
+const MIME: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".json": "application/json",
+};
 
 const ROUTES: Record<string, unknown> = {
   "/api/health": { ok: true, version: "0.99.0" },
@@ -87,13 +113,28 @@ export function startFakeStudio(): Promise<{ server: Server; port: number }> {
       return;
     }
     const payload = ROUTES[url.pathname];
-    if (payload === undefined) {
+    if (payload !== undefined) {
+      response.writeHead(200, { "Content-Type": "application/json", ...EMBEDDED_HEADERS });
+      response.end(JSON.stringify(payload));
+      return;
+    }
+    if (url.pathname.startsWith("/api/")) {
       response.writeHead(404, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ detail: `No fake route for ${url.pathname}` }));
       return;
     }
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(payload));
+    // SPA fallback: serve the real built bundle; unknown paths get
+    // index.html the way the real server's catch-all does.
+    const safePath = normalize(url.pathname).replace(/^([.][.][/\\])+/, "");
+    let filePath = join(STATIC_ROOT, safePath);
+    if (!filePath.startsWith(STATIC_ROOT) || !existsSync(filePath) || extname(filePath) === "") {
+      filePath = join(STATIC_ROOT, "index.html");
+    }
+    response.writeHead(200, {
+      "Content-Type": MIME[extname(filePath)] ?? "application/octet-stream",
+      ...EMBEDDED_HEADERS,
+    });
+    createReadStream(filePath).pipe(response);
   });
   return new Promise((resolve, reject) => {
     server.once("error", reject);

@@ -19,6 +19,8 @@ const WEBVIEW_OPTIONS: vscode.WebviewOptions & vscode.WebviewPanelOptions = {
 
 export class StudioPanel implements vscode.Disposable {
   private args: PanelAreaArgs;
+  /** True once the SPA inside the iframe reported amx:embedReady. */
+  private spaReady = false;
   /** Server identity of the currently rendered iframe, if any. */
   private rendered: { port: number; token: string } | undefined;
   /** Guards against a slow rebuild overwriting a newer one. */
@@ -158,15 +160,38 @@ export class StudioPanel implements vscode.Disposable {
     return { area: this.definition.area, args: this.args };
   }
 
+  /** True once the embedded SPA confirmed it is executing. */
+  get isReady(): boolean {
+    return this.spaReady;
+  }
+
   private handleMessage(message: unknown): void {
     if (typeof message !== "object" || message === null) return;
     const { type, url } = message as { type?: unknown; url?: unknown };
+    if (type === "amx:embedReady") {
+      this.spaReady = true;
+      log(`Studio panel ${this.definition.viewType}: SPA reported ready`);
+      return;
+    }
     if (type === "amx:openExternal" && typeof url === "string") {
       void vscode.env.openExternal(vscode.Uri.parse(url));
       return;
     }
     if (type === "amx:retry") {
       void this.rebuild();
+      return;
+    }
+    if (type === "amx:openBrowser") {
+      // Escape hatch from the stalled-overlay: open the same Studio
+      // page as a normal browser tab with the launcher-style token
+      // hand-off.
+      const state = this.services.server.state;
+      if (state.status === "running") {
+        const route = this.definition.buildRoute(this.args);
+        void vscode.env.openExternal(
+          vscode.Uri.parse(`${state.baseUrl}${route}?t=${encodeURIComponent(state.token)}`),
+        );
+      }
     }
   }
 }

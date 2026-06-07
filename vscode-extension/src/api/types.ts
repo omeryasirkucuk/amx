@@ -82,13 +82,20 @@ export interface TableExplain {
 // --- /api/history (history.py) ---
 
 export interface RunSummary {
-  run_id: string;
+  /** Numeric run id — the SPA's /runs/:runId deep-link segment. */
+  id: number;
   command?: string;
   status?: string;
-  kind?: string;
-  scope?: string;
-  started_at?: string;
-  finished_at?: string | null;
+  mode?: string;
+  /** Epoch seconds. */
+  started_at?: number;
+  ended_at?: number | null;
+  duration_sec?: number | null;
+  /** `{schema: [tables]}` — for ask runs the keys are profiles. */
+  scope_json?: Record<string, string[]> | null;
+  db_profile?: string | null;
+  db_backend?: string | null;
+  llm_model?: string | null;
   live_job_id?: string | null;
   [key: string]: unknown;
 }
