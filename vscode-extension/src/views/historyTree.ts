@@ -172,7 +172,7 @@ function runItem(run: RunSummary): vscode.TreeItem {
   const label = scope ? `${friendlyCommand(run.command)} · ${scope}` : friendlyCommand(run.command);
   const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
   item.iconPath = statusIcon(run.status);
-  item.contextValue = "amx.run";
+  item.contextValue = run.live_job_id ? "amx.run.running" : "amx.run";
   const when = relativeTime(run.started_at);
   item.description = [run.status?.replaceAll("_", " "), when].filter(Boolean).join(" · ");
   const tooltipLines = [
