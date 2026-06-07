@@ -947,6 +947,12 @@ def list_assets_for_table(
     db_path = _history_db_path(cfg)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
+        # A provided ``database`` prefers the exact row but also
+        # accepts rows whose database_name is empty/NULL: catalog
+        # entries synced before multi-database walks (and
+        # single-database profiles generally) leave the column blank
+        # while deep links carry the live database name — a strict
+        # match would 404 the very table the caller is looking at.
         table_row = conn.execute(
             """
             SELECT id, database_name, schema_name, table_name
@@ -955,8 +961,12 @@ def list_assets_for_table(
               AND entity_kind = 'table'
               AND LOWER(schema_name) = LOWER(?)
               AND LOWER(table_name) = LOWER(?)
-              AND (? = '' OR LOWER(database_name) = LOWER(?))
-            ORDER BY CASE WHEN database_name = ? THEN 0 ELSE 1 END
+              AND (
+                    ? = ''
+                    OR LOWER(database_name) = LOWER(?)
+                    OR COALESCE(database_name, '') = ''
+                  )
+            ORDER BY CASE WHEN LOWER(database_name) = LOWER(?) THEN 0 ELSE 1 END
             LIMIT 1
             """,
             (profile, schema, table, database, database, database),
