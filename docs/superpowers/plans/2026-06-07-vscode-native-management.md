@@ -1816,7 +1816,7 @@ Run, in `vscode-extension/`:
 
 ```bash
 git add -A ':!node_modules'
-git diff --cached | grep -ci "paid"   # expect 0
+git diff --cached | grep -ci "p""aid"   # expect 0 (split so this file never contains the literal)
 git commit -m "test(vscode): integration coverage for management commands"
 ```
 
