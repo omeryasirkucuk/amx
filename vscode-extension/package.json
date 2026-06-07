@@ -306,6 +306,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src test",
     "test": "vitest run",
+    "test:integration": "node esbuild.mjs && tsc -p tsconfig.integration.json && node dist-test/test/integration/runTests.js",
     "package": "tsc --noEmit && node esbuild.mjs --production && vsce package --no-dependencies"
   },
   "devDependencies": {

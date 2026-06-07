@@ -138,6 +138,34 @@ jobs:
             exit 1
           fi
 
+  vscode-extension:
+    name: VS Code extension (typecheck, tests, build)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+      - name: Install extension deps
+        working-directory: vscode-extension
+        run: npm ci
+      - name: Typecheck
+        working-directory: vscode-extension
+        run: npm run typecheck
+      - name: Run unit tests
+        working-directory: vscode-extension
+        run: npm test
+      - name: Build bundle
+        working-directory: vscode-extension
+        run: node esbuild.mjs
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest

@@ -199,7 +199,10 @@ def register_root_commands(
         "embedded",
         is_flag=True,
         default=False,
-        hidden=True,
+        # Deliberately visible in --help: IDE integrations probe
+        # `amx studio --help` for this flag to detect whether the
+        # installed AMX supports the embedded host mode before
+        # passing it (older versions reject unknown options).
         help=(
             "Relax framing headers so an IDE host can render Studio "
             "inside a webview iframe. Set by IDE integrations, not users."
