@@ -46,7 +46,10 @@ export function registerProfileManagement(services: ExtensionServices): void {
 
 async function addDbProfile(services: ExtensionServices): Promise<void> {
   const { client } = services;
-  const backends = await client.profiles.listBackends();
+
+  const backends = await guardValue("load backends", () => client.profiles.listBackends());
+  if (backends === undefined) return;
+
   const port = vscodePromptPort("AMX: Add DB Profile");
   const backendPick = await runWizard(
     [
@@ -60,20 +63,22 @@ async function addDbProfile(services: ExtensionServices): Promise<void> {
     port,
   );
   if (!backendPick) return;
-  const backend = backends.find((entry) => entry.id === backendPick["backend"])!;
+
+  const backend = backends.find((entry) => entry.id === backendPick["backend"]);
+  if (!backend) return;
+
   const specs = backend.field_specs as FieldSpec[];
 
-  const existing = new Set((await client.profiles.listDb()).map((profile) => profile.name));
+  const existingNames = await guardValue("list profiles", () => client.profiles.listDb());
+  if (existingNames === undefined) return;
+
+  const existing = new Set(existingNames.map((profile) => profile.name));
   const nameStep: WizardStep = {
     id: "__name",
     kind: "input",
     title: "Profile name",
     required: true,
-    validate: (value) => {
-      if (!value.trim()) return "Name is required";
-      if (existing.has(value.trim())) return `Profile '${value.trim()}' already exists`;
-      return undefined;
-    },
+    validate: uniqueNameValidator(existing, "Profile"),
   };
   const basicSteps = specs.filter((spec) => spec.group === "basic").map(fieldSpecToStep);
   // Pre-fill the port input with the backend default.
@@ -120,9 +125,15 @@ async function addDbProfile(services: ExtensionServices): Promise<void> {
 
 async function addLlmProfile(services: ExtensionServices): Promise<void> {
   const { client } = services;
-  const providers = await client.profiles.listProviders();
+
+  const providers = await guardValue("load providers", () => client.profiles.listProviders());
+  if (providers === undefined) return;
+
+  const existingNames = await guardValue("list profiles", () => client.profiles.listLlm());
+  if (existingNames === undefined) return;
+
   const port = vscodePromptPort("AMX: Add LLM Profile");
-  const existing = new Set((await client.profiles.listLlm()).map((profile) => profile.name));
+  const existing = new Set(existingNames.map((profile) => profile.name));
   const answers = await runWizard(
     [
       {
@@ -136,11 +147,7 @@ async function addLlmProfile(services: ExtensionServices): Promise<void> {
         kind: "input",
         title: "Profile name",
         required: true,
-        validate: (value) => {
-          if (!value.trim()) return "Name is required";
-          if (existing.has(value.trim())) return `Profile '${value.trim()}' already exists`;
-          return undefined;
-        },
+        validate: uniqueNameValidator(existing, "Profile"),
       },
       {
         id: "model",
@@ -173,7 +180,8 @@ async function addLlmProfile(services: ExtensionServices): Promise<void> {
   if (!answers) return;
   const name = String(answers["__name"]).trim();
   const body: Record<string, unknown> = { provider: answers["provider"], model: answers["model"] };
-  if (answers["api_key"]) body["api_key"] = answers["api_key"];
+  const rawApiKey = String(answers["api_key"] ?? "").trim();
+  if (rawApiKey) body["api_key"] = rawApiKey;
   if (answers["api_base"]) body["api_base"] = answers["api_base"];
   await guard(`save profile '${name}'`, async () => {
     await services.client.profiles.upsertLlm(name, body);
@@ -216,10 +224,7 @@ async function addPathsProfile(services: ExtensionServices, kind: "docs" | "code
   const name = String(answers["__name"]).trim();
   await guard(`save profile '${name}'`, async () => {
     if (kind === "docs") {
-      const paths = String(answers["path"])
-        .split(",")
-        .map((p) => p.trim())
-        .filter(Boolean);
+      const paths = splitPaths(String(answers["path"]));
       await services.client.profiles.upsertDocs(name, { paths });
     } else {
       await services.client.profiles.upsertCode(name, { path: String(answers["path"]).trim() });
@@ -237,8 +242,16 @@ async function editProfile(services: ExtensionServices, node?: ProfileNodeArg): 
     return addPathsProfileEdit(services, kind, name);
   }
   const { client } = services;
-  const specs: FieldSpec[] =
-    kind === "db" ? await dbSpecsFor(services, name) : llmEditSpecs();
+
+  let specs: FieldSpec[];
+  if (kind === "db") {
+    const fetched = await guardValue(`load profile '${name}'`, () => dbSpecsFor(services, name));
+    if (fetched === undefined) return;
+    specs = fetched;
+  } else {
+    specs = llmEditSpecs();
+  }
+
   const fieldPick = await vscode.window.showQuickPick(
     specs.map((spec) => ({ label: spec.label, spec })),
     { canPickMany: true, title: `AMX: Edit ${name} — pick fields to change` },
@@ -248,6 +261,17 @@ async function editProfile(services: ExtensionServices, node?: ProfileNodeArg): 
   const answers = await runWizard(fieldPick.map((entry) => fieldSpecToStep(entry.spec)), port);
   if (!answers) return;
   const body = answersToBody(answers, specs);
+
+  // answersToBody drops empty optionals (the server would then leave
+  // them unchanged). For fields the user explicitly picked and left
+  // blank, we must send an explicit empty string so the server clears
+  // the value rather than ignoring the missing key.
+  for (const { spec } of fieldPick) {
+    if (!(spec.name in body)) {
+      body[spec.name] = "";
+    }
+  }
+
   await guard(`update profile '${name}'`, async () => {
     if (kind === "db") await client.profiles.upsertDb(name, body);
     else await client.profiles.upsertLlm(name, body);
@@ -268,10 +292,7 @@ async function addPathsProfileEdit(
   if (value === undefined || !value.trim()) return;
   await guard(`update profile '${name}'`, async () => {
     if (kind === "docs") {
-      const paths = value
-        .split(",")
-        .map((p) => p.trim())
-        .filter(Boolean);
+      const paths = splitPaths(value);
       await services.client.profiles.upsertDocs(name, { paths });
     } else {
       await services.client.profiles.upsertCode(name, { path: value.trim() });
@@ -368,19 +389,35 @@ async function pickName(
   kind: ProfileKind,
   title: string,
 ): Promise<string | undefined> {
-  const list: Array<DbProfileSummary | LlmProfileSummary | NamedProfileSummary> =
-    kind === "db"
-      ? await services.client.profiles.listDb()
-      : kind === "llm"
-        ? await services.client.profiles.listLlm()
-        : kind === "docs"
-          ? await services.client.profiles.listDocs()
-          : await services.client.profiles.listCode();
+  const list: Array<DbProfileSummary | LlmProfileSummary | NamedProfileSummary> | undefined =
+    await guardValue(
+      `list ${kind} profiles`,
+      (): Promise<Array<DbProfileSummary | LlmProfileSummary | NamedProfileSummary>> =>
+        kind === "db"
+          ? services.client.profiles.listDb()
+          : kind === "llm"
+            ? services.client.profiles.listLlm()
+            : kind === "docs"
+              ? services.client.profiles.listDocs()
+              : services.client.profiles.listCode(),
+    );
+  if (list === undefined) return undefined;
   const pick = await vscode.window.showQuickPick(
     list.map((profile) => profile.name),
     { title },
   );
   return pick;
+}
+
+/** Show a branded error toast and return undefined when the action throws. */
+async function guardValue<T>(action: string, body: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await body();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    void vscode.window.showErrorMessage(`AMX: could not ${action}: ${message}`);
+    return undefined;
+  }
 }
 
 async function guard(action: string, body: () => Promise<void>): Promise<void> {
@@ -390,4 +427,24 @@ async function guard(action: string, body: () => Promise<void>): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     void vscode.window.showErrorMessage(`AMX: could not ${action}: ${message}`);
   }
+}
+
+/** Returns a validator that rejects duplicate names within `existing`. */
+function uniqueNameValidator(
+  existing: Set<string>,
+  what: string,
+): (value: string) => string | undefined {
+  return (value) => {
+    if (!value.trim()) return `${what} name is required`;
+    if (existing.has(value.trim())) return `${what} '${value.trim()}' already exists`;
+    return undefined;
+  };
+}
+
+/** Split a comma-separated paths string into a trimmed, non-empty array. */
+function splitPaths(value: string): string[] {
+  return value
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
 }
