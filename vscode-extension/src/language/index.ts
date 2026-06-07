@@ -9,7 +9,6 @@ import type { ExtensionServices } from "../services";
 import { DisposableStore } from "../util/disposables";
 import { log } from "../util/log";
 import { registerGenerateDescription } from "./actions/generateDescription";
-import { registerOpenAsset } from "./actions/openInStudio";
 import { DocumentStateStore } from "./documentState";
 import { AmxCodeLensProvider } from "./providers/codeLensProvider";
 import { createCompletionProvider } from "./providers/completionProvider";
@@ -66,8 +65,9 @@ export function registerLanguageFeatures(services: ExtensionServices): void {
     resolver,
     state,
     { dispose: () => providerStore.dispose() },
+    // amx.openAsset is registered once in commands/openPanels.ts;
+    // hovers and lenses invoke it by id.
     registerGenerateDescription(services),
-    registerOpenAsset(),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("amx.editor")) registerProviders();
     }),
