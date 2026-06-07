@@ -131,7 +131,7 @@ async function pickMatch(matches: SelectionMatch[]): Promise<SelectionMatch | un
   const pick = await vscode.window.showQuickPick(
     matches.map((match) => ({
       label: [match.schema, match.table, match.column].filter(Boolean).join("."),
-      description: match.profile ?? "",
+      description: [match.profile, match.database].filter(Boolean).join(" · "),
       detail: match.description ?? "",
       match,
     })),
