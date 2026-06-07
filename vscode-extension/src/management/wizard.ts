@@ -19,7 +19,11 @@ export interface PickStep {
   title: string;
   items: PickItem[];
   placeholder?: string;
-  /** Skip the step entirely when false for the answers so far. */
+  /**
+   * Skip the step entirely when false for the answers so far.
+   * Guards see only scalar (pick/input) answers; pickMany selections
+   * are not visible to `when`.
+   */
   when?: (answers: Record<string, string>) => boolean;
 }
 
@@ -29,6 +33,11 @@ export interface PickManyStep {
   title: string;
   items: PickItem[];
   placeholder?: string;
+  /**
+   * Skip the step entirely when false for the answers so far.
+   * Guards see only scalar (pick/input) answers; pickMany selections
+   * are not visible to `when`.
+   */
   when?: (answers: Record<string, string>) => boolean;
 }
 
@@ -42,6 +51,11 @@ export interface InputStep {
   required?: boolean;
   /** Return an error message to reject, undefined to accept. */
   validate?: (value: string) => string | undefined;
+  /**
+   * Skip the step entirely when false for the answers so far.
+   * Guards see only scalar (pick/input) answers; pickMany selections
+   * are not visible to `when`.
+   */
   when?: (answers: Record<string, string>) => boolean;
 }
 
@@ -62,6 +76,9 @@ export type WizardAnswers = Record<string, string | string[]>;
  * Run steps in order. Back re-runs the previous *shown* step; Esc
  * anywhere aborts (returns undefined, nothing persisted). `when`
  * guards re-evaluate on every pass so Back through a branch behaves.
+ *
+ * Guards see only scalar (pick/input) answers; pickMany selections
+ * are not visible to `when`.
  */
 export async function runWizard(
   steps: WizardStep[],
@@ -145,15 +162,16 @@ export function fieldSpecToStep(spec: FieldSpec): WizardStep {
   };
   if (spec.help) step.placeholder = spec.help;
   if (spec.kind === "password" || spec.secret) step.password = true;
-  if (spec.required) {
-    step.required = true;
-    step.validate = (value) => (value.trim() ? undefined : `${spec.label} is required`);
-  }
+  if (spec.required) step.required = true;
+  // Build validate once so that int and required constraints compose
+  // correctly — no double assignment.
   if (spec.kind === "int") {
     step.validate = (value) => {
       if (!value.trim()) return spec.required ? `${spec.label} is required` : undefined;
       return /^\d+$/.test(value.trim()) ? undefined : `${spec.label} must be a number`;
     };
+  } else if (spec.required) {
+    step.validate = (value) => (value.trim() ? undefined : `${spec.label} is required`);
   }
   return step;
 }

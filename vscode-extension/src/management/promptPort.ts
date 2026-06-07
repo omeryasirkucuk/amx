@@ -33,7 +33,7 @@ function showPick(
     quickPick.buttons = [vscode.QuickInputButtons.Back];
     quickPick.items = step.items.map((item) => ({
       label: item.label,
-      description: item.description ?? "",
+      ...(item.description ? { description: item.description } : {}),
     }));
     const valueOf = (label: string) =>
       step.items.find((item) => item.label === label)?.value ?? label;
@@ -47,8 +47,14 @@ function showPick(
     };
     quickPick.onDidTriggerButton(() => settle(WIZARD_BACK));
     quickPick.onDidAccept(() => {
-      if (many) settle(quickPick.selectedItems.map((item) => valueOf(item.label)));
-      else settle(quickPick.selectedItems[0] ? valueOf(quickPick.selectedItems[0].label) : undefined);
+      if (many) {
+        settle(quickPick.selectedItems.map((item) => valueOf(item.label)));
+      } else {
+        // No item selected in single-select mode: keep the picker open
+        // so the user must choose before proceeding.
+        if (quickPick.selectedItems.length === 0) return;
+        settle(valueOf(quickPick.selectedItems[0]!.label));
+      }
     });
     quickPick.onDidHide(() => settle(undefined));
     quickPick.show();

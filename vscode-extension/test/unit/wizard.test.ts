@@ -3,9 +3,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  answersToBody,
   fieldSpecToStep,
   runWizard,
   WIZARD_BACK,
+  type FieldSpec,
   type PromptPort,
   type WizardStep,
 } from "../../src/management/wizard";
@@ -70,10 +72,26 @@ describe("runWizard", () => {
   });
 
   it("enforces required on input steps via validate", async () => {
-    const step: WizardStep = { id: "n", kind: "input", title: "N", required: true };
-    expect(step.required).toBe(true); // validation itself happens in the port driver
-    const { port } = scriptedPort(["x"]);
-    expect(await runWizard([step], port)).toEqual({ n: "x" });
+    // Required text field
+    const textSpec: FieldSpec = {
+      name: "label", kind: "text", label: "Label", help: "",
+      secret: false, required: true, group: "basic", options: [],
+    };
+    const textStep = fieldSpecToStep(textSpec);
+    if (textStep.kind !== "input") throw new Error("expected input step");
+    expect(textStep.validate?.("")).toMatch(/required/i);
+    expect(textStep.validate?.("x")).toBeUndefined();
+
+    // Required int field: empty → required error, valid digits → ok, non-digits → must be a number
+    const intSpec: FieldSpec = {
+      name: "port", kind: "int", label: "Port", help: "",
+      secret: false, required: true, group: "basic", options: [],
+    };
+    const intStep = fieldSpecToStep(intSpec);
+    if (intStep.kind !== "input") throw new Error("expected input step");
+    expect(intStep.validate?.("")).toMatch(/required/i);
+    expect(intStep.validate?.("12")).toBeUndefined();
+    expect(intStep.validate?.("1a")).toMatch(/must be a number/i);
   });
 });
 
@@ -118,5 +136,49 @@ describe("fieldSpecToStep", () => {
     if (step.kind !== "input") throw new Error("expected input step");
     expect(step.validate?.("abc")).toBeTruthy();   // error message
     expect(step.validate?.("5432")).toBeUndefined(); // valid
+  });
+});
+
+describe("answersToBody", () => {
+  const specs: FieldSpec[] = [
+    { name: "port", kind: "int", label: "Port", help: "", secret: false, required: true, group: "basic", options: [] },
+    { name: "enabled", kind: "bool", label: "Enabled", help: "", secret: false, required: false, group: "advanced", options: [] },
+    { name: "host", kind: "text", label: "Host", help: "", secret: false, required: true, group: "basic", options: [] },
+    { name: "schema", kind: "text", label: "Schema", help: "", secret: false, required: false, group: "advanced", options: [] },
+  ];
+
+  it("casts int fields from string to number", () => {
+    const body = answersToBody({ port: "5432", host: "localhost" }, specs);
+    expect(body["port"]).toBe(5432);
+    expect(typeof body["port"]).toBe("number");
+  });
+
+  it("casts bool fields: 'true' → true, 'false' → false", () => {
+    expect(answersToBody({ enabled: "true", host: "h" }, specs)["enabled"]).toBe(true);
+    expect(answersToBody({ enabled: "false", host: "h" }, specs)["enabled"]).toBe(false);
+  });
+
+  it("drops empty optional fields", () => {
+    const body = answersToBody({ host: "localhost", schema: "" }, specs);
+    expect(Object.prototype.hasOwnProperty.call(body, "schema")).toBe(false);
+  });
+
+  it("includes empty required text fields as empty string (current behavior)", () => {
+    // An empty required text field reaches answersToBody as "" and is
+    // included verbatim — the port driver (InputBox) is responsible for
+    // blocking submission, but if it slips through, the value is preserved.
+    const body = answersToBody({ host: "" }, specs);
+    expect(Object.prototype.hasOwnProperty.call(body, "host")).toBe(true);
+    expect(body["host"]).toBe("");
+  });
+
+  it("passes through unknown keys (no matching spec) as strings", () => {
+    const body = answersToBody({ extra: "val" }, specs);
+    expect(body["extra"]).toBe("val");
+  });
+
+  it("skips string[] (pickMany) answers", () => {
+    const body = answersToBody({ host: "localhost", tags: ["a", "b"] }, specs);
+    expect(Object.prototype.hasOwnProperty.call(body, "tags")).toBe(false);
   });
 });
