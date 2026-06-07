@@ -8,7 +8,7 @@ import type { RunSummary } from "../api/types";
 import type { ExtensionServices } from "../services";
 import { refreshViews } from "../views";
 import { guardValue, guardWithRetry } from "./errors";
-import { vscodePromptPort } from "./promptPort";
+import { getPromptPort } from "./index";
 import { runWizard, type WizardStep } from "./wizard";
 
 interface RunNodeArg {
@@ -43,7 +43,7 @@ async function startRun(services: ExtensionServices, prefill: StartArgs): Promis
     void vscode.window.showWarningMessage("AMX: no DB profiles configured.");
     return;
   }
-  const port = vscodePromptPort("AMX: Start Run");
+  const port = getPromptPort("AMX: Start Run");
 
   const profileStep: WizardStep = {
     id: "profile",

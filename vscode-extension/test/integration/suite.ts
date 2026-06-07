@@ -145,4 +145,44 @@ export async function run(): Promise<void> {
     syncEntry !== undefined,
     "POST /api/catalog/sync with profile=warehouse was not recorded by the fake server",
   );
+
+  // Drive the add-DB-profile wizard end-to-end through a scripted
+  // prompt port. The fake backend's field_specs are: host (text,
+  // required, basic), port (int, required, basic), sslmode (select,
+  // advanced) — so the wizard asks: backend pick, profile name, host,
+  // port, advanced gate ("no" skips sslmode). Exactly five answers.
+  await vscode.commands.executeCommand("amx.test.setScriptedAnswers", [
+    "postgresql",
+    "itest-profile",
+    "db.example.com",
+    "5433",
+    "no",
+  ]);
+  // The command awaits a post-save information toast ("Test
+  // Connection" | "Done") that nobody clicks in test mode, so do not
+  // await its completion; the PUT lands before the toast. Poll the
+  // fake server's recorder instead.
+  const addDbDone = vscode.commands.executeCommand("amx.profiles.addDb");
+  addDbDone.then(undefined, () => {});
+
+  const wizardDeadline = Date.now() + 15_000;
+  let putEntry: ReceivedEntry | undefined;
+  while (Date.now() < wizardDeadline) {
+    const resp = await fetch(`http://127.0.0.1:${fakePort}/__test/received`);
+    const entries = (await resp.json()) as ReceivedEntry[];
+    putEntry = entries.find(
+      (e) => e.method === "PUT" && e.path === "/api/profiles/db/itest-profile",
+    );
+    if (putEntry) break;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+  assert.ok(
+    putEntry !== undefined,
+    "PUT /api/profiles/db/itest-profile was not recorded by the fake server",
+  );
+  assert.deepStrictEqual(
+    putEntry.body,
+    { backend: "postgresql", host: "db.example.com", port: 5433 },
+    `wizard submitted an unexpected body: ${JSON.stringify(putEntry.body)}`,
+  );
 }

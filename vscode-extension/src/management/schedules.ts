@@ -8,7 +8,7 @@ import type { ScheduleCreateBody, ScheduleSummary } from "../api/types";
 import type { ExtensionServices } from "../services";
 import { refreshViews } from "../views";
 import { guardValue, guardWithRetry } from "./errors";
-import { vscodePromptPort } from "./promptPort";
+import { getPromptPort } from "./index";
 import { runWizard, type WizardStep } from "./wizard";
 
 interface ScheduleNodeArg {
@@ -38,7 +38,7 @@ async function createSchedule(services: ExtensionServices): Promise<void> {
     void vscode.window.showWarningMessage("AMX: configure a DB profile first.");
     return;
   }
-  const port = vscodePromptPort("AMX: New Schedule");
+  const port = getPromptPort("AMX: New Schedule");
   const answers = await runWizard(
     [
       {

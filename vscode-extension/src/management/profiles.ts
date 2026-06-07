@@ -8,7 +8,7 @@ import type { DbProfileSummary, LlmProfileSummary, NamedProfileSummary } from ".
 import type { ExtensionServices } from "../services";
 import { refreshViews } from "../views";
 import { guard, guardValue, guardWithRetry } from "./errors";
-import { vscodePromptPort } from "./promptPort";
+import { getPromptPort } from "./index";
 import {
   answersToBody,
   fieldSpecToStep,
@@ -51,7 +51,7 @@ async function addDbProfile(services: ExtensionServices): Promise<void> {
   const backends = await guardValue("load backends", () => client.profiles.listBackends());
   if (backends === undefined) return;
 
-  const port = vscodePromptPort("AMX: Add DB Profile");
+  const port = getPromptPort("AMX: Add DB Profile");
   const backendPick = await runWizard(
     [
       {
@@ -133,7 +133,7 @@ async function addLlmProfile(services: ExtensionServices): Promise<void> {
   const existingNames = await guardValue("list profiles", () => client.profiles.listLlm());
   if (existingNames === undefined) return;
 
-  const port = vscodePromptPort("AMX: Add LLM Profile");
+  const port = getPromptPort("AMX: Add LLM Profile");
   const existing = new Set(existingNames.map((profile) => profile.name));
   const answers = await runWizard(
     [
@@ -201,7 +201,7 @@ async function addLlmProfile(services: ExtensionServices): Promise<void> {
 
 async function addPathsProfile(services: ExtensionServices, kind: "docs" | "code"): Promise<void> {
   const title = kind === "docs" ? "AMX: Add Docs Profile" : "AMX: Add Code Profile";
-  const port = vscodePromptPort(title);
+  const port = getPromptPort(title);
   const answers = await runWizard(
     [
       {
@@ -258,7 +258,7 @@ async function editProfile(services: ExtensionServices, node?: ProfileNodeArg): 
     { canPickMany: true, title: `AMX: Edit ${name} — pick fields to change` },
   );
   if (!fieldPick || fieldPick.length === 0) return;
-  const port = vscodePromptPort(`AMX: Edit ${name}`);
+  const port = getPromptPort(`AMX: Edit ${name}`);
   const steps = fieldPick.map((entry) => fieldSpecToStep(entry.spec));
   // LLM temperature is a float; the generic int validator would reject
   // "0.7", so it stays a text field with a float-shaped validator.
