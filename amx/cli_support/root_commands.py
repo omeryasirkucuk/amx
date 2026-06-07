@@ -194,8 +194,19 @@ def register_root_commands(
         default=False,
         help="Skip auto-opening the browser (useful in headless environments).",
     )
+    @click.option(
+        "--embedded",
+        "embedded",
+        is_flag=True,
+        default=False,
+        hidden=True,
+        help=(
+            "Relax framing headers so an IDE host can render Studio "
+            "inside a webview iframe. Set by IDE integrations, not users."
+        ),
+    )
     @click.pass_obj
-    def studio(cfg: AMXConfig, port: int | None, no_open: bool) -> None:
+    def studio(cfg: AMXConfig, port: int | None, no_open: bool, embedded: bool) -> None:
         """Launch AMX Studio (local web UI) and open it in your browser."""
         try:
             from amx.web import launch_studio
@@ -206,7 +217,7 @@ def register_root_commands(
                 f"Underlying import error: {exc}"
             )
             return
-        launch_studio(cfg, port=port, open_browser=not no_open)
+        launch_studio(cfg, port=port, open_browser=not no_open, embedded=embedded)
 
     @main.group()
     def db() -> None:

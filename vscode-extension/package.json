@@ -1,0 +1,323 @@
+{
+  "name": "amx-vscode",
+  "displayName": "AMX",
+  "description": "Manage AMX database metadata, runs, lineage, and documentation from VS Code.",
+  "version": "0.1.0",
+  "publisher": "amx",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/omeryasirkucuk/amx",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Data Science",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:sql"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "amx",
+          "title": "AMX",
+          "icon": "media/amx.svg"
+        }
+      ]
+    },
+    "views": {
+      "amx": [
+        {
+          "id": "amx.profiles",
+          "name": "Profiles"
+        },
+        {
+          "id": "amx.catalog",
+          "name": "Catalog"
+        },
+        {
+          "id": "amx.history",
+          "name": "History"
+        },
+        {
+          "id": "amx.schedules",
+          "name": "Schedules"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "amx.openAsk",
+        "title": "Open Ask Chat",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.newRun",
+        "title": "Start New Run",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.openLineage",
+        "title": "Open Lineage",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.openPages",
+        "title": "Open Pages",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.openSettings",
+        "title": "Open Studio Settings",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.openRepl",
+        "title": "Open REPL",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.server.start",
+        "title": "Start Studio Server",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.server.stop",
+        "title": "Stop Studio Server",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.server.restart",
+        "title": "Restart Studio Server",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.server.showLogs",
+        "title": "Show Studio Server Logs",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.profiles.switchDb",
+        "title": "Switch Database Profile",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.profiles.switchLlm",
+        "title": "Switch LLM Profile",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.profiles.refresh",
+        "title": "Refresh Profiles",
+        "category": "AMX",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "amx.catalog.refresh",
+        "title": "Refresh Catalog",
+        "category": "AMX",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "amx.history.refresh",
+        "title": "Refresh History",
+        "category": "AMX",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "amx.schedules.refresh",
+        "title": "Refresh Schedules",
+        "category": "AMX",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "amx.runtime.selectInterpreter",
+        "title": "Select Python Interpreter for AMX",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.runtime.installAmx",
+        "title": "Install AMX CLI",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.statusMenu",
+        "title": "Status Menu",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.generateDescription",
+        "title": "Generate Description",
+        "category": "AMX"
+      },
+      {
+        "command": "amx.openAsset",
+        "title": "Open Asset in Studio",
+        "category": "AMX"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "amx.profiles.refresh",
+          "when": "view == amx.profiles",
+          "group": "navigation"
+        },
+        {
+          "command": "amx.catalog.refresh",
+          "when": "view == amx.catalog",
+          "group": "navigation"
+        },
+        {
+          "command": "amx.history.refresh",
+          "when": "view == amx.history",
+          "group": "navigation"
+        },
+        {
+          "command": "amx.schedules.refresh",
+          "when": "view == amx.schedules",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "amx.statusMenu",
+          "when": "false"
+        },
+        {
+          "command": "amx.generateDescription",
+          "when": "false"
+        },
+        {
+          "command": "amx.openAsset",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AMX",
+      "properties": {
+        "amx.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python interpreter used to run the AMX Studio server. Leave empty to auto-detect."
+        },
+        "amx.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the amx CLI binary. Leave empty to auto-detect from PATH."
+        },
+        "amx.server.preferredPort": {
+          "type": "number",
+          "default": 47821,
+          "description": "Preferred port for the Studio server. Falls back to an ephemeral port when busy."
+        },
+        "amx.server.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the Studio server automatically on first use."
+        },
+        "amx.server.adoptExisting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reuse a Studio server already running on this machine (e.g. launched from the REPL) instead of starting a second one."
+        },
+        "amx.catalog.cacheTtlSeconds": {
+          "type": "number",
+          "default": 300,
+          "description": "How long catalog data (tables, columns, descriptions) is cached before a refetch."
+        },
+        "amx.managedInstall.allow": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow the extension to offer creating a managed virtual environment and installing amx-cli into it when no AMX installation is found."
+        },
+        "amx.editor.languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "sql"
+          ],
+          "description": "Language IDs that get AMX catalog hovers, completion, and CodeLens."
+        },
+        "amx.editor.maxFileSizeKb": {
+          "type": "number",
+          "default": 512,
+          "description": "Documents larger than this are skipped by the AMX language features."
+        },
+        "amx.editor.hover.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show catalog descriptions when hovering recognized table/column names."
+        },
+        "amx.editor.completion.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Offer table/column completion from the AMX catalog."
+        },
+        "amx.editor.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show AMX CodeLens actions above SQL statements referencing known tables."
+        },
+        "amx.editor.codeLens.maxPerDocument": {
+          "type": "number",
+          "default": 50,
+          "description": "Maximum number of AMX CodeLens entries per document."
+        },
+        "amx.editor.diagnostics.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Flag referenced catalog assets that have no description."
+        },
+        "amx.editor.diagnostics.severity": {
+          "type": "string",
+          "enum": [
+            "hint",
+            "info",
+            "warning"
+          ],
+          "default": "hint",
+          "description": "Severity used for documentation-coverage diagnostics."
+        },
+        "amx.editor.diagnostics.scope": {
+          "type": "string",
+          "enum": [
+            "tables",
+            "tablesAndColumns"
+          ],
+          "default": "tables",
+          "description": "Whether coverage diagnostics check tables only or tables and columns."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc --noEmit && node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "package": "tsc --noEmit && node esbuild.mjs --production && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@vscode/test-electron": "^2.4.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

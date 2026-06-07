@@ -49,6 +49,31 @@ def test_launch_studio_spawns_subprocess_with_python_module(tmp_path, monkeypatc
     assert "47821" in cmd
     assert "--token" in cmd
     assert "--config-path" in cmd
+    # Browser launches stay strict — embedded mode is opt-in.
+    assert "--embedded" not in cmd
+
+
+def test_launch_studio_embedded_passthrough(tmp_path):
+    """``launch_studio(embedded=True)`` forwards ``--embedded`` to the
+    server subprocess so IDE hosts get frameable headers."""
+    from amx.config import AMXConfig
+    from amx.web import launcher
+
+    cfg = AMXConfig()
+    object.__setattr__(cfg, "_config_path", str(tmp_path / "config.yml"))
+    object.__setattr__(cfg, "CONFIG_DIR", str(tmp_path))
+
+    fake_proc = MagicMock()
+    fake_proc.wait.return_value = 0
+    with patch.object(launcher.subprocess, "Popen", return_value=fake_proc) as fake_popen:
+        with (
+            patch.object(launcher, "_wait_for_http", return_value=True),
+            patch.object(launcher, "webbrowser"),
+        ):
+            ok = launcher.launch_studio(cfg, port=47822, open_browser=False, embedded=True)
+    assert ok is True
+    cmd = fake_popen.call_args.args[0]
+    assert "--embedded" in cmd
 
 
 def test_popen_kwargs_isolate_child_from_parent_terminal(tmp_path):

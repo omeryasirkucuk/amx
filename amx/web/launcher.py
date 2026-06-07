@@ -120,6 +120,7 @@ def launch_studio(
     port: int | None = None,
     open_browser: bool = True,
     block: bool = True,
+    embedded: bool = False,
 ) -> bool:
     """Start AMX Studio for one ``/studio`` invocation.
 
@@ -146,6 +147,11 @@ def launch_studio(
         Pass ``False`` in tests so the function returns once the
         child has been spawned (the caller controls shutdown and is
         responsible for closing the log file).
+    embedded
+        Pass-through for the server's embedded host mode (relaxed
+        framing headers so IDE webviews can iframe the SPA). Set by
+        IDE integrations that drive ``amx studio --embedded``; the
+        browser-facing default stays strict.
     """
     chosen_port = port if port is not None else _pick_port(PREFERRED_PORT)
 
@@ -181,6 +187,8 @@ def launch_studio(
         "--config-path",
         config_path,
     ]
+    if embedded:
+        cmd.append("--embedded")
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
