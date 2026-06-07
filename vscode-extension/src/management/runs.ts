@@ -7,7 +7,7 @@ import { eventType } from "../api/sse";
 import type { RunSummary } from "../api/types";
 import type { ExtensionServices } from "../services";
 import { refreshViews } from "../views";
-import { guardValue } from "./errors";
+import { guardValue, guardWithRetry } from "./errors";
 import { vscodePromptPort } from "./promptPort";
 import { runWizard, type WizardStep } from "./wizard";
 
@@ -100,9 +100,14 @@ async function startRun(services: ExtensionServices, prefill: StartArgs): Promis
     if (!tableAnswers) return;
     chosen = (tableAnswers["tables"] as string[]) ?? [];
   }
+  // The server rejects empty scopes, so the "every table" shortcut
+  // (empty selection) expands to the full table list explicitly.
+  if (chosen.length === 0) chosen = tablesInSchema;
 
   const summary =
-    chosen.length > 0 ? chosen.map((t) => `${schema}.${t}`).join(", ") : `${schema}.*`;
+    chosen.length === tablesInSchema.length
+      ? `${schema}.*`
+      : chosen.map((t) => `${schema}.${t}`).join(", ");
   const go = await vscode.window.showInformationMessage(
     `Start an analyze run for ${summary} on '${profile}'?`,
     { modal: true },
@@ -110,16 +115,13 @@ async function startRun(services: ExtensionServices, prefill: StartArgs): Promis
   );
   if (go !== "Start Run") return;
 
-  try {
+  await guardWithRetry("start the run", async () => {
     const job = await client.runs.submit({
       scope: { [schema]: chosen },
       db_profile: profile,
     });
     void trackRun(services, job.job_id, summary);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    void vscode.window.showErrorMessage(`AMX: could not start the run: ${message}`);
-  }
+  });
 }
 
 /** Progress notification fed by the run's SSE stream. */

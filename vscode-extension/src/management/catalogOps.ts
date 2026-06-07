@@ -155,7 +155,7 @@ async function runSync(
             timedOut = true;
             break pollLoop;
           }
-          const raw = (await services.client.catalog.freshness(profile)) as FreshnessResponse;
+          const raw = (await services.client.catalog.freshness()) as FreshnessResponse;
 
           const isSyncing = isFreshnessActivelySyncing(raw, profile);
           if (!isSyncing) break pollLoop;

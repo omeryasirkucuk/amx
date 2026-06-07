@@ -187,8 +187,8 @@ export class AmxClient {
       this.post("/api/catalog/sync", undefined, { profile, database }),
     deepSync: (profile?: string, database?: string): Promise<unknown> =>
       this.post("/api/catalog/deep-sync", undefined, { profile, database }),
-    freshness: (profile?: string): Promise<Record<string, unknown>> =>
-      this.get("/api/catalog/freshness", { profile }),
+    // The server ignores any profile filter; callers filter client-side.
+    freshness: (): Promise<Record<string, unknown>> => this.get("/api/catalog/freshness"),
   };
 
   readonly history = {

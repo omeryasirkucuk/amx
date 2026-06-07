@@ -7,7 +7,7 @@ import * as vscode from "vscode";
 import type { DbProfileSummary, LlmProfileSummary, NamedProfileSummary } from "../api/types";
 import type { ExtensionServices } from "../services";
 import { refreshViews } from "../views";
-import { guard, guardValue } from "./errors";
+import { guard, guardValue, guardWithRetry } from "./errors";
 import { vscodePromptPort } from "./promptPort";
 import {
   answersToBody,
@@ -112,7 +112,7 @@ async function addDbProfile(services: ExtensionServices): Promise<void> {
   delete answers["__name"];
   delete answers["__advanced"];
   const body = { backend: backend.id, ...answersToBody(answers, specs) };
-  await guard(`save profile '${name}'`, async () => {
+  await guardWithRetry(`save profile '${name}'`, async () => {
     await services.client.profiles.upsertDb(name, body);
     refreshViews("profiles", "catalog");
     const test = await vscode.window.showInformationMessage(
@@ -184,7 +184,7 @@ async function addLlmProfile(services: ExtensionServices): Promise<void> {
   const rawApiKey = String(answers["api_key"] ?? "").trim();
   if (rawApiKey) body["api_key"] = rawApiKey;
   if (answers["api_base"]) body["api_base"] = answers["api_base"];
-  await guard(`save profile '${name}'`, async () => {
+  await guardWithRetry(`save profile '${name}'`, async () => {
     await services.client.profiles.upsertLlm(name, body);
     refreshViews("profiles", "statusBar");
     const activate = await vscode.window.showInformationMessage(
@@ -223,7 +223,7 @@ async function addPathsProfile(services: ExtensionServices, kind: "docs" | "code
   );
   if (!answers) return;
   const name = String(answers["__name"]).trim();
-  await guard(`save profile '${name}'`, async () => {
+  await guardWithRetry(`save profile '${name}'`, async () => {
     if (kind === "docs") {
       const paths = splitPaths(String(answers["path"]));
       await services.client.profiles.upsertDocs(name, { paths });
@@ -259,21 +259,48 @@ async function editProfile(services: ExtensionServices, node?: ProfileNodeArg): 
   );
   if (!fieldPick || fieldPick.length === 0) return;
   const port = vscodePromptPort(`AMX: Edit ${name}`);
-  const answers = await runWizard(fieldPick.map((entry) => fieldSpecToStep(entry.spec)), port);
+  const steps = fieldPick.map((entry) => fieldSpecToStep(entry.spec));
+  // LLM temperature is a float; the generic int validator would reject
+  // "0.7", so it stays a text field with a float-shaped validator.
+  if (kind === "llm") {
+    for (const step of steps) {
+      if (step.id === "temperature" && step.kind === "input") {
+        step.validate = (value) =>
+          /^\d*(\.\d+)?$/.test(value.trim()) ? undefined : "Temperature must be a number";
+      }
+    }
+  }
+  const answers = await runWizard(steps, port);
   if (!answers) return;
   const body = answersToBody(answers, specs);
 
   // answersToBody drops empty optionals (the server would then leave
-  // them unchanged). For fields the user explicitly picked and left
-  // blank, we must send an explicit empty string so the server clears
-  // the value rather than ignoring the missing key.
+  // them unchanged). For string-shaped fields the user explicitly
+  // picked and left blank, send an explicit empty string so the server
+  // clears the value rather than ignoring the missing key. Typed
+  // (int/bool) fields cannot be cleared with "" — the server would
+  // reject the body — so they are skipped with a notice instead.
+  const skipped: string[] = [];
   for (const { spec } of fieldPick) {
-    if (!(spec.name in body)) {
+    if (spec.name in body) continue;
+    if (spec.kind === "text" || spec.kind === "password" || spec.kind === "select") {
       body[spec.name] = "";
+    } else {
+      skipped.push(spec.label);
     }
   }
+  if (skipped.length > 0) {
+    void vscode.window.showInformationMessage(
+      `AMX: numeric fields cannot be cleared — skipped: ${skipped.join(", ")}`,
+    );
+  }
 
-  await guard(`update profile '${name}'`, async () => {
+  // Temperature must reach the API as a number, not the wizard's string.
+  if (typeof body["temperature"] === "string" && body["temperature"] !== "") {
+    body["temperature"] = Number(body["temperature"]);
+  }
+
+  await guardWithRetry(`update profile '${name}'`, async () => {
     if (kind === "db") await client.profiles.upsertDb(name, body);
     else await client.profiles.upsertLlm(name, body);
     refreshViews("profiles", "statusBar");
@@ -291,7 +318,7 @@ async function addPathsProfileEdit(
     prompt: kind === "docs" ? "Paths (comma-separated)" : "Repository path",
   });
   if (value === undefined || !value.trim()) return;
-  await guard(`update profile '${name}'`, async () => {
+  await guardWithRetry(`update profile '${name}'`, async () => {
     if (kind === "docs") {
       const paths = splitPaths(value);
       await services.client.profiles.upsertDocs(name, { paths });

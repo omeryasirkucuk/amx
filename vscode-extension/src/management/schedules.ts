@@ -7,7 +7,7 @@ import * as vscode from "vscode";
 import type { ScheduleCreateBody, ScheduleSummary } from "../api/types";
 import type { ExtensionServices } from "../services";
 import { refreshViews } from "../views";
-import { guardValue } from "./errors";
+import { guardValue, guardWithRetry } from "./errors";
 import { vscodePromptPort } from "./promptPort";
 import { runWizard, type WizardStep } from "./wizard";
 
@@ -175,14 +175,11 @@ async function createSchedule(services: ExtensionServices): Promise<void> {
   const cron = String(answers["cron_expr"] ?? "").trim();
   if (cron) body.cron_expr = cron;
 
-  try {
+  await guardWithRetry("create the schedule", async () => {
     await services.client.schedules.create(body);
     refreshViews("schedules");
     void vscode.window.showInformationMessage(`AMX: schedule '${body.name}' created.`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    void vscode.window.showErrorMessage(`AMX: could not create the schedule: ${message}`);
-  }
+  });
 }
 
 async function editSchedule(
@@ -238,7 +235,10 @@ async function deleteSchedule(
   }
 }
 
-async function pickSchedule(services: ExtensionServices): Promise<ScheduleSummary | undefined> {
+/** QuickPick over the configured schedules; shared with commands/index.ts. */
+export async function pickSchedule(
+  services: ExtensionServices,
+): Promise<ScheduleSummary | undefined> {
   const schedules = await guardValue("list schedules", () => services.client.schedules.list());
   if (schedules === undefined) return undefined;
   if (schedules.length === 0) {

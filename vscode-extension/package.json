@@ -474,7 +474,7 @@
         },
         {
           "command": "amx.runs.rerun",
-          "when": "view == amx.history && viewItem =~ /amx\\.run/",
+          "when": "view == amx.history && viewItem == amx.run",
           "group": "1_actions@1"
         },
         {
@@ -484,27 +484,27 @@
         },
         {
           "command": "amx.schedules.edit",
-          "when": "view == amx.schedules && viewItem =~ /amx\\.schedule/",
+          "when": "view == amx.schedules && viewItem =~ /^amx\\.schedule($|\\.)/",
           "group": "2_modify@1"
         },
         {
           "command": "amx.schedules.delete",
-          "when": "view == amx.schedules && viewItem =~ /amx\\.schedule/",
+          "when": "view == amx.schedules && viewItem =~ /^amx\\.schedule($|\\.)/",
           "group": "2_modify@2"
         },
         {
           "command": "amx.schedules.pause",
-          "when": "view == amx.schedules && viewItem =~ /amx\\.schedule/",
+          "when": "view == amx.schedules && viewItem =~ /^amx\\.schedule($|\\.)/",
           "group": "1_actions@1"
         },
         {
           "command": "amx.schedules.resume",
-          "when": "view == amx.schedules && viewItem =~ /amx\\.schedule/",
+          "when": "view == amx.schedules && viewItem =~ /^amx\\.schedule($|\\.)/",
           "group": "1_actions@2"
         },
         {
           "command": "amx.schedules.runNow",
-          "when": "view == amx.schedules && viewItem =~ /amx\\.schedule/",
+          "when": "view == amx.schedules && viewItem =~ /^amx\\.schedule($|\\.)/",
           "group": "1_actions@3"
         }
       ]
