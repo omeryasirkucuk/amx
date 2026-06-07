@@ -7,6 +7,7 @@ import { eventType } from "../api/sse";
 import type { RunSummary } from "../api/types";
 import type { ExtensionServices } from "../services";
 import { refreshViews } from "../views";
+import { guardValue } from "./errors";
 import { vscodePromptPort } from "./promptPort";
 import { runWizard, type WizardStep } from "./wizard";
 
@@ -36,7 +37,8 @@ export function registerRunManagement(services: ExtensionServices): void {
 
 async function startRun(services: ExtensionServices, prefill: StartArgs): Promise<void> {
   const { client, catalog } = services;
-  const profiles = await client.profiles.listDb();
+  const profiles = await guardValue("list DB profiles", () => client.profiles.listDb());
+  if (profiles === undefined) return;
   if (profiles.length === 0) {
     void vscode.window.showWarningMessage("AMX: no DB profiles configured.");
     return;
@@ -57,7 +59,8 @@ async function startRun(services: ExtensionServices, prefill: StartArgs): Promis
   if (!first) return;
   const profile = String(first["profile"]);
 
-  const tables = await catalog.getTables({ profile });
+  const tables = await guardValue("load catalog tables", () => catalog.getTables({ profile }));
+  if (tables === undefined) return;
   if (tables.length === 0) {
     void vscode.window.showWarningMessage(
       `AMX: no indexed tables for '${profile}' — run a catalog sync first.`,
@@ -134,7 +137,7 @@ async function trackRun(
     },
     async (progress, cancelToken) => {
       const abort = new AbortController();
-      cancelToken.onCancellationRequested(() => {
+      const cancelListener = cancelToken.onCancellationRequested(() => {
         void services.client.runs.cancel(jobId);
         abort.abort();
       });
@@ -153,6 +156,8 @@ async function trackRun(
       } catch {
         outcome = "connection lost";
       }
+      cancelListener.dispose();
+      if (cancelToken.isCancellationRequested) outcome = "cancelled";
       refreshViews("history");
       if (outcome === "finished") {
         const open = await vscode.window.showInformationMessage(

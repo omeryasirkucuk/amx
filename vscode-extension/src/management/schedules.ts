@@ -7,6 +7,7 @@ import * as vscode from "vscode";
 import type { ScheduleCreateBody, ScheduleSummary } from "../api/types";
 import type { ExtensionServices } from "../services";
 import { refreshViews } from "../views";
+import { guardValue } from "./errors";
 import { vscodePromptPort } from "./promptPort";
 import { runWizard, type WizardStep } from "./wizard";
 
@@ -29,9 +30,10 @@ export function registerScheduleManagement(services: ExtensionServices): void {
 async function createSchedule(services: ExtensionServices): Promise<void> {
   const { client, catalog } = services;
   const [dbProfiles, llmProfiles] = await Promise.all([
-    client.profiles.listDb(),
-    client.profiles.listLlm(),
+    guardValue("load profiles", () => client.profiles.listDb()),
+    guardValue("load profiles", () => client.profiles.listLlm()),
   ]);
+  if (dbProfiles === undefined || llmProfiles === undefined) return;
   if (dbProfiles.length === 0) {
     void vscode.window.showWarningMessage("AMX: configure a DB profile first.");
     return;
@@ -129,7 +131,8 @@ async function createSchedule(services: ExtensionServices): Promise<void> {
 
   // Scope: all schemas, or pick schemas from the indexed catalog.
   const profile = String(answers["db_profile"]);
-  const tables = await catalog.getTables({ profile });
+  const tables = await guardValue("load catalog tables", () => catalog.getTables({ profile }));
+  if (tables === undefined) return;
   const schemas = [...new Set(tables.map((table) => table.schema))].sort();
   const scopeAnswers = await runWizard(
     [
@@ -236,7 +239,8 @@ async function deleteSchedule(
 }
 
 async function pickSchedule(services: ExtensionServices): Promise<ScheduleSummary | undefined> {
-  const schedules = await services.client.schedules.list();
+  const schedules = await guardValue("list schedules", () => services.client.schedules.list());
+  if (schedules === undefined) return undefined;
   if (schedules.length === 0) {
     void vscode.window.showInformationMessage("AMX: no schedules configured.");
     return undefined;

@@ -18,11 +18,13 @@ interface CatalogNodeArg {
 }
 
 // The freshness endpoint returns `{profiles: [...], stale_profile_count, syncing_profile_count}`.
-// Each profile entry carries `{db_profile, state, ...}` where `state` is
+// Each profile entry carries `{profile, state, ...}` where `state` is
 // "syncing" while the sync is in progress and transitions to another value
-// when complete. We also accept a plain top-level `state`/`status` as a
-// defensive fallback in case the shape changes.
+// when complete. `db_profile` is kept as a defensive fallback in case an
+// older server version uses the old key name. We also accept a plain
+// top-level `state`/`status` as a defensive fallback in case the shape changes.
 interface FreshnessProfile {
+  profile?: string;
   db_profile?: string;
   state?: string;
   status?: string;
@@ -138,24 +140,39 @@ async function runSync(
 
         // The sync endpoint returns immediately; poll freshness until the
         // profile leaves its syncing state. The endpoint returns:
-        //   {profiles: [{db_profile, state, ...}, ...], ...}
+        //   {profiles: [{profile, state, ...}, ...], ...}
         // We match our profile (or any profile when none is specified) and
         // wait until none of them report a state containing "sync". The
         // defensive fallback also handles a hypothetical flat top-level
         // state/status key so the code stays correct if the shape changes.
         const deadline = Date.now() + SYNC_TIMEOUT_MS;
-        while (Date.now() < deadline) {
+        let timedOut = false;
+        pollLoop: while (Date.now() < deadline) {
           await new Promise<void>((resolve) => setTimeout(resolve, SYNC_POLL_MS));
+          // If the sleep itself pushed us past the deadline, record timeout
+          // and stop rather than making another API call.
+          if (Date.now() >= deadline) {
+            timedOut = true;
+            break pollLoop;
+          }
           const raw = (await services.client.catalog.freshness(profile)) as FreshnessResponse;
 
           const isSyncing = isFreshnessActivelySyncing(raw, profile);
-          if (!isSyncing) break;
+          if (!isSyncing) break pollLoop;
           progress.report({ message: "syncing…" });
         }
+        // Loop condition `Date.now() < deadline` became false without a break.
+        if (!timedOut && Date.now() >= deadline) timedOut = true;
 
         services.catalog.invalidate(profile ? { profile } : undefined);
         refreshViews("catalog");
-        void vscode.window.showInformationMessage(`AMX: catalog ${label} finished.`);
+        if (timedOut) {
+          void vscode.window.showWarningMessage(
+            `AMX: catalog ${label} is still running on the server after 10 minutes — check Studio for progress.`,
+          );
+        } else {
+          void vscode.window.showInformationMessage(`AMX: catalog ${label} finished.`);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         void vscode.window.showErrorMessage(`AMX: catalog ${label} failed: ${message}`);
@@ -176,7 +193,10 @@ function isFreshnessActivelySyncing(
   const profileList = response["profiles"];
   if (Array.isArray(profileList) && profileList.length > 0) {
     const relevant: FreshnessProfile[] = targetProfile
-      ? profileList.filter((p) => !p["db_profile"] || p["db_profile"] === targetProfile)
+      ? profileList.filter((p) => {
+          const name = p["profile"] ?? p["db_profile"];
+          return !name || name === targetProfile;
+        })
       : profileList;
     return relevant.some((p) => {
       const stateStr = String(p["state"] ?? p["status"] ?? "").toLowerCase();

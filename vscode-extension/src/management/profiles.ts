@@ -7,6 +7,7 @@ import * as vscode from "vscode";
 import type { DbProfileSummary, LlmProfileSummary, NamedProfileSummary } from "../api/types";
 import type { ExtensionServices } from "../services";
 import { refreshViews } from "../views";
+import { guard, guardValue } from "./errors";
 import { vscodePromptPort } from "./promptPort";
 import {
   answersToBody,
@@ -369,7 +370,7 @@ async function setActive(services: ExtensionServices, node?: ProfileNodeArg): Pr
   });
 }
 
-// --- helpers ---
+// --- local helpers ---
 
 async function resolveTarget(
   services: ExtensionServices,
@@ -407,26 +408,6 @@ async function pickName(
     { title },
   );
   return pick;
-}
-
-/** Show a branded error toast and return undefined when the action throws. */
-async function guardValue<T>(action: string, body: () => Promise<T>): Promise<T | undefined> {
-  try {
-    return await body();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    void vscode.window.showErrorMessage(`AMX: could not ${action}: ${message}`);
-    return undefined;
-  }
-}
-
-async function guard(action: string, body: () => Promise<void>): Promise<void> {
-  try {
-    await body();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    void vscode.window.showErrorMessage(`AMX: could not ${action}: ${message}`);
-  }
 }
 
 /** Returns a validator that rejects duplicate names within `existing`. */
