@@ -146,3 +146,67 @@ export interface CatalogScope {
   database?: string;
   schema?: string;
 }
+
+// --- /api/profiles wizard metadata (profiles.py) ---
+
+export interface BackendSpec {
+  id: string;
+  label: string;
+  fields: string[];
+  field_specs: Array<{
+    name: string;
+    kind: "text" | "int" | "password" | "select" | "bool";
+    label: string;
+    help: string;
+    secret: boolean;
+    required: boolean;
+    group: "basic" | "advanced";
+    options: string[];
+  }>;
+  default_port?: number;
+  supports_catalog?: boolean;
+  [key: string]: unknown;
+}
+
+export interface LlmProviderSpec {
+  id: string;
+  label: string;
+  needs_key: boolean;
+  needs_base: boolean;
+}
+
+// --- /api/schedules create/patch (schedules.py) ---
+
+export interface ScheduleCreateBody {
+  name: string;
+  fire_at_local: string;
+  fire_at_tz: string;
+  db_profile: string;
+  database?: string | null;
+  catalog?: string | null;
+  scope: Record<string, unknown>;
+  llm_profile: string;
+  review_strategy: "auto" | "manual";
+  kind: "analyze" | "cache_refresh";
+  cron_expr?: string | null;
+  trigger: "time" | "change";
+}
+
+// --- /api/runs submit (runs.py) ---
+
+export interface RunSubmitBody {
+  scope: Record<string, string[]>;
+  db_profile?: string;
+  database?: string;
+  catalog?: string;
+}
+
+export interface JobRef {
+  job_id: string;
+  status?: string;
+}
+
+export interface RunResultRow {
+  id: number;
+  [key: string]: unknown;
+}
