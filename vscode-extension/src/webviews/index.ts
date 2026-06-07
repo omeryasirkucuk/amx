@@ -46,10 +46,10 @@ async function enrichTableArgs(
   services: ExtensionServices,
   args: PanelAreaArgs,
 ): Promise<PanelAreaArgs> {
-  if (!args.schema || !args.table || args.catalog) return args;
+  if (!args.schema || args.catalog) return args;
   try {
     let database = args.database;
-    if (!database) {
+    if (!database && args.table) {
       // Profile-wide fetch (usually already warm). Never pass a
       // schema filter here — the cache keys scopes on
       // profile|database only, and a filtered fetch would poison the
@@ -64,6 +64,23 @@ async function enrichTableArgs(
           table.name.toLowerCase() === wanted && table.schema.toLowerCase() === schemaWanted,
       );
       database = row?.database;
+    }
+    if (!database && args.profile) {
+      // Legacy catalog rows can carry a NULL database_name (synced
+      // before multi-database walks). Fall back to the profile's
+      // configured connection database, then to the only known
+      // database when there is exactly one.
+      const detail = await services.client.profiles.getDb(args.profile).catch(() => undefined);
+      const configured = detail?.["database"];
+      if (typeof configured === "string" && configured.trim()) {
+        database = configured.trim();
+      } else {
+        const known = await services.client.catalog
+          .databases({ profile: args.profile })
+          .catch(() => [] as string[]);
+        const real = known.filter((name) => name !== "");
+        if (real.length === 1) database = real[0];
+      }
     }
     if (!database) return args;
     if (await profileUsesCatalogAxis(services, args.profile)) {

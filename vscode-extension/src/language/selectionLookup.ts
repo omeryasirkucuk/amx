@@ -11,7 +11,11 @@ import { guardValue } from "../management/errors";
 import type { ExtensionServices } from "../services";
 import { log } from "../util/log";
 import type { CatalogResolver } from "./resolver";
-import { resolveSelectionLocally, type SelectionMatch } from "./selectionResolve";
+import {
+  matchContainers,
+  resolveSelectionLocally,
+  type SelectionMatch,
+} from "./selectionResolve";
 
 const MAX_SELECTION_CHARS = 500;
 const COMMAND_ID = "amx.searchSelection";
@@ -78,7 +82,10 @@ async function searchSelection(
     log(`selection lookup warm-up failed: ${String(error)}`);
   });
 
-  let matches = resolveSelectionLocally(text, resolver);
+  // Granularity first: a bare identifier naming a database or schema
+  // surfaces those containers ahead of any table/column hits.
+  const containers = matchContainers(text, resolver.allTables());
+  let matches = [...containers, ...resolveSelectionLocally(text, resolver)];
   if (matches.length === 0) {
     const remote = await guardValue("search the catalog", () =>
       remoteSearch(services, text),
@@ -93,9 +100,11 @@ async function searchSelection(
   }
   const chosen = matches.length === 1 ? matches[0]! : await pickMatch(matches);
   if (!chosen) return;
+  // The progressive table route drills exactly as deep as the match:
+  // database browse, schema detail, or the table/column card.
   await vscode.commands.executeCommand("amx.panel.open", "table", {
-    schema: chosen.schema,
-    table: chosen.table,
+    ...(chosen.schema ? { schema: chosen.schema } : {}),
+    ...(chosen.table ? { table: chosen.table } : {}),
     ...(chosen.profile ? { profile: chosen.profile } : {}),
     ...(chosen.database ? { database: chosen.database } : {}),
   });
@@ -114,7 +123,11 @@ async function remoteSearch(
   const seen = new Set<string>();
   const matches: SelectionMatch[] = [];
   for (const hit of [...tables, ...columns]) {
-    const match: SelectionMatch = { schema: hit.schema_name, table: hit.table_name };
+    const match: SelectionMatch = {
+      kind: hit.column_name ? "column" : "table",
+      schema: hit.schema_name,
+      table: hit.table_name,
+    };
     if (hit.db_profile) match.profile = hit.db_profile;
     if (hit.database_name) match.database = hit.database_name;
     if (hit.column_name) match.column = hit.column_name;
@@ -130,8 +143,19 @@ async function remoteSearch(
 async function pickMatch(matches: SelectionMatch[]): Promise<SelectionMatch | undefined> {
   const pick = await vscode.window.showQuickPick(
     matches.map((match) => ({
-      label: [match.schema, match.table, match.column].filter(Boolean).join("."),
-      description: [match.profile, match.database].filter(Boolean).join(" · "),
+      label:
+        match.kind === "database"
+          ? `$(database) ${match.database}`
+          : match.kind === "schema"
+            ? `$(symbol-namespace) ${match.schema}`
+            : [match.schema, match.table, match.column].filter(Boolean).join("."),
+      description: [
+        match.kind === "database" || match.kind === "schema" ? match.kind : undefined,
+        match.profile,
+        match.kind === "database" ? undefined : match.database,
+      ]
+        .filter(Boolean)
+        .join(" · "),
       detail: match.description ?? "",
       match,
     })),

@@ -7,7 +7,7 @@ import type { AmxClient } from "../../src/api/client";
 import type { InventoryTable } from "../../src/api/types";
 import { catalogArgFromNode } from "../../src/management/catalogNodeArg";
 import { CatalogResolver } from "../../src/language/resolver";
-import { resolveSelectionLocally } from "../../src/language/selectionResolve";
+import { matchContainers, resolveSelectionLocally } from "../../src/language/selectionResolve";
 
 function cacheWith(rows: InventoryTable[]): CatalogCache {
   const client = {
@@ -37,6 +37,7 @@ describe("resolveSelectionLocally", () => {
     const matches = resolveSelectionLocally('SELECT * FROM amx.test', resolver);
     expect(matches).toEqual([
       {
+        kind: "table",
         profile: "dbr-oyk",
         database: "main",
         schema: "amx",
@@ -62,6 +63,34 @@ describe("resolveSelectionLocally", () => {
       resolver,
     );
     expect(matches).toHaveLength(1);
+  });
+});
+
+describe("matchContainers (selection granularity)", () => {
+  const TABLES = [
+    { profile: "local-postgre", database: "SAP", schema: "sap_s6p" },
+    { profile: "local-postgre", database: "SAP", schema: "sap_test" },
+    { profile: "local-postgre", database: "bird_train", schema: "AMX" },
+  ];
+
+  it("matches a bare database name first, case-insensitively", () => {
+    const matches = matchContainers("sap", TABLES);
+    expect(matches[0]).toEqual({ kind: "database", profile: "local-postgre", database: "SAP" });
+  });
+
+  it("matches a bare schema name with its database context", () => {
+    const matches = matchContainers("sap_s6p", TABLES);
+    expect(matches).toEqual([
+      { kind: "schema", profile: "local-postgre", database: "SAP", schema: "sap_s6p" },
+    ]);
+  });
+
+  it("skips multi-part selections (table intent)", () => {
+    expect(matchContainers("sap.amx.orders", TABLES)).toEqual([]);
+  });
+
+  it("dedupes container hits across many tables", () => {
+    expect(matchContainers("SAP", TABLES).filter((m) => m.kind === "database")).toHaveLength(1);
   });
 });
 

@@ -42,16 +42,25 @@ const seg = (value: string): string => encodeURIComponent(value);
 // landing page when even the profile is unknown).
 function tableRoute(args: PanelAreaArgs): string {
   const { profile, database, catalog, schema, table } = args;
-  if (profile && schema && table) {
-    if (catalog) return `/cat/${seg(profile)}/${seg(catalog)}/${seg(schema)}/${seg(table)}`;
-    if (database) return `/db/${seg(profile)}/${seg(database)}/${seg(schema)}/${seg(table)}`;
+  if (!profile) return "/";
+  const container = catalog ?? database;
+  if (!container) return `/db/${seg(profile)}`;
+  const axis = catalog ? "cat" : "db";
+  // Progressive deep link: drill exactly as far as the args reach —
+  // database/catalog browse, schema detail, or the table card.
+  const segments = [axis, seg(profile), seg(container)];
+  if (schema) {
+    segments.push(seg(schema));
+    if (table) segments.push(seg(table));
   }
-  if (profile) return `/db/${seg(profile)}`;
-  return "/";
+  return `/${segments.join("/")}`;
 }
 
 function tableTitle(args: PanelAreaArgs): string {
   if (args.schema && args.table) return `AMX: ${args.schema}.${args.table}`;
+  if (args.schema) return `AMX: ${args.schema}`;
+  const container = args.catalog ?? args.database;
+  if (container) return `AMX: ${container}`;
   return "AMX Catalog";
 }
 
