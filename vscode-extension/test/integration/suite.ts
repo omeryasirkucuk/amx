@@ -2,7 +2,18 @@
 // assert-based runner (no mocha dependency): @vscode/test-electron
 // just needs an exported run() that resolves on success.
 import * as assert from "node:assert";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import * as vscode from "vscode";
+
+/** Read the fake-studio port from the discovery file written by runTests.ts. */
+async function readFakePort(): Promise<number> {
+  const configDir = process.env["AMX_CONFIG_DIR"];
+  assert.ok(configDir, "AMX_CONFIG_DIR env var is not set");
+  const raw = await readFile(join(configDir, "studio.json"), "utf-8");
+  const parsed = JSON.parse(raw) as { port: number };
+  return parsed.port;
+}
 
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension("amx.amx-vscode");
@@ -21,6 +32,34 @@ export async function run(): Promise<void> {
     "amx.panel.open",
   ]) {
     assert.ok(commands.includes(expected), `command ${expected} is not registered`);
+  }
+
+  // All 21 new management command ids must be registered.
+  const newCommandIds = [
+    "amx.profiles.addDb",
+    "amx.profiles.addLlm",
+    "amx.profiles.addDocs",
+    "amx.profiles.addCode",
+    "amx.profiles.editProfile",
+    "amx.profiles.deleteProfile",
+    "amx.profiles.testDb",
+    "amx.profiles.setActive",
+    "amx.catalog.sync",
+    "amx.catalog.deepSync",
+    "amx.catalog.editDescription",
+    "amx.catalog.generateDescription",
+    "amx.catalog.copyName",
+    "amx.catalog.analyzeTable",
+    "amx.runs.start",
+    "amx.runs.cancel",
+    "amx.runs.rerun",
+    "amx.schedules.create",
+    "amx.schedules.edit",
+    "amx.schedules.delete",
+    "amx.schedules.pause",
+  ];
+  for (const id of newCommandIds) {
+    assert.ok(commands.includes(id), `management command ${id} is not registered`);
   }
 
   // The server manager adopts the fake Studio recorded in the
@@ -71,5 +110,39 @@ export async function run(): Promise<void> {
   assert.ok(
     hoverText.includes("All customer orders"),
     `hover did not surface the catalog description (got: ${hoverText || "<empty>"})`,
+  );
+
+  // catalog.sync integration: invoke the command with a profileScope node
+  // (matching the shape catalogArgFromNode expects) and confirm the fake
+  // server recorded a POST /api/catalog/sync with profile=warehouse.
+  const fakePort = await readFakePort();
+  await vscode.commands.executeCommand("amx.catalog.sync", {
+    type: "profileScope",
+    profile: "warehouse",
+  });
+  // Give the async command a moment to complete the HTTP call.
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, 3000));
+
+  interface ReceivedEntry {
+    method: string;
+    path: string;
+    query: Record<string, string>;
+    body: unknown;
+  }
+
+  const pollDeadline = Date.now() + 10_000;
+  let syncEntry: ReceivedEntry | undefined;
+  while (Date.now() < pollDeadline) {
+    const resp = await fetch(`http://127.0.0.1:${fakePort}/__test/received`);
+    const entries = (await resp.json()) as ReceivedEntry[];
+    syncEntry = entries.find(
+      (e) => e.method === "POST" && e.path === "/api/catalog/sync" && e.query["profile"] === "warehouse",
+    );
+    if (syncEntry) break;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+  assert.ok(
+    syncEntry !== undefined,
+    "POST /api/catalog/sync with profile=warehouse was not recorded by the fake server",
   );
 }
