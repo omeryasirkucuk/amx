@@ -352,6 +352,11 @@ include = ["amx*"]
 # (vendored dist) so a developer cloning the repo + running
 # ``pip install -e .`` gets a working AMX Studio without Node.
 "amx.web" = ["static/**/*", "static/index.html"]
+# Ship the pre-built editor extension VSIX inside the wheel. The file
+# is committed to the repo (vendored so end users need no Node) and is
+# rebuilt by ``make vsix``, which stamps the extension version to the
+# current amx version so the two can never drift.
+"amx.assets" = ["vsix/*.vsix"]
 # Jinja templates used by /search compare --pdf and the Studio
 # "Download PDF" button. WeasyPrint reads them at render time, so
 # they have to ship inside the wheel alongside the Python code.
