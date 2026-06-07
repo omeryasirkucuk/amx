@@ -2,7 +2,7 @@
   "name": "amx-vscode",
   "displayName": "AMX",
   "description": "Manage AMX database metadata, runs, lineage, and documentation from VS Code.",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "publisher": "amx",
   "license": "Apache-2.0",
   "icon": "media/amx.png",
