@@ -17,8 +17,12 @@ interface RunNodeArg {
 
 interface StartArgs {
   profile?: string;
+  /** Database / UC catalog scope from the catalog tree's database level. */
+  database?: string;
   schema?: string;
   table?: string;
+  /** Schema bulk run: skip the table picker, analyze every table. */
+  allTables?: boolean;
 }
 
 export function registerRunManagement(services: ExtensionServices): void {
@@ -59,7 +63,9 @@ async function startRun(services: ExtensionServices, prefill: StartArgs): Promis
   if (!first) return;
   const profile = String(first["profile"]);
 
-  const tables = await guardValue("load catalog tables", () => catalog.getTables({ profile }));
+  const tableScope: { profile: string; database?: string } = { profile };
+  if (prefill.database !== undefined) tableScope.database = prefill.database;
+  const tables = await guardValue("load catalog tables", () => catalog.getTables(tableScope));
   if (tables === undefined) return;
   if (tables.length === 0) {
     void vscode.window.showWarningMessage(
@@ -85,6 +91,10 @@ async function startRun(services: ExtensionServices, prefill: StartArgs): Promis
   let chosen: string[];
   if (prefill.table) {
     chosen = [prefill.table];
+  } else if (prefill.allTables) {
+    // Schema bulk run from the tree: every table, no picker — the
+    // modal confirm below is the single gate.
+    chosen = tablesInSchema;
   } else {
     const tableAnswers = await runWizard(
       [
@@ -116,10 +126,12 @@ async function startRun(services: ExtensionServices, prefill: StartArgs): Promis
   if (go !== "Start Run") return;
 
   await guardWithRetry("start the run", async () => {
-    const job = await client.runs.submit({
+    const body: Parameters<typeof client.runs.submit>[0] = {
       scope: { [schema]: chosen },
       db_profile: profile,
-    });
+    };
+    if (prefill.database !== undefined) body.database = prefill.database;
+    const job = await client.runs.submit(body);
     void trackRun(services, job.job_id, summary);
   });
 }

@@ -79,6 +79,18 @@ export interface TableExplain {
   relationships?: unknown[];
 }
 
+/** Row from `GET /api/catalog/search/{tables|columns}` (verified live:
+ *  hybrid search rows carry the full entity record). */
+export interface CatalogSearchHit {
+  db_profile: string;
+  database_name?: string | null;
+  schema_name: string;
+  table_name: string;
+  column_name?: string | null;
+  effective_description?: string | null;
+  [key: string]: unknown;
+}
+
 // --- /api/history (history.py) ---
 
 export interface RunSummary {

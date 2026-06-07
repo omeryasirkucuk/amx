@@ -8,6 +8,7 @@ import { streamSse, type SseOptions } from "./sse";
 import type {
   BackendSpec,
   CatalogScope,
+  CatalogSearchHit,
   ContextInfo,
   DbProfileSummary,
   GenerateResult,
@@ -183,6 +184,22 @@ export class AmxClient {
       ).tables,
     explain: (path: string, profile?: string): Promise<TableExplain> =>
       this.get("/api/catalog/explain", { path, profile }),
+    searchTables: async (q: string, profile?: string, limit = 8): Promise<CatalogSearchHit[]> =>
+      (
+        await this.get<{ rows: CatalogSearchHit[] }>("/api/catalog/search/tables", {
+          q,
+          profile,
+          limit,
+        })
+      ).rows,
+    searchColumns: async (q: string, profile?: string, limit = 8): Promise<CatalogSearchHit[]> =>
+      (
+        await this.get<{ rows: CatalogSearchHit[] }>("/api/catalog/search/columns", {
+          q,
+          profile,
+          limit,
+        })
+      ).rows,
     sync: (profile?: string, database?: string): Promise<unknown> =>
       this.post("/api/catalog/sync", undefined, { profile, database }),
     deepSync: (profile?: string, database?: string): Promise<unknown> =>

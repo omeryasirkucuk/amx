@@ -13,9 +13,18 @@ interface ProfileScopeNode {
   profile?: string;
 }
 
+interface DatabaseNode {
+  type: "databaseScope";
+  profile?: string;
+  /** undefined groups legacy rows whose database_name was NULL. */
+  database?: string;
+  label: string;
+}
+
 interface SchemaNode {
   type: "schema";
   profile?: string;
+  database?: string;
   schema: string;
 }
 
@@ -37,7 +46,13 @@ interface PlaceholderNode {
   startServer: boolean;
 }
 
-export type CatalogNode = ProfileScopeNode | SchemaNode | TableNode | ColumnNode | PlaceholderNode;
+export type CatalogNode =
+  | ProfileScopeNode
+  | DatabaseNode
+  | SchemaNode
+  | TableNode
+  | ColumnNode
+  | PlaceholderNode;
 
 const TOOLTIP_MAX_CHARS = 240;
 
@@ -59,6 +74,8 @@ export class CatalogTreeProvider implements vscode.TreeDataProvider<CatalogNode>
     switch (node.type) {
       case "profileScope":
         return profileScopeItem(node);
+      case "databaseScope":
+        return databaseItem(node);
       case "schema":
         return schemaItem(node);
       case "table":
@@ -75,7 +92,9 @@ export class CatalogTreeProvider implements vscode.TreeDataProvider<CatalogNode>
       if (!node) return await this.rootNodes();
       switch (node.type) {
         case "profileScope":
-          return await this.schemaNodes(node.profile);
+          return await this.databaseNodes(node.profile);
+        case "databaseScope":
+          return await this.schemaNodes(node.profile, node.database);
         case "schema":
           return await this.tableNodes(node);
         case "table":
@@ -102,13 +121,42 @@ export class CatalogTreeProvider implements vscode.TreeDataProvider<CatalogNode>
     return profiles.map((profile) => ({ type: "profileScope", profile: profile.name }));
   }
 
-  private async schemaNodes(profile: string | undefined): Promise<CatalogNode[]> {
-    const tables = await this.tablesForProfile(profile);
+  /** Database level under a profile (Postgres databases, UC catalogs). */
+  private async databaseNodes(profile: string | undefined): Promise<CatalogNode[]> {
+    const scope = profile !== undefined ? { profile } : {};
+    const databases = await this.services.client.catalog.databases(scope);
+    if (databases.length === 0) {
+      return [
+        {
+          type: "placeholder",
+          message: "No databases indexed — run a catalog sync for this profile",
+          startServer: false,
+        },
+      ];
+    }
+    return databases.map((database) => {
+      const node: DatabaseNode = {
+        type: "databaseScope",
+        label: database === "" ? "(default)" : database,
+      };
+      if (profile !== undefined) node.profile = profile;
+      // Empty string = legacy rows whose database_name was NULL; an
+      // undefined database keeps downstream fetches unscoped.
+      if (database !== "") node.database = database;
+      return node;
+    });
+  }
+
+  private async schemaNodes(
+    profile: string | undefined,
+    database: string | undefined,
+  ): Promise<CatalogNode[]> {
+    const tables = await this.tablesForScope(profile, database);
     if (tables.length === 0) {
       return [
         {
           type: "placeholder",
-          message: "No tables indexed — run /search sync for this profile",
+          message: "No tables indexed — run a catalog sync for this profile",
           startServer: false,
         },
       ];
@@ -117,12 +165,13 @@ export class CatalogTreeProvider implements vscode.TreeDataProvider<CatalogNode>
     return schemas.map((schema) => {
       const node: SchemaNode = { type: "schema", schema };
       if (profile !== undefined) node.profile = profile;
+      if (database !== undefined) node.database = database;
       return node;
     });
   }
 
   private async tableNodes(node: SchemaNode): Promise<CatalogNode[]> {
-    const tables = await this.tablesForProfile(node.profile);
+    const tables = await this.tablesForScope(node.profile, node.database);
     return tables
       .filter((table) => table.schema === node.schema)
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -134,8 +183,13 @@ export class CatalogTreeProvider implements vscode.TreeDataProvider<CatalogNode>
     return columns.map((column) => ({ type: "column", meta: column, table: meta }) as ColumnNode);
   }
 
-  private async tablesForProfile(profile: string | undefined): Promise<readonly TableMeta[]> {
-    const scope = profile !== undefined ? { profile } : {};
+  private async tablesForScope(
+    profile: string | undefined,
+    database: string | undefined,
+  ): Promise<readonly TableMeta[]> {
+    const scope: { profile?: string; database?: string } = {};
+    if (profile !== undefined) scope.profile = profile;
+    if (database !== undefined) scope.database = database;
     return this.services.catalog.getTables(scope);
   }
 
@@ -152,6 +206,13 @@ function profileScopeItem(node: ProfileScopeNode): vscode.TreeItem {
   );
   item.iconPath = new vscode.ThemeIcon("plug");
   item.contextValue = "amx.catalogProfile";
+  return item;
+}
+
+function databaseItem(node: DatabaseNode): vscode.TreeItem {
+  const item = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.Collapsed);
+  item.iconPath = new vscode.ThemeIcon("database");
+  item.contextValue = "amx.catalogDatabase";
   return item;
 }
 

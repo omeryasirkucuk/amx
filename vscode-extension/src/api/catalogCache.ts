@@ -158,7 +158,9 @@ export class CatalogCache {
 }
 
 function scopeKey(scope: CatalogScope): string {
-  return scope.profile ?? "";
+  // Database participates in the key so per-database inventories
+  // (profile → database → schema tree level) cache independently.
+  return `${scope.profile ?? ""}|${scope.database ?? ""}`;
 }
 
 function toTableMeta(row: InventoryTable, scopeProfile?: string): TableMeta {

@@ -157,6 +157,15 @@ const ROUTES: Record<string, unknown> = {
   "/api/schedules": { schedules: [] },
   "/api/profiles/db/backends": BACKENDS_RESPONSE,
   "/api/catalog/freshness": { profiles: [{ profile: "warehouse", state: "fresh" }] },
+  "/api/catalog/databases": {
+    databases: [
+      { database_name: "dwh", entity_count: 10 },
+      { database_name: "analytics", entity_count: 5 },
+    ],
+    count: 2,
+  },
+  "/api/catalog/search/tables": { q: "", rows: [], count: 0 },
+  "/api/catalog/search/columns": { q: "", rows: [], count: 0 },
 };
 
 /** Start the fake server on an ephemeral port; resolves the port. */

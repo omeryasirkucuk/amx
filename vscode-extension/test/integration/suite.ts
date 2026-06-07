@@ -57,6 +57,9 @@ export async function run(): Promise<void> {
     "amx.schedules.edit",
     "amx.schedules.delete",
     "amx.schedules.pause",
+    "amx.catalog.analyzeSchema",
+    "amx.catalog.analyzeScope",
+    "amx.searchSelection",
   ];
   for (const id of newCommandIds) {
     assert.ok(commands.includes(id), `management command ${id} is not registered`);
@@ -184,5 +187,38 @@ export async function run(): Promise<void> {
     putEntry.body,
     { backend: "postgresql", host: "db.example.com", port: 5433 },
     `wizard submitted an unexpected body: ${JSON.stringify(putEntry.body)}`,
+  );
+
+  // Selection lookup: select SQL inside a PYTHON document (the
+  // spark.sql use case) and run amx.searchSelection. The single local
+  // match (sales.orders from the fake inventory) opens the table
+  // panel directly; assert the panel's SPA boots via the readiness
+  // hook — proving lookup works outside .sql files end-to-end.
+  const pyDoc = await vscode.workspace.openTextDocument({
+    language: "python",
+    content: 'spark.sql("""SELECT * FROM sales.orders""").show()',
+  });
+  const pyEditor = await vscode.window.showTextDocument(pyDoc);
+  const sqlStart = pyDoc.getText().indexOf("SELECT");
+  const sqlEnd = pyDoc.getText().indexOf('"""', sqlStart);
+  pyEditor.selection = new vscode.Selection(
+    pyDoc.positionAt(sqlStart),
+    pyDoc.positionAt(sqlEnd),
+  );
+  await vscode.commands.executeCommand("amx.searchSelection");
+  const tableDeadline = Date.now() + 20_000;
+  let tableReady = false;
+  while (Date.now() < tableDeadline) {
+    const ready =
+      (await vscode.commands.executeCommand<string[]>("amx.panel.readyAreas")) ?? [];
+    if (ready.includes("table")) {
+      tableReady = true;
+      break;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+  assert.ok(
+    tableReady,
+    "selection lookup did not open a booted table panel for sales.orders",
   );
 }

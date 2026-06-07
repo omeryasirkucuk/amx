@@ -6,16 +6,7 @@ import * as vscode from "vscode";
 
 import type { ExtensionServices } from "../services";
 import { refreshViews } from "../views";
-
-// --- node shape expected by the context-menu contributions ---
-
-interface CatalogNodeArg {
-  profile?: string;
-  schema?: string;
-  table?: string;
-  column?: string;
-  description?: string;
-}
+import { catalogArgFromNode, type CatalogNodeArg } from "./catalogNodeArg";
 
 // The freshness endpoint returns `{profiles: [...], stale_profile_count, syncing_profile_count}`.
 // Each profile entry carries `{profile, state, ...}` where `state` is
@@ -64,6 +55,17 @@ export function registerCatalogOps(services: ExtensionServices): void {
     vscode.commands.registerCommand("amx.catalog.analyzeTable", (element?: unknown) =>
       vscode.commands.executeCommand("amx.runs.start", catalogArgFromNode(element)),
     ),
+    // Bulk runs from container nodes: schema → whole-schema run (no
+    // table picker, one modal confirm); database/profile → run wizard
+    // starting at the schema step.
+    vscode.commands.registerCommand("amx.catalog.analyzeSchema", (element?: unknown) => {
+      const node = catalogArgFromNode(element);
+      if (!node?.schema) return;
+      void vscode.commands.executeCommand("amx.runs.start", { ...node, allTables: true });
+    }),
+    vscode.commands.registerCommand("amx.catalog.analyzeScope", (element?: unknown) =>
+      vscode.commands.executeCommand("amx.runs.start", catalogArgFromNode(element)),
+    ),
     vscode.commands.registerCommand("amx.catalog.generateDescription", (element?: unknown) => {
       const node = catalogArgFromNode(element);
       if (!node) return;
@@ -79,44 +81,6 @@ export function registerCatalogOps(services: ExtensionServices): void {
 
 // --- helpers ---
 
-/**
- * Map a VS Code tree element (the raw node object the provider returns)
- * onto the flat CatalogNodeArg shape that commands consume. Returns
- * undefined when the element is not a recognizable catalog node.
- */
-export function catalogArgFromNode(element: unknown): CatalogNodeArg | undefined {
-  if (typeof element !== "object" || element === null) return undefined;
-  const node = element as Record<string, unknown>;
-
-  if (node["type"] === "profileScope") {
-    const profile = node["profile"] as string | undefined;
-    return profile !== undefined ? { profile } : {};
-  }
-
-  if (node["type"] === "table") {
-    const meta = node["meta"] as {
-      schema: string;
-      name: string;
-      profile?: string;
-      description?: string;
-    };
-    const arg: CatalogNodeArg = { schema: meta.schema, table: meta.name };
-    if (meta.profile) arg.profile = meta.profile;
-    if (meta.description) arg.description = meta.description;
-    return arg;
-  }
-
-  if (node["type"] === "column") {
-    const table = node["table"] as { schema: string; name: string; profile?: string };
-    const meta = node["meta"] as { name: string; description?: string };
-    const arg: CatalogNodeArg = { schema: table.schema, table: table.name, column: meta.name };
-    if (table.profile) arg.profile = table.profile;
-    if (meta.description) arg.description = meta.description;
-    return arg;
-  }
-
-  return undefined;
-}
 
 // --- command implementations ---
 
@@ -272,3 +236,5 @@ async function editDescription(
     void vscode.window.showErrorMessage(`AMX: could not save description: ${message}`);
   }
 }
+
+export { catalogArgFromNode } from "./catalogNodeArg";
