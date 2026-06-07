@@ -12,7 +12,13 @@ import { backoffDelayMs, singleFlight, sleep } from "../util/async";
 import { getServerChannel, log } from "../util/log";
 import { readDiscovery } from "./discoveryFile";
 import { pickPort } from "./ports";
-import { buildCliSpawnSpec, buildServerSpawnSpec, killServer, spawnServer } from "./spawn";
+import {
+  buildCliSpawnSpec,
+  buildServerSpawnSpec,
+  killServer,
+  probeEmbeddedSupport,
+  spawnServer,
+} from "./spawn";
 import { generateToken } from "./token";
 
 export type RunningServer = {
@@ -21,6 +27,13 @@ export type RunningServer = {
   port: number;
   token: string;
   baseUrl: string;
+  /**
+   * Whether the server runs in embedded host mode (frameable
+   * headers). False for servers started by an older AMX or launched
+   * for a browser (REPL /studio): trees and editor features still
+   * work, but iframe panels are blocked and render guidance instead.
+   */
+  embedded: boolean;
 };
 
 export type ServerState =
@@ -105,18 +118,22 @@ export class ServerManager implements vscode.Disposable {
 
     const record = await readDiscovery();
     if (!record) return undefined;
-    const healthy = await this.healthCheck(record.port, record.token);
-    if (!healthy) {
+    const health = await this.healthCheck(record.port, record.token);
+    if (!health.ok) {
       log(`discovery file points at :${record.port} but the health check failed — ignoring`);
       return undefined;
     }
-    log(`adopted running Studio server on :${record.port} (owner=${record.owner})`);
+    log(
+      `adopted running Studio server on :${record.port} ` +
+        `(owner=${record.owner} embedded=${health.embedded})`,
+    );
     const running: RunningServer = {
       status: "running",
       mode: "attached",
       port: record.port,
       token: record.token,
       baseUrl: `http://127.0.0.1:${record.port}`,
+      embedded: health.embedded,
     };
     this.setState(running);
     return running;
@@ -133,26 +150,47 @@ export class ServerManager implements vscode.Disposable {
     const port = await pickPort(preferred);
 
     let token: string;
+    let embedded: boolean;
     if (runtime.kind === "amx-cli") {
       // The CLI launcher generates its own token; recover it from the
-      // discovery file once the server has written it.
+      // discovery file once the server has written it. Both the
+      // discovery file and --embedded shipped together, so an older
+      // CLI can't be driven headless at all — fail with guidance
+      // instead of hanging on a discovery file that never appears.
+      embedded = await probeEmbeddedSupport({ kind: "cli", amxCliPath: runtime.amxCliPath });
+      if (!embedded) {
+        throw new Error(
+          `the installed amx CLI (${runtime.amxVersion}) predates the embedded host mode — ` +
+            "run `pip install --upgrade amx-cli` (or pipx upgrade amx-cli) and retry",
+        );
+      }
       const spec = buildCliSpawnSpec({ amxCliPath: runtime.amxCliPath, port });
       this.attachProcess(spawnServer(spec));
       token = await this.waitForDiscoveryToken(port);
     } else {
+      embedded = await probeEmbeddedSupport({ kind: "python", pythonPath: runtime.pythonPath });
+      if (!embedded) {
+        log("installed AMX predates embedded mode — panels disabled until upgrade");
+      }
       token = generateToken();
-      const spec = buildServerSpawnSpec({ pythonPath: runtime.pythonPath, port, token });
+      const spec = buildServerSpawnSpec({
+        pythonPath: runtime.pythonPath,
+        port,
+        token,
+        supportsEmbedded: embedded,
+      });
       this.attachProcess(spawnServer(spec));
     }
 
     await this.waitForHealth(port, token);
-    log(`owned Studio server running on :${port}`);
+    log(`owned Studio server running on :${port} (embedded=${embedded})`);
     const running: RunningServer = {
       status: "running",
       mode: "owned",
       port,
       token,
       baseUrl: `http://127.0.0.1:${port}`,
+      embedded,
     };
     this.setState(running);
     return running;
@@ -205,15 +243,27 @@ export class ServerManager implements vscode.Disposable {
     }
   }
 
-  private async healthCheck(port: number, token: string): Promise<boolean> {
+  /**
+   * Liveness + capability probe. `embedded` is derived from the
+   * response headers: an embedded-mode server omits X-Frame-Options
+   * and serves `frame-ancestors *`; the strict browser profile sends
+   * X-Frame-Options: DENY on every response.
+   */
+  private async healthCheck(
+    port: number,
+    token: string,
+  ): Promise<{ ok: boolean; embedded: boolean }> {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
       });
-      return response.ok;
+      const csp = response.headers.get("content-security-policy") ?? "";
+      const embedded =
+        !response.headers.has("x-frame-options") && csp.includes("frame-ancestors *");
+      return { ok: response.ok, embedded };
     } catch {
-      return false;
+      return { ok: false, embedded: false };
     }
   }
 
@@ -223,7 +273,7 @@ export class ServerManager implements vscode.Disposable {
       if (this.proc === undefined && this.current.status !== "starting") {
         throw new Error("Studio server process exited during startup");
       }
-      if (await this.healthCheck(port, token)) return;
+      if ((await this.healthCheck(port, token)).ok) return;
       await sleep(300);
     }
     throw new Error(`Studio server did not become healthy on :${port} within ${STARTUP_TIMEOUT_MS / 1000}s`);

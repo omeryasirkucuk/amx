@@ -119,6 +119,25 @@ export class StudioPanel implements vscode.Disposable {
     }
     if (generation !== this.generation) return;
 
+    if (!server.embedded) {
+      // The server is up but sends the strict no-framing headers
+      // (older AMX, or a browser-launched /studio we adopted) — an
+      // iframe would render blank. Show guidance instead.
+      this.rendered = { port: server.port, token: server.token };
+      this.panel.webview.html = buildErrorHtml({
+        title: this.definition.buildTitle(this.args),
+        message:
+          server.mode === "attached"
+            ? "The running Studio server was launched for a browser and cannot be " +
+              "embedded. Stop it (Ctrl-C in the terminal that ran /studio), then " +
+              "retry here so the extension starts an embeddable instance."
+            : "The installed AMX version predates embedded Studio panels. " +
+              "Upgrade with `pip install --upgrade amx-cli` and retry.",
+        state: this.persistedState(),
+      });
+      return;
+    }
+
     // asExternalUri keeps the panel working under Remote / Codespaces
     // by mapping the loopback base URL through the port forwarder.
     const externalBase = await vscode.env.asExternalUri(vscode.Uri.parse(server.baseUrl));

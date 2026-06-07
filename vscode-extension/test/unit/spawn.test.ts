@@ -9,6 +9,7 @@ describe("buildServerSpawnSpec", () => {
       pythonPath: "/usr/bin/python3",
       port: 47821,
       token: "tok-123",
+      supportsEmbedded: true,
     });
     expect(spec.command).toBe("/usr/bin/python3");
     expect(spec.args).toEqual([
@@ -24,12 +25,24 @@ describe("buildServerSpawnSpec", () => {
     ]);
   });
 
+  it("omits the embedded flags for servers that predate them", () => {
+    const spec = buildServerSpawnSpec({
+      pythonPath: "python",
+      port: 1,
+      token: "t",
+      supportsEmbedded: false,
+    });
+    expect(spec.args).not.toContain("--embedded");
+    expect(spec.args).not.toContain("--owner");
+  });
+
   it("appends --config-path when provided", () => {
     const spec = buildServerSpawnSpec({
       pythonPath: "python",
       port: 1,
       token: "t",
       configPath: "C:\\Users\\dev\\.amx\\config.yml",
+      supportsEmbedded: true,
     });
     expect(spec.args.slice(-2)).toEqual(["--config-path", "C:\\Users\\dev\\.amx\\config.yml"]);
   });
