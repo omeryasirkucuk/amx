@@ -13,7 +13,10 @@ What we ship
   image sources to ``'self'`` (plus ``data:`` for inline assets used
   by markdown render). Inline ``style`` is allowed because Tailwind
   emits utility classes via ``style`` attributes; inline ``script``
-  is **not** allowed. ``frame-ancestors 'none'`` blocks clickjacking.
+  is **not** allowed. ``frame-ancestors 'none'`` blocks clickjacking
+  by default; embedded hosts (IDE webviews) opt into a relaxed
+  ``frame-ancestors *`` via ``create_app(embedded=True)`` — see
+  :func:`_headers_for` for why that stays safe.
 * **Referrer-Policy: no-referrer** — Studio is on 127.0.0.1, never
   send referrer when the user clicks a link to an external doc.
 * **X-Content-Type-Options: nosniff** — defence against MIME confusion
@@ -59,39 +62,61 @@ from starlette.responses import Response
 # under CC0; the CDN endpoint is read-only and ships pure SVG with no
 # scripts. Per the policy intent above this is the explicit
 # single-source relaxation rather than a wildcard.
-_CSP = (
+_CSP_BASE = (
     "default-src 'self'; "
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: https://cdn.simpleicons.org; "
     "connect-src 'self'; "
     "font-src 'self' data:; "
-    "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self'"
 )
 
-_HEADERS: dict[str, str] = {
-    "Content-Security-Policy": _CSP,
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "DENY",
-}
+_CSP = _CSP_BASE + "; frame-ancestors 'none'"
+
+# Embedded mode — opted into by IDE hosts (e.g. the VS Code
+# extension) that render Studio inside a webview iframe. The iframe
+# parent is an opaque ``vscode-webview://`` origin, so there is no
+# stable value to allowlist; ``frame-ancestors *`` is acceptable here
+# because the server still binds to 127.0.0.1 only and every ``/api/*``
+# request still requires the bearer token — framing alone grants an
+# attacker nothing without the token, and the token never leaves the
+# host that spawned the server.
+_CSP_EMBEDDED = _CSP_BASE + "; frame-ancestors *"
+
+
+def _headers_for(embedded: bool) -> dict[str, str]:
+    headers = {
+        "Content-Security-Policy": _CSP_EMBEDDED if embedded else _CSP,
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if not embedded:
+        # Legacy mirror of the CSP frame-ancestors rule for browsers
+        # that ignore CSP. Omitted entirely in embedded mode — there
+        # is no "allow any ancestor" value for X-Frame-Options.
+        headers["X-Frame-Options"] = "DENY"
+    return headers
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Attach the headers in :data:`_HEADERS` to every response.
+    """Attach the security headers to every response.
 
     The middleware writes through to *every* response — SPA shell,
     /api/* JSON, SSE streams, error pages — so a future CSP
     violation report covers them all.
     """
 
+    def __init__(self, app, *, embedded: bool = False) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(app)
+        self._headers = _headers_for(embedded)
+
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         # We never overwrite a header a route has already set — if a
         # specific endpoint needs a relaxed CSP (rare), it can set the
         # header on its response and the middleware respects it.
-        for name, value in _HEADERS.items():
+        for name, value in self._headers.items():
             response.headers.setdefault(name, value)
         return response

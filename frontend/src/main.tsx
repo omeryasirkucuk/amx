@@ -1,15 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import {
-  MutationCache,
-  QueryCache,
-  QueryClient,
-  QueryClientProvider,
-} from "@tanstack/react-query";
+import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 
 import App from "./App";
 import { captureTokenFromUrl, consumeDeeplink } from "./lib/auth";
+import { captureEmbedFromUrl, installExternalLinkBridge } from "./lib/embed";
 import { publishQueryError } from "./lib/queryErrorBus";
 import "./styles/index.css";
 
@@ -17,6 +13,12 @@ import "./styles/index.css";
 // first /api/* fetch already has it. The launcher embeds the token
 // as `?t=<token>` on the URL the browser tab opens.
 captureTokenFromUrl();
+
+// Capture `?embed=1` (IDE webview hosts) the same way, then route
+// external links through the host since iframes inside IDE webviews
+// can't open browser tabs themselves.
+captureEmbedFromUrl();
+installExternalLinkBridge();
 
 // Honor the deep link a previous tab session stashed before it
 // bounced through ``/`` to refresh the bearer token (see the 401
@@ -45,8 +47,7 @@ captureTokenFromUrl();
     params.delete("__amx_reload");
     sessionStorage.removeItem("amx-stale-reload-fired");
     const trimmed = params.toString();
-    const next =
-      window.location.pathname + (trimmed ? `?${trimmed}` : "") + window.location.hash;
+    const next = window.location.pathname + (trimmed ? `?${trimmed}` : "") + window.location.hash;
     window.history.replaceState({}, document.title, next);
   }
 })();
@@ -162,15 +163,13 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
   // Defer registration until after the first paint so the SW
   // install doesn't compete with the main bundle's network budget.
   window.addEventListener("load", () => {
-    navigator.serviceWorker
-      .register("/sw.js")
-      .catch((err) => {
-        // SW registration failures are recoverable — Studio still works
-        // online, the user just loses the offline fallback. Log to the
-        // console so a power user can spot it; don't bother the
-        // ErrorBoundary or the toast layer.
-        // eslint-disable-next-line no-console
-        console.warn("[amx] service worker registration failed:", err);
-      });
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
+      // SW registration failures are recoverable — Studio still works
+      // online, the user just loses the offline fallback. Log to the
+      // console so a power user can spot it; don't bother the
+      // ErrorBoundary or the toast layer.
+
+      console.warn("[amx] service worker registration failed:", err);
+    });
   });
 }
