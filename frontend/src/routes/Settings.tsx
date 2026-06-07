@@ -26,14 +26,28 @@ import { getStoredToken } from "../lib/auth";
 import { cn } from "../lib/cn";
 import { humanizeDelta } from "../lib/humanizeDelta";
 import { invalidateAfterDbProfileMutation } from "../lib/profileMutations";
-import { AlertDialog, InfoHint, RouteState, Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
+import {
+  AlertDialog,
+  InfoHint,
+  RouteState,
+  Tabs,
+  TabsList,
+  Tab as TabTrigger,
+  TabPanel,
+} from "../components/ui";
 import { StyleReferenceCard } from "../components/StyleReferenceCard";
 import EmbeddingsTab from "./settings/EmbeddingsTab";
 import TeamWorkspaceTab from "./settings/TeamWorkspaceTab";
 import McpTab from "./settings/McpTab";
-import { Layers as EmbeddingsIcon, Plug as McpIcon, Users } from "lucide-react";
+import VsCodeTab from "./settings/VsCodeTab";
+import {
+  Blocks as VsCodeIcon,
+  Layers as EmbeddingsIcon,
+  Plug as McpIcon,
+  Users,
+} from "lucide-react";
 
-type Tab = "db" | "llm" | "docs" | "code" | "embeddings" | "mcp" | "team";
+type Tab = "db" | "llm" | "docs" | "code" | "embeddings" | "mcp" | "vscode" | "team";
 
 interface DbProfileSummary {
   name: string;
@@ -110,10 +124,20 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Database }> = [
   { id: "code", label: "Code", icon: CodeIcon },
   { id: "embeddings", label: "Embeddings", icon: EmbeddingsIcon },
   { id: "mcp", label: "MCP", icon: McpIcon },
+  { id: "vscode", label: "VS Code", icon: VsCodeIcon },
   { id: "team", label: "Team workspace", icon: Users },
 ];
 
-const TAB_IDS: readonly Tab[] = ["db", "llm", "docs", "code", "embeddings", "mcp", "team"];
+const TAB_IDS: readonly Tab[] = [
+  "db",
+  "llm",
+  "docs",
+  "code",
+  "embeddings",
+  "mcp",
+  "vscode",
+  "team",
+];
 
 function isTab(value: string | null): value is Tab {
   return value !== null && (TAB_IDS as readonly string[]).includes(value);
@@ -135,18 +159,11 @@ export default function Settings() {
   };
   return (
     <>
-      <PageHeader
-        title="Settings"
-        breadcrumbs={[{ label: "Settings" }]}
-      />
+      <PageHeader title="Settings" breadcrumbs={[{ label: "Settings" }]} />
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
         <TabsList>
           {TABS.map((t) => (
-            <TabTrigger
-              key={t.id}
-              value={t.id}
-              icon={<t.icon size={13} />}
-            >
+            <TabTrigger key={t.id} value={t.id} icon={<t.icon size={13} />}>
               {t.label}
             </TabTrigger>
           ))}
@@ -169,6 +186,9 @@ export default function Settings() {
         <TabPanel value="mcp">
           <McpTab />
         </TabPanel>
+        <TabPanel value="vscode">
+          <VsCodeTab />
+        </TabPanel>
         <TabPanel value="team">
           <TeamWorkspaceTab />
         </TabPanel>
@@ -183,14 +203,13 @@ function DbProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; message: string }>>({});
+  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; message: string }>>(
+    {},
+  );
 
   const profiles = useQuery({
     queryKey: ["profiles", "db"],
-    queryFn: () =>
-      apiFetch<{ profiles: DbProfileSummary[]; count: number }>(
-        "/api/profiles/db",
-      ),
+    queryFn: () => apiFetch<{ profiles: DbProfileSummary[]; count: number }>("/api/profiles/db"),
     retry: false,
     meta: { silentError: true },
   });
@@ -320,7 +339,7 @@ function DbProfilesSection() {
                             handles "last profile" + "first profile"
                             cases gracefully (the next defined profile
                             becomes the new CLI default-fallback). */}
-                        {(
+                        {
                           <button
                             type="button"
                             onClick={() => {
@@ -331,7 +350,7 @@ function DbProfilesSection() {
                           >
                             <Trash2 size={14} />
                           </button>
-                        )}
+                        }
                       </div>
                     </div>
                   </li>
@@ -348,11 +367,7 @@ function DbProfilesSection() {
         </CardBody>
       </Card>
       {editing && (
-        <DbProfileWizard
-          open
-          editingName={editing.name}
-          onClose={() => setEditing(null)}
-        />
+        <DbProfileWizard open editingName={editing.name} onClose={() => setEditing(null)} />
       )}
       <AlertDialog
         open={pendingDelete !== null}
@@ -539,20 +554,19 @@ function DbProfileWizard({
         </Field>
         {chosenBackend && chosenBackend.supports_shared_history === false && (
           <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-            Shared history is unavailable on this backend. AMX run history
-            stays on this machine only — <code>/history-store enable</code> will refuse
-            to bootstrap on {chosenBackend.label}. Use it as a sandbox /
-            personal connection, not as the team&apos;s workspace.
+            Shared history is unavailable on this backend. AMX run history stays on this machine
+            only — <code>/history-store enable</code> will refuse to bootstrap on{" "}
+            {chosenBackend.label}. Use it as a sandbox / personal connection, not as the team&apos;s
+            workspace.
           </div>
         )}
         {chosenBackend && chosenBackend.supports_shared_history !== false && (
           <div className="rounded-md border border-surface-border bg-surface-subtle/40 px-3 py-2 text-xs text-ink-muted">
-            <span className="font-semibold text-ink">Team workspace location.</span>{" "}
-            Choose one database profile to host the shared team workspace. This
-            single backend stores history runs, lineage diagrams, and
-            documentation pages for <strong>all</strong> your database profiles
-            — the team manages everything from one place. You do not need to
-            configure this per profile. Run{" "}
+            <span className="font-semibold text-ink">Team workspace location.</span> Choose one
+            database profile to host the shared team workspace. This single backend stores history
+            runs, lineage diagrams, and documentation pages for <strong>all</strong> your database
+            profiles — the team manages everything from one place. You do not need to configure this
+            per profile. Run{" "}
             <code className="rounded bg-surface px-1 py-px font-mono text-[11px]">
               /history-store enable
             </code>{" "}
@@ -621,11 +635,7 @@ function DbFieldInput({
   onChange: (next: string) => void;
 }) {
   return (
-    <Field
-      label={spec.label}
-      hint={spec.help || undefined}
-      narrow={spec.kind === "int"}
-    >
+    <Field label={spec.label} hint={spec.help || undefined} narrow={spec.kind === "int"}>
       {spec.kind === "bool" ? (
         <input
           type="checkbox"
@@ -650,9 +660,7 @@ function DbFieldInput({
           type={spec.kind === "password" ? "password" : "text"}
           value={value ?? ""}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={
-            spec.name === "port" && defaultPort ? String(defaultPort) : ""
-          }
+          placeholder={spec.name === "port" && defaultPort ? String(defaultPort) : ""}
           className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
         />
       )}
@@ -720,7 +728,10 @@ function LlmProfilesSection() {
           ) : profiles.data?.profiles.length ? (
             <ul className="divide-y divide-surface-border">
               {profiles.data.profiles.map((p) => (
-                <li key={p.name} className="flex items-center justify-between gap-3 px-5 py-3 text-sm">
+                <li
+                  key={p.name}
+                  className="flex items-center justify-between gap-3 px-5 py-3 text-sm"
+                >
                   <div>
                     <div className="font-medium">{p.name}</div>
                     <div className="text-xs text-ink-dim">
@@ -846,9 +857,7 @@ function LlmProfileWizard({
   const [promptDetail, setPromptDetail] = useState("standard");
   const [descriptionVerbosity, setDescriptionVerbosity] = useState("brief");
   const [confidenceSignal, setConfidenceSignal] = useState("self_consistency");
-  const [alternativesMode, setAlternativesMode] = useState<"semantic" | "lexical">(
-    "semantic",
-  );
+  const [alternativesMode, setAlternativesMode] = useState<"semantic" | "lexical">("semantic");
   const [logprobHigh, setLogprobHigh] = useState(0.85);
   const [logprobMedium, setLogprobMedium] = useState(0.5);
   const [hydratedFor, setHydratedFor] = useState<string | null>(null);
@@ -866,14 +875,10 @@ function LlmProfileWizard({
     setTemperature(Number(d.temperature ?? 0.2));
     setMaxTokens(Number(d.max_tokens ?? 16384));
     setCustomInputCost(
-      d.custom_input_cost_per_mtok != null
-        ? String(d.custom_input_cost_per_mtok)
-        : "",
+      d.custom_input_cost_per_mtok != null ? String(d.custom_input_cost_per_mtok) : "",
     );
     setCustomOutputCost(
-      d.custom_output_cost_per_mtok != null
-        ? String(d.custom_output_cost_per_mtok)
-        : "",
+      d.custom_output_cost_per_mtok != null ? String(d.custom_output_cost_per_mtok) : "",
     );
     setNAlternatives(Number(d.n_alternatives ?? 3));
     setColumnBatchSize(Number(d.column_batch_size ?? 10));
@@ -922,8 +927,7 @@ function LlmProfileWizard({
         // negative / non-numeric as "no override". The conversion is
         // explicit here so a future schema change does not silently
         // start sending ``"" -> 0`` (which would bill input at zero).
-        custom_input_cost_per_mtok:
-          customInputCost.trim() === "" ? null : Number(customInputCost),
+        custom_input_cost_per_mtok: customInputCost.trim() === "" ? null : Number(customInputCost),
         custom_output_cost_per_mtok:
           customOutputCost.trim() === "" ? null : Number(customOutputCost),
         n_alternatives: nAlternatives,
@@ -1217,13 +1221,7 @@ function LlmProfileWizard({
               onChange={(e) => setConfidenceSignal(e.target.value)}
               className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm"
             >
-              {[
-                "self_consistency",
-                "logprob",
-                "self_decl",
-                "judge",
-                "none",
-              ].map((v) => (
+              {["self_consistency", "logprob", "self_decl", "judge", "none"].map((v) => (
                 <option key={v} value={v}>
                   {v}
                 </option>
@@ -1326,15 +1324,12 @@ function PriceHint({
     return (
       <div className="rounded-md border border-warning/40 bg-warning-soft/40 px-3 py-2 text-[11px] text-warning">
         No price entry found for this model. Run <code className="font-mono">/refresh-prices</code>{" "}
-        from the CLI (or click ↻ in the TopBar pricing badge) to re-pull the LiteLLM /
-        OpenRouter tables, or set both custom rates below to bill it explicitly.
+        from the CLI (or click ↻ in the TopBar pricing badge) to re-pull the LiteLLM / OpenRouter
+        tables, or set both custom rates below to bill it explicitly.
       </div>
     );
   }
-  const sourceLabel =
-    data.source === "user_override"
-      ? "your override"
-      : data.source;
+  const sourceLabel = data.source === "user_override" ? "your override" : data.source;
   return (
     <div className="rounded-md border border-info/40 bg-info-soft/40 px-3 py-2 text-[11px] text-info">
       Auto-detected: <span className="font-mono">${data.input_per_mtok.toFixed(4)}</span> /{" "}
@@ -1447,14 +1442,10 @@ function DocUploadDropZone({
             className="hidden"
             accept=".md,.markdown,.txt,.pdf,.docx,.doc,.csv,.tsv,.html,.htm,.rst,.rtf,.json,.yaml,.yml"
           />
-          <span className="rounded bg-surface-subtle px-2 py-0.5 text-[10px]">
-            Browse
-          </span>
+          <span className="rounded bg-surface-subtle px-2 py-0.5 text-[10px]">Browse</span>
         </label>
       </div>
-      {error && (
-        <div className="mt-1 text-[11px] text-critical">{error}</div>
-      )}
+      {error && <div className="mt-1 text-[11px] text-critical">{error}</div>}
     </div>
   );
 }
@@ -1496,8 +1487,7 @@ interface DocProfileHealth {
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
@@ -1521,9 +1511,7 @@ function DocProfileHealthLine({ name }: { name: string }) {
   const health = useQuery({
     queryKey: ["profiles", "docs", name, "health"],
     queryFn: () =>
-      apiFetch<DocProfileHealth>(
-        `/api/profiles/docs/${encodeURIComponent(name)}/health`,
-      ),
+      apiFetch<DocProfileHealth>(`/api/profiles/docs/${encodeURIComponent(name)}/health`),
     retry: false,
     staleTime: 10_000,
   });
@@ -1538,9 +1526,7 @@ function DocProfileHealthLine({ name }: { name: string }) {
     },
   });
   if (health.isLoading) {
-    return (
-      <div className="mt-2 pl-3 text-[10.5px] text-ink-dim">Loading health…</div>
-    );
+    return <div className="mt-2 pl-3 text-[10.5px] text-ink-dim">Loading health…</div>;
   }
   if (health.error || !health.data) return null;
   const data = health.data;
@@ -1568,9 +1554,7 @@ function DocProfileHealthLine({ name }: { name: string }) {
   const files = (data.local_files ?? []).filter(
     (entry): entry is DocProfileFile => !("__truncated__" in entry),
   );
-  const truncated = (data.local_files ?? []).some(
-    (entry) => "__truncated__" in entry,
-  );
+  const truncated = (data.local_files ?? []).some((entry) => "__truncated__" in entry);
   if (files.length > 0) {
     parts.push(`📄 ${files.length}${truncated ? "+" : ""} file${files.length === 1 ? "" : "s"}`);
   }
@@ -1588,18 +1572,11 @@ function DocProfileHealthLine({ name }: { name: string }) {
               // manifest; show the hashed on-disk name as a tooltip
               // so the user can still confirm the dedup identity.
               const label = file.display_name || file.name;
-              const showHashTooltip =
-                file.display_name && file.display_name !== file.name;
+              const showHashTooltip = file.display_name && file.display_name !== file.name;
               return (
-                <li
-                  key={`${file.path}-${idx}`}
-                  className="flex items-center gap-2 text-[10.5px]"
-                >
+                <li key={`${file.path}-${idx}`} className="flex items-center gap-2 text-[10.5px]">
                   <span
-                    className={cn(
-                      "truncate text-ink",
-                      showHashTooltip ? "" : "font-mono",
-                    )}
+                    className={cn("truncate text-ink", showHashTooltip ? "" : "font-mono")}
                     title={showHashTooltip ? `${file.name} → ${file.path}` : file.path}
                   >
                     {label}
@@ -1640,9 +1617,7 @@ function DocProfileHealthLine({ name }: { name: string }) {
           ) : (
             <span className="line-clamp-1 font-mono">{data.last_error}</span>
           )}
-          <span className="ml-1 opacity-70">
-            ({expanded ? "hide" : "Inspect"})
-          </span>
+          <span className="ml-1 opacity-70">({expanded ? "hide" : "Inspect"})</span>
         </button>
       )}
       <AlertDialog
@@ -1702,8 +1677,7 @@ function DocProfilesSection() {
         method: "POST",
         body: JSON.stringify({ profile }),
       }),
-    onSuccess: (r, profile) =>
-      setActiveOp({ jobId: r.job_id, label: `Indexing ${profile}` }),
+    onSuccess: (r, profile) => setActiveOp({ jobId: r.job_id, label: `Indexing ${profile}` }),
   });
 
   return (
@@ -1827,9 +1801,7 @@ function DocProfilesSection() {
                   <div className="mt-2">
                     <DocUploadDropZone
                       profile={p.name}
-                      onJobStarted={(jobId, label) =>
-                        setActiveOp({ jobId, label })
-                      }
+                      onJobStarted={(jobId, label) => setActiveOp({ jobId, label })}
                     />
                   </div>
                 </li>
@@ -1850,13 +1822,13 @@ function DocProfilesSection() {
           editingName={editing.name}
           existingPaths={
             editing.name
-              ? profiles.data?.profiles?.find((p) => p.name === editing.name)?.paths ?? []
+              ? (profiles.data?.profiles?.find((p) => p.name === editing.name)?.paths ?? [])
               : []
           }
           existingLinkedDbs={
             editing.name
-              ? profiles.data?.profiles?.find((p) => p.name === editing.name)
-                  ?.linked_db_profiles ?? []
+              ? (profiles.data?.profiles?.find((p) => p.name === editing.name)
+                  ?.linked_db_profiles ?? [])
               : []
           }
           onClose={() => setEditing(null)}
@@ -1937,9 +1909,7 @@ function DocProfileWizard({
       });
       if (pendingFiles.length === 0) return;
       setUploadingNote(
-        `Uploading ${pendingFiles.length} file${
-          pendingFiles.length === 1 ? "" : "s"
-        }…`,
+        `Uploading ${pendingFiles.length} file${pendingFiles.length === 1 ? "" : "s"}…`,
       );
       const fd = new FormData();
       fd.append("profile", name);
@@ -2022,9 +1992,9 @@ function DocProfileWizard({
         </Field>
         <Field label="Or drop files (optional)">
           <p className="mb-2 text-[11px] text-ink-dim">
-            PDF, DOCX, MD, TXT, CSV, HTML, RST, JSON, YAML accepted. Files
-            land under <code>~/.amx/uploads/{name || "<profile>"}/</code> and
-            ingest immediately when you save the profile.
+            PDF, DOCX, MD, TXT, CSV, HTML, RST, JSON, YAML accepted. Files land under{" "}
+            <code>~/.amx/uploads/{name || "<profile>"}/</code> and ingest immediately when you save
+            the profile.
           </p>
           <div
             onDragOver={(e) => {
@@ -2062,9 +2032,7 @@ function DocProfileWizard({
                 className="hidden"
                 accept=".md,.markdown,.txt,.pdf,.docx,.doc,.csv,.tsv,.html,.htm,.rst,.rtf,.json,.yaml,.yml"
               />
-              <span className="rounded bg-surface-subtle px-2 py-0.5 text-[10px]">
-                Browse
-              </span>
+              <span className="rounded bg-surface-subtle px-2 py-0.5 text-[10px]">Browse</span>
             </label>
           </div>
           {pendingFiles.length > 0 && (
@@ -2075,16 +2043,11 @@ function DocProfileWizard({
                   className="flex items-center justify-between gap-2 rounded bg-surface-subtle px-2 py-1"
                 >
                   <span className="truncate font-mono">
-                    {f.name}{" "}
-                    <span className="text-ink-dim">
-                      ({(f.size / 1024).toFixed(1)} KB)
-                    </span>
+                    {f.name} <span className="text-ink-dim">({(f.size / 1024).toFixed(1)} KB)</span>
                   </span>
                   <button
                     type="button"
-                    onClick={() =>
-                      setPendingFiles(pendingFiles.filter((_, i) => i !== idx))
-                    }
+                    onClick={() => setPendingFiles(pendingFiles.filter((_, i) => i !== idx))}
                     className="rounded p-0.5 text-ink-dim hover:bg-critical/10 hover:text-critical"
                     title="Remove"
                   >
@@ -2094,12 +2057,8 @@ function DocProfileWizard({
               ))}
             </ul>
           )}
-          {uploadingNote && (
-            <p className="mt-1 text-[11px] text-ink-muted">{uploadingNote}</p>
-          )}
-          {uploadError && (
-            <p className="mt-1 text-[11px] text-critical">{uploadError}</p>
-          )}
+          {uploadingNote && <p className="mt-1 text-[11px] text-ink-muted">{uploadingNote}</p>}
+          {uploadError && <p className="mt-1 text-[11px] text-critical">{uploadError}</p>}
         </Field>
         <LinkedDbsField selected={linkedDbs} onChange={setLinkedDbs} kind="doc" />
         {save.isError && (
@@ -2127,8 +2086,7 @@ function LinkedDbsField({
   // /ask retrieval to questions running against those DBs.
   const dbs = useQuery({
     queryKey: ["profiles", "db", "names-only"],
-    queryFn: () =>
-      apiFetch<{ profiles: DbProfileSummary[] }>("/api/profiles/db"),
+    queryFn: () => apiFetch<{ profiles: DbProfileSummary[] }>("/api/profiles/db"),
     retry: false,
   });
   const profiles = dbs.data?.profiles ?? [];
@@ -2142,15 +2100,13 @@ function LinkedDbsField({
   return (
     <Field label="Linked DB profiles (optional)">
       <p className="mb-2 text-[11px] text-ink-dim">
-        Pick which DB profiles this {kind} documents. Empty = global (in
-        scope for every /ask). When set, /ask only pulls from this {kind}{" "}
-        profile when at least one of the selected DBs is in the question's
-        scope.
+        Pick which DB profiles this {kind} documents. Empty = global (in scope for every /ask). When
+        set, /ask only pulls from this {kind} profile when at least one of the selected DBs is in
+        the question's scope.
       </p>
       {profiles.length === 0 ? (
         <p className="text-xs text-ink-dim">
-          No DB profiles configured yet — leave empty to keep this {kind}{" "}
-          profile global.
+          No DB profiles configured yet — leave empty to keep this {kind} profile global.
         </p>
       ) : (
         <div className="flex flex-wrap gap-1.5">
@@ -2197,9 +2153,7 @@ function SearchDocsBox() {
   const search = useQuery({
     queryKey: ["docs-search", submitted],
     queryFn: () =>
-      apiFetch<SearchResponse>(
-        `/api/docs/search?q=${encodeURIComponent(submitted)}&n=8`,
-      ),
+      apiFetch<SearchResponse>(`/api/docs/search?q=${encodeURIComponent(submitted)}&n=8`),
     enabled: submitted.length > 0,
     retry: false,
   });
@@ -2245,9 +2199,7 @@ function SearchDocsBox() {
         )}
         {search.data && (
           <div className="space-y-2">
-            {search.data.message && (
-              <p className="text-xs text-warning">{search.data.message}</p>
-            )}
+            {search.data.message && <p className="text-xs text-warning">{search.data.message}</p>}
             {search.data.hits.length === 0 ? (
               <p className="text-xs text-ink-dim">No matches.</p>
             ) : (
@@ -2258,16 +2210,10 @@ function SearchDocsBox() {
                     className="rounded-md border border-surface-border bg-surface px-3 py-2"
                   >
                     <div className="flex items-center justify-between gap-2 text-[11px]">
-                      <span className="truncate font-mono text-ink-muted">
-                        {hit.source}
-                      </span>
-                      <span className="font-mono text-ink-dim">
-                        d={hit.distance.toFixed(3)}
-                      </span>
+                      <span className="truncate font-mono text-ink-muted">{hit.source}</span>
+                      <span className="font-mono text-ink-dim">d={hit.distance.toFixed(3)}</span>
                     </div>
-                    <p className="mt-1 line-clamp-3 text-xs text-ink-muted">
-                      {hit.preview}
-                    </p>
+                    <p className="mt-1 line-clamp-3 text-xs text-ink-muted">{hit.preview}</p>
                   </li>
                 ))}
               </ul>
@@ -2305,9 +2251,7 @@ function SearchCodeBox() {
   const search = useQuery({
     queryKey: ["code-search", submitted],
     queryFn: () =>
-      apiFetch<CodeSearchResponse>(
-        `/api/code/search?q=${encodeURIComponent(submitted)}&n=8`,
-      ),
+      apiFetch<CodeSearchResponse>(`/api/code/search?q=${encodeURIComponent(submitted)}&n=8`),
     enabled: submitted.length > 0,
     retry: false,
   });
@@ -2353,9 +2297,7 @@ function SearchCodeBox() {
         )}
         {search.data && (
           <div className="space-y-2">
-            {search.data.message && (
-              <p className="text-xs text-warning">{search.data.message}</p>
-            )}
+            {search.data.message && <p className="text-xs text-warning">{search.data.message}</p>}
             {search.data.hits.length === 0 ? (
               <p className="text-xs text-ink-dim">No matches.</p>
             ) : (
@@ -2379,16 +2321,16 @@ function SearchCodeBox() {
                         <span className="truncate font-mono text-ink-muted">
                           {hit.source}
                           {hit.symbol ? (
-                            <span className="ml-2 text-accent-ink">
-                              · {hit.symbol}
-                            </span>
+                            <span className="ml-2 text-accent-ink">· {hit.symbol}</span>
                           ) : null}
                         </span>
                         <span
                           className="font-mono text-ink-dim"
                           title={`distance: ${hit.distance.toFixed(3)}`}
                         >
-                          {hasScore ? `score ${hit.score!.toFixed(2)}` : `d=${hit.distance.toFixed(3)}`}
+                          {hasScore
+                            ? `score ${hit.score!.toFixed(2)}`
+                            : `d=${hit.distance.toFixed(3)}`}
                         </span>
                       </div>
                       <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs text-ink-muted">
@@ -2430,24 +2372,18 @@ function CodeProfileHealthLine({ name }: { name: string }) {
   const health = useQuery({
     queryKey: ["profiles", "code", name, "health"],
     queryFn: () =>
-      apiFetch<CodeProfileHealth>(
-        `/api/profiles/code/${encodeURIComponent(name)}/health`,
-      ),
+      apiFetch<CodeProfileHealth>(`/api/profiles/code/${encodeURIComponent(name)}/health`),
     retry: false,
     staleTime: 10_000,
   });
   if (health.isLoading) {
-    return (
-      <div className="mt-2 pl-3 text-[10.5px] text-ink-dim">Loading health…</div>
-    );
+    return <div className="mt-2 pl-3 text-[10.5px] text-ink-dim">Loading health…</div>;
   }
   if (health.error || !health.data) return null;
   const data = health.data;
   const chunks = data.chunk_count || 0;
   const indexed =
-    data.last_indexed_at && data.last_indexed_at > 0
-      ? humanizeDelta(data.last_indexed_at)
-      : null;
+    data.last_indexed_at && data.last_indexed_at > 0 ? humanizeDelta(data.last_indexed_at) : null;
   const parts: string[] = [];
   if (chunks > 0) {
     parts.push(`💻 ${chunks.toLocaleString()} chunk${chunks === 1 ? "" : "s"}`);
@@ -2471,9 +2407,7 @@ function CodeProfileHealthLine({ name }: { name: string }) {
           ) : (
             <span className="line-clamp-1 font-mono">{data.last_error}</span>
           )}
-          <span className="ml-1 opacity-70">
-            ({expanded ? "hide" : "Inspect"})
-          </span>
+          <span className="ml-1 opacity-70">({expanded ? "hide" : "Inspect"})</span>
         </button>
       )}
     </div>
@@ -2512,8 +2446,7 @@ function CodeProfilesSection() {
         method: "POST",
         body: JSON.stringify({ profile }),
       }),
-    onSuccess: (r, profile) =>
-      setActiveOp({ jobId: r.job_id, label: `Indexing ${profile}` }),
+    onSuccess: (r, profile) => setActiveOp({ jobId: r.job_id, label: `Indexing ${profile}` }),
   });
 
   return (
@@ -2564,63 +2497,63 @@ function CodeProfilesSection() {
               {profiles.data.profiles.map((p) => (
                 <li key={p.name} className="px-5 py-3 text-sm">
                   <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="font-medium">{p.name}</div>
-                    <div className="truncate font-mono text-xs text-ink-dim">{p.path}</div>
-                    {(p.linked_db_profiles?.length ?? 0) > 0 && (
-                      <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-ink-dim">
-                        <span>Links:</span>
-                        {p.linked_db_profiles!.map((db) => (
-                          <span
-                            key={db}
-                            className="rounded bg-surface-subtle px-1.5 py-0.5 font-mono text-accent-ink"
-                          >
-                            {db}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {p.is_active ? (
-                      <StatusPill tone="positive">Active</StatusPill>
-                    ) : (
+                    <div className="min-w-0">
+                      <div className="font-medium">{p.name}</div>
+                      <div className="truncate font-mono text-xs text-ink-dim">{p.path}</div>
+                      {(p.linked_db_profiles?.length ?? 0) > 0 && (
+                        <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-ink-dim">
+                          <span>Links:</span>
+                          {p.linked_db_profiles!.map((db) => (
+                            <span
+                              key={db}
+                              className="rounded bg-surface-subtle px-1.5 py-0.5 font-mono text-accent-ink"
+                            >
+                              {db}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {p.is_active ? (
+                        <StatusPill tone="positive">Active</StatusPill>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => activate.mutate(p.name)}
+                          className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-accent-soft hover:text-accent-ink"
+                        >
+                          Activate
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => activate.mutate(p.name)}
-                        className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-accent-soft hover:text-accent-ink"
+                        onClick={() => index.mutate(p.name)}
+                        disabled={index.isPending || !!activeOp}
+                        className="rounded-md bg-accent-soft px-2 py-1 text-xs text-accent-ink hover:opacity-90 disabled:opacity-50"
+                        title="Index: scan source files for table + column references and (re)build the semantic code index under the active embedding"
                       >
-                        Activate
+                        Index
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => index.mutate(p.name)}
-                      disabled={index.isPending || !!activeOp}
-                      className="rounded-md bg-accent-soft px-2 py-1 text-xs text-accent-ink hover:opacity-90 disabled:opacity-50"
-                      title="Index: scan source files for table + column references and (re)build the semantic code index under the active embedding"
-                    >
-                      Index
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditing({ name: p.name })}
-                      className="rounded-md p-1 text-ink-dim hover:bg-surface-subtle hover:text-ink"
-                      title="Edit"
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPendingDelete(p.name);
-                      }}
-                      className="rounded-md p-1 text-ink-dim hover:bg-critical/10 hover:text-critical"
-                      title="Delete"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
+                      <button
+                        type="button"
+                        onClick={() => setEditing({ name: p.name })}
+                        className="rounded-md p-1 text-ink-dim hover:bg-surface-subtle hover:text-ink"
+                        title="Edit"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPendingDelete(p.name);
+                        }}
+                        className="rounded-md p-1 text-ink-dim hover:bg-critical/10 hover:text-critical"
+                        title="Delete"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
                   <CodeProfileHealthLine name={p.name} />
                 </li>
@@ -2641,13 +2574,13 @@ function CodeProfilesSection() {
           editingName={editing.name}
           existingPath={
             editing.name
-              ? profiles.data?.profiles?.find((p) => p.name === editing.name)?.path ?? ""
+              ? (profiles.data?.profiles?.find((p) => p.name === editing.name)?.path ?? "")
               : ""
           }
           existingLinkedDbs={
             editing.name
-              ? profiles.data?.profiles?.find((p) => p.name === editing.name)
-                  ?.linked_db_profiles ?? []
+              ? (profiles.data?.profiles?.find((p) => p.name === editing.name)
+                  ?.linked_db_profiles ?? [])
               : []
           }
           onClose={() => setEditing(null)}
