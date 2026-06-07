@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import signal
 import sys
 
@@ -39,6 +40,20 @@ def main() -> int:
         type=str,
         default="",
         help="Optional explicit path to the AMXConfig YAML; falls back to the default lookup.",
+    )
+    parser.add_argument(
+        "--embedded",
+        action="store_true",
+        help=(
+            "Relax framing headers so an IDE host can render Studio "
+            "inside a webview iframe. Browser launches omit this."
+        ),
+    )
+    parser.add_argument(
+        "--owner",
+        type=str,
+        default="cli",
+        help="Label recorded in the discovery file for who started this server.",
     )
     args = parser.parse_args()
 
@@ -75,7 +90,7 @@ def main() -> int:
 
     from amx.web.server import create_app
 
-    app = create_app(cfg, token=args.token)
+    app = create_app(cfg, token=args.token, embedded=args.embedded)
 
     import uvicorn
 
@@ -95,7 +110,21 @@ def main() -> int:
     # NOT from a Python signal handler that competes with uvloop.
     server.install_signal_handlers = lambda: None
 
-    asyncio.run(_serve_with_fast_shutdown(server))
+    # Record this server in <config-dir>/studio.json so other local
+    # AMX tooling (a second REPL, an IDE integration) can discover and
+    # reuse it instead of spawning a duplicate. Best effort on both
+    # ends: a failed write never blocks the launch, and a stale file
+    # left by a SIGKILL is filtered out by consumers' health checks.
+    from amx.web import discovery
+
+    try:
+        discovery.write_discovery(args.port, args.token, owner=args.owner)
+    except OSError:
+        pass
+    try:
+        asyncio.run(_serve_with_fast_shutdown(server))
+    finally:
+        discovery.clear_discovery(pid=os.getpid())
     return 0
 
 

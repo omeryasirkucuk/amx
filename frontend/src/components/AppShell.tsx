@@ -8,6 +8,7 @@ import MobileSidebar from "./MobileSidebar";
 import BackfillBanner from "./BackfillBanner";
 import { useUi } from "../lib/store";
 import { cn } from "../lib/cn";
+import { isEmbedded } from "../lib/embed";
 
 /**
  * App shell. TopBar carries primary nav and global context; sidebar
@@ -16,10 +17,29 @@ import { cn } from "../lib/cn";
  * viewport so it stays visible regardless of how tall the routed page
  * is — previously it lived inside the scrolling main canvas, which
  * pushed it below the fold on long pages.
+ *
+ * Embedded mode (IDE webview hosts, `?embed=1`): the host provides
+ * its own navigation — tree views, commands, status bar — so the
+ * shell renders only the routed page, without TopBar / Sidebar /
+ * Footer chrome.
  */
 export default function AppShell() {
   const sidebarCollapsed = useUi((s) => s.sidebarCollapsed);
   const location = useLocation();
+  if (isEmbedded()) {
+    return (
+      <div className="flex h-screen flex-col overflow-hidden bg-bg text-ink">
+        <BackfillBanner />
+        <main className="flex-1 min-h-0 overflow-y-auto">
+          <div className="mx-auto w-full max-w-[1280px] px-4 py-4 sm:px-6 sm:py-6 md:px-8 md:py-7">
+            <ErrorBoundary scoped resetKey={location.pathname}>
+              <Outlet />
+            </ErrorBoundary>
+          </div>
+        </main>
+      </div>
+    );
+  }
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-bg text-ink">
       <TopBar />

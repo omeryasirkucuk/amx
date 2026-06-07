@@ -74,6 +74,7 @@ def create_app(
     token: str | None = None,
     jobs: JobRegistry | None = None,
     static_root: Path | None = None,
+    embedded: bool = False,
 ) -> FastAPI:
     """Build a fully wired AMX Studio FastAPI app.
 
@@ -94,6 +95,11 @@ def create_app(
         let this default to the wheel's ``amx/web/static`` so end
         users get the pre-built dist; tests point it at a temp dir
         with stub files.
+    embedded
+        When ``True`` the security headers allow the SPA to be framed
+        (``frame-ancestors *``, no ``X-Frame-Options``) so IDE hosts
+        can render Studio inside a webview iframe. Defaults to the
+        strict no-framing policy for browser launches.
     """
     # Route HTTPS calls made from Studio worker threads (pricing
     # refresh, doc scanner, batch API SDKs) through the OS trust
@@ -112,6 +118,7 @@ def create_app(
     app.state.cfg = cfg
     app.state.token = token or generate_token()
     app.state.jobs = jobs or JobRegistry()
+    app.state.embedded = embedded
 
     # Auth middleware runs before any router so unauthenticated /api/*
     # requests short-circuit with 401 — never reach the route handler.
@@ -121,7 +128,7 @@ def create_app(
     # response too. Starlette runs middleware in the *reverse* of
     # ``add_middleware`` order, so adding it after auth means it wraps
     # the auth middleware — every response goes through it.
-    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware, embedded=embedded)
 
     app.include_router(admin.router)
     app.include_router(assets_router.router)
@@ -294,7 +301,10 @@ def create_app(
         task.cancel()
         try:
             await task
-        except Exception:  # noqa: BLE001
+        except BaseException:  # noqa: BLE001 - CancelledError is a
+            # BaseException since 3.8; catching only Exception let it
+            # propagate and every Ctrl-C shutdown logged a spurious
+            # "Application shutdown failed" traceback.
             pass
 
     root = static_root if static_root is not None else _static_root()
