@@ -70,7 +70,7 @@ export class ProfilesTreeProvider implements vscode.TreeDataProvider<ProfilesNod
     if (node.type === "group") {
       const item = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.Collapsed);
       item.iconPath = new vscode.ThemeIcon(GROUP_ICONS[node.kind]);
-      item.contextValue = "amx.profileGroup";
+      item.contextValue = `amx.profileGroup.${node.kind}`;
       return item;
     }
     if (node.type === "placeholder") {
