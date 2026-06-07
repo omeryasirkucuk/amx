@@ -27,6 +27,8 @@ interface TableNode {
 interface ColumnNode {
   type: "column";
   meta: ColumnMeta;
+  /** Owning table — forwarded to context-menu commands for schema/profile context. */
+  table: TableMeta;
 }
 
 interface PlaceholderNode {
@@ -129,7 +131,7 @@ export class CatalogTreeProvider implements vscode.TreeDataProvider<CatalogNode>
 
   private async columnNodes(meta: TableMeta): Promise<CatalogNode[]> {
     const columns = await this.services.catalog.getColumns(meta.schema, meta.name, meta.profile);
-    return columns.map((column) => ({ type: "column", meta: column }) as ColumnNode);
+    return columns.map((column) => ({ type: "column", meta: column, table: meta }) as ColumnNode);
   }
 
   private async tablesForProfile(profile: string | undefined): Promise<readonly TableMeta[]> {
