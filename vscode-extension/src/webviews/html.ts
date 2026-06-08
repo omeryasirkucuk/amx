@@ -83,6 +83,24 @@ export function buildFrameHtml(options: FrameHtmlOptions): string {
       const vscode = acquireVsCodeApi();
       vscode.setState(${scriptJson(options.state)});
       let ready = false;
+      // Focus bridge. The Studio iframe is cross-origin, so VS Code
+      // never hands it keyboard focus on its own — clicks land but
+      // typed keys go to this (empty) wrapper document. Explicitly
+      // pushing focus into the frame on load, on window focus, and
+      // once the SPA reports in makes inputs (Ask composer, settings
+      // forms) actually typeable. contentWindow.focus() is one of the
+      // few cross-origin-legal calls; VS Code's own Simple Browser
+      // uses the same trick.
+      const frame = document.getElementById("studio");
+      const focusFrame = () => {
+        try {
+          frame.contentWindow.focus();
+        } catch (_error) {
+          /* frame not ready yet — the next trigger retries */
+        }
+      };
+      frame.addEventListener("load", focusFrame);
+      window.addEventListener("focus", focusFrame);
       // A blocked iframe still fires \`load\` but never executes the
       // SPA, so the overlay waits for the SPA's explicit boot signal
       // (amx:embedReady) rather than the load event.
@@ -100,6 +118,10 @@ export function buildFrameHtml(options: FrameHtmlOptions): string {
           const overlay = document.getElementById("loading");
           if (overlay) overlay.remove();
           document.getElementById("stalled").classList.add("hidden");
+          // The SPA is interactive now — make sure the keyboard
+          // follows (the load-event focus can fire before the SPA
+          // mounts its inputs).
+          focusFrame();
           // Relay to the extension host: panels track SPA readiness
           // for logging and the integration suite asserts on it.
           vscode.postMessage({ type: "amx:embedReady" });
