@@ -12,6 +12,14 @@
 // "rotate token" button that re-runs this flow.
 
 const STORAGE_KEY = "amx.studio.token";
+
+// In-memory fallback for contexts where localStorage is unavailable
+// or partitioned — notably the SPA running inside a nested IDE
+// webview iframe, where storage writes can silently fail and a
+// "stored" token is never readable again. The module-level variable
+// lives exactly as long as the SPA instance, which matches the
+// token's lifetime (one per server run).
+let memoryToken: string | null = null;
 //: Where we stash the user's intended deep link before bouncing them
 //: to ``/`` so the launcher can inject a fresh token via
 //: ``?t=<...>``. Lives in sessionStorage so it survives the reload but
@@ -26,27 +34,35 @@ export function captureTokenFromUrl(): string | null {
     if (!token) {
       return getStoredToken();
     }
+    // Keep the in-memory copy regardless of storage health so every
+    // later read works even when localStorage rejects the write.
+    memoryToken = token;
     window.localStorage.setItem(STORAGE_KEY, token);
     url.searchParams.delete("t");
     const next = url.pathname + (url.search || "") + (url.hash || "");
     window.history.replaceState({}, document.title, next);
     return token;
   } catch {
-    // localStorage may be disabled (private mode); fall back to URL.
+    // localStorage may be disabled (private mode / partitioned
+    // iframe); fall back to the URL and remember the value in memory
+    // so API + SSE auth keep working after the URL is consumed.
     const params = new URLSearchParams(window.location.search);
-    return params.get("t");
+    const token = params.get("t");
+    if (token) memoryToken = token;
+    return memoryToken;
   }
 }
 
 export function getStoredToken(): string | null {
   try {
-    return window.localStorage.getItem(STORAGE_KEY);
+    return window.localStorage.getItem(STORAGE_KEY) ?? memoryToken;
   } catch {
-    return null;
+    return memoryToken;
   }
 }
 
 export function clearStoredToken(): void {
+  memoryToken = null;
   try {
     window.localStorage.removeItem(STORAGE_KEY);
   } catch {

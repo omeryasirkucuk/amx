@@ -7,6 +7,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { useEventSource, type SseEvent } from "../lib/sse";
 import { api, apiFetch, ApiError } from "../lib/api";
+import { isEmbedded } from "../lib/embed";
 import { useUi } from "../lib/store";
 import { Card } from "./Card";
 import { cn } from "../lib/cn";
@@ -198,6 +199,19 @@ export default function AskChat({
   const [submitErrorHint, setSubmitErrorHint] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
+
+  // Inside an IDE webview the nested cross-origin iframe never gets
+  // keyboard focus handed to it automatically — the user can click
+  // the composer yet keystrokes still land in the host document. In
+  // embed mode, claim focus on mount and re-claim it when a turn
+  // finishes (the textarea is disabled while a job runs, so the
+  // browser silently drops focus from it). Browser tabs keep their
+  // native focus behavior.
+  useEffect(() => {
+    if (!isEmbedded()) return;
+    if (activeJob) return;
+    inputRef.current?.focus();
+  }, [activeJob]);
 
   // Per-chat sticky scope. Keyed by session id (or "_new_" before the
   // first message of a fresh chat assigns one). The dropdown writes

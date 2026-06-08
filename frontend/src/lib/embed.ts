@@ -15,6 +15,12 @@
 
 const STORAGE_KEY = "amx.studio.embed";
 
+// In-memory fallback mirroring lib/auth.ts: inside a nested IDE
+// webview iframe sessionStorage writes can silently fail, which used
+// to drop embed mode entirely — no amx:embedReady boot signal, so the
+// host's loading overlay stalled forever even though the SPA ran.
+let memoryEmbed = false;
+
 /** Message type the embedding shell listens for to open external URLs. */
 export const OPEN_EXTERNAL_MESSAGE = "amx:openExternal";
 
@@ -31,18 +37,22 @@ export function captureEmbedFromUrl(): void {
   try {
     const url = new URL(window.location.href);
     if (url.searchParams.get("embed") !== "1") return;
+    memoryEmbed = true;
     window.sessionStorage.setItem(STORAGE_KEY, "1");
     url.searchParams.delete("embed");
     const next = url.pathname + (url.search || "") + (url.hash || "");
     window.history.replaceState({}, document.title, next);
   } catch {
-    /* sessionStorage unavailable (private mode) — fall through to
-       full-chrome rendering; the embed is cosmetic, not functional. */
+    // sessionStorage unavailable (private mode / partitioned iframe).
+    // The in-memory flag was already set above when the param was
+    // present, so embed mode — and the amx:embedReady boot signal the
+    // host waits for — still engages for this SPA instance.
   }
 }
 
 /** True when the SPA runs inside an embedding host's iframe. */
 export function isEmbedded(): boolean {
+  if (memoryEmbed) return true;
   try {
     return window.sessionStorage.getItem(STORAGE_KEY) === "1";
   } catch {
