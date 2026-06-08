@@ -6,6 +6,7 @@
 import * as vscode from "vscode";
 
 import type { ExtensionServices } from "../services";
+import { registerBulkGenerate } from "./bulkGenerate";
 import { registerCatalogOps } from "./catalogOps";
 import { registerProfileManagement } from "./profiles";
 import { vscodePromptPort } from "./promptPort";
@@ -48,6 +49,7 @@ function scriptedPromptPort(queue: (string | string[] | undefined)[]): PromptPor
 export function registerManagement(services: ExtensionServices): void {
   registerProfileManagement(services);
   registerCatalogOps(services);
+  services.context.subscriptions.push(registerBulkGenerate(services));
   registerRunManagement(services);
   registerScheduleManagement(services);
   services.context.subscriptions.push(
