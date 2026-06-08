@@ -228,6 +228,11 @@
         "category": "AMX"
       },
       {
+        "command": "amx.catalog.generateMissing",
+        "title": "Generate Missing Descriptions…",
+        "category": "AMX"
+      },
+      {
         "command": "amx.catalog.copyName",
         "title": "Copy Qualified Name",
         "category": "AMX"
@@ -368,6 +373,10 @@
         },
         {
           "command": "amx.catalog.generateDescription",
+          "when": "false"
+        },
+        {
+          "command": "amx.catalog.generateMissing",
           "when": "false"
         },
         {
@@ -515,6 +524,11 @@
           "command": "amx.catalog.generateDescription",
           "when": "view == amx.catalog && viewItem =~ /amx\\.catalog(Table|Column)/",
           "group": "2_modify@2"
+        },
+        {
+          "command": "amx.catalog.generateMissing",
+          "when": "view == amx.catalog && viewItem =~ /amx\\.catalog(Schema|Table)/",
+          "group": "2_modify@3"
         },
         {
           "command": "amx.catalog.copyName",
