@@ -90,6 +90,10 @@ export function buildFrameHtml(options: FrameHtmlOptions): string {
         if (ready) return;
         document.getElementById("loading").classList.add("hidden");
         document.getElementById("stalled").classList.remove("hidden");
+        // Tell the extension host too: it re-checks the server and
+        // rebuilds the panel once it is healthy again, so a stall
+        // caused by a server restart heals without a manual Retry.
+        vscode.postMessage({ type: "amx:stalled" });
       }, 12000);
       window.addEventListener("message", (event) => {
         const data = event.data;

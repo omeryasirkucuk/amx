@@ -63,13 +63,38 @@ export class StudioPanel implements vscode.Disposable {
     this.subscriptions.push(
       panel.webview.onDidReceiveMessage((message: unknown) => this.handleMessage(message)),
       this.services.server.onDidChangeState((state) => {
+        if (state.status === "running") {
+          if (this.rendered === undefined) {
+            // Panel is showing error/guidance HTML from an earlier
+            // failure — the server is back, recover without making
+            // the user click Retry (or reload the window).
+            log(`Studio server is back — rebuilding ${this.definition.viewType}`);
+            void this.rebuild();
+          } else if (
+            state.port !== this.rendered.port ||
+            state.token !== this.rendered.token
+          ) {
+            log(`Studio server moved to :${state.port} — rebuilding ${this.definition.viewType}`);
+            void this.rebuild();
+          }
+          return;
+        }
         if (
-          state.status === "running" &&
-          this.rendered !== undefined &&
-          (state.port !== this.rendered.port || state.token !== this.rendered.token)
+          (state.status === "stopped" || state.status === "error") &&
+          this.rendered !== undefined
         ) {
-          log(`Studio server moved to :${state.port} — rebuilding ${this.definition.viewType}`);
-          void this.rebuild();
+          // The rendered iframe points at a dead server — swap to the
+          // error shell instead of leaving a silently dead page. The
+          // running-state branch above rebuilds when it recovers.
+          this.rendered = undefined;
+          this.panel.webview.html = buildErrorHtml({
+            title: this.definition.buildTitle(this.args),
+            message:
+              state.status === "error"
+                ? state.message
+                : "The Studio server stopped. It restarts automatically; retry if this persists.",
+            state: this.persistedState(),
+          });
         }
       }),
     );
@@ -179,6 +204,22 @@ export class StudioPanel implements vscode.Disposable {
     }
     if (type === "amx:retry") {
       void this.rebuild();
+      return;
+    }
+    if (type === "amx:stalled") {
+      // The SPA never reported in. If the server identity has moved
+      // (or the server is down and will be re-ensured), rebuild —
+      // ensure() inside rebuild() revalidates a stale attached
+      // server. When the server is verifiably the one we rendered
+      // and healthy, leave the overlay's manual buttons in charge so
+      // a genuinely broken SPA doesn't trigger a rebuild loop.
+      const state = this.services.server.state;
+      const sameServer =
+        state.status === "running" &&
+        this.rendered !== undefined &&
+        state.port === this.rendered.port &&
+        state.token === this.rendered.token;
+      if (!sameServer) void this.rebuild();
       return;
     }
     if (type === "amx:openBrowser") {

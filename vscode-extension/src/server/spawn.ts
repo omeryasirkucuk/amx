@@ -111,6 +111,55 @@ export function spawnServer(spec: SpawnSpec): ChildProcess {
  * detached-stdin child, so go through taskkill with /T to take the
  * process tree down.
  */
+/** Whether a process with this pid currently exists (signal 0 probe). */
+export function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stop a server by raw pid — used to reap an owned server left over
+ * from a previous extension host (deactivate cannot await the kill,
+ * so reconciliation happens on the next activation). Unlike
+ * killServer there is no ChildProcess to await, so liveness is
+ * polled between escalation steps.
+ */
+export async function killPid(pid: number, graceMs = 2000): Promise<void> {
+  if (!isPidAlive(pid)) return;
+  if (process.platform === "win32") {
+    try {
+      await execFileAsync("taskkill", ["/pid", String(pid), "/T", "/F"]);
+    } catch {
+      /* best effort — the process may have exited already */
+    }
+    return;
+  }
+  const signalAndWait = async (signal: NodeJS.Signals): Promise<boolean> => {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      return true; // already gone
+    }
+    const deadline = Date.now() + graceMs;
+    while (Date.now() < deadline) {
+      if (!isPidAlive(pid)) return true;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return !isPidAlive(pid);
+  };
+  if (await signalAndWait("SIGINT")) return;
+  if (await signalAndWait("SIGTERM")) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* already gone */
+  }
+}
+
 export async function killServer(proc: ChildProcess, graceMs = 2000): Promise<void> {
   if (proc.exitCode !== null || proc.signalCode !== null) return;
   const exited = new Promise<void>((resolve) => {

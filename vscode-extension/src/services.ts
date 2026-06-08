@@ -17,7 +17,12 @@ export interface ExtensionServices {
 
 export function createServices(context: vscode.ExtensionContext): ExtensionServices {
   const runtime = new RuntimeManager(context.globalStorageUri.fsPath);
-  const server = new ServerManager(runtime);
+  const server = new ServerManager(runtime, context.globalState);
+  // Reap any owned server a previous extension host failed to kill
+  // (deactivate cannot await) before it can squat on the preferred
+  // port and wedge the next spawn. Healthy leftovers are kept and
+  // re-adopted through the discovery file.
+  void server.reconcileOrphans();
   const client = new AmxClient(server);
   const ttlSeconds = vscode.workspace
     .getConfiguration("amx")

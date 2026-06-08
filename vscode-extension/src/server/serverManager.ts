@@ -10,11 +10,14 @@ import * as vscode from "vscode";
 import type { RuntimeManager } from "../runtime/runtimeManager";
 import { backoffDelayMs, singleFlight, sleep } from "../util/async";
 import { getServerChannel, log } from "../util/log";
-import { readDiscovery } from "./discoveryFile";
+import { amxConfigDir, readDiscovery } from "./discoveryFile";
+import { HealthMonitor } from "./healthMonitor";
 import { pickPort } from "./ports";
 import {
   buildCliSpawnSpec,
   buildServerSpawnSpec,
+  isPidAlive,
+  killPid,
   killServer,
   probeEmbeddedSupport,
   spawnServer,
@@ -46,17 +49,32 @@ const HEALTH_TIMEOUT_MS = 1500;
 const STARTUP_TIMEOUT_MS = 15_000;
 const MAX_RESTARTS = 3;
 const RESTART_WINDOW_MS = 60_000;
+/** Cached "running" state older than this is revalidated in ensure().
+ *  The attached-server monitor refreshes the timestamp every probe,
+ *  so the revalidation only fires when the monitor itself is wedged
+ *  or was never able to start. */
+const HEALTH_STALENESS_MS = 15_000;
+/** globalState key holding the pid of the owned server subprocess,
+ *  written on spawn and cleared on clean shutdown. A surviving value
+ *  on activation means the previous extension host could not finish
+ *  its kill — see reconcileOrphans(). */
+const OWNED_PID_KEY = "amx.server.ownedPid";
 
 export class ServerManager implements vscode.Disposable {
   private current: ServerState = { status: "stopped" };
   private proc: ChildProcess | undefined;
   private disposing = false;
   private restartTimestamps: number[] = [];
+  private monitor: HealthMonitor | undefined;
+  private lastHealthyAt = 0;
   private readonly didChange = new vscode.EventEmitter<ServerState>();
   readonly onDidChangeState = this.didChange.event;
   private readonly ensureOnce = singleFlight(() => this.startOrAttach());
 
-  constructor(private readonly runtime: RuntimeManager) {}
+  constructor(
+    private readonly runtime: RuntimeManager,
+    private readonly memento?: vscode.Memento,
+  ) {}
 
   get state(): ServerState {
     return this.current;
@@ -64,8 +82,50 @@ export class ServerManager implements vscode.Disposable {
 
   /** Start-or-attach, idempotent and single-flight. */
   async ensure(): Promise<RunningServer> {
-    if (this.current.status === "running") return this.current;
+    const current = this.current;
+    if (current.status === "running") {
+      // An attached server can die without any signal to us (REPL
+      // Ctrl-C). The monitor usually notices first; this staleness
+      // guard catches the window before it does, so callers never
+      // get handed a dead server.
+      if (current.mode === "attached" && Date.now() - this.lastHealthyAt > HEALTH_STALENESS_MS) {
+        const health = await this.healthCheck(current.port, current.token);
+        if (!health.ok) {
+          log(`cached attached server on :${current.port} failed revalidation`);
+          this.setState({ status: "stopped" });
+          return this.ensureOnce();
+        }
+        this.lastHealthyAt = Date.now();
+      }
+      return current;
+    }
     return this.ensureOnce();
+  }
+
+  /**
+   * Reap an owned server left over from a previous extension host.
+   * deactivate() cannot await the kill, so a recorded pid that is
+   * still alive but no longer healthy is cleaned up here, on the
+   * next activation, before it can squat on the preferred port.
+   * A leftover that IS healthy is left alone — tryAdopt() will
+   * reuse it through the discovery file.
+   */
+  async reconcileOrphans(): Promise<void> {
+    const pid = this.memento?.get<number>(OWNED_PID_KEY);
+    if (pid === undefined) return;
+    if (!isPidAlive(pid)) {
+      await this.memento?.update(OWNED_PID_KEY, undefined);
+      return;
+    }
+    const record = await readDiscovery();
+    const isOurs = record !== undefined && record.pid === pid && record.owner === "vscode";
+    if (isOurs && (await this.healthCheck(record.port, record.token)).ok) {
+      log(`previous owned server (pid ${pid}) is still healthy — leaving it for adoption`);
+      return;
+    }
+    log(`reaping orphaned Studio server from a previous session (pid ${pid})`);
+    await killPid(pid);
+    await this.memento?.update(OWNED_PID_KEY, undefined);
   }
 
   async stop(): Promise<void> {
@@ -73,6 +133,7 @@ export class ServerManager implements vscode.Disposable {
       const proc = this.proc;
       this.proc = undefined;
       await killServer(proc);
+      await this.memento?.update(OWNED_PID_KEY, undefined);
     }
     this.setState({ status: "stopped" });
   }
@@ -84,8 +145,12 @@ export class ServerManager implements vscode.Disposable {
 
   dispose(): void {
     this.disposing = true;
+    this.monitor?.dispose();
+    this.monitor = undefined;
     if (this.proc) {
       // Fire and forget — deactivate cannot await long shutdowns.
+      // reconcileOrphans() on the next activation handles the case
+      // where this kill never finishes; the recorded pid is its input.
       void killServer(this.proc);
       this.proc = undefined;
     }
@@ -94,7 +159,67 @@ export class ServerManager implements vscode.Disposable {
 
   private setState(state: ServerState): void {
     this.current = state;
+    this.syncMonitor(state);
     this.didChange.fire(state);
+  }
+
+  /** Keep the out-of-band liveness monitor running exactly while an
+   *  attached server is the current state. Owned servers already
+   *  report death through the ChildProcess exit event. */
+  private syncMonitor(state: ServerState): void {
+    this.monitor?.dispose();
+    this.monitor = undefined;
+    if (state.status !== "running" || state.mode !== "attached" || this.disposing) return;
+    const { port, token } = state;
+    this.lastHealthyAt = Date.now();
+    const monitor = new HealthMonitor({
+      probe: async () => {
+        const ok = (await this.healthCheck(port, token)).ok;
+        // Feed the staleness guard in ensure() so it only revalidates
+        // when this loop has genuinely stopped producing heartbeats.
+        if (ok) this.lastHealthyAt = Date.now();
+        return ok;
+      },
+      watchDir: amxConfigDir(),
+      onServerLost: () => this.handleAttachedLoss(port),
+      onDiscoveryChanged: () => void this.handleDiscoveryChanged(port, token),
+    });
+    this.monitor = monitor;
+    monitor.start();
+  }
+
+  /** The attached server stopped answering — drop the state and, when
+   *  enabled, re-run the adopt-or-spawn flow through the same backoff
+   *  budget owned-server crashes use. */
+  private handleAttachedLoss(port: number): void {
+    if (this.disposing) return;
+    const current = this.current;
+    if (current.status !== "running" || current.mode !== "attached" || current.port !== port) {
+      return; // superseded — a newer state already replaced this server
+    }
+    log(`attached Studio server on :${port} stopped responding`);
+    this.setState({ status: "stopped" });
+    const autoRecover = vscode.workspace
+      .getConfiguration("amx")
+      .get<boolean>("server.autoRecover", true);
+    if (autoRecover) void this.maybeRestart();
+  }
+
+  /** The discovery file changed while attached — a new server may have
+   *  replaced the monitored one (REPL restart on a new port). Verify
+   *  the monitored server; if it is gone, fail over immediately
+   *  instead of waiting for the probe loop's failure threshold. */
+  private async handleDiscoveryChanged(port: number, token: string): Promise<void> {
+    if (this.disposing) return;
+    const current = this.current;
+    if (current.status !== "running" || current.mode !== "attached" || current.port !== port) {
+      return;
+    }
+    if ((await this.healthCheck(port, token)).ok) {
+      this.lastHealthyAt = Date.now();
+      return; // still alive — the file change was about someone else
+    }
+    this.handleAttachedLoss(port);
   }
 
   private async startOrAttach(): Promise<RunningServer> {
@@ -198,12 +323,16 @@ export class ServerManager implements vscode.Disposable {
 
   private attachProcess(proc: ChildProcess): void {
     this.proc = proc;
+    // Persist the pid so the NEXT extension host can reap this server
+    // if deactivate's fire-and-forget kill never lands.
+    if (proc.pid !== undefined) void this.memento?.update(OWNED_PID_KEY, proc.pid);
     const channel = getServerChannel();
     proc.stdout?.on("data", (chunk: Buffer) => channel.append(chunk.toString()));
     proc.stderr?.on("data", (chunk: Buffer) => channel.append(chunk.toString()));
     proc.on("exit", (code, signal) => {
       if (this.proc !== proc) return; // superseded or stopped on purpose
       this.proc = undefined;
+      void this.memento?.update(OWNED_PID_KEY, undefined);
       log(`Studio server exited (code=${code} signal=${signal})`);
       if (this.disposing) return;
       this.setState({ status: "stopped" });

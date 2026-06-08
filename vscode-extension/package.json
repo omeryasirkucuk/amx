@@ -586,6 +586,11 @@
           "default": true,
           "description": "Reuse a Studio server already running on this machine (e.g. launched from the REPL) instead of starting a second one."
         },
+        "amx.server.autoRecover": {
+          "type": "boolean",
+          "default": true,
+          "description": "When an adopted Studio server goes away (e.g. Ctrl-C in the terminal that launched it), automatically adopt its replacement or start a new one."
+        },
         "amx.catalog.cacheTtlSeconds": {
           "type": "number",
           "default": 300,
