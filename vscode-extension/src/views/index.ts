@@ -10,8 +10,10 @@ import { HistoryTreeProvider } from "./historyTree";
 import { ProfilesTreeProvider } from "./profilesTree";
 import { SchedulesTreeProvider } from "./schedulesTree";
 import { AmxStatusBar } from "./statusBar";
+import { StudioActionsProvider } from "./studioActionsTree";
 
 export interface ViewRegistry {
+  readonly studio: StudioActionsProvider;
   readonly profiles: ProfilesTreeProvider;
   readonly catalog: CatalogTreeProvider;
   readonly history: HistoryTreeProvider;
@@ -58,6 +60,7 @@ export function refreshViews(...targets: RefreshTarget[]): void {
 
 export function registerViews(services: ExtensionServices): void {
   const views: ViewRegistry = {
+    studio: new StudioActionsProvider(),
     profiles: new ProfilesTreeProvider(services),
     catalog: new CatalogTreeProvider(services),
     history: new HistoryTreeProvider(services),
@@ -67,6 +70,7 @@ export function registerViews(services: ExtensionServices): void {
   registry = views;
 
   services.context.subscriptions.push(
+    vscode.window.registerTreeDataProvider("amx.studio", views.studio),
     vscode.window.registerTreeDataProvider("amx.profiles", views.profiles),
     vscode.window.registerTreeDataProvider("amx.catalog", views.catalog),
     vscode.window.registerTreeDataProvider("amx.history", views.history),
