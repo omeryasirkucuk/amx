@@ -35,6 +35,10 @@
     "views": {
       "amx": [
         {
+          "id": "amx.studio",
+          "name": "AMX Studio"
+        },
+        {
           "id": "amx.profiles",
           "name": "Profiles"
         },
@@ -56,27 +60,32 @@
       {
         "command": "amx.openAsk",
         "title": "Open Ask Chat",
-        "category": "AMX"
+        "category": "AMX",
+        "icon": "$(comment-discussion)"
       },
       {
         "command": "amx.newRun",
         "title": "Start New Run",
-        "category": "AMX"
+        "category": "AMX",
+        "icon": "$(play)"
       },
       {
         "command": "amx.openLineage",
         "title": "Open Lineage",
-        "category": "AMX"
+        "category": "AMX",
+        "icon": "$(type-hierarchy)"
       },
       {
         "command": "amx.openPages",
         "title": "Open Pages",
-        "category": "AMX"
+        "category": "AMX",
+        "icon": "$(book)"
       },
       {
         "command": "amx.openSettings",
         "title": "Open Studio Settings",
-        "category": "AMX"
+        "category": "AMX",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "amx.openRepl",
@@ -308,14 +317,34 @@
     "menus": {
       "view/title": [
         {
+          "command": "amx.openAsk",
+          "when": "view == amx.studio",
+          "group": "navigation@1"
+        },
+        {
+          "command": "amx.newRun",
+          "when": "view == amx.studio",
+          "group": "navigation@2"
+        },
+        {
+          "command": "amx.openLineage",
+          "when": "view == amx.studio",
+          "group": "navigation@3"
+        },
+        {
           "command": "amx.profiles.refresh",
           "when": "view == amx.profiles",
           "group": "navigation"
         },
         {
+          "command": "amx.openAsk",
+          "when": "view == amx.catalog",
+          "group": "navigation@0"
+        },
+        {
           "command": "amx.catalog.refresh",
           "when": "view == amx.catalog",
-          "group": "navigation"
+          "group": "navigation@1"
         },
         {
           "command": "amx.history.refresh",
