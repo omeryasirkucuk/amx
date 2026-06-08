@@ -3,6 +3,10 @@
 Architecture (triple-layer defense after PRs #353/#354/#355 each
 fixed a layer but left a sibling open):
 
+0. Check the discovery file first — if a healthy Studio is already
+   running (started by another REPL or an IDE integration), reuse
+   it: print its URL, open the browser, and return without
+   spawning a duplicate.
 1. Pick a port (preferred 47821, otherwise an ephemeral one).
 2. Generate a one-shot URL-safe Bearer token.
 3. Spawn a **subprocess** running :mod:`amx.web._studio_subprocess`
@@ -41,12 +45,16 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.request
 import webbrowser
 from contextlib import suppress
 from pathlib import Path as _Path
-from typing import IO
+from typing import IO, TYPE_CHECKING
 
 from amx.config import AMXConfig
+
+if TYPE_CHECKING:
+    from amx.web.discovery import StudioDiscovery
 
 log = logging.getLogger("amx.web.launcher")
 
@@ -73,6 +81,45 @@ SHUTDOWN_TIMEOUT_SEC = 1.5
 #: drain wait — this should always succeed quickly.
 TERMINATE_TIMEOUT_SEC = 1.0
 KILL_TIMEOUT_SEC = 1.0
+
+#: Health-check deadline when probing a discovery-file record for an
+#: already-running Studio. Localhost answers in single-digit
+#: milliseconds; 1.5 s tolerates a server momentarily busy with an
+#: LLM-bound request without making a cold ``/studio`` feel slow.
+REUSE_PROBE_TIMEOUT_SEC = 1.5
+
+
+def _probe_running_studio() -> StudioDiscovery | None:
+    """Return the discovery record for a live Studio, or ``None``.
+
+    Reads ``<config-dir>/studio.json`` and health-checks the recorded
+    endpoint (``GET /api/health`` with the recorded bearer token). A
+    missing, malformed, or stale record — including one whose server
+    no longer answers — yields ``None``; the caller then spawns a
+    fresh server, whose child atomically overwrites the discovery
+    file. The stale file is deliberately NOT deleted here: deletion
+    is the owning process's job (pid-guarded in
+    :func:`amx.web.discovery.clear_discovery`), and racing it from a
+    reader could drop the record of a healthy server mid-restart.
+    """
+    from amx.web.discovery import read_discovery
+
+    record = read_discovery()
+    if record is None:
+        return None
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{record.port}/api/health",
+        headers={"Authorization": f"Bearer {record.token}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=REUSE_PROBE_TIMEOUT_SEC) as response:
+            if response.status == 200:
+                return record
+    except (OSError, ValueError):
+        # URLError subclasses OSError; ValueError covers a corrupt
+        # port landing in the URL. All mean "not reusable".
+        return None
+    return None
 
 
 def _pick_port(preferred: int) -> int:
@@ -120,7 +167,7 @@ def launch_studio(
     port: int | None = None,
     open_browser: bool = True,
     block: bool = True,
-    embedded: bool = False,
+    embedded: bool = True,
 ) -> bool:
     """Start AMX Studio for one ``/studio`` invocation.
 
@@ -149,10 +196,32 @@ def launch_studio(
         responsible for closing the log file).
     embedded
         Pass-through for the server's embedded host mode (relaxed
-        framing headers so IDE webviews can iframe the SPA). Set by
-        IDE integrations that drive ``amx studio --embedded``; the
-        browser-facing default stays strict.
+        framing headers so IDE webviews can iframe the SPA). Defaults
+        to ``True`` so the one server every surface shares — browser
+        tabs, REPL, IDE webviews — is always frameable; the server
+        still binds 127.0.0.1 and requires the bearer token, so the
+        relaxed ``frame-ancestors`` grants nothing by itself (see
+        the rationale in :mod:`amx.web.security_headers`). Pass
+        ``False`` to get the strict browser-only headers.
     """
+    if port is None:
+        running = _probe_running_studio()
+        if running is not None:
+            reused_url = f"http://127.0.0.1:{running.port}/?t={running.token}"
+            owner = running.owner or "unknown"
+            print(  # user-facing — keep print, not log
+                f"AMX Studio already running → {reused_url}\n"
+                f"  Reusing the existing server (started by {owner}, pid {running.pid}); "
+                "this terminal does not control it.\n"
+                "  Stop it from wherever it was started."
+            )
+            if open_browser:
+                try:
+                    webbrowser.open_new_tab(reused_url)
+                except Exception as exc:  # pragma: no cover - browser launch is best-effort
+                    log.debug("Could not auto-open browser: %s", exc)
+            return True
+
     chosen_port = port if port is not None else _pick_port(PREFERRED_PORT)
 
     # Generate the bearer token in the PARENT so we can immediately

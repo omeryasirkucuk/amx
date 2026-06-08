@@ -205,7 +205,8 @@ def register_root_commands(
         # passing it (older versions reject unknown options).
         help=(
             "Relax framing headers so an IDE host can render Studio "
-            "inside a webview iframe. Set by IDE integrations, not users."
+            "inside a webview iframe. Now the default; kept for "
+            "compatibility with IDE integrations that pass it."
         ),
     )
     @click.pass_obj
@@ -220,7 +221,13 @@ def register_root_commands(
                 f"Underlying import error: {exc}"
             )
             return
-        launch_studio(cfg, port=port, open_browser=not no_open, embedded=embedded)
+        # Embedded host mode is always on so the single shared server
+        # (discovery-file reuse) is frameable by IDE webviews no matter
+        # who started it first. The flag above is accepted but no
+        # longer steers behavior; see security_headers.py for why the
+        # relaxed framing headers are safe on a loopback token server.
+        del embedded
+        launch_studio(cfg, port=port, open_browser=not no_open, embedded=True)
 
     @main.group()
     def db() -> None:
