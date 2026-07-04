@@ -688,6 +688,65 @@ class EntityCrudMixin:
             if r["table_name"]
         ]
 
+    def fetch_effective_descriptions_for_schema(
+        self,
+        db_profile: str,
+        schema_name: str,
+        database_name: str | None = None,
+    ) -> dict[str, str]:
+        """Return ``{table_name: effective_description}`` for every table in
+        (profile, schema) that has a canonical applied description.
+
+        The applied description is joined through
+        ``catalog_entities.effective_description_id`` →
+        ``catalog_descriptions.description_text`` — the same source
+        :func:`get_table_metadata_snapshot` reads. The schema asset listing
+        uses this to surface an AMX-applied description that was never
+        mirrored into ``column_comments_cache``. ``database_name`` scopes to
+        a single database under the profile when provided, matching
+        :func:`fetch_distinct_tables_in_schema`. Rows with an empty
+        description are omitted so the caller can treat "no key" and "no
+        description" identically. Returns an empty dict on any error.
+        """
+        try:
+            with self._connect() as conn:
+                if database_name is None:
+                    rows = conn.execute(
+                        """
+                        SELECT ce.table_name,
+                               cd.description_text AS effective_description
+                        FROM catalog_entities ce
+                        LEFT JOIN catalog_descriptions cd
+                            ON cd.id = ce.effective_description_id
+                        WHERE ce.db_profile = ? AND ce.schema_name = ?
+                          AND ce.entity_kind = 'table' AND ce.table_name != ''
+                        """,
+                        (db_profile, schema_name),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT ce.table_name,
+                               cd.description_text AS effective_description
+                        FROM catalog_entities ce
+                        LEFT JOIN catalog_descriptions cd
+                            ON cd.id = ce.effective_description_id
+                        WHERE ce.db_profile = ? AND ce.database_name = ?
+                          AND ce.schema_name = ?
+                          AND ce.entity_kind = 'table' AND ce.table_name != ''
+                        """,
+                        (db_profile, database_name, schema_name),
+                    ).fetchall()
+        except Exception:
+            return {}
+        descriptions: dict[str, str] = {}
+        for r in rows:
+            name = str(r["table_name"] or "")
+            desc = str(r["effective_description"] or "")
+            if name and desc:
+                descriptions[name] = desc
+        return descriptions
+
     def fetch_coverage_summary(
         self,
         db_profile: str | list[str],

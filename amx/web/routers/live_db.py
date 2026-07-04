@@ -351,12 +351,16 @@ def _cached_table_comments_for_schema(
 
     Batch sibling of :func:`_cached_table_comment` used by the schema
     asset listing so the sidebar / Schema page can show the DB comment a
-    sync imported without a per-table round-trip. Same contract as the
-    single-table helper: scope-tolerant (a ``database_scope`` hit wins,
-    else the unscoped rows are used) and TTL-agnostic (no ``expires_at``
-    filter — the durable warm the sync stamps can outlive the browse
-    TTL). ``fetched_at`` ascending so a newer row overwrites an older one
-    for the same table. Returns an empty dict when nothing is cached.
+    sync imported without a per-table round-trip. Mirrors the single-table
+    helper's *per-table* scope tolerance: the unscoped rows form the base
+    (so a comment written under a different ``database_name`` than the
+    request scope — the connection-pinned key the connector stamps — still
+    surfaces), and a non-empty ``database_scope`` hit overrides per table
+    for multi-database profiles. An empty scoped skeleton row never masks a
+    real unscoped comment. TTL-agnostic (no ``expires_at`` filter — the
+    durable warm the sync stamps can outlive the browse TTL) and
+    ``fetched_at`` ascending so a newer row overwrites an older one for the
+    same table. Returns an empty dict when nothing is cached.
     """
     try:
         from amx.storage.sqlite_store import history_store as _history_store
@@ -366,35 +370,42 @@ def _cached_table_comments_for_schema(
         hs = None
     if hs is None:
         return {}
-    rows: list[Any] = []
+    comments: dict[str, str] = {}
     try:
         with hs._connect() as conn:  # noqa: SLF001 — same access as helpers
+            # Base: every cached comment for the schema regardless of
+            # ``database_name``, newest wins per table (ASC → later
+            # overwrites). This is the per-table unscoped fallback the
+            # single-table helper applies, applied to the whole schema.
+            for r in conn.execute(
+                """
+                SELECT table_name, table_comment FROM column_comments_cache
+                WHERE db_profile = ? AND schema_name = ?
+                ORDER BY fetched_at ASC
+                """,
+                (profile, schema),
+            ).fetchall():
+                name = str(r["table_name"] or "")
+                if name:
+                    comments[name] = str(r["table_comment"] or "")
+            # Scoped rows win per table when they carry an actual comment,
+            # preserving multi-database scope preference without letting an
+            # empty scoped row clobber a real unscoped one.
             if database_scope:
-                rows = conn.execute(
+                for r in conn.execute(
                     """
                     SELECT table_name, table_comment FROM column_comments_cache
                     WHERE db_profile = ? AND database_name = ? AND schema_name = ?
                     ORDER BY fetched_at ASC
                     """,
                     (profile, database_scope, schema),
-                ).fetchall()
-            if not rows:
-                rows = conn.execute(
-                    """
-                    SELECT table_name, table_comment FROM column_comments_cache
-                    WHERE db_profile = ? AND schema_name = ?
-                    ORDER BY fetched_at ASC
-                    """,
-                    (profile, schema),
-                ).fetchall()
+                ).fetchall():
+                    name = str(r["table_name"] or "")
+                    scoped = str(r["table_comment"] or "")
+                    if name and scoped:
+                        comments[name] = scoped
     except Exception:
         return {}
-    comments: dict[str, str] = {}
-    for r in rows:
-        name = str(r["table_name"] or "")
-        if not name:
-            continue
-        comments[name] = str(r["table_comment"] or "")
     return comments
 
 
@@ -1122,12 +1133,28 @@ def _cached_assets_for_profile_schema(
         return None
     if not rows:
         return None
-    # Surface the native DB comment a sync warmed into
-    # ``column_comments_cache`` so the sidebar / Schema page show it
-    # instead of "no description yet". The comment lives in a separate
-    # cache table from ``catalog_entities``, so read it once for the
-    # whole schema and map by table name.
-    comments = _cached_table_comments_for_schema(profile, schema, database)
+    # Surface a description so the sidebar / Schema page show it instead
+    # of "no description yet". Two sources, native comment winning:
+    #   1. the native DB comment a sync warmed into
+    #      ``column_comments_cache`` (the same source the table page reads),
+    #   2. the canonical AMX-applied description on ``catalog_entities``
+    #      (``effective_description_id``) for descriptions never mirrored
+    #      into the native cache.
+    # Both live in separate tables from the name rows, so read each once
+    # for the whole schema and join by table name. Keys are casefolded
+    # because names arrive raw from ``catalog_entities`` while the native
+    # cache normalizes them (``UPPER()`` on Snowflake / Oracle) — a plain
+    # exact match would silently drop the comment on those backends.
+    comments = {
+        k.casefold(): v
+        for k, v in _cached_table_comments_for_schema(profile, schema, database).items()
+    }
+    applied = {
+        k.casefold(): v
+        for k, v in cat.fetch_effective_descriptions_for_schema(
+            profile, schema, database_name=database
+        ).items()
+    }
     # Asset kind isn't on the simple fetch helper; default to "table"
     # for the sidebar (the wide majority of rows are tables). Views /
     # materialized views surface their kind on the Table-detail page
@@ -1138,7 +1165,9 @@ def _cached_assets_for_profile_schema(
         n = str(r.get("name") or "")
         if not n:
             continue
-        items.append({"name": n, "kind": "table", "comment": comments.get(n, "")})
+        key = n.casefold()
+        comment = comments.get(key) or applied.get(key) or ""
+        items.append({"name": n, "kind": "table", "comment": comment})
     return items
 
 
