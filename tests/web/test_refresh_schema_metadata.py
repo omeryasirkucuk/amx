@@ -77,3 +77,60 @@ def test_refresh_payload_shape_matches_list_assets(client, auth_headers, stub_db
     orders = next(a for a in body["assets"] if a["name"] == "orders")
     assert orders["comment"] == "Refreshed orders"
     assert orders["kind"] == "table"
+
+
+@pytest.fixture()
+def stub_db_empty(monkeypatch, cfg):
+    """A connector whose live re-list comes back empty without raising —
+    the exact condition that used to blank the schema."""
+    cfg.db_profiles[PROFILE] = DBConfig(
+        backend="postgresql", host="pg.test", user="amx", database="appdb"
+    )
+    instance = MagicMock()
+    instance.list_assets.return_value = []
+    monkeypatch.setattr(live_db, "DatabaseConnector", lambda *_a, **_kw: instance)
+    return instance
+
+
+def test_refresh_empty_live_salvages_catalog(
+    client, auth_headers, stub_db_empty, monkeypatch
+) -> None:
+    """When live introspection returns nothing, the endpoint must serve
+    the persistent catalog view instead of an empty payload — otherwise
+    the SPA overwrites the sidebar with 0 assets and the schema vanishes."""
+    fallback = [{"name": "orders", "kind": "table", "comment": "cached"}]
+    monkeypatch.setattr(
+        live_db,
+        "_cached_assets_for_profile_schema",
+        lambda *_a, **_kw: fallback,
+    )
+    response = client.post(
+        f"/api/live/schemas/sales/refresh?profile={PROFILE}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 1
+    assert body["assets"] == fallback
+    assert body["stale"] is True
+    assert body["refreshed"] is False
+
+
+def test_refresh_empty_live_and_no_cache_returns_zero(
+    client, auth_headers, stub_db_empty, monkeypatch
+) -> None:
+    """With neither a live result nor a cached fallback the endpoint
+    honestly reports 0 — there is nothing to preserve."""
+    monkeypatch.setattr(
+        live_db,
+        "_cached_assets_for_profile_schema",
+        lambda *_a, **_kw: None,
+    )
+    response = client.post(
+        f"/api/live/schemas/sales/refresh?profile={PROFILE}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 0
+    assert body["assets"] == []

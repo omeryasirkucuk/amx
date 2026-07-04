@@ -1146,7 +1146,20 @@ function SchemaNode({
   const refresh = useMutation({
     mutationFn: () => api.refreshSchemaMetadata(scope, schema),
     onSuccess: (data) => {
-      qcLocal.setQueryData(queryKey, data);
+      // Never overwrite a populated asset list with an empty refresh
+      // result — a transient live-introspection miss must not blank the
+      // schema. The backend already salvages the catalog view in that
+      // case; this is defense-in-depth. On a genuinely empty payload,
+      // revalidate from the cache-first /assets endpoint instead.
+      if (data?.assets?.length) {
+        qcLocal.setQueryData(queryKey, data);
+      } else {
+        qcLocal.invalidateQueries({ queryKey });
+      }
+    },
+    onError: () => {
+      // Leave the existing cached list intact on failure.
+      qcLocal.invalidateQueries({ queryKey });
     },
   });
 
