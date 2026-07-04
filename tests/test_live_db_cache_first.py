@@ -132,3 +132,59 @@ def test_cache_helpers_serve_partial_sync_data(
     # The fully-synced probe should still report False so the route
     # can flag ``possibly_partial`` in the SSE response.
     assert live_db._profile_is_fully_synced("prof-a") is False  # noqa: SLF001
+
+
+def _seed_table_comment(
+    db_path: Path,
+    profile: str,
+    schema: str,
+    table: str,
+    comment: str,
+    *,
+    database: str = "",
+) -> None:
+    """Insert a ``column_comments_cache`` row carrying a native table
+    comment — the durable warm a sync leaves behind."""
+    now = time.time()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO column_comments_cache (
+                cache_key, db_profile, database_name, schema_name,
+                table_name, table_comment, columns_json, kind,
+                fetched_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'TABLE', ?, ?)
+            """,
+            (
+                f"{profile}|{database}|{schema}|{table}",
+                profile,
+                database,
+                schema,
+                table,
+                comment,
+                "{}",
+                now,
+                now + 3600,
+            ),
+        )
+
+
+def test_cached_assets_surfaces_native_comment(seeded_history_store: Path) -> None:
+    """A native DB comment warmed into ``column_comments_cache`` shows up
+    as the table's ``comment`` in the schema asset listing — the fix for
+    tables rendering "no description yet" despite a real DB comment."""
+    _seed_catalog(seeded_history_store, "prof-a", ["public"])
+    _seed_table_comment(seeded_history_store, "prof-a", "public", "public_table", "SAP email table")
+    out = live_db._cached_assets_for_profile_schema("prof-a", "public")  # noqa: SLF001
+    assert out is not None
+    row = next(item for item in out if item["name"] == "public_table")
+    assert row["comment"] == "SAP email table"
+
+
+def test_cached_assets_blank_comment_when_uncached(seeded_history_store: Path) -> None:
+    """With no cached comment row the listing falls back to an empty
+    string — never ``None`` or a crash."""
+    _seed_catalog(seeded_history_store, "prof-a", ["public"])
+    out = live_db._cached_assets_for_profile_schema("prof-a", "public")  # noqa: SLF001
+    assert out is not None
+    assert all(item["comment"] == "" for item in out)

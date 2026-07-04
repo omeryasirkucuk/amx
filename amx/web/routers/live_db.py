@@ -341,6 +341,63 @@ def _cached_table_comment(
     return str(row["table_comment"] or "")
 
 
+def _cached_table_comments_for_schema(
+    profile: str,
+    schema: str,
+    database_scope: str | None,
+) -> dict[str, str]:
+    """Return ``{table_name: table_comment}`` for every table in *schema*
+    that has a cached native comment in ``column_comments_cache``.
+
+    Batch sibling of :func:`_cached_table_comment` used by the schema
+    asset listing so the sidebar / Schema page can show the DB comment a
+    sync imported without a per-table round-trip. Same contract as the
+    single-table helper: scope-tolerant (a ``database_scope`` hit wins,
+    else the unscoped rows are used) and TTL-agnostic (no ``expires_at``
+    filter — the durable warm the sync stamps can outlive the browse
+    TTL). ``fetched_at`` ascending so a newer row overwrites an older one
+    for the same table. Returns an empty dict when nothing is cached.
+    """
+    try:
+        from amx.storage.sqlite_store import history_store as _history_store
+
+        hs = _history_store()
+    except Exception:
+        hs = None
+    if hs is None:
+        return {}
+    rows: list[Any] = []
+    try:
+        with hs._connect() as conn:  # noqa: SLF001 — same access as helpers
+            if database_scope:
+                rows = conn.execute(
+                    """
+                    SELECT table_name, table_comment FROM column_comments_cache
+                    WHERE db_profile = ? AND database_name = ? AND schema_name = ?
+                    ORDER BY fetched_at ASC
+                    """,
+                    (profile, database_scope, schema),
+                ).fetchall()
+            if not rows:
+                rows = conn.execute(
+                    """
+                    SELECT table_name, table_comment FROM column_comments_cache
+                    WHERE db_profile = ? AND schema_name = ?
+                    ORDER BY fetched_at ASC
+                    """,
+                    (profile, schema),
+                ).fetchall()
+    except Exception:
+        return {}
+    comments: dict[str, str] = {}
+    for r in rows:
+        name = str(r["table_name"] or "")
+        if not name:
+            continue
+        comments[name] = str(r["table_comment"] or "")
+    return comments
+
+
 def _cached_row_count(
     profile: str,
     schema: str,
@@ -1065,6 +1122,12 @@ def _cached_assets_for_profile_schema(
         return None
     if not rows:
         return None
+    # Surface the native DB comment a sync warmed into
+    # ``column_comments_cache`` so the sidebar / Schema page show it
+    # instead of "no description yet". The comment lives in a separate
+    # cache table from ``catalog_entities``, so read it once for the
+    # whole schema and map by table name.
+    comments = _cached_table_comments_for_schema(profile, schema, database)
     # Asset kind isn't on the simple fetch helper; default to "table"
     # for the sidebar (the wide majority of rows are tables). Views /
     # materialized views surface their kind on the Table-detail page
@@ -1075,7 +1138,7 @@ def _cached_assets_for_profile_schema(
         n = str(r.get("name") or "")
         if not n:
             continue
-        items.append({"name": n, "kind": "table", "comment": ""})
+        items.append({"name": n, "kind": "table", "comment": comments.get(n, "")})
     return items
 
 
@@ -1142,8 +1205,19 @@ def refresh_schema_metadata(
     this endpoint exists for the out-of-band edit case (DBA tweaking
     comments directly in the warehouse console). The response shape
     matches ``list_assets`` so the SPA can swap the result in-place.
+
+    Fail-safe: a live re-list can legitimately return ``[]`` without
+    raising (bulk introspection swallows to ``None`` → inspector returns
+    ``[]`` on a scope miss). We never let that empty result reach the
+    SPA, which would blank the schema — instead we salvage the persistent
+    catalog view (captured *before* invalidating so it still carries the
+    old comments) and mark the response stale.
     """
     name = _require_profile(profile)
+    cache_scope = database or catalog
+    # Snapshot the catalog view before we bust the comment cache; with
+    # the comment-surfacing read above this carries tables + comments.
+    fallback = _cached_assets_for_profile_schema(name, schema, cache_scope)
     db = _connector_for_scope(cfg, name, database=database, catalog=catalog)
     db.invalidate_column_comments_cache(schema=schema)
     raw = _coerce_or_500(f"Refreshing assets in {schema}", lambda: db.list_assets(schema))
@@ -1154,6 +1228,27 @@ def refresh_schema_metadata(
         except Exception:
             comment = ""
         items.append({"name": asset_name, "kind": kind.value, "comment": comment})
+    if not items:
+        # Live introspection came back empty without raising. Preserve
+        # whatever the catalog still knows rather than wiping the schema.
+        if fallback:
+            return {
+                "schema": schema,
+                "assets": fallback,
+                "count": len(fallback),
+                "refreshed": False,
+                "stale": True,
+            }
+        return {"schema": schema, "assets": [], "count": 0, "refreshed": True}
+    # Reconcile the persistent catalog with live truth so a refresh picks
+    # up newly added / renamed tables, mirroring ``list_assets``.
+    _writethrough_assets_to_catalog(
+        name,
+        schema,
+        db_backend=_profile_backend(cfg, name),
+        database_scope=cache_scope,
+        assets=items,
+    )
     return {"schema": schema, "assets": items, "count": len(items), "refreshed": True}
 
 
