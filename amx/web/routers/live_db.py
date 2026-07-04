@@ -32,10 +32,12 @@ from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 
 from amx.config import AMXConfig, DBConfig
 from amx.db.connector import DatabaseConnector
 from amx.web.deps import get_cfg
+from amx.web.permissions import require_writer_role
 
 router = APIRouter(prefix="/api/live", tags=["live-db"])
 
@@ -1543,3 +1545,45 @@ def table_snapshot(
     # shows nothing rather than a misleading 0.
     snapshot["row_count"] = _cached_row_count(name, schema, table, database_scope=cache_scope)
     return _merge_pending(snapshot, schema, table)
+
+
+class ClearReviewsIn(BaseModel):
+    """Which review categories to clear for a table. All default to true
+    so a bare request wipes everything the Table page shows."""
+
+    pending: bool = True
+    review_state: bool = True
+    audit: bool = True
+
+
+@router.post("/schemas/{schema}/tables/{table}/reviews/clear")
+def clear_table_reviews_endpoint(
+    schema: str,
+    table: str,
+    body: ClearReviewsIn,
+    _: None = Depends(require_writer_role),
+) -> dict[str, Any]:
+    """Clear a table's review data — pending suggestions, review-state
+    decisions, and/or the applied-description audit — in one call.
+
+    Clearing the audit removes AMX's *record* of prior writes only; the
+    live-database COMMENTs are never touched. Returns per-category counts.
+    """
+    from amx.storage.sqlite_store import history_store as _history_store
+    from amx.table_reviews import clear_table_reviews
+
+    hs = _history_store()
+    if hs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=("History store isn't initialized yet. Activate a DB profile and reload."),
+        )
+    counts = clear_table_reviews(
+        hs,
+        schema,
+        table,
+        pending=body.pending,
+        review_state=body.review_state,
+        audit=body.audit,
+    )
+    return {"cleared": True, "schema": schema, "table": table, "counts": counts}

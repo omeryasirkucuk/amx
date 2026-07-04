@@ -599,6 +599,97 @@ def get_run(hs: SQLiteHistoryStore, run_id: int) -> dict[str, Any] | None:
     return out
 
 
+def delete_run(hs: SQLiteHistoryStore, run_id: int) -> dict[str, int]:
+    """Hard-delete one run: its ``analysis_runs`` master row plus every
+    ``run_results`` child row.
+
+    Returns a counts dict ``{"runs": n, "results": m}`` so callers can
+    confirm what was removed. A missing run yields ``{"runs": 0,
+    "results": 0}`` (idempotent — deleting an already-gone run is not an
+    error).
+
+    The ``apply_events`` audit trail is intentionally left untouched:
+    those rows record comments actually written to a live database and
+    are cleared through the separate "clear a table's reviews" path
+    (:func:`amx.storage._history_apply_audit.delete_apply_events_for_table`),
+    never as a side effect of pruning run history.
+    """
+    rid = int(run_id)
+    with hs._lock, hs._connect() as conn:
+        results = conn.execute("DELETE FROM run_results WHERE run_id = ?", (rid,)).rowcount or 0
+        runs = conn.execute("DELETE FROM analysis_runs WHERE id = ?", (rid,)).rowcount or 0
+    return {"runs": runs, "results": results}
+
+
+def delete_runs(hs: SQLiteHistoryStore, run_ids: list[int]) -> dict[str, int]:
+    """Hard-delete a batch of runs in a single transaction.
+
+    Returns aggregate counts ``{"runs": n, "results": m}``. Ids that
+    don't exist are silently skipped. See :func:`delete_run` for the
+    ``apply_events`` boundary.
+    """
+    ids = [int(r) for r in run_ids if r is not None]
+    if not ids:
+        return {"runs": 0, "results": 0}
+    placeholders = ",".join("?" for _ in ids)
+    with hs._lock, hs._connect() as conn:
+        results = (
+            conn.execute(f"DELETE FROM run_results WHERE run_id IN ({placeholders})", ids).rowcount
+            or 0
+        )
+        runs = (
+            conn.execute(f"DELETE FROM analysis_runs WHERE id IN ({placeholders})", ids).rowcount
+            or 0
+        )
+    return {"runs": runs, "results": results}
+
+
+def delete_runs_matching(
+    hs: SQLiteHistoryStore,
+    *,
+    q: str | None = None,
+    status: str | None = None,
+    kind: str | None = None,
+    command_filter: str | None = None,
+    comparable_only: bool = False,
+) -> dict[str, int]:
+    """Hard-delete every run matching the same filter the Runs list uses.
+
+    Reuses :func:`_runs_where` so "delete all matching filter" removes
+    exactly the rows the current filtered view shows (and their
+    ``run_results`` children) in one transaction — no id round-trip, no
+    SQLite variable-count ceiling. See :func:`delete_run` for the
+    ``apply_events`` boundary.
+
+    A guard: an empty filter body would delete the entire history, so
+    the caller must pass at least one constraint. With no filter this
+    raises ``ValueError`` rather than silently wiping everything.
+    """
+    where_body, params = _runs_where(
+        q=q,
+        status=status,
+        kind=kind,
+        command_filter=command_filter,
+        comparable_only=comparable_only,
+    )
+    if not where_body:
+        raise ValueError(
+            "delete_runs_matching requires at least one filter "
+            "(q/status/kind/command_filter/comparable_only)."
+        )
+    with hs._lock, hs._connect() as conn:
+        results = (
+            conn.execute(
+                f"DELETE FROM run_results WHERE run_id IN "
+                f"(SELECT id FROM analysis_runs WHERE {where_body})",
+                params,
+            ).rowcount
+            or 0
+        )
+        runs = conn.execute(f"DELETE FROM analysis_runs WHERE {where_body}", params).rowcount or 0
+    return {"runs": runs, "results": results}
+
+
 def stats(hs: SQLiteHistoryStore, command_filter: str | None = "analyze.run") -> dict[str, Any]:
     """Aggregate counters for the dashboard.
 

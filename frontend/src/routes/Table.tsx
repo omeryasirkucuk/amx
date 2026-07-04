@@ -8,6 +8,7 @@ import {
   Hash,
   RefreshCw,
   Sparkles,
+  Trash2,
   Workflow,
 } from "lucide-react";
 
@@ -21,12 +22,7 @@ import GenerateScopeDialog from "../components/GenerateScopeDialog";
 import Modal from "../components/Modal";
 import StatusPill from "../components/StatusPill";
 import { useUi } from "../lib/store";
-import {
-  Button,
-  InlineEditText,
-  Skeleton,
-  useToast,
-} from "../components/ui";
+import { Button, InlineEditText, Skeleton, useToast } from "../components/ui";
 
 export default function Table() {
   const { scope } = useScope();
@@ -47,9 +43,20 @@ export default function Table() {
   // the catalog-cache substitution instead of the bulk worker crashing on
   // ``NoSuchTableError`` (the user-confirmed "ask, don't silently fall
   // back" contract).
-  const [reachabilityBlocked, setReachabilityBlocked] = useState<
-    Array<{ schema: string; table: string; reason: string }> | null
-  >(null);
+  const [reachabilityBlocked, setReachabilityBlocked] = useState<Array<{
+    schema: string;
+    table: string;
+    reason: string;
+  }> | null>(null);
+  // Clear-reviews dialog: which of the three review categories to wipe
+  // for this table. All default on so the common "reset this table's
+  // reviews" case is one confirm away.
+  const [clearReviewsOpen, setClearReviewsOpen] = useState(false);
+  const [clearOpts, setClearOpts] = useState({
+    pending: true,
+    review_state: true,
+    audit: true,
+  });
 
   useEffect(() => {
     if (scope && schema && table) {
@@ -149,9 +156,29 @@ export default function Table() {
       }),
   });
 
+  const clearReviews = useMutation({
+    mutationFn: () => api.clearTableReviews(schema, table, clearOpts),
+    onSuccess: (res) => {
+      setClearReviewsOpen(false);
+      // Refresh the snapshot (pending pills), the pending queue, and the
+      // audit timeline so the cleared categories drop from the UI.
+      qc.invalidateQueries({ queryKey: ["live-snapshot"] });
+      qc.invalidateQueries({ queryKey: ["pending"] });
+      qc.invalidateQueries({ queryKey: ["apply-events"] });
+      const { pending, review_state, audit } = res.counts;
+      toast.push({
+        title: "Reviews cleared",
+        description: `${pending} pending · ${review_state} review-state · ${audit} audit row(s) removed. Live-database comments untouched.`,
+        tone: "success",
+        duration: 3600,
+      });
+    },
+    onError: (e: Error) =>
+      toast.push({ title: "Clear failed", description: e.message, tone: "error" }),
+  });
+
   const generateColumnOne = useMutation({
-    mutationFn: (column: string) =>
-      api.generateColumnDescription(scope!, schema, table, column),
+    mutationFn: (column: string) => api.generateColumnDescription(scope!, schema, table, column),
     onSuccess: (result, column) => {
       qc.invalidateQueries({ queryKey: ["live-snapshot"] });
       const altCount = result.alternatives_count ?? 1;
@@ -407,6 +434,15 @@ export default function Table() {
               Open lineage
             </Button>
             <Button
+              variant="secondary"
+              size="md"
+              leadingIcon={<Trash2 size={14} />}
+              onClick={() => setClearReviewsOpen(true)}
+              title="Clear this table's reviews — pending suggestions, review-state decisions, and applied-description audit"
+            >
+              Clear reviews
+            </Button>
+            <Button
               variant="primary"
               size="md"
               leadingIcon={<Sparkles size={14} />}
@@ -433,9 +469,7 @@ export default function Table() {
         />
         <SummaryCard
           label="Coverage"
-          value={
-            totalCols ? `${Math.round((commented / totalCols) * 100)}%` : "—"
-          }
+          value={totalCols ? `${Math.round((commented / totalCols) * 100)}%` : "—"}
           icon={AlignLeft}
         />
       </div>
@@ -477,9 +511,7 @@ export default function Table() {
                   return (
                     <tr key={col.name} className="align-top hover:bg-surface-subtle/40">
                       <td className="px-5 py-2 font-mono text-xs text-ink">{col.name}</td>
-                      <td className="px-5 py-2 font-mono text-xs text-ink-muted">
-                        {col.dtype}
-                      </td>
+                      <td className="px-5 py-2 font-mono text-xs text-ink-muted">{col.dtype}</td>
                       <td className="px-5 py-2">
                         <StatusPill tone={col.nullable ? "neutral" : "accent"}>
                           {col.nullable ? "nullable" : "required"}
@@ -538,10 +570,7 @@ export default function Table() {
       />
 
       <div className="mt-4">
-        <Link
-          to={scopePath(scope, schema)}
-          className="text-xs text-ink-dim hover:text-ink"
-        >
+        <Link to={scopePath(scope, schema)} className="text-xs text-ink-dim hover:text-ink">
           ← Back to schema
         </Link>
       </div>
@@ -583,6 +612,83 @@ export default function Table() {
         }}
       />
       <Modal
+        open={clearReviewsOpen}
+        onClose={() => setClearReviewsOpen(false)}
+        size="md"
+        title={
+          <span>
+            Clear reviews for {schema}.{table}
+          </span>
+        }
+        description="Choose what to remove. This resets AMX's review data for the table — it never edits the descriptions already written to the live database."
+      >
+        <div className="space-y-3 text-[13px] text-ink">
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-3.5 w-3.5 cursor-pointer accent-accent"
+              checked={clearOpts.pending}
+              onChange={(e) => setClearOpts((o) => ({ ...o, pending: e.target.checked }))}
+            />
+            <span>
+              <span className="font-medium">Pending suggestions</span>
+              <span className="block text-[12px] text-ink-muted">
+                Unapplied generated descriptions queued for this table.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-3.5 w-3.5 cursor-pointer accent-accent"
+              checked={clearOpts.review_state}
+              onChange={(e) => setClearOpts((o) => ({ ...o, review_state: e.target.checked }))}
+            />
+            <span>
+              <span className="font-medium">Review-state decisions</span>
+              <span className="block text-[12px] text-ink-muted">
+                Accept / skip / custom choices recorded on this table's run results — reset to
+                unreviewed (the generated alternatives stay).
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-3.5 w-3.5 cursor-pointer accent-accent"
+              checked={clearOpts.audit}
+              onChange={(e) => setClearOpts((o) => ({ ...o, audit: e.target.checked }))}
+            />
+            <span>
+              <span className="font-medium">Applied-description audit</span>
+              <span className="block text-[12px] text-ink-muted">
+                AMX's record of descriptions previously written for this table. Clears the history
+                only — the live-database comments are untouched.
+              </span>
+            </span>
+          </label>
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="ghost"
+              size="md"
+              onClick={() => setClearReviewsOpen(false)}
+              disabled={clearReviews.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="md"
+              loading={clearReviews.isPending}
+              disabled={!clearOpts.pending && !clearOpts.review_state && !clearOpts.audit}
+              onClick={() => clearReviews.mutate()}
+            >
+              Clear reviews
+            </Button>
+          </div>
+        </div>
+      </Modal>
+      <Modal
         open={reachabilityBlocked !== null}
         onClose={() => setReachabilityBlocked(null)}
         size="md"
@@ -609,9 +715,8 @@ export default function Table() {
             </ul>
           ) : null}
           <p className="text-[12px] text-ink-muted">
-            Cached schema gives the LLM column names, dtypes, and existing
-            comments — no live samples, PK/FK, or row counts. Approve the
-            descriptions from the Pending page as usual.
+            Cached schema gives the LLM column names, dtypes, and existing comments — no live
+            samples, PK/FK, or row counts. Approve the descriptions from the Pending page as usual.
           </p>
           <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
             <Button
@@ -628,9 +733,7 @@ export default function Table() {
               loading={generateWithOverride.isPending}
               onClick={() => {
                 if (!reachabilityBlocked) return;
-                const overrides = reachabilityBlocked.map(
-                  (b) => `${b.schema}.${b.table}`,
-                );
+                const overrides = reachabilityBlocked.map((b) => `${b.schema}.${b.table}`);
                 generateWithOverride.mutate(overrides);
               }}
             >
@@ -659,8 +762,7 @@ export default function Table() {
               >
                 <div className="text-[13px] font-medium text-ink">{a.name}</div>
                 <div className="mt-0.5 text-[11px] text-fg-muted">
-                  {a.node_count} nodes · {a.edge_count} edges ·{" "}
-                  {a.db_profile || "no profile"}
+                  {a.node_count} nodes · {a.edge_count} edges · {a.db_profile || "no profile"}
                 </div>
               </button>
             </li>
@@ -722,8 +824,7 @@ function LinkedAssetsCard({
   const [direction, setDirection] = useState<"all" | "read" | "write">("all");
   const query = useQuery({
     queryKey: ["assets-for-table", profile, database, schema, table],
-    queryFn: () =>
-      assetsForTable({ profile, schema, table, database, sinceDays: 90 }),
+    queryFn: () => assetsForTable({ profile, schema, table, database, sinceDays: 90 }),
     enabled: !!profile && !!schema && !!table,
   });
 
@@ -767,17 +868,13 @@ function LinkedAssetsCard({
             ))}
           </div>
         ) : query.error ? (
-          <div className="text-sm text-critical">
-            {(query.error as Error).message}
-          </div>
+          <div className="text-sm text-critical">{(query.error as Error).message}</div>
         ) : totalLinked === 0 ? (
           <div className="text-sm text-ink-dim">
             No ingested asset references this table yet. Run{" "}
-            <code className="rounded bg-surface px-1 font-mono text-[12px]">
-              /db ingest-assets
-            </code>{" "}
-            so notebooks, queries, jobs, and pipelines feed into the
-            asset graph, then come back here.
+            <code className="rounded bg-surface px-1 font-mono text-[12px]">/db ingest-assets</code>{" "}
+            so notebooks, queries, jobs, and pipelines feed into the asset graph, then come back
+            here.
           </div>
         ) : (
           <>
@@ -794,16 +891,8 @@ function LinkedAssetsCard({
                   </span>
                 ))}
             </div>
-            <LinkedAssetGroup
-              label="Reads"
-              rows={visibleReads}
-              hidden={direction === "write"}
-            />
-            <LinkedAssetGroup
-              label="Writes"
-              rows={visibleWrites}
-              hidden={direction === "read"}
-            />
+            <LinkedAssetGroup label="Reads" rows={visibleReads} hidden={direction === "write"} />
+            <LinkedAssetGroup label="Writes" rows={visibleWrites} hidden={direction === "read"} />
           </>
         )}
       </CardBody>
@@ -841,11 +930,7 @@ function LinkedAssetGroup({
                 {r.kind}
               </span>
               <span className="font-medium text-ink">{r.name || "(unnamed)"}</span>
-              {r.path ? (
-                <span className="font-mono text-[11px] text-ink-dim">
-                  {r.path}
-                </span>
-              ) : null}
+              {r.path ? <span className="font-mono text-[11px] text-ink-dim">{r.path}</span> : null}
               <span className="ml-auto flex flex-wrap items-baseline gap-x-2 text-[11px] text-ink-dim">
                 {r.last_user ? <span>{r.last_user}</span> : null}
                 {r.last_used_at ? (

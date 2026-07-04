@@ -473,6 +473,27 @@ _ANALYZE_COMMANDS: tuple[SlashCommand, ...] = (
         "/run-apply", "analyze", "Run + apply (/run-apply [ASSET …] [--schema …] [--table …])"
     ),
     SlashCommand("/apply", "analyze", "Write pending comments to the database"),
+    SlashCommand(
+        "/review-clear",
+        "analyze",
+        (
+            "Clear a table's reviews — pending, review-state, audit "
+            "(/review-clear [SCHEMA] [TABLE] [--no-pending] "
+            "[--no-review-state] [--no-audit])"
+        ),
+        long_desc=(
+            "Resets a single table's review data so you can start fresh. "
+            "Clears any subset of three categories (all on by default):\n"
+            "  --pending / --no-pending            unapplied pending "
+            "suggestions for the table\n"
+            "  --review-state / --no-review-state  accept/skip/custom "
+            "decisions on the table's run_results\n"
+            "  --audit / --no-audit                applied-description "
+            "audit rows (never touches the live database)\n"
+            "Bare invocation prompts for schema + table. Destructive: "
+            "gated behind a confirmation unless --yes."
+        ),
+    ),
     # PR A — bulk-review UX: a focused entry point for reviewing a
     # previously-completed run's suggestions with filter / sort /
     # status / group flags. Reads the pending-review queue + the
@@ -561,6 +582,11 @@ _HISTORY_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/stats", "history", "Aggregate run/event metrics"),
     SlashCommand("/events", "history", "Recent app events (/events -n 30)"),
     SlashCommand("/results", "history", "Show saved LLM alternatives (/results <run_id>)"),
+    SlashCommand(
+        "/delete",
+        "history",
+        "Delete previous run(s) (/delete <run_id…> | --all | bare to pick)",
+    ),
     SlashCommand(
         "/review",
         "history",
