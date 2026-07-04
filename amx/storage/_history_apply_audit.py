@@ -194,6 +194,54 @@ def record_db_apply_failure(hs: SQLiteHistoryStore, result_id: int, error_text: 
         )
 
 
+def reset_review_state_for_table(hs: SQLiteHistoryStore, schema: str, table: str) -> int:
+    """Reset the review decisions recorded against one ``(schema, table)``
+    back to unreviewed, across every run.
+
+    Clears only the *decision* columns (``evaluated_at``, ``applied_at``,
+    ``chosen_description``, ``evaluation``, ``db_applied_status``,
+    ``rejection_reason``) — the generated ``alternatives_json`` and the
+    run linkage stay intact, so the suggestions remain reviewable from a
+    clean slate. Returns the number of ``run_results`` rows touched.
+
+    Multi-profile note: ``run_results`` keys on ``(schema_name,
+    table_name)`` without a ``db_profile`` discriminator, so same-named
+    tables across profiles are reset together — the same documented
+    limitation carried by ``read_pending_for_table``.
+    """
+    with hs._lock, hs._connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE run_results
+            SET evaluated_at = NULL,
+                applied_at = NULL,
+                chosen_description = NULL,
+                evaluation = NULL,
+                db_applied_status = '',
+                rejection_reason = ''
+            WHERE schema_name = ? AND table_name = ?
+            """,
+            (schema, table),
+        )
+        return cur.rowcount or 0
+
+
+def delete_apply_events_for_table(hs: SQLiteHistoryStore, schema: str, table: str) -> int:
+    """Delete the ``apply_events`` audit rows for one ``(schema, table)``.
+
+    This wipes the *record* of descriptions previously written for the
+    table; it does **not** touch the live-database COMMENTs themselves —
+    those remain exactly as they are on the source system. Returns the
+    number of audit rows removed.
+    """
+    with hs._lock, hs._connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM apply_events WHERE schema_name = ? AND table_name = ?",
+            (schema, table),
+        )
+        return cur.rowcount or 0
+
+
 def record_apply_event(
     hs: SQLiteHistoryStore,
     *,

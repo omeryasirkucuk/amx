@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from amx.storage.sqlite_store import history_store
 from amx.web.deps import get_jobs
 from amx.web.jobs import JobRegistry
+from amx.web.permissions import require_writer_role
 
 router = APIRouter(prefix="/api/history", tags=["history"])
 
@@ -209,6 +210,84 @@ def get_run(
     if lineage:
         row["lineage"] = lineage
     return row
+
+
+class RunsDeleteIn(BaseModel):
+    """Body for bulk run deletion.
+
+    Exactly one selector must be supplied:
+
+    * ``run_ids`` — delete this explicit set (the Studio "Delete
+      selected" multi-select bar and the CLI ``/history delete 1 2 3``).
+    * ``all_matching`` — delete every run matching a Runs-list filter
+      (the "Delete all matching filter" action). At least one filter key
+      must be non-empty; an all-empty filter is rejected so the endpoint
+      can never wipe the entire history by accident.
+    """
+
+    run_ids: list[int] | None = None
+    all_matching: dict[str, Any] | None = None
+
+
+@router.delete("/runs/{run_id}")
+def delete_run(
+    run_id: int,
+    _: None = Depends(require_writer_role),
+) -> dict[str, Any]:
+    """Hard-delete one run and its per-asset ``run_results`` rows.
+
+    404 when the run doesn't exist. The ``apply_events`` audit trail is
+    left intact — it records comments written to a live database and is
+    cleared only through the table-reviews endpoint.
+    """
+    store = _store()
+    if store.get_run(run_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No run with id {run_id}.",
+        )
+    counts = store.delete_run(run_id)
+    return {"deleted": True, "run_id": run_id, "counts": counts}
+
+
+@router.post("/runs/delete")
+def delete_runs(
+    body: RunsDeleteIn,
+    _: None = Depends(require_writer_role),
+) -> dict[str, Any]:
+    """Bulk hard-delete runs by explicit id list or by Runs-list filter."""
+    store = _store()
+    if body.run_ids is not None and body.all_matching is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide either run_ids or all_matching, not both.",
+        )
+    if body.run_ids is not None:
+        counts = store.delete_runs(body.run_ids)
+        return {"deleted": True, "counts": counts}
+    if body.all_matching is not None:
+        f = body.all_matching
+        normalized = str(f.get("command") or "").strip().lower()
+        comparable_only = normalized == "comparable"
+        cmd_filter = None if normalized in {"", "all", "comparable"} else f.get("command")
+        try:
+            counts = store.delete_runs_matching(
+                q=f.get("q"),
+                status=f.get("status"),
+                kind=f.get("kind"),
+                command_filter=cmd_filter,
+                comparable_only=comparable_only,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        return {"deleted": True, "counts": counts}
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Provide run_ids or all_matching.",
+    )
 
 
 @router.get("/runs/{run_id}/results")

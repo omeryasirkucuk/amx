@@ -263,6 +263,116 @@ def register_history_commands(
         }
         console.print(json.dumps(payload, indent=2, ensure_ascii=True))
 
+    @history.command("delete")
+    @click.argument("run_ids", nargs=-1, type=int)
+    @click.option(
+        "--all",
+        "delete_all",
+        is_flag=True,
+        help="Delete every run shown in /history list (analyze.run invocations).",
+    )
+    @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt.")
+    def history_delete(run_ids: tuple[int, ...], delete_all: bool, yes: bool) -> None:
+        """Hard-delete previous run(s) and their per-asset result rows.
+
+        The applied-description audit trail is left intact — clear a
+        table's applied history with ``/review-clear``. Examples::
+
+            /delete 42            delete one run
+            /delete 42 43 44      delete several at once
+            /delete --all         delete every run in the history list
+            /delete               pick interactively (bare wizard)
+        """
+        hs = history_store()
+        if hs is None:
+            error("History store is not initialized.")
+            return
+        heading("History · delete")
+
+        ids = list(run_ids)
+        resolved_all = delete_all
+
+        # Bare invocation with nothing pinned → short wizard: show the
+        # recent runs and let the user name ids (or 'all').
+        if not ids and not resolved_all:
+            from amx.utils.console import ask
+
+            recent = hs.list_recent_runs(limit=20, command_filter="analyze.run")
+            if not recent:
+                info("No runs in history.")
+                return
+            render_table(
+                "Recent runs",
+                ["ID", "Started", "Status", "Command"],
+                [
+                    [
+                        r.get("id"),
+                        r.get("started_at"),
+                        r.get("status"),
+                        r.get("command"),
+                    ]
+                    for r in recent
+                ],
+            )
+            raw = ask(
+                "Run id(s) to delete (comma/space separated), or 'all'",
+                default="",
+            ).strip()
+            if not raw:
+                warn("Cancelled.")
+                return
+            if raw.lower() == "all":
+                resolved_all = True
+            else:
+                try:
+                    ids = [int(tok) for tok in raw.replace(",", " ").split()]
+                except ValueError:
+                    error(f"Could not parse run ids from '{raw}'.")
+                    return
+
+        if resolved_all:
+            matching = hs.list_recent_runs(limit=1_000_000, command_filter="analyze.run")
+            n = len(matching)
+            if n == 0:
+                info("No runs to delete.")
+                return
+            if not yes and not confirm(
+                f"Delete all {n} run(s) and their results? This cannot be undone.",
+                default=False,
+            ):
+                warn("Cancelled.")
+                return
+            counts = hs.delete_runs_matching(command_filter="analyze.run")
+            success(f"Deleted {counts['runs']} run(s) and {counts['results']} result row(s).")
+            log_event(
+                event_type="history.delete",
+                status="ok",
+                command="/history delete",
+                details={"scope": "all", **counts},
+            )
+            return
+
+        missing = [rid for rid in ids if hs.get_run(rid) is None]
+        if missing:
+            error(f"Run id(s) not found: {', '.join(str(m) for m in missing)}.")
+            return
+
+        label = ", ".join(str(i) for i in ids)
+        if not yes and not confirm(
+            f"Delete run(s) {label} and their results? This cannot be undone.",
+            default=False,
+        ):
+            warn("Cancelled.")
+            return
+        counts = hs.delete_run(ids[0]) if len(ids) == 1 else hs.delete_runs(ids)
+        success(f"Deleted {counts['runs']} run(s) and {counts['results']} result row(s).")
+        log_event(
+            event_type="history.delete",
+            status="ok",
+            command="/history delete",
+            details={"ids": ids, **counts},
+        )
+
     @history.command("stats")
     def history_stats() -> None:
         hs = history_store()

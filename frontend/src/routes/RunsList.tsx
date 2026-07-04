@@ -9,6 +9,7 @@ import {
   PauseCircle,
   PlayCircle,
   ScrollText,
+  Trash2,
 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -108,6 +109,13 @@ export default function RunsList() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [confirmCancelRow, setConfirmCancelRow] = useState<Row | null>(null);
+  // Delete state: one row pending a single-delete confirm, the set of
+  // checkbox-selected row ids for a bulk delete, and which bulk confirm
+  // dialog is open ("selected" = the checked ids, "all" = every run
+  // matching the active filter/search across all pages).
+  const [confirmDeleteRow, setConfirmDeleteRow] = useState<Row | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [confirmBulk, setConfirmBulk] = useState<"selected" | "all" | null>(null);
   const [kindFilter, setKindFilter] = useState<CommandKindFilter>(readStoredKindFilter);
   // Server-driven controls. The list is paged on the server, so search,
   // status filter, and sort must travel to the API too — otherwise they'd
@@ -187,10 +195,7 @@ export default function RunsList() {
   // The page is already the server-resolved slice — no client-side kind
   // filtering. Counts come from the full-dataset facets so the chips stay
   // honest across pages.
-  const rows: Row[] = useMemo(
-    () => (runs.data?.runs as Row[] | undefined) ?? [],
-    [runs.data],
-  );
+  const rows: Row[] = useMemo(() => (runs.data?.runs as Row[] | undefined) ?? [], [runs.data]);
   // Memoized so the empty-object fallback isn't a fresh reference each
   // render (which would churn the `filters` useMemo below).
   const kindCounts = useMemo<Record<string, number>>(
@@ -202,6 +207,10 @@ export default function RunsList() {
     [runs.data],
   );
   const totalRows = runs.data?.total ?? rows.length;
+  // Whether any server-side filter narrows the view. Gates the
+  // "delete all matching" action so it can never fire against an
+  // unfiltered full-history view.
+  const hasActiveFilter = !!debouncedSearch || statusFilter !== "__all" || kindFilter !== "all";
   // Grand total across statuses (under the active search + kind) for the
   // status chip group's "All" badge.
   const statusTotal = Object.values(statusCounts).reduce((a, b) => a + b, 0);
@@ -227,8 +236,110 @@ export default function RunsList() {
     },
   });
 
+  const deleteRun = useMutation({
+    mutationFn: (runId: number) => api.deleteRun(runId),
+    onSuccess: (res) => {
+      setConfirmDeleteRow(null);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(res.run_id);
+        return next;
+      });
+      toast.push({
+        title: "Run deleted",
+        description: `Removed the run and ${res.counts.results} result row(s).`,
+        tone: "success",
+      });
+      queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
+    },
+    onError: (e: Error) => {
+      setConfirmDeleteRow(null);
+      toast.push({ title: "Delete failed", description: e.message, tone: "error" });
+    },
+  });
+
+  const deleteRunsBulk = useMutation({
+    mutationFn: (body: Parameters<typeof api.deleteRuns>[0]) => api.deleteRuns(body),
+    onSuccess: (res) => {
+      setConfirmBulk(null);
+      setSelectedIds(new Set());
+      toast.push({
+        title: "Runs deleted",
+        description: `Removed ${res.counts.runs} run(s) and ${res.counts.results} result row(s).`,
+        tone: "success",
+      });
+      queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
+    },
+    onError: (e: Error) => {
+      setConfirmBulk(null);
+      toast.push({ title: "Delete failed", description: e.message, tone: "error" });
+    },
+  });
+
+  // Only finished rows are selectable — running rows can't be deleted
+  // (their worker is still live). ``pageSelectable`` is the set of ids on
+  // the current page that a select-all should cover.
+  const pageSelectableIds = useMemo(
+    () => rows.filter((r) => !r.live_job_id).map((r) => r.id),
+    [rows],
+  );
+  const allPageSelected =
+    pageSelectableIds.length > 0 && pageSelectableIds.every((id) => selectedIds.has(id));
+
+  function toggleRow(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllOnPage() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) {
+        pageSelectableIds.forEach((id) => next.delete(id));
+      } else {
+        pageSelectableIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  }
+
   const columns: DataTableColumn<Row>[] = useMemo(
     () => [
+      {
+        id: "select",
+        header: (
+          <input
+            type="checkbox"
+            aria-label="Select all runs on this page"
+            className="h-3.5 w-3.5 cursor-pointer accent-accent"
+            checked={allPageSelected}
+            onChange={(e) => {
+              e.stopPropagation();
+              toggleAllOnPage();
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        ),
+        width: "w-8",
+        cell: (r) =>
+          r.live_job_id ? null : (
+            <input
+              type="checkbox"
+              aria-label={`Select run #${r.id}`}
+              className="h-3.5 w-3.5 cursor-pointer accent-accent"
+              checked={selectedIds.has(r.id)}
+              onChange={(e) => {
+                e.stopPropagation();
+                toggleRow(r.id);
+              }}
+              onClick={(e) => e.stopPropagation()}
+            />
+          ),
+      },
       {
         id: "id",
         header: "ID",
@@ -274,10 +385,7 @@ export default function RunsList() {
             processedAssetsTooltip(r.processed_assets) ??
             Object.keys(r.scope_json ?? r.scope ?? {}).join(", ");
           return (
-            <span
-              className="truncate text-sm text-ink-muted"
-              title={tooltip || undefined}
-            >
+            <span className="truncate text-sm text-ink-muted" title={tooltip || undefined}>
               {label}
             </span>
           );
@@ -300,10 +408,7 @@ export default function RunsList() {
         header: "Model",
         sortValue: (r) => shortModel(r.llm_model),
         cell: (r) => (
-          <span
-            className="truncate font-mono text-xs text-ink-muted"
-            title={r.llm_model ?? ""}
-          >
+          <span className="truncate font-mono text-xs text-ink-muted" title={r.llm_model ?? ""}>
             {shortModel(r.llm_model) || "—"}
           </span>
         ),
@@ -356,7 +461,7 @@ export default function RunsList() {
         // running row at any given time.
         id: "actions",
         header: "",
-        width: "w-10",
+        width: "w-16",
         align: "right",
         cell: (r) =>
           r.live_job_id ? (
@@ -371,10 +476,26 @@ export default function RunsList() {
               }}
               disabled={cancelRun.isPending}
             />
-          ) : null,
+          ) : (
+            // Finished rows get a delete control. Running rows show
+            // Cancel instead — deleting an in-flight run would orphan
+            // its worker, so the trash icon is hidden until it settles.
+            <IconButton
+              icon={<Trash2 size={14} />}
+              label="Delete this run"
+              size="sm"
+              variant="ghost"
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmDeleteRow(r);
+              }}
+              disabled={deleteRun.isPending}
+            />
+          ),
       },
     ],
-    [cancelRun.isPending],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cancelRun.isPending, deleteRun.isPending, selectedIds, allPageSelected, pageSelectableIds],
   );
 
   // Status filter chips. Server-side now, so the predicates are unused (the
@@ -419,20 +540,12 @@ export default function RunsList() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Link to="/runs/schedules">
-              <Button
-                variant="secondary"
-                size="md"
-                leadingIcon={<CalendarClock size={14} />}
-              >
+              <Button variant="secondary" size="md" leadingIcon={<CalendarClock size={14} />}>
                 Schedules
               </Button>
             </Link>
             <Link to="/db-cache">
-              <Button
-                variant="secondary"
-                size="md"
-                leadingIcon={<DatabaseZap size={14} />}
-              >
+              <Button variant="secondary" size="md" leadingIcon={<DatabaseZap size={14} />}>
                 Catalog cache
               </Button>
             </Link>
@@ -459,9 +572,7 @@ export default function RunsList() {
           runs, Re-runs, and the union "All activity". The pick is
           persisted in localStorage so a refresh doesn't reset the view. */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
-        <span className="text-[11px] uppercase tracking-wider text-ink-dim">
-          Kind
-        </span>
+        <span className="text-[11px] uppercase tracking-wider text-ink-dim">Kind</span>
         {KIND_FILTER_OPTIONS.map(({ value, label }) => {
           const active = kindFilter === value;
           // Counts come from the server's full-dataset ``kind_counts``
@@ -481,13 +592,54 @@ export default function RunsList() {
               )}
             >
               {label}
-              <span className="font-mono text-[10px] text-ink-dim tabular-nums">
-                {count}
-              </span>
+              <span className="font-mono text-[10px] text-ink-dim tabular-nums">{count}</span>
             </button>
           );
         })}
       </div>
+      {/* Bulk delete bar. The left cluster appears once rows are checked
+          (delete-the-selected-ids); the right "delete all matching" only
+          appears when a search / status / kind filter is active, so it
+          always maps to the label and can never wipe the whole history
+          from a bare, unfiltered view. */}
+      {(selectedIds.size > 0 || hasActiveFilter) && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface-subtle px-3 py-2">
+          <div className="flex items-center gap-2">
+            {selectedIds.size > 0 ? (
+              <>
+                <span className="text-xs text-ink-muted">{selectedIds.size} selected</span>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  leadingIcon={<Trash2 size={13} />}
+                  onClick={() => setConfirmBulk("selected")}
+                  disabled={deleteRunsBulk.isPending}
+                >
+                  Delete selected
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
+                  Clear
+                </Button>
+              </>
+            ) : (
+              <span className="text-xs text-ink-dim">
+                Filter active — {totalRows} matching run(s)
+              </span>
+            )}
+          </div>
+          {hasActiveFilter && (
+            <Button
+              variant="ghost"
+              size="sm"
+              leadingIcon={<Trash2 size={13} />}
+              onClick={() => setConfirmBulk("all")}
+              disabled={deleteRunsBulk.isPending}
+            >
+              Delete all {totalRows} matching
+            </Button>
+          )}
+        </div>
+      )}
       <DataTable<Row>
         columns={columns}
         rows={rows}
@@ -499,8 +651,7 @@ export default function RunsList() {
         isLoading={runs.isLoading}
         error={runs.error ? (runs.error as Error).message : null}
         errorTone={
-          runs.error &&
-          /history store isn't initialized/i.test((runs.error as Error).message || "")
+          runs.error && /history store isn't initialized/i.test((runs.error as Error).message || "")
             ? "warning"
             : "critical"
         }
@@ -537,13 +688,48 @@ export default function RunsList() {
           }
         }}
         loading={cancelRun.isPending}
-        title={
-          confirmCancelRow
-            ? `Cancel run #${confirmCancelRow.id}?`
-            : "Cancel this run?"
-        }
+        title={confirmCancelRow ? `Cancel run #${confirmCancelRow.id}?` : "Cancel this run?"}
         description="The worker exits between rows. Already-written descriptions stay; in-flight assets stop. This cannot be undone."
         confirmLabel="Cancel run"
+      />
+      <AlertDialog
+        open={!!confirmDeleteRow}
+        onClose={() => setConfirmDeleteRow(null)}
+        onConfirm={() => {
+          if (confirmDeleteRow) deleteRun.mutate(confirmDeleteRow.id);
+        }}
+        loading={deleteRun.isPending}
+        tone="danger"
+        title={confirmDeleteRow ? `Delete run #${confirmDeleteRow.id}?` : "Delete run?"}
+        description="Permanently removes this run and its per-asset results from history. The applied-description audit trail and any live-database comments are untouched. This cannot be undone."
+        confirmLabel="Delete"
+      />
+      <AlertDialog
+        open={!!confirmBulk}
+        onClose={() => setConfirmBulk(null)}
+        onConfirm={() => {
+          if (confirmBulk === "selected") {
+            deleteRunsBulk.mutate({ run_ids: Array.from(selectedIds) });
+          } else if (confirmBulk === "all") {
+            deleteRunsBulk.mutate({
+              all_matching: {
+                q: debouncedSearch || undefined,
+                status: statusFilter !== "__all" ? statusFilter : undefined,
+                kind: kindFilter !== "all" ? kindFilter : undefined,
+                command: "all",
+              },
+            });
+          }
+        }}
+        loading={deleteRunsBulk.isPending}
+        tone="danger"
+        title={
+          confirmBulk === "all"
+            ? `Delete all ${totalRows} matching run(s)?`
+            : `Delete ${selectedIds.size} selected run(s)?`
+        }
+        description="Permanently removes the run(s) and their per-asset results from history. The applied-description audit trail and any live-database comments are untouched. This cannot be undone."
+        confirmLabel="Delete"
       />
     </>
   );

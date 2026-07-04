@@ -32,12 +32,7 @@ export class ApiError extends Error {
    *  decisions without re-parsing the message string. */
   data?: Record<string, unknown>;
 
-  constructor(
-    status: number,
-    detail: string,
-    hint?: string,
-    data?: Record<string, unknown>,
-  ) {
+  constructor(status: number, detail: string, hint?: string, data?: Record<string, unknown>) {
     super(detail);
     this.status = status;
     this.detail = detail;
@@ -46,10 +41,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiFetch<T>(
-  path: string,
-  init: RequestInit = {},
-): Promise<T> {
+export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getStoredToken();
   const headers = new Headers(init.headers || {});
   if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -111,10 +103,7 @@ export async function apiFetch<T>(
         data = rawDetail as Record<string, unknown>;
         const message = (rawDetail as { message?: unknown }).message;
         const detailHint = (rawDetail as { hint?: unknown }).hint;
-        detail =
-          typeof message === "string" && message
-            ? message
-            : JSON.stringify(rawDetail);
+        detail = typeof message === "string" && message ? message : JSON.stringify(rawDetail);
         if (typeof detailHint === "string" && detailHint) {
           hint = detailHint;
         }
@@ -641,16 +630,11 @@ export const api = {
   context: () => apiFetch<ContextResponse>("/api/context"),
   /** List catalogs for a profile (3-level backends). */
   liveCatalogs: (scope: ProfileScope) =>
-    apiFetch<CatalogsResponse>(
-      `/api/live/catalogs?profile=${encodeURIComponent(scope.profile)}`,
-    ),
+    apiFetch<CatalogsResponse>(`/api/live/catalogs?profile=${encodeURIComponent(scope.profile)}`),
   /** List databases for a profile (2-level backends). */
   liveDatabases: (scope: ProfileScope) =>
-    apiFetch<DatabasesResponse>(
-      `/api/live/databases?profile=${encodeURIComponent(scope.profile)}`,
-    ),
-  liveSchemas: (scope: Scope) =>
-    apiFetch<SchemasResponse>(withScope("/api/live/schemas", scope)),
+    apiFetch<DatabasesResponse>(`/api/live/databases?profile=${encodeURIComponent(scope.profile)}`),
+  liveSchemas: (scope: Scope) => apiFetch<SchemasResponse>(withScope("/api/live/schemas", scope)),
   liveAssets: (scope: Scope, schema: string) =>
     apiFetch<AssetsResponse>(
       withScope(`/api/live/schemas/${encodeURIComponent(schema)}/assets`, scope),
@@ -681,9 +665,7 @@ export const api = {
     if (profile) params.set("profile", profile);
     if (typeof limit === "number") params.set("limit", String(limit));
     if (includeUnsynced) params.set("include_unsynced", "true");
-    return apiFetch<DbCacheSearchResponse>(
-      `/api/db/cache/search?${params.toString()}`,
-    );
+    return apiFetch<DbCacheSearchResponse>(`/api/db/cache/search?${params.toString()}`);
   },
   /** Cache-only tree listing. These four helpers read straight from
    *  the persistent catalog cache and never touch the live DB — used
@@ -703,12 +685,7 @@ export const api = {
     apiFetch<DbCacheTreeResponse>(
       `/api/db/cache/tree/tables?profile=${encodeURIComponent(profile)}&database=${encodeURIComponent(database)}&schema=${encodeURIComponent(schema)}`,
     ),
-  dbCacheTreeColumns: (
-    profile: string,
-    database: string,
-    schema: string,
-    table: string,
-  ) =>
+  dbCacheTreeColumns: (profile: string, database: string, schema: string, table: string) =>
     apiFetch<DbCacheTreeColumnsResponse>(
       `/api/db/cache/tree/columns?profile=${encodeURIComponent(profile)}&database=${encodeURIComponent(database)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`,
     ),
@@ -764,10 +741,7 @@ export const api = {
    * G-Eval style — Liu et al. 2023). The response shape is
    * identical to /compare; only ``quality_metrics`` is enriched.
    */
-  runDeepAnalysis: (
-    runIds: number[],
-    options?: { groundTruthRunId?: number | null },
-  ) =>
+  runDeepAnalysis: (runIds: number[], options?: { groundTruthRunId?: number | null }) =>
     apiFetch<CompareResponse>("/api/history/compare/deep-analysis", {
       method: "POST",
       body: JSON.stringify({
@@ -824,7 +798,9 @@ export const api = {
     }
     return res.blob();
   },
-  applyEvents: (params: { runId?: number | null; profileName?: string | null; limit?: number } = {}) => {
+  applyEvents: (
+    params: { runId?: number | null; profileName?: string | null; limit?: number } = {},
+  ) => {
     const qs = new URLSearchParams();
     if (params.runId != null) qs.set("run_id", String(params.runId));
     if (params.profileName) qs.set("profile_name", params.profileName);
@@ -879,10 +855,7 @@ export const api = {
       result_id: number | null;
       alternatives_count: number;
       verbosity: string;
-    }>(
-      withScope("/api/generate/database", scope),
-      { method: "POST" },
-    ),
+    }>(withScope("/api/generate/database", scope), { method: "POST" }),
   generateSchemaDescription: (scope: Scope, schema: string) =>
     apiFetch<{
       description: string;
@@ -890,10 +863,7 @@ export const api = {
       result_id: number | null;
       alternatives_count: number;
       verbosity: string;
-    }>(
-      withScope(`/api/generate/schema/${encodeURIComponent(schema)}`, scope),
-      { method: "POST" },
-    ),
+    }>(withScope(`/api/generate/schema/${encodeURIComponent(schema)}`, scope), { method: "POST" }),
   generateTableDescription: (scope: Scope, schema: string, table: string) =>
     apiFetch<{
       description: string;
@@ -908,12 +878,7 @@ export const api = {
       ),
       { method: "POST" },
     ),
-  generateColumnDescription: (
-    scope: Scope,
-    schema: string,
-    table: string,
-    column: string,
-  ) =>
+  generateColumnDescription: (scope: Scope, schema: string, table: string, column: string) =>
     apiFetch<{
       description: string;
       run_id: number | null;
@@ -958,9 +923,7 @@ export const api = {
     const params = new URLSearchParams();
     if (command) params.set("command", command);
     const qs = params.toString();
-    return apiFetch<StatsResponse>(
-      qs ? `/api/history/stats?${qs}` : "/api/history/stats",
-    );
+    return apiFetch<StatsResponse>(qs ? `/api/history/stats?${qs}` : "/api/history/stats");
   },
   submitRun: (body: {
     scope: Record<string, string[]>;
@@ -1040,6 +1003,45 @@ export const api = {
     apiFetch<{ ok: boolean; job_id: string }>(`/api/runs/${encodeURIComponent(jobId)}/cancel`, {
       method: "POST",
     }),
+  /** Hard-delete one run and its per-asset results. The apply_events
+   * audit trail is left intact (clear it per-table via clearTableReviews). */
+  deleteRun: (runId: number | string) =>
+    apiFetch<{ deleted: boolean; run_id: number; counts: { runs: number; results: number } }>(
+      `/api/history/runs/${encodeURIComponent(String(runId))}`,
+      { method: "DELETE" },
+    ),
+  /** Bulk hard-delete runs by explicit id list OR by the current Runs-list
+   * filter (delete-all-matching). Pass exactly one selector. */
+  deleteRuns: (body: {
+    run_ids?: (number | string)[];
+    all_matching?: {
+      q?: string | null;
+      status?: string | null;
+      kind?: string | null;
+      command?: string | null;
+    };
+  }) =>
+    apiFetch<{ deleted: boolean; counts: { runs: number; results: number } }>(
+      `/api/history/runs/delete`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  /** Clear a table's review data — any subset of pending suggestions,
+   * review-state decisions, and the applied-description audit. Clearing
+   * the audit never touches the live-database COMMENTs. */
+  clearTableReviews: (
+    schema: string,
+    table: string,
+    opts: { pending?: boolean; review_state?: boolean; audit?: boolean } = {},
+  ) =>
+    apiFetch<{
+      cleared: boolean;
+      schema: string;
+      table: string;
+      counts: { pending: number; review_state: number; audit: number };
+    }>(
+      `/api/live/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/reviews/clear`,
+      { method: "POST", body: JSON.stringify(opts) },
+    ),
   /** Spawn a re-run for one or many ``run_results`` rows.
    *
    * Caller subscribes to ``/api/runs/{job_id}/events`` for SSE
@@ -1104,9 +1106,7 @@ export const api = {
    *  Drives the Studio's "Advanced LLM settings" knob-gating UI. */
   llmCapabilities: (provider: string, model: string) => {
     const params = new URLSearchParams({ provider, model });
-    return apiFetch<LLMCapabilities>(
-      `/api/llm/capabilities?${params.toString()}`,
-    );
+    return apiFetch<LLMCapabilities>(`/api/llm/capabilities?${params.toString()}`);
   },
   /** Fetch the full re-run chain for one ``run_results`` row.
    *
@@ -1157,13 +1157,10 @@ export const api = {
    * ``/pricing`` page. Backend reads only from the in-memory cache —
    * no network fetch — so the UI stays snappy when refetched.
    */
-  listModelPrices: () =>
-    apiFetch<ModelCatalog>("/api/pricing/models"),
+  listModelPrices: () => apiFetch<ModelCatalog>("/api/pricing/models"),
 
   // ── Scheduled runs (Phase 5a routes) ───────────────────────────────
-  listSchedules: (
-    params: { status?: string; db_profile?: string; kind?: string } = {},
-  ) => {
+  listSchedules: (params: { status?: string; db_profile?: string; kind?: string } = {}) => {
     const qs = new URLSearchParams();
     if (params.status) qs.set("status_filter", params.status);
     if (params.db_profile) qs.set("db_profile", params.db_profile);
@@ -1191,17 +1188,13 @@ export const api = {
     apiFetch<{ fired: number[] }>(`/api/schedules/${id}/run-now`, {
       method: "POST",
     }),
-  deleteSchedule: (id: number) =>
-    apiFetch<void>(`/api/schedules/${id}`, { method: "DELETE" }),
-  schedulerStatus: () =>
-    apiFetch<SchedulerStatusResponse>(`/api/scheduler/status`),
-  schedulerBootstrapReport: () =>
-    apiFetch<BootstrapReport>(`/api/scheduler/bootstrap-report`),
+  deleteSchedule: (id: number) => apiFetch<void>(`/api/schedules/${id}`, { method: "DELETE" }),
+  schedulerStatus: () => apiFetch<SchedulerStatusResponse>(`/api/scheduler/status`),
+  schedulerBootstrapReport: () => apiFetch<BootstrapReport>(`/api/scheduler/bootstrap-report`),
   installDaemon: () =>
-    apiFetch<{ message: string; path: string | null }>(
-      `/api/scheduler/install-daemon`,
-      { method: "POST" },
-    ),
+    apiFetch<{ message: string; path: string | null }>(`/api/scheduler/install-daemon`, {
+      method: "POST",
+    }),
   uninstallDaemon: () =>
     apiFetch<{ message: string }>(`/api/scheduler/uninstall-daemon`, {
       method: "POST",
@@ -1211,13 +1204,10 @@ export const api = {
    * for the picked scope without writing a scheduled_runs row. Backs
    * the Catalog cache page's "Sync scope…" dialog. */
   refreshCatalogScope: (body: CatalogScopeRefreshPayload) =>
-    apiFetch<{ ok: boolean; profile: string; mode: string }>(
-      `/api/catalog/refresh`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
-    ),
+    apiFetch<{ ok: boolean; profile: string; mode: string }>(`/api/catalog/refresh`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   // ── Remote asset ingestion (Phase F) ──────────────────────────────────
 
@@ -1239,9 +1229,7 @@ export const api = {
     if (opts.limit != null) params.set("limit", String(opts.limit));
     if (opts.offset != null) params.set("offset", String(opts.offset));
     if (opts.q) params.set("q", opts.q);
-    return apiFetch<RemoteAssetListResponse>(
-      `/api/assets?${params.toString()}`,
-    );
+    return apiFetch<RemoteAssetListResponse>(`/api/assets?${params.toString()}`);
   },
 
   /** Fetch full detail row for one remote asset. */
@@ -1293,9 +1281,7 @@ export const api = {
       profile: params.profile,
       kind: params.kind,
     });
-    return apiFetch<{ items: RemoteAssetMetadata[] }>(
-      `/api/assets/discover?${qs.toString()}`,
-    );
+    return apiFetch<{ items: RemoteAssetMetadata[] }>(`/api/assets/discover?${qs.toString()}`);
   },
 
   /**
@@ -1303,36 +1289,25 @@ export const api = {
    * discover cache. Backend transparently fetches + writes the
    * cache on a miss.
    */
-  discoverTree: (params: {
-    profile: string;
-    kind?: string;
-    parent?: string;
-  }) => {
+  discoverTree: (params: { profile: string; kind?: string; parent?: string }) => {
     const qs = new URLSearchParams({
       profile: params.profile,
       kind: params.kind ?? "notebook",
       parent: params.parent ?? "",
     });
-    return apiFetch<DiscoverTreeResponse>(
-      `/api/assets/discover/tree?${qs.toString()}`,
-    );
+    return apiFetch<DiscoverTreeResponse>(`/api/assets/discover/tree?${qs.toString()}`);
   },
 
   /** PR-E: refresh one folder's immediate children (atomic replace). */
-  refreshDiscoverTree: (params: {
-    profile: string;
-    kind?: string;
-    parent?: string;
-  }) => {
+  refreshDiscoverTree: (params: { profile: string; kind?: string; parent?: string }) => {
     const qs = new URLSearchParams({
       profile: params.profile,
       kind: params.kind ?? "notebook",
       parent: params.parent ?? "",
     });
-    return apiFetch<DiscoverTreeResponse>(
-      `/api/assets/discover/tree/refresh?${qs.toString()}`,
-      { method: "POST" },
-    );
+    return apiFetch<DiscoverTreeResponse>(`/api/assets/discover/tree/refresh?${qs.toString()}`, {
+      method: "POST",
+    });
   },
 
   /**
@@ -1345,17 +1320,14 @@ export const api = {
       profile: params.profile,
       kind: params.kind ?? "notebook",
     });
-    return apiFetch<DiscoverTreeWalkResult>(
-      `/api/assets/discover/tree/walk?${qs.toString()}`,
-      { method: "POST" },
-    );
+    return apiFetch<DiscoverTreeWalkResult>(`/api/assets/discover/tree/walk?${qs.toString()}`, {
+      method: "POST",
+    });
   },
 
   /** List all configured DB profiles (used by the profile picker). */
   listDbProfiles: () =>
-    apiFetch<{ profiles: Array<{ name: string; backend?: string }> }>(
-      "/api/profiles/db",
-    ),
+    apiFetch<{ profiles: Array<{ name: string; backend?: string }> }>("/api/profiles/db"),
 };
 
 export interface CatalogScopeRefreshPayload {
@@ -1674,9 +1646,7 @@ export async function lineageArtifactsForTable(args: {
     schema: args.schema ?? "",
     table: args.table,
   });
-  return apiFetch<LineageArtifactList>(
-    `/api/lineage/artifacts-with-table?${params.toString()}`,
-  );
+  return apiFetch<LineageArtifactList>(`/api/lineage/artifacts-with-table?${params.toString()}`);
 }
 
 /** Row shape returned by ``GET /api/assets/by-table``. The endpoint
@@ -1735,9 +1705,7 @@ export async function assetsForTable(args: {
     since_days: String(args.sinceDays ?? 90),
     direction: args.direction ?? "all",
   });
-  return apiFetch<AssetsForTableResponse>(
-    `/api/assets/by-table?${params.toString()}`,
-  );
+  return apiFetch<AssetsForTableResponse>(`/api/assets/by-table?${params.toString()}`);
 }
 
 /** Hard-delete a saved lineage artifact (cascades to its nodes,
@@ -1775,16 +1743,13 @@ export async function lineageEdgesAmong(args: {
   entityIds?: number[];
   tables?: { profile: string; fqn: string }[];
 }): Promise<{ edges: LineageEdgeAmongRow[]; count: number }> {
-  return apiFetch<{ edges: LineageEdgeAmongRow[]; count: number }>(
-    `/api/lineage/edges/among`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        entity_ids: args.entityIds ?? [],
-        tables: args.tables ?? [],
-      }),
-    },
-  );
+  return apiFetch<{ edges: LineageEdgeAmongRow[]; count: number }>(`/api/lineage/edges/among`, {
+    method: "POST",
+    body: JSON.stringify({
+      entity_ids: args.entityIds ?? [],
+      tables: args.tables ?? [],
+    }),
+  });
 }
 
 /** Update Studio-canvas style overrides on a single edge. Any
@@ -1799,10 +1764,10 @@ export async function lineageEdgeStyle(
   edgeId: number,
   patch: LineageEdgeStylePatch,
 ): Promise<{ id: number; ok: boolean }> {
-  return apiFetch<{ id: number; ok: boolean }>(
-    `/api/lineage/edges/${edgeId}/style`,
-    { method: "PATCH", body: JSON.stringify(patch) },
-  );
+  return apiFetch<{ id: number; ok: boolean }>(`/api/lineage/edges/${edgeId}/style`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
 }
 
 export async function lineageFetch(
@@ -1815,9 +1780,7 @@ export async function lineageFetch(
   if (opts.depthUp !== undefined) params.set("depth_up", String(opts.depthUp));
   if (opts.depthDown !== undefined) params.set("depth_down", String(opts.depthDown));
   const qs = params.toString();
-  return apiFetch<LineagePayload>(
-    `/api/lineage/${encodeAnchorPath(anchor)}${qs ? `?${qs}` : ""}`,
-  );
+  return apiFetch<LineagePayload>(`/api/lineage/${encodeAnchorPath(anchor)}${qs ? `?${qs}` : ""}`);
 }
 
 export interface NativeFetchResult {
@@ -1904,10 +1867,9 @@ export async function lineageDiscover(
   if (opts.profile) params.set("profile", opts.profile);
   if (opts.maxTables !== undefined) params.set("max_tables", String(opts.maxTables));
   const qs = params.toString();
-  return apiFetch<LineageDiscoverResponse>(
-    `/api/lineage/discover${qs ? `?${qs}` : ""}`,
-    { method: "POST" },
-  );
+  return apiFetch<LineageDiscoverResponse>(`/api/lineage/discover${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+  });
 }
 
 // ── Authoring — v3 S4 ──────────────────────────────────────────────────
@@ -1999,14 +1961,11 @@ export async function lineageSetVerdict(
   edgeId: number,
   verdict: "approved" | "rejected" | "pending" | "",
 ): Promise<{ id: number; verdict: string }> {
-  return apiFetch<{ id: number; verdict: string }>(
-    `/api/lineage/edges/${edgeId}/verdict`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ verdict }),
-    },
-  );
+  return apiFetch<{ id: number; verdict: string }>(`/api/lineage/edges/${edgeId}/verdict`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ verdict }),
+  });
 }
 
 export interface LineageAuditEntry {
@@ -2040,13 +1999,7 @@ export async function lineageAudit(
 // ── Remote asset ingestion types (Phase F) ────────────────────────────────
 
 /** The six remote asset kinds the ingestion pipeline understands. */
-export type RemoteAssetKind =
-  | "notebook"
-  | "job"
-  | "pipeline"
-  | "streamlit"
-  | "stream"
-  | "query";
+export type RemoteAssetKind = "notebook" | "job" | "pipeline" | "streamlit" | "stream" | "query";
 
 /** One row returned by GET /api/assets */
 export interface RemoteAssetRow {

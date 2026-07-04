@@ -2059,3 +2059,114 @@ def register_analyze_review_command(
             sort=review_sort or "",
             group_by=review_group or "none",
         )
+
+
+def register_analyze_review_clear_command(
+    analyze: click.Group,
+    *,
+    log_event: LogEvent,
+) -> None:
+    """Attach the ``/analyze review-clear`` (alias ``/review-clear``) command.
+
+    Clears a single table's review data across the three stores that hold
+    it — pending suggestions, review-state decisions, and the
+    applied-description audit — so a reviewer can reset one table and start
+    fresh. Destructive: gated behind a confirmation unless ``--yes``.
+    Clearing the audit removes AMX's record of prior writes only; the
+    live-database COMMENTs are never touched.
+    """
+
+    @analyze.command("review-clear")
+    @click.argument("schema", required=False, metavar="[SCHEMA]")
+    @click.argument("table", required=False, metavar="[TABLE]")
+    @click.option(
+        "--pending/--no-pending",
+        default=True,
+        help="Clear unapplied pending suggestions for the table.",
+    )
+    @click.option(
+        "--review-state/--no-review-state",
+        "review_state",
+        default=True,
+        help="Reset accept/skip/custom decisions on the table's run_results.",
+    )
+    @click.option(
+        "--audit/--no-audit",
+        default=True,
+        help="Delete the applied-description audit rows (never touches live DB).",
+    )
+    @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt.")
+    def analyze_review_clear(
+        schema: str | None,
+        table: str | None,
+        pending: bool,
+        review_state: bool,
+        audit: bool,
+        yes: bool,
+    ) -> None:
+        """Clear a table's reviews (pending / review-state / audit).
+
+        Examples::
+
+            /review-clear sales orders          clear all three for sales.orders
+            /review-clear sales orders --no-audit
+            /review-clear                        prompt for schema + table
+        """
+        from amx.table_reviews import clear_table_reviews
+        from amx.utils.console import ask, success
+
+        hs = history_store()
+        if hs is None:
+            error("History store is not initialized.")
+            return
+        heading("Analyze · review-clear")
+
+        # Wizard: prompt for anything not supplied on the command line.
+        if not schema:
+            schema = ask("Schema", default="").strip()
+        if not table:
+            table = ask("Table", default="").strip()
+        if not schema or not table:
+            error("Both schema and table are required.")
+            return
+
+        if not (pending or review_state or audit):
+            warn("Nothing selected to clear (all categories disabled).")
+            return
+
+        cats = [
+            name
+            for name, on in (
+                ("pending", pending),
+                ("review-state", review_state),
+                ("audit", audit),
+            )
+            if on
+        ]
+        if not yes and not confirm(
+            f"Clear {', '.join(cats)} for {schema}.{table}? This cannot be undone.",
+            default=False,
+        ):
+            warn("Cancelled.")
+            return
+
+        counts = clear_table_reviews(
+            hs,
+            schema,
+            table,
+            pending=pending,
+            review_state=review_state,
+            audit=audit,
+        )
+        success(
+            f"Cleared {schema}.{table}: "
+            f"{counts['pending']} pending, "
+            f"{counts['review_state']} review-state, "
+            f"{counts['audit']} audit row(s)."
+        )
+        log_event(
+            event_type="analyze.review_clear",
+            status="ok",
+            command="/review-clear",
+            details={"schema": schema, "table": table, **counts},
+        )

@@ -2201,6 +2201,21 @@ class SQLiteHistoryStore:
 
         return update_run_current_step(self, *args, **kwargs)
 
+    def delete_run(self, *args, **kwargs):
+        from amx.storage._history_runs import delete_run
+
+        return delete_run(self, *args, **kwargs)
+
+    def delete_runs(self, *args, **kwargs):
+        from amx.storage._history_runs import delete_runs
+
+        return delete_runs(self, *args, **kwargs)
+
+    def delete_runs_matching(self, *args, **kwargs):
+        from amx.storage._history_runs import delete_runs_matching
+
+        return delete_runs_matching(self, *args, **kwargs)
+
     # ── Audit + scheduled delegators (extracted to amx.storage._history_apply_audit / _history_scheduled) ──
     def save_run_results(self, *args, **kwargs):
         from amx.storage._history_apply_audit import save_run_results
@@ -2231,6 +2246,16 @@ class SQLiteHistoryStore:
         from amx.storage._history_apply_audit import list_apply_events
 
         return list_apply_events(self, *args, **kwargs)
+
+    def reset_review_state_for_table(self, *args, **kwargs):
+        from amx.storage._history_apply_audit import reset_review_state_for_table
+
+        return reset_review_state_for_table(self, *args, **kwargs)
+
+    def delete_apply_events_for_table(self, *args, **kwargs):
+        from amx.storage._history_apply_audit import delete_apply_events_for_table
+
+        return delete_apply_events_for_table(self, *args, **kwargs)
 
     def create_scheduled_run(self, *args, **kwargs):
         from amx.storage._history_scheduled import create_scheduled_run
