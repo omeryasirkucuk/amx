@@ -123,6 +123,51 @@ def clear_pending_for(result_ids: list[int] | set[int]) -> int:
     return removed
 
 
+def clear_pending_for_table(schema: str, table: str) -> int:
+    """Drop every pending entry for one ``(schema, table)`` pair — the
+    table-level row and all of its column rows. Returns the number of
+    rows removed.
+
+    Used by the "clear a table's reviews" path (CLI ``/review-clear`` and
+    the Studio Table page) to discard unapplied suggestions for a single
+    table without touching the rest of the pending queue. An empty result
+    or a missing queue file is a no-op returning 0.
+
+    Multi-profile note: ``pending_metadata.json`` does not track the
+    originating ``db_profile``, so same-named tables across profiles are
+    cleared together — the same documented limitation carried by
+    :func:`read_pending_for_table`.
+    """
+    if not PENDING_FILE.is_file():
+        return 0
+    try:
+        raw = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(raw, list):
+        return 0
+    kept: list[Any] = []
+    removed = 0
+    for row in raw:
+        if (
+            isinstance(row, dict)
+            and str(row.get("schema", "")) == schema
+            and str(row.get("table", "")) == table
+        ):
+            removed += 1
+            continue
+        kept.append(row)
+    if removed == 0:
+        return 0
+    if kept:
+        PENDING_FILE.write_text(json.dumps(kept, indent=2), encoding="utf-8")
+    else:
+        # No rows left — drop the file so ``list_pending`` returns []
+        # cleanly instead of carrying an empty JSON array.
+        PENDING_FILE.unlink()
+    return removed
+
+
 def _resolve_run_id_for_result(result_id: int | None) -> int | None:
     """Look up the ``analysis_runs.id`` that owns ``result_id`` in run_results.
 

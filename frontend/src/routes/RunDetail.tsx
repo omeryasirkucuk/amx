@@ -1,16 +1,23 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity as ActivityIcon, Loader2, PauseCircle, Pin, PinOff, PlayCircle, RefreshCw, SkipForward, Sparkles, Timer } from "lucide-react";
+import {
+  Activity as ActivityIcon,
+  Loader2,
+  PauseCircle,
+  Pin,
+  PinOff,
+  PlayCircle,
+  RefreshCw,
+  SkipForward,
+  Sparkles,
+  Timer,
+  Trash2,
+} from "lucide-react";
 
 import type { StructuredAlternative } from "../lib/api";
 import { apiFetch, api } from "../lib/api";
-import {
-  isPinned as isCellPinned,
-  pinCell,
-  unpinCell,
-  type PinnedCell,
-} from "../lib/pinnedCells";
+import { isPinned as isCellPinned, pinCell, unpinCell, type PinnedCell } from "../lib/pinnedCells";
 import { useEventSource, type SseEvent } from "../lib/sse";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
@@ -111,14 +118,9 @@ interface RunDetailPayload {
  *  is a Variations or Re-Run child. Clickable → navigates back to
  *  the parent run. The seed text is truncated to 60 chars so it fits
  *  on one row without crowding out the other chips. */
-function LineageChip({
-  lineage,
-}: {
-  lineage: NonNullable<RunDetailPayload["lineage"]>;
-}) {
+function LineageChip({ lineage }: { lineage: NonNullable<RunDetailPayload["lineage"]> }) {
   const seedText = (lineage.seed_alternative_text ?? "").trim();
-  const truncated =
-    seedText.length > 60 ? `${seedText.slice(0, 60)}…` : seedText;
+  const truncated = seedText.length > 60 ? `${seedText.slice(0, 60)}…` : seedText;
   // ``seed_alternative_id`` is the string ``"{parent_result_id}:{idx}"``;
   // surface the letter (A/B/C…) by decoding the index suffix.
   const altLetter = (() => {
@@ -150,9 +152,7 @@ function LineageChip({
         </>
       )}
       {lineage.kind === "variations" && truncated && (
-        <span className="max-w-[28rem] truncate text-ink-dim">
-          "{truncated}"
-        </span>
+        <span className="max-w-[28rem] truncate text-ink-dim">"{truncated}"</span>
       )}
     </Link>
   );
@@ -423,9 +423,7 @@ function LiveRunStream({ jobId }: { jobId: string }) {
   // lives) becomes reliable.
   const jobInfo = useQuery({
     queryKey: ["job", jobId],
-    queryFn: () => apiFetch<{ run_id: number | null; status: string }>(
-      `/api/runs/${jobId}`,
-    ),
+    queryFn: () => apiFetch<{ run_id: number | null; status: string }>(`/api/runs/${jobId}`),
     refetchInterval: closed ? false : 2000,
     refetchOnWindowFocus: false,
     retry: 1,
@@ -524,11 +522,7 @@ function LiveRunStream({ jobId }: { jobId: string }) {
           input: Number(event.input_tokens ?? 0),
           output: Number(event.output_tokens ?? 0),
         });
-      } else if (
-        t === "step.added" ||
-        t === "step.begin" ||
-        t === "step.update"
-      ) {
+      } else if (t === "step.added" || t === "step.begin" || t === "step.update") {
         const label = String(event.label ?? "").trim();
         if (label) {
           setLastStep(label);
@@ -587,9 +581,7 @@ function LiveRunStream({ jobId }: { jobId: string }) {
   });
 
   const lastEvent = events[events.length - 1] as SseEvent | undefined;
-  const terminalKind = lastEvent
-    ? String(lastEvent.type || "")
-    : "";
+  const terminalKind = lastEvent ? String(lastEvent.type || "") : "";
 
   // Newest still-running activity is the "current" thing the agent
   // is doing; falls back to the latest entry overall when nothing
@@ -685,9 +677,7 @@ function LiveRunStream({ jobId }: { jobId: string }) {
               <span className="text-ink-muted">↓</span>
               {tokensSnapshot.total_tokens.toLocaleString()} tok
               {tokensSnapshot.total_cost_usd > 0 && (
-                <span className="text-positive">
-                  · ${tokensSnapshot.total_cost_usd.toFixed(4)}
-                </span>
+                <span className="text-positive">· ${tokensSnapshot.total_cost_usd.toFixed(4)}</span>
               )}
             </span>
           )}
@@ -707,7 +697,10 @@ function LiveRunStream({ jobId }: { jobId: string }) {
       />
       {tokensSnapshot && tokensSnapshot.total_tokens > 0 && (
         <Card className="mb-4">
-          <CardHeader title="Tokens & cost" description="Running totals while the worker streams. Frozen at run end into the persisted Metrics card." />
+          <CardHeader
+            title="Tokens & cost"
+            description="Running totals while the worker streams. Frozen at run end into the persisted Metrics card."
+          />
           <CardBody>
             <div className="grid grid-cols-2 gap-4 text-sm md:grid-cols-4">
               <Row label="Input">
@@ -783,19 +776,12 @@ function LiveRunStream({ jobId }: { jobId: string }) {
                   <div className="flex items-center gap-3">
                     <ActivityDot status={a.status} />
                     <span className="font-mono">{a.label}</span>
-                    {a.detail && (
-                      <span className="ml-auto text-xs text-ink-muted">
-                        {a.detail}
-                      </span>
-                    )}
+                    {a.detail && <span className="ml-auto text-xs text-ink-muted">{a.detail}</span>}
                   </div>
                   {a.results && a.results.length > 0 && (
                     <div className="mt-3 space-y-2 border-l border-surface-border pl-4">
                       {a.results.map((r, idx) => (
-                        <ColumnSuggestionCard
-                          key={r.result_id ?? `${a.idx}-${idx}`}
-                          detail={r}
-                        />
+                        <ColumnSuggestionCard key={r.result_id ?? `${a.idx}-${idx}`} detail={r} />
                       ))}
                     </div>
                   )}
@@ -817,11 +803,7 @@ function LiveRunStream({ jobId }: { jobId: string }) {
 function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
   const structuredAlts = normalizeStructuredAlternatives(detail.alternatives);
   const tone =
-    detail.confidence === "high"
-      ? "positive"
-      : detail.confidence === "low"
-        ? "warning"
-        : "neutral";
+    detail.confidence === "high" ? "positive" : detail.confidence === "low" ? "warning" : "neutral";
   return (
     <div className="rounded-md border border-surface-border bg-surface p-3">
       <div className="flex items-center gap-2">
@@ -849,12 +831,9 @@ function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
         ) : (
           structuredAlts.map((alt, idx) => {
             const isChosen =
-              alt.text === detail.chosen_description ||
-              (idx === 0 && !detail.chosen_description);
+              alt.text === detail.chosen_description || (idx === 0 && !detail.chosen_description);
             const stripeStyle =
-              alt.band && BAND_STYLES[alt.band]
-                ? BAND_STYLES[alt.band].stripe
-                : "bg-transparent";
+              alt.band && BAND_STYLES[alt.band] ? BAND_STYLES[alt.band].stripe : "bg-transparent";
             return (
               <div
                 key={idx}
@@ -865,10 +844,7 @@ function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
                     : "border-surface-border text-ink-muted",
                 )}
               >
-                <div
-                  className={cn("hidden sm:block w-1 shrink-0", stripeStyle)}
-                  aria-hidden
-                />
+                <div className={cn("hidden sm:block w-1 shrink-0", stripeStyle)} aria-hidden />
                 <div className="flex-1 px-2 py-1">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
@@ -943,9 +919,7 @@ function ReasoningDisclosure({ reasoning }: { reasoning: string }) {
       className="mt-2 block w-full rounded-md border border-border bg-surface-subtle/20 px-2.5 py-1.5 text-left text-xs italic text-ink-muted transition hover:border-accent/30 hover:text-ink"
       title={expanded ? "Click to collapse" : trimmed}
     >
-      <span className="not-italic mr-2 text-[10px] uppercase tracking-wider text-ink-dim">
-        Why
-      </span>
+      <span className="not-italic mr-2 text-[10px] uppercase tracking-wider text-ink-dim">Why</span>
       <span className={cn(expanded ? "" : "line-clamp-2")}>{trimmed}</span>
     </button>
   );
@@ -1017,12 +991,8 @@ function normalizeStructuredAlternatives(raw: unknown): StructuredAlternative[] 
       out.push({
         text,
         signal: hasNewShape && typeof obj.signal === "string" ? obj.signal : null,
-        score:
-          hasNewShape && typeof obj.score === "number" ? (obj.score as number) : null,
-        band:
-          obj.band === "HIGH" || obj.band === "MED" || obj.band === "LOW"
-            ? obj.band
-            : null,
+        score: hasNewShape && typeof obj.score === "number" ? (obj.score as number) : null,
+        band: obj.band === "HIGH" || obj.band === "MED" || obj.band === "LOW" ? obj.band : null,
       });
     } else if (entry && typeof entry === "object" && "description" in entry) {
       out.push({
@@ -1076,7 +1046,7 @@ function ConfidenceBadge({ alt }: { alt: StructuredAlternative }) {
   if (!alt.band || !BAND_STYLES[alt.band]) return null;
   const style = BAND_STYLES[alt.band];
   const scoreText = typeof alt.score === "number" ? alt.score.toFixed(2) : null;
-  const abbrev = alt.signal ? SIGNAL_ABBREV[alt.signal] ?? null : null;
+  const abbrev = alt.signal ? (SIGNAL_ABBREV[alt.signal] ?? null) : null;
 
   return (
     <details className="inline-block relative align-middle">
@@ -1186,10 +1156,7 @@ function RunHeaderTokenCost({ run }: { run: RunDetailPayload }) {
  *  all-schemas run from the lack of a chip. */
 function RunHeaderScope({ run }: { run: RunDetailPayload }) {
   const scope = (run.scope_json ?? run.scope ?? {}) as Record<string, unknown>;
-  const target =
-    (run.database && run.database.trim()) ||
-    (run.catalog && run.catalog.trim()) ||
-    "";
+  const target = (run.database && run.database.trim()) || (run.catalog && run.catalog.trim()) || "";
   const entries = Object.entries(scope).filter(([k]) => k && k !== "db_profile");
   if (entries.length === 0 && !target && !run.db_profile) return null;
   const tableLabel = (() => {
@@ -1243,9 +1210,7 @@ function RunHeaderRagBadge({ run }: { run: RunDetailPayload }) {
       ? (metrics.rag_unavailable_reason as string)
       : null;
   const hitsTotal =
-    typeof metrics.rag_hits_total === "number"
-      ? (metrics.rag_hits_total as number)
-      : null;
+    typeof metrics.rag_hits_total === "number" ? (metrics.rag_hits_total as number) : null;
   if (profiles.length === 0 && !reason && hitsTotal == null) {
     return null;
   }
@@ -1257,12 +1222,8 @@ function RunHeaderRagBadge({ run }: { run: RunDetailPayload }) {
       >
         <span className="text-ink-dim">docs</span>
         <span className="text-ink">
-          {profiles.length === 0
-            ? "no docs used"
-            : profiles.join(", ")}
-          {hitsTotal != null && hitsTotal > 0
-            ? ` · ${hitsTotal.toLocaleString()} hits`
-            : ""}
+          {profiles.length === 0 ? "no docs used" : profiles.join(", ")}
+          {hitsTotal != null && hitsTotal > 0 ? ` · ${hitsTotal.toLocaleString()} hits` : ""}
         </span>
       </span>
       {reason && (
@@ -1293,9 +1254,7 @@ function RunHeaderCodeBadge({ run }: { run: RunDetailPayload }) {
       ? (metrics.code_unavailable_reason as string)
       : null;
   const hitsTotal =
-    typeof metrics.code_hits_total === "number"
-      ? (metrics.code_hits_total as number)
-      : null;
+    typeof metrics.code_hits_total === "number" ? (metrics.code_hits_total as number) : null;
   if (profiles.length === 0 && !reason && hitsTotal == null) {
     return null;
   }
@@ -1307,12 +1266,8 @@ function RunHeaderCodeBadge({ run }: { run: RunDetailPayload }) {
       >
         <span className="text-ink-dim">code</span>
         <span className="text-ink">
-          {profiles.length === 0
-            ? "no code used"
-            : profiles.join(", ")}
-          {hitsTotal != null && hitsTotal > 0
-            ? ` · ${hitsTotal.toLocaleString()} chunks`
-            : ""}
+          {profiles.length === 0 ? "no code used" : profiles.join(", ")}
+          {hitsTotal != null && hitsTotal > 0 ? ` · ${hitsTotal.toLocaleString()} chunks` : ""}
         </span>
       </span>
       {reason && (
@@ -1461,11 +1416,7 @@ function PersistedRunActivityCard({
         );
         setLastStep(null);
         setLastStepStartedAt(null);
-      } else if (
-        t === "step.added" ||
-        t === "step.begin" ||
-        t === "step.update"
-      ) {
+      } else if (t === "step.added" || t === "step.begin" || t === "step.update") {
         const label = String(event.label ?? "").trim();
         if (label) {
           setLastStep(label);
@@ -1538,13 +1489,7 @@ function PersistedRunActivityCard({
       <CardHeader
         title={
           <span className="inline-flex items-center gap-2">
-            <Loader2
-              size={14}
-              className={cn(
-                "text-accent",
-                !closed && "animate-spin",
-              )}
-            />
+            <Loader2 size={14} className={cn("text-accent", !closed && "animate-spin")} />
             Live progress
             {total > 0 && (
               <span
@@ -1606,9 +1551,7 @@ function PersistedRunActivityCard({
                   key={s.id}
                   className="flex items-center gap-2 font-mono tabular-nums text-ink-muted"
                 >
-                  <span className="text-[10px] text-ink-dim">
-                    +{formatElapsed(s.offsetSec)}
-                  </span>
+                  <span className="text-[10px] text-ink-dim">+{formatElapsed(s.offsetSec)}</span>
                   <span className="truncate text-ink">{s.label}</span>
                 </li>
               ))}
@@ -1618,9 +1561,7 @@ function PersistedRunActivityCard({
         {activities.length === 0 ? (
           <div className="px-5 py-4 text-sm text-ink-dim">
             <Loader2 size={14} className="mr-2 inline animate-spin" />
-            {lastStep
-              ? `Now: ${lastStep}${stepTimerSuffix}`
-              : "Waiting for the worker to begin…"}
+            {lastStep ? `Now: ${lastStep}${stepTimerSuffix}` : "Waiting for the worker to begin…"}
           </div>
         ) : (
           <ul className="divide-y divide-surface-border">
@@ -1629,11 +1570,7 @@ function PersistedRunActivityCard({
                 <div className="flex items-center gap-3">
                   <ActivityDot status={a.status} />
                   <span className="font-mono">{a.label}</span>
-                  {a.detail && (
-                    <span className="ml-auto text-xs text-ink-muted">
-                      {a.detail}
-                    </span>
-                  )}
+                  {a.detail && <span className="ml-auto text-xs text-ink-muted">{a.detail}</span>}
                 </div>
               </li>
             ))}
@@ -1662,6 +1599,8 @@ function ActivityDot({ status }: { status: "running" | "done" | "failed" }) {
 function PersistedRunView({ runId }: { runId: number }) {
   const [tab, setTab] = useState<Tab>("results");
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const navigate = useNavigate();
   const toast = useToast();
   const queryClient = useQueryClient();
   const run = useQuery({
@@ -1733,15 +1672,30 @@ function PersistedRunView({ runId }: { runId: number }) {
     },
   });
 
+  const del = useMutation({
+    mutationFn: () => api.deleteRun(runId),
+    onSuccess: (res) => {
+      setConfirmDelete(false);
+      toast.push({
+        title: "Run deleted",
+        description: `Removed the run and ${res.counts.results} result row(s).`,
+        tone: "success",
+      });
+      queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
+      navigate("/runs");
+    },
+    onError: (e: Error) => {
+      setConfirmDelete(false);
+      toast.push({ title: "Delete failed", description: e.message, tone: "error" });
+    },
+  });
+
   if (run.isLoading && !run.data) {
     return (
       <>
         <PageHeader
           title={`Run #${runId}`}
-          breadcrumbs={[
-            { label: "Runs", to: "/runs" },
-            { label: `#${runId}` },
-          ]}
+          breadcrumbs={[{ label: "Runs", to: "/runs" }, { label: `#${runId}` }]}
         />
         <RouteState status="loading" hideLoadingTitle loadingBlocks={3} />
       </>
@@ -1752,16 +1706,9 @@ function PersistedRunView({ runId }: { runId: number }) {
       <>
         <PageHeader
           title={`Run #${runId}`}
-          breadcrumbs={[
-            { label: "Runs", to: "/runs" },
-            { label: `#${runId}` },
-          ]}
+          breadcrumbs={[{ label: "Runs", to: "/runs" }, { label: `#${runId}` }]}
         />
-        <RouteState
-          status="error"
-          error={run.error}
-          onRetry={() => run.refetch()}
-        />
+        <RouteState status="error" error={run.error} onRetry={() => run.refetch()} />
       </>
     );
   }
@@ -1770,10 +1717,7 @@ function PersistedRunView({ runId }: { runId: number }) {
     <>
       <PageHeader
         title={run.data?.command ?? `Run #${runId}`}
-        breadcrumbs={[
-          { label: "Runs", to: "/runs" },
-          { label: `#${runId}` },
-        ]}
+        breadcrumbs={[{ label: "Runs", to: "/runs" }, { label: `#${runId}` }]}
         description={
           run.data ? (
             <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
@@ -1792,17 +1736,11 @@ function PersistedRunView({ runId }: { runId: number }) {
                 {run.data.status}
               </Badge>
               <span className="font-mono text-ink-muted tabular-nums">
-                {run.data.duration_sec != null
-                  ? `${run.data.duration_sec.toFixed(1)}s`
-                  : "—"}
+                {run.data.duration_sec != null ? `${run.data.duration_sec.toFixed(1)}s` : "—"}
               </span>
-              <span className="font-mono text-ink-muted">
-                {run.data.llm_model ?? "—"}
-              </span>
+              <span className="font-mono text-ink-muted">{run.data.llm_model ?? "—"}</span>
               <RunHeaderTokenCost run={run.data} />
-              {run.data.lineage && (
-                <LineageChip lineage={run.data.lineage} />
-              )}
+              {run.data.lineage && <LineageChip lineage={run.data.lineage} />}
               <RunHeaderScope run={run.data} />
               <RunHeaderRagBadge run={run.data} />
               <RunHeaderCodeBadge run={run.data} />
@@ -1811,7 +1749,7 @@ function PersistedRunView({ runId }: { runId: number }) {
         }
         actions={
           <div className="flex items-center gap-3">
-            {liveJobId && (
+            {liveJobId ? (
               <Button
                 variant="danger"
                 size="md"
@@ -1820,6 +1758,18 @@ function PersistedRunView({ runId }: { runId: number }) {
                 disabled={cancel.isPending}
               >
                 Cancel
+              </Button>
+            ) : (
+              // Delete is only offered once the run has settled — a live
+              // run is cancelled first (its worker owns the row).
+              <Button
+                variant="danger"
+                size="md"
+                leadingIcon={<Trash2 size={14} />}
+                onClick={() => setConfirmDelete(true)}
+                disabled={del.isPending}
+              >
+                Delete
               </Button>
             )}
             <Link to="/runs" className="text-xs text-ink-dim hover:text-ink">
@@ -1836,6 +1786,16 @@ function PersistedRunView({ runId }: { runId: number }) {
         title="Cancel this run?"
         description="The worker exits between rows. Already-written descriptions stay; in-flight assets stop. This cannot be undone."
         confirmLabel="Cancel run"
+      />
+      <AlertDialog
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        onConfirm={() => del.mutate()}
+        loading={del.isPending}
+        tone="danger"
+        title={`Delete run #${runId}?`}
+        description="Permanently removes this run and its per-asset results from history. The applied-description audit trail and any live-database comments are untouched. This cannot be undone."
+        confirmLabel="Delete"
       />
       {liveJobId && (
         <PersistedRunActivityCard
@@ -1868,13 +1828,12 @@ function PersistedRunView({ runId }: { runId: number }) {
         <TabPanel value="results">
           {results.data?.has_descendants && (
             <p className="mb-3 text-[11px] text-ink-dim">
-              Showing {results.data.count} original ·{" "}
-              {results.data.descendants?.length ?? 0}{" "}
+              Showing {results.data.count} original · {results.data.descendants?.length ?? 0}{" "}
               {(results.data.descendants?.length ?? 0) === 1
                 ? "variation / re-run"
                 : "variations / re-runs"}
-              . Each version below is independently collapsible — fall
-              back to v1 at any time by collapsing the newer ones.
+              . Each version below is independently collapsible — fall back to v1 at any time by
+              collapsing the newer ones.
             </p>
           )}
           <ResultsTab
@@ -1884,9 +1843,7 @@ function PersistedRunView({ runId }: { runId: number }) {
             error={results.error as Error | undefined}
             descendants={results.data?.descendants ?? []}
             runStatus={(run.data?.status as string | undefined) ?? null}
-            runErrorText={
-              (run.data?.error_text as string | undefined) ?? null
-            }
+            runErrorText={(run.data?.error_text as string | undefined) ?? null}
             scope={{
               db_profile: run.data?.db_profile ?? null,
               database: run.data?.database ?? null,
@@ -1898,11 +1855,7 @@ function PersistedRunView({ runId }: { runId: number }) {
           <Card>
             <CardBody>
               <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-ink p-3 font-mono text-xs text-bg">
-                {JSON.stringify(
-                  run.data?.scope_json ?? run.data?.scope ?? {},
-                  null,
-                  2,
-                )}
+                {JSON.stringify(run.data?.scope_json ?? run.data?.scope ?? {}, null, 2)}
               </pre>
             </CardBody>
           </Card>
@@ -1912,11 +1865,7 @@ function PersistedRunView({ runId }: { runId: number }) {
             <CardHeader title="Settings snapshot" />
             <CardBody>
               <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-ink p-3 font-mono text-xs text-bg">
-                {JSON.stringify(
-                  run.data?.settings_json ?? run.data?.settings ?? {},
-                  null,
-                  2,
-                )}
+                {JSON.stringify(run.data?.settings_json ?? run.data?.settings ?? {}, null, 2)}
               </pre>
             </CardBody>
           </Card>
@@ -1927,7 +1876,12 @@ function PersistedRunView({ runId }: { runId: number }) {
 }
 
 function SummaryTab({ run }: { run: RunDetailPayload | undefined }) {
-  if (!run) return <Card><CardBody>Loading…</CardBody></Card>;
+  if (!run)
+    return (
+      <Card>
+        <CardBody>Loading…</CardBody>
+      </Card>
+    );
   const m = (run.metrics ?? {}) as Record<string, unknown>;
   return (
     <div className="grid gap-4 md:grid-cols-2">
@@ -1965,13 +1919,15 @@ function SummaryTab({ run }: { run: RunDetailPayload | undefined }) {
           {Object.entries(m).length === 0 ? (
             <div className="text-ink-dim">No metrics recorded.</div>
           ) : (
-            Object.entries(m).slice(0, 10).map(([k, v]) => (
-              <Row key={k} label={k}>
-                <span className="font-mono text-xs">
-                  {typeof v === "object" ? JSON.stringify(v) : String(v)}
-                </span>
-              </Row>
-            ))
+            Object.entries(m)
+              .slice(0, 10)
+              .map(([k, v]) => (
+                <Row key={k} label={k}>
+                  <span className="font-mono text-xs">
+                    {typeof v === "object" ? JSON.stringify(v) : String(v)}
+                  </span>
+                </Row>
+              ))
           )}
         </CardBody>
       </Card>
@@ -2048,9 +2004,7 @@ function TokensRow({ run }: { run: RunDetailPayload }) {
           ↓ {outputTokens.toLocaleString()}
         </span>
         <span className="text-ink-dim">·</span>
-        <span title="Sum of input + output.">
-          {totalTokens.toLocaleString()} total
-        </span>
+        <span title="Sum of input + output.">{totalTokens.toLocaleString()} total</span>
       </span>
     </Row>
   );
@@ -2066,10 +2020,8 @@ function TokensRow({ run }: { run: RunDetailPayload }) {
  */
 function CostRow({ run }: { run: RunDetailPayload }) {
   const tokens = (run.tokens_json ?? {}) as Record<string, unknown>;
-  const frozenCost =
-    typeof tokens.total_cost_usd === "number" ? tokens.total_cost_usd : null;
-  const totalTokens =
-    typeof tokens.total_tokens === "number" ? tokens.total_tokens : null;
+  const frozenCost = typeof tokens.total_cost_usd === "number" ? tokens.total_cost_usd : null;
+  const totalTokens = typeof tokens.total_tokens === "number" ? tokens.total_tokens : null;
   const provider = run.llm_provider ?? "";
   const model = run.llm_model ?? "";
   const [liveCost, setLiveCost] = useState<number | null>(null);
@@ -2109,9 +2061,7 @@ function CostRow({ run }: { run: RunDetailPayload }) {
     return (
       <Row label="Cost">
         <span className="text-xs text-ink-dim">
-          {totalTokens != null
-            ? "no cost data — pre-cost run, recompute below"
-            : "—"}
+          {totalTokens != null ? "no cost data — pre-cost run, recompute below" : "—"}
           {totalTokens != null && (
             <button
               type="button"
@@ -2128,18 +2078,13 @@ function CostRow({ run }: { run: RunDetailPayload }) {
   }
 
   const display = liveCost != null ? liveCost : (frozenCost as number);
-  const sourceLabel =
-    liveCost != null
-      ? `live · ${liveSource || "?"}`
-      : "frozen at run time";
+  const sourceLabel = liveCost != null ? `live · ${liveSource || "?"}` : "frozen at run time";
 
   return (
     <Row label="Cost">
       <span className="inline-flex items-center gap-2 font-mono text-xs">
         <span>${display.toFixed(4)}</span>
-        <span className="text-[10px] uppercase tracking-wider text-ink-dim">
-          ({sourceLabel})
-        </span>
+        <span className="text-[10px] uppercase tracking-wider text-ink-dim">({sourceLabel})</span>
         {provider && model && (
           <button
             type="button"
@@ -2206,9 +2151,8 @@ function FailedRunCard({ errorText }: { errorText: string }) {
       <CardHeader title="Run failed" />
       <CardBody>
         <p className="text-sm text-ink-muted">
-          The worker stopped before producing any per-column
-          suggestions. The error below was captured on the run row
-          (``analysis_runs.error_text``).
+          The worker stopped before producing any per-column suggestions. The error below was
+          captured on the run row (``analysis_runs.error_text``).
         </p>
         <div className="mt-3 rounded-md border border-critical/30 bg-critical-soft/20 px-3 py-2 text-xs">
           <div className="flex items-center justify-between gap-2">
@@ -2262,10 +2206,7 @@ function DescendantStreamSubscriber({
   });
   useEffect(() => {
     const terminal = sse.events.find(
-      (e) =>
-        e.type === "job.done" ||
-        e.type === "job.failed" ||
-        e.type === "job.cancelled",
+      (e) => e.type === "job.done" || e.type === "job.failed" || e.type === "job.cancelled",
     );
     if (terminal) onTerminal();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2335,9 +2276,7 @@ function ResultsTab({
   // active profile pinned a different DB than the run was actually
   // scoped to. Let the user override here when the run's scope is
   // missing — defaults to the persisted value when present.
-  const [overrideDatabase, setOverrideDatabase] = useState<string>(
-    scope.database ?? "",
-  );
+  const [overrideDatabase, setOverrideDatabase] = useState<string>(scope.database ?? "");
   // Confirm-before-apply state. The apply path is irreversible
   // (writes COMMENT statements to the live DB), so we render a
   // dialog with the row count + DB target rather than fire on a
@@ -2501,8 +2440,7 @@ function ResultsTab({
       if (r.id != null) v1IdByAssetKey.set(key, r.id);
     }
     for (const desc of descendants) {
-      const isRunning =
-        desc.status === "running" || desc.status === "queued";
+      const isRunning = desc.status === "running" || desc.status === "queued";
       if (!isRunning) continue;
       const seedAltIdx = (() => {
         const id = desc.seed_alternative_id ?? "";
@@ -2547,22 +2485,19 @@ function ResultsTab({
       // to the override picker the user filled out for old runs.
       const effDb = (scope.database || overrideDatabase || "").trim();
       const effCat = (scope.catalog || overrideCatalog || "").trim();
-      return apiFetch<{ job_id: string; status: string }>(
-        "/api/pending/apply",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            // Pin the apply to the run's own scope. Without this the
-            // worker falls back to cfg.active_db_profile + its pinned
-            // database, which produces ``schema "X" does not exist``
-            // errors when the active profile points elsewhere than
-            // the database the run was rooted in.
-            db_profile: scope.db_profile ?? undefined,
-            database: effDb || undefined,
-            catalog: effCat || undefined,
-          }),
-        },
-      );
+      return apiFetch<{ job_id: string; status: string }>("/api/pending/apply", {
+        method: "POST",
+        body: JSON.stringify({
+          // Pin the apply to the run's own scope. Without this the
+          // worker falls back to cfg.active_db_profile + its pinned
+          // database, which produces ``schema "X" does not exist``
+          // errors when the active profile points elsewhere than
+          // the database the run was rooted in.
+          db_profile: scope.db_profile ?? undefined,
+          database: effDb || undefined,
+          catalog: effCat || undefined,
+        }),
+      });
     },
     onSuccess: (result) => {
       setActiveApplyJob(result.job_id);
@@ -2605,8 +2540,7 @@ function ResultsTab({
   });
 
   const skipPending = useMutation({
-    mutationFn: (idx: number) =>
-      apiFetch(`/api/pending/${idx}`, { method: "DELETE" }),
+    mutationFn: (idx: number) => apiFetch(`/api/pending/${idx}`, { method: "DELETE" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pending"] });
       toast.push({
@@ -2681,29 +2615,21 @@ function ResultsTab({
   const [filterQuery, setFilterQuery] = useState(initialUrlState.q);
   const [sortKey, setSortKey] = useState<SortKey>(initialUrlState.sort);
   const [groupBy, setGroupBy] = useState<GroupKey>(initialUrlState.group);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>(
-    initialUrlState.status,
-  );
-  const [presetActive, setPresetActive] = useState<ReviewPreset>(
-    initialUrlState.preset,
-  );
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialUrlState.status);
+  const [presetActive, setPresetActive] = useState<ReviewPreset>(initialUrlState.preset);
   // PR B — pagination + review-mode state.
   const [currentPage, setCurrentPage] = useState<number>(initialUrlState.page);
   const [reviewMode, setReviewMode] = useState<boolean>(initialUrlState.reviewMode);
   // Review-mode selection is a SEPARATE set from PR-220's bulk-rerun
   // ``selectedIds`` so toggling review mode never disturbs an in-progress
   // re-run selection (and vice-versa). Both keys are ``result_id``.
-  const [reviewSelectedIds, setReviewSelectedIds] = useState<Set<number>>(
-    new Set(),
-  );
+  const [reviewSelectedIds, setReviewSelectedIds] = useState<Set<number>>(new Set());
   const [keynavFocusId, setKeynavFocusId] = useState<number | null>(null);
   const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
   const lastGKeyAtRef = useRef<number>(0);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   // ``Accept all visible`` / ``Skip all visible`` confirmation dialog state.
-  const [bulkVisibleAction, setBulkVisibleAction] = useState<
-    "accept" | "skip" | null
-  >(null);
+  const [bulkVisibleAction, setBulkVisibleAction] = useState<"accept" | "skip" | null>(null);
 
   // Write URL params whenever the user changes a filter/page/mode. ``replace``
   // keeps the history clean — only the initial deep-link counts as a
@@ -2728,15 +2654,7 @@ function ResultsTab({
     // ``searchParams`` is intentionally excluded — we don't want a
     // pull from the URL to retrigger a write.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    filterQuery,
-    sortKey,
-    groupBy,
-    statusFilter,
-    presetActive,
-    currentPage,
-    reviewMode,
-  ]);
+  }, [filterQuery, sortKey, groupBy, statusFilter, presetActive, currentPage, reviewMode]);
 
   // When filters change, jump back to page 1 — otherwise the user lands
   // on an empty page-N because the filtered set shrank below N * 50.
@@ -2767,9 +2685,7 @@ function ResultsTab({
       xs = xs.filter((r) => rowMatchesQuery(r, filterQuery));
     }
     if (statusFilter !== "all") {
-      xs = xs.filter((r) =>
-        statusFilterMatches(r, statusFilter, pendingByResultId),
-      );
+      xs = xs.filter((r) => statusFilterMatches(r, statusFilter, pendingByResultId));
     }
     if (presetActive === "low_conf") {
       xs = xs.filter((r) => confidenceWeight(r) < 0.7);
@@ -2781,9 +2697,7 @@ function ResultsTab({
     if (sortKey === "status") {
       const order = { pending: 0, accepted: 1, skipped: 2, applied: 3 };
       xs.sort(
-        (a, b) =>
-          order[rowStatus(a, pendingByResultId)] -
-          order[rowStatus(b, pendingByResultId)],
+        (a, b) => order[rowStatus(a, pendingByResultId)] - order[rowStatus(b, pendingByResultId)],
       );
     } else if (sortKey !== "natural") {
       xs.sort(SORT_COMPARATORS[sortKey]);
@@ -2840,10 +2754,7 @@ function ResultsTab({
   // grouping so a 50-row page may surface partial groups; that's
   // intentional, otherwise group-by-table on a wide schema would push
   // the page count above what the pagination controls advertise).
-  const pageCount = Math.max(
-    1,
-    Math.ceil(expandedFilteredRows.length / RESULTS_PAGE_SIZE),
-  );
+  const pageCount = Math.max(1, Math.ceil(expandedFilteredRows.length / RESULTS_PAGE_SIZE));
   const effectivePage = Math.min(currentPage, pageCount);
   const pagedRows = useMemo(() => {
     const start = (effectivePage - 1) * RESULTS_PAGE_SIZE;
@@ -2874,12 +2785,7 @@ function ResultsTab({
       const target = event.target as HTMLElement | null;
       if (target) {
         const tag = target.tagName;
-        if (
-          tag === "INPUT" ||
-          tag === "TEXTAREA" ||
-          tag === "SELECT" ||
-          target.isContentEditable
-        ) {
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) {
           // ``/`` is the one exception: pressing it inside an input means
           // the user wants to type a slash, so we only intercept ``/``
           // outside inputs.
@@ -2959,18 +2865,14 @@ function ResultsTab({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [
-    pagedIds,
-    keynavFocusId,
-    effectivePage,
-    pageCount,
-    pendingByResultId,
-    skipPending,
-    toast,
-  ]);
+  }, [pagedIds, keynavFocusId, effectivePage, pageCount, pendingByResultId, skipPending, toast]);
 
   if (loading) {
-    return <Card><CardBody>Loading results…</CardBody></Card>;
+    return (
+      <Card>
+        <CardBody>Loading results…</CardBody>
+      </Card>
+    );
   }
   if (error) {
     return (
@@ -2987,19 +2889,14 @@ function ResultsTab({
     const isFailure = runStatus === "failed";
     const trimmedError = (runErrorText ?? "").trim();
     if (isFailure) {
-      return (
-        <FailedRunCard
-          errorText={trimmedError || "Worker reported no error message."}
-        />
-      );
+      return <FailedRunCard errorText={trimmedError || "Worker reported no error message."} />;
     }
     return (
       <Card>
         <CardBody className="text-sm text-ink-dim">
-          This run produced no per-column suggestions. (The
-          missing-only filter dropped every asset, or the scope was
-          empty.) For executor failures, check the run's status —
-          failed runs surface the underlying error here.
+          This run produced no per-column suggestions. (The missing-only filter dropped every asset,
+          or the scope was empty.) For executor failures, check the run's status — failed runs
+          surface the underlying error here.
         </CardBody>
       </Card>
     );
@@ -3082,23 +2979,18 @@ function ResultsTab({
       )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-ink-muted">
-          Run #{runId} produced <span className="font-mono">{rows.length}</span>{" "}
-          suggestion{rows.length === 1 ? "" : "s"} —{" "}
+          Run #{runId} produced <span className="font-mono">{rows.length}</span> suggestion
+          {rows.length === 1 ? "" : "s"} —{" "}
           <span className="text-positive">{appliedCount} applied</span>,{" "}
-          <span className="text-ink">{queuedCount} queued</span>. Edit text
-          inline, pick an alternative, or skip a row.
+          <span className="text-ink">{queuedCount} queued</span>. Edit text inline, pick an
+          alternative, or skip a row.
         </p>
         <Button
           variant="primary"
           size="md"
           leadingIcon={<PlayCircle size={14} />}
           loading={queueApply.isPending}
-          disabled={
-            applyInFlight ||
-            nothingToApply ||
-            queueApply.isPending ||
-            !hasDatabaseScope
-          }
+          disabled={applyInFlight || nothingToApply || queueApply.isPending || !hasDatabaseScope}
           onClick={() => setConfirmApplyOpen(true)}
           title={
             !hasDatabaseScope
@@ -3121,9 +3013,10 @@ function ResultsTab({
         description={(() => {
           const target = (scope.database || overrideDatabase || scope.catalog || "").trim();
           const profile = scope.db_profile || "";
-          const where = profile && target
-            ? `${profile} @ ${target}`
-            : profile || target || "the active database profile";
+          const where =
+            profile && target
+              ? `${profile} @ ${target}`
+              : profile || target || "the active database profile";
           return `This writes COMMENT statements to ${where}. The change is permanent — restoring the previous comment requires another apply with the old text. Cancel here to keep reviewing the queue.`;
         })()}
         confirmLabel={`Apply ${queuedCount}`}
@@ -3132,12 +3025,10 @@ function ResultsTab({
         <Card>
           <CardBody className="space-y-2 px-4 py-3 text-xs">
             <p className="text-ink-muted">
-              This run didn't capture the target database. Pick the
-              database the schemas live in so apply targets it directly —
-              otherwise the COMMENTs would land in the active profile's
+              This run didn't capture the target database. Pick the database the schemas live in so
+              apply targets it directly — otherwise the COMMENTs would land in the active profile's
               default and produce
-              <span className="font-mono"> schema "…" does not exist</span>{" "}
-              errors.
+              <span className="font-mono"> schema "…" does not exist</span> errors.
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-ink-dim">Profile:</span>
@@ -3220,7 +3111,8 @@ function ResultsTab({
             const failedCount = summary?.failed_count ?? 0;
             const appliedCount = summary?.applied ?? 0;
             if (failedCount > 0) {
-              const headline = summary?.failed?.[0]?.error_title || "Some rows could not be written";
+              const headline =
+                summary?.failed?.[0]?.error_title || "Some rows could not be written";
               toast.push({
                 title: `${appliedCount} applied, ${failedCount} failed`,
                 description: `${headline} — queue preserved, see banner below.`,
@@ -3266,11 +3158,7 @@ function ResultsTab({
             >
               Re-Run selected ({selectedIds.size})
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setSelectedIds(new Set())}
-            >
+            <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
               Clear
             </Button>
           </>
@@ -3424,40 +3312,34 @@ function ResultsTab({
             <span className="text-ink-muted">— move row focus down / up</span>
           </li>
           <li className="flex items-center gap-2">
-            <Kbd>Enter</Kbd>{" "}
-            <span className="text-ink-muted">— accept the focused row</span>
+            <Kbd>Enter</Kbd> <span className="text-ink-muted">— accept the focused row</span>
           </li>
           <li className="flex items-center gap-2">
-            <Kbd>x</Kbd>{" "}
-            <span className="text-ink-muted">— skip the focused row</span>
+            <Kbd>x</Kbd> <span className="text-ink-muted">— skip the focused row</span>
           </li>
           <li className="flex items-center gap-2">
-            <Kbd>/</Kbd>{" "}
-            <span className="text-ink-muted">— focus the search input</span>
+            <Kbd>/</Kbd> <span className="text-ink-muted">— focus the search input</span>
           </li>
           <li className="flex items-center gap-2">
             <Kbd>g</Kbd> <Kbd>g</Kbd>{" "}
             <span className="text-ink-muted">— jump to the first row on page</span>
           </li>
           <li className="flex items-center gap-2">
-            <Kbd>G</Kbd>{" "}
-            <span className="text-ink-muted">— jump to the last row on page</span>
+            <Kbd>G</Kbd> <span className="text-ink-muted">— jump to the last row on page</span>
           </li>
           <li className="flex items-center gap-2">
-            <Kbd>?</Kbd>{" "}
-            <span className="text-ink-muted">— open this cheatsheet</span>
+            <Kbd>?</Kbd> <span className="text-ink-muted">— open this cheatsheet</span>
           </li>
           <li className="flex items-center gap-2">
-            <Kbd>Esc</Kbd>{" "}
-            <span className="text-ink-muted">— close + clear row focus</span>
+            <Kbd>Esc</Kbd> <span className="text-ink-muted">— close + clear row focus</span>
           </li>
         </ul>
       </Dialog>
       {filteredRows.length === 0 && (
         <Card>
           <CardBody className="text-sm text-ink-dim">
-            No suggestions match the current filter combo. Clear the
-            search or status chip to see more rows.
+            No suggestions match the current filter combo. Clear the search or status chip to see
+            more rows.
           </CardBody>
         </Card>
       )}
@@ -3475,8 +3357,7 @@ function ResultsTab({
           <CardBody className="p-0">
             <ul className="divide-y divide-border">
               {tableRows.map((r) => {
-                const pendingEntry =
-                  r.id != null ? pendingByResultId.get(r.id) : undefined;
+                const pendingEntry = r.id != null ? pendingByResultId.get(r.id) : undefined;
                 // Cross-version lock: if a different row for the same
                 // asset (schema|table|column) currently holds the
                 // pending pick, this row's alternatives go non-
@@ -3489,8 +3370,7 @@ function ResultsTab({
                 const lockedByOtherVersion =
                   holderRowId != null && holderRowId !== r.id
                     ? {
-                        versionLabel:
-                          versionInfoByRowId.get(holderRowId)?.versionLabel ?? "v1",
+                        versionLabel: versionInfoByRowId.get(holderRowId)?.versionLabel ?? "v1",
                       }
                     : null;
                 return (
@@ -3524,24 +3404,16 @@ function ResultsTab({
                       });
                     }}
                     isMutating={
-                      patchPending.isPending ||
-                      skipPending.isPending ||
-                      restorePending.isPending
+                      patchPending.isPending || skipPending.isPending || restorePending.isPending
                     }
                     multiSelectMode={multiSelectMode}
                     isSelected={selectedIds.has(r.id)}
                     onToggleSelected={toggleSelected}
                     reviewMode={reviewMode}
-                    isReviewSelected={
-                      r.id != null && reviewSelectedIds.has(r.id)
-                    }
+                    isReviewSelected={r.id != null && reviewSelectedIds.has(r.id)}
                     onToggleReviewSelected={toggleReviewSelected}
                     isKeynavFocused={r.id != null && keynavFocusId === r.id}
-                    versionInfo={
-                      r.id != null
-                        ? (versionInfoByRowId.get(r.id) ?? null)
-                        : null
-                    }
+                    versionInfo={r.id != null ? (versionInfoByRowId.get(r.id) ?? null) : null}
                     hydratedRunningKinds={
                       r.id != null
                         ? (liveDescendants.get(r.id) ?? []).map((d) => ({
@@ -3578,7 +3450,6 @@ function ResultsTab({
     </div>
   );
 }
-
 
 /** PR B — paginated controls under the results list. Renders a
  * 7-slot Prev/page-tokens/Next bar with elided middle when the
@@ -3683,45 +3554,20 @@ function ReviewBulkToolbar({
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-surface-border bg-surface px-3 py-2">
-      <Button
-        variant="primary"
-        size="sm"
-        onClick={onAcceptSelected}
-        disabled={selectedCount === 0}
-      >
+      <Button variant="primary" size="sm" onClick={onAcceptSelected} disabled={selectedCount === 0}>
         Accept selected ({selectedCount})
       </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={onSkipSelected}
-        disabled={selectedCount === 0}
-      >
+      <Button variant="ghost" size="sm" onClick={onSkipSelected} disabled={selectedCount === 0}>
         Skip selected ({selectedCount})
       </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={onClearSelection}
-        disabled={selectedCount === 0}
-      >
+      <Button variant="ghost" size="sm" onClick={onClearSelection} disabled={selectedCount === 0}>
         Clear selection
       </Button>
       <span className="mx-1 h-4 w-px bg-surface-border" aria-hidden />
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={onAcceptAllVisible}
-        disabled={visibleCount === 0}
-      >
+      <Button variant="ghost" size="sm" onClick={onAcceptAllVisible} disabled={visibleCount === 0}>
         Accept all visible ({visibleCount})
       </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={onSkipAllVisible}
-        disabled={visibleCount === 0}
-      >
+      <Button variant="ghost" size="sm" onClick={onSkipAllVisible} disabled={visibleCount === 0}>
         Skip all visible ({visibleCount})
       </Button>
     </div>
@@ -3757,9 +3603,8 @@ function BulkRerunOrchestrator({
         .map((r) => ({
           resultId: r.id,
           label:
-            [r.schema_name, r.table_name, r.column_name]
-              .filter(Boolean)
-              .join(".") || `result #${r.id}`,
+            [r.schema_name, r.table_name, r.column_name].filter(Boolean).join(".") ||
+            `result #${r.id}`,
         })),
     [rows, selectedIds],
   );
@@ -3770,12 +3615,15 @@ function BulkRerunOrchestrator({
   useEffect(() => {
     if (!bulkRerunJobId) return;
     const terminal = sse.events.find(
-      (e) =>
-        e.type === "job.done" || e.type === "job.failed" || e.type === "job.cancelled",
+      (e) => e.type === "job.done" || e.type === "job.failed" || e.type === "job.cancelled",
     );
     if (!terminal) return;
     if (terminal.type === "job.done") {
-      const summary = (terminal as unknown as { summary?: { successful?: number; total?: number; new_run_id?: number } }).summary;
+      const summary = (
+        terminal as unknown as {
+          summary?: { successful?: number; total?: number; new_run_id?: number };
+        }
+      ).summary;
       pushToast({
         tone: "success",
         title: "Bulk re-run complete",
@@ -3930,15 +3778,10 @@ function ResultRowItemImpl({
   const structuredAlts = pendingEntry
     ? normalizeStructuredAlternatives(pendingEntry.alternatives)
     : normalizeStructuredAlternatives(displayRow.alternatives_json);
-  const structuredByText = new Map(
-    structuredAlts.map((alt) => [alt.text, alt] as const),
-  );
-  const chosen =
-    pendingEntry?.final_description ?? displayRow.chosen_description ?? "";
+  const structuredByText = new Map(structuredAlts.map((alt) => [alt.text, alt] as const));
+  const chosen = pendingEntry?.final_description ?? displayRow.chosen_description ?? "";
   const chosenStructured = structuredByText.get(chosen) ?? null;
-  const visible = chosen && !sourceAlts.includes(chosen)
-    ? [chosen, ...sourceAlts]
-    : sourceAlts;
+  const visible = chosen && !sourceAlts.includes(chosen) ? [chosen, ...sourceAlts] : sourceAlts;
   // ``applied`` is the live-DB state: this row's COMMENT was written
   // at some point. ``hasPendingRevision`` is the pending-file state:
   // a (possibly different) description is queued for a future write.
@@ -3956,7 +3799,7 @@ function ResultRowItemImpl({
   // Show the latest chain entry's seq when present so the v-badge
   // tracks the freshly-rendered alternatives, not the original
   // row's stale "v1" stamp.
-  const rerunSeq = (latestChainEntry?.rerun_seq ?? row.rerun_seq) ?? 0;
+  const rerunSeq = latestChainEntry?.rerun_seq ?? row.rerun_seq ?? 0;
   const statusTone: "positive" | "neutral" | "warning" = isAppliedClean
     ? "positive"
     : queued
@@ -3977,7 +3820,7 @@ function ResultRowItemImpl({
         : "accepted"
       : skipped
         ? "skipped"
-        : (row.evaluation || "unreviewed");
+        : row.evaluation || "unreviewed";
 
   // Re-Run state lives per-row. ``rerunJobId`` becomes non-null after
   // the modal submits successfully; the SSE hook below tails the job
@@ -3994,9 +3837,7 @@ function ResultRowItemImpl({
   } | null>(null);
   const [variationsJobId, setVariationsJobId] = useState<string | null>(null);
   const variationsSse = useEventSource({
-    path: variationsJobId
-      ? `/api/runs/${encodeURIComponent(variationsJobId)}/events`
-      : "",
+    path: variationsJobId ? `/api/runs/${encodeURIComponent(variationsJobId)}/events` : "",
     enabled: !!variationsJobId,
   });
   useEffect(() => {
@@ -4036,12 +3877,9 @@ function ResultRowItemImpl({
   // per-alternative ✨ spinner. When the SSE subscriber emits a
   // terminal event the descendants query refetches; ``status``
   // flips off ``running``; this OR resolves false; spinner clears.
-  const hydratedVariationKinds = hydratedRunningKinds.filter(
-    (d) => d.kind === "variations",
-  );
+  const hydratedVariationKinds = hydratedRunningKinds.filter((d) => d.kind === "variations");
   const variationsBusy =
-    (!!variationsJobId && !variationsSse.closed) ||
-    hydratedVariationKinds.length > 0;
+    (!!variationsJobId && !variationsSse.closed) || hydratedVariationKinds.length > 0;
   // Per-alternative spinner refinement (use only the seed letter to
   // spin instead of every alt) is a follow-up — the current
   // ``variationsBusy`` boolean spins every alt's ✨, which is the
@@ -4054,8 +3892,8 @@ function ResultRowItemImpl({
   });
   useEffect(() => {
     if (!rerunJobId) return;
-    const terminal = rerunSse.events.find((e) =>
-      e.type === "job.done" || e.type === "job.failed" || e.type === "job.cancelled",
+    const terminal = rerunSse.events.find(
+      (e) => e.type === "job.done" || e.type === "job.failed" || e.type === "job.cancelled",
     );
     if (!terminal) return;
     if (terminal.type === "job.done") {
@@ -4095,8 +3933,7 @@ function ResultRowItemImpl({
   }, [rerunSse.events, rerunJobId]);
 
   const rerunBusy =
-    (!!rerunJobId && !rerunSse.closed) ||
-    hydratedRunningKinds.some((d) => d.kind === "rerun");
+    (!!rerunJobId && !rerunSse.closed) || hydratedRunningKinds.some((d) => d.kind === "rerun");
   const rerunLabel = (() => {
     const parts: string[] = [];
     if (row.schema_name) parts.push(row.schema_name);
@@ -4159,8 +3996,7 @@ function ResultRowItemImpl({
       ref={liRef}
       className={cn(
         "px-5 py-3",
-        isTableLevel &&
-          "border-l-2 border-l-accent/70 bg-accent-soft/10",
+        isTableLevel && "border-l-2 border-l-accent/70 bg-accent-soft/10",
         isKeynavFocused && "outline outline-2 outline-accent",
       )}
     >
@@ -4189,10 +4025,7 @@ function ResultRowItemImpl({
           </span>
         )}
         <span
-          className={cn(
-            "font-mono",
-            isTableLevel ? "text-sm font-semibold text-ink" : "text-ink",
-          )}
+          className={cn("font-mono", isTableLevel ? "text-sm font-semibold text-ink" : "text-ink")}
         >
           {row.column_name ?? row.table_name}
         </span>
@@ -4255,9 +4088,7 @@ function ResultRowItemImpl({
         )}
         <span className="ml-auto inline-flex items-center gap-2">
           {row.source && (
-            <span className="text-[10px] uppercase tracking-wider text-ink-dim">
-              {row.source}
-            </span>
+            <span className="text-[10px] uppercase tracking-wider text-ink-dim">{row.source}</span>
           )}
           <IconButton
             icon={isCellPinnedState ? <PinOff size={12} /> : <Pin size={12} />}
@@ -4275,11 +4106,7 @@ function ResultRowItemImpl({
             icon={
               rerunBusy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />
             }
-            label={
-              rerunBusy
-                ? "Re-running…"
-                : "Re-Run this item with optional new instructions"
-            }
+            label={rerunBusy ? "Re-running…" : "Re-Run this item with optional new instructions"}
             size="sm"
             variant="ghost"
             onClick={() => setRerunOpen(true)}
@@ -4302,58 +4129,51 @@ function ResultRowItemImpl({
           this version + which run produced it. Hidden on v1
           (versionInfo.kind === "original") and on rows with no
           version chrome at all. */}
-      {versionInfo != null &&
-        versionInfo.kind !== "original" && (
-          <div className="mt-1.5 inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-border bg-surface-subtle/30 px-2.5 py-1 text-[10.5px] text-ink-dim">
-            <span className="text-ink-muted">
-              {versionInfo.kind === "variations"
-                ? (() => {
-                    const id = versionInfo.seedAlternativeId ?? "";
-                    const colon = id.lastIndexOf(":");
-                    const idx = Number(id.slice(colon + 1));
-                    const letter = Number.isFinite(idx)
-                      ? String.fromCharCode(65 + idx)
-                      : "?";
-                    return `variations of ${letter}`;
-                  })()
-                : "re-run"}
-            </span>
-            <Link
-              to={`/runs/${versionInfo.runId}`}
-              className="font-mono text-accent hover:underline"
-              title="Open this version on its own detail page"
+      {versionInfo != null && versionInfo.kind !== "original" && (
+        <div className="mt-1.5 inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-border bg-surface-subtle/30 px-2.5 py-1 text-[10.5px] text-ink-dim">
+          <span className="text-ink-muted">
+            {versionInfo.kind === "variations"
+              ? (() => {
+                  const id = versionInfo.seedAlternativeId ?? "";
+                  const colon = id.lastIndexOf(":");
+                  const idx = Number(id.slice(colon + 1));
+                  const letter = Number.isFinite(idx) ? String.fromCharCode(65 + idx) : "?";
+                  return `variations of ${letter}`;
+                })()
+              : "re-run"}
+          </span>
+          <Link
+            to={`/runs/${versionInfo.runId}`}
+            className="font-mono text-accent hover:underline"
+            title="Open this version on its own detail page"
+          >
+            run #{versionInfo.runId}
+          </Link>
+          {versionInfo.mode && <span>· {versionInfo.mode}</span>}
+          {versionInfo.confidenceSignal && (
+            <span
+              className="font-mono"
+              title={
+                "Confidence signal active when this version ran. " +
+                "Badge types between v1 and vN can legitimately differ; " +
+                "the badge type on each row matches the signal active " +
+                "when that row was produced."
+              }
             >
-              run #{versionInfo.runId}
-            </Link>
-            {versionInfo.mode && (
-              <span>· {versionInfo.mode}</span>
-            )}
-            {versionInfo.confidenceSignal && (
-              <span
-                className="font-mono"
-                title={
-                  "Confidence signal active when this version ran. " +
-                  "Badge types between v1 and vN can legitimately differ; " +
-                  "the badge type on each row matches the signal active " +
-                  "when that row was produced."
-                }
-              >
-                · {versionInfo.confidenceSignal}
+              · {versionInfo.confidenceSignal}
+            </span>
+          )}
+          {versionInfo.model && <span className="font-mono">· {versionInfo.model}</span>}
+          {versionInfo.seedAlternativeText && (
+            <span className="block w-full italic">
+              Seed:{" "}
+              <span className="font-mono not-italic text-ink-muted">
+                "{versionInfo.seedAlternativeText}"
               </span>
-            )}
-            {versionInfo.model && (
-              <span className="font-mono">· {versionInfo.model}</span>
-            )}
-            {versionInfo.seedAlternativeText && (
-              <span className="block w-full italic">
-                Seed:{" "}
-                <span className="font-mono not-italic text-ink-muted">
-                  "{versionInfo.seedAlternativeText}"
-                </span>
-              </span>
-            )}
-          </div>
-        )}
+            </span>
+          )}
+        </div>
+      )}
       <RerunDialog
         open={rerunOpen}
         onClose={() => setRerunOpen(false)}
@@ -4369,9 +4189,7 @@ function ResultRowItemImpl({
           alternativeIndex={variationsState.altIndex}
           seedText={variationsState.altText}
           seedLetter={variationsState.altLetter}
-          initialMode={
-            displayRow.alternatives_mode === "lexical" ? "lexical" : "semantic"
-          }
+          initialMode={displayRow.alternatives_mode === "lexical" ? "lexical" : "semantic"}
           onSubmitted={(jobId) => {
             setVariationsJobId(jobId);
             setVariationsState(null);
@@ -4421,8 +4239,7 @@ function ResultRowItemImpl({
             // a time -- the apply step would otherwise write two
             // competing comments for the same column with last-write-
             // wins semantics that are invisible from the SPA.
-            const clickable =
-              (canPick || canRestore || canDeselect) && !lockedByOtherVersion;
+            const clickable = (canPick || canRestore || canDeselect) && !lockedByOtherVersion;
             return (
               <button
                 key={`${row.id}-${idx}`}
@@ -4457,15 +4274,15 @@ function ResultRowItemImpl({
                     : skipped
                       ? "border-warning/30 text-ink-muted hover:border-warning/60 hover:bg-warning-soft/30 hover:text-ink"
                       : "border-border text-ink-muted hover:border-accent/40 hover:bg-surface-subtle/50 hover:text-ink",
-                  (!clickable || isMutating) && !isChosen && "cursor-default opacity-70 hover:border-border hover:bg-transparent hover:text-ink-muted",
+                  (!clickable || isMutating) &&
+                    !isChosen &&
+                    "cursor-default opacity-70 hover:border-border hover:bg-transparent hover:text-ink-muted",
                 )}
               >
                 <span
                   className={cn(
                     "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold",
-                    isChosen
-                      ? "bg-accent text-white"
-                      : "bg-surface-subtle text-ink-dim",
+                    isChosen ? "bg-accent text-white" : "bg-surface-subtle text-ink-dim",
                   )}
                 >
                   {isChosen ? "✓" : String.fromCharCode(65 + idx)}
@@ -4473,51 +4290,48 @@ function ResultRowItemImpl({
                 <span className="flex-1 leading-relaxed">{alt}</span>
                 {(() => {
                   const structuredAlt = structuredByText.get(alt);
-                  return structuredAlt ? (
-                    <ConfidenceBadge alt={structuredAlt} />
-                  ) : null;
+                  return structuredAlt ? <ConfidenceBadge alt={structuredAlt} /> : null;
                 })()}
-                {visible.length >= 2 && (() => {
-                  // While the variations worker is in flight, the same
-                  // ✨ slot reads as a spinner so the row's user sees
-                  // that *this* alternative is the one being varied
-                  // around — hiding the button would tell them nothing.
-                  // The inline "Generating variations…" status below
-                  // the row covers row-agnostic context. We click-disable
-                  // the button so a stray click doesn't fire a second
-                  // worker against the same seed.
-                  if (variationsBusy) {
+                {visible.length >= 2 &&
+                  (() => {
+                    // While the variations worker is in flight, the same
+                    // ✨ slot reads as a spinner so the row's user sees
+                    // that *this* alternative is the one being varied
+                    // around — hiding the button would tell them nothing.
+                    // The inline "Generating variations…" status below
+                    // the row covers row-agnostic context. We click-disable
+                    // the button so a stray click doesn't fire a second
+                    // worker against the same seed.
+                    if (variationsBusy) {
+                      return (
+                        <span
+                          title="Generating variations…"
+                          className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-accent"
+                        >
+                          <Loader2 size={11} className="animate-spin" />
+                        </span>
+                      );
+                    }
                     return (
-                      <span
-                        title="Generating variations…"
-                        className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-accent"
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const letter = isChosen ? "✓" : String.fromCharCode(65 + idx);
+                          setVariationsState({
+                            altIndex: idx,
+                            altText: alt,
+                            altLetter: letter === "✓" ? "★" : letter,
+                          });
+                        }}
+                        title="Generate variations from this alternative"
+                        className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-dim hover:bg-surface-subtle hover:text-accent"
+                        aria-label="Generate variations from this alternative"
                       >
-                        <Loader2 size={11} className="animate-spin" />
-                      </span>
+                        <Sparkles size={11} />
+                      </button>
                     );
-                  }
-                  return (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const letter = isChosen
-                          ? "✓"
-                          : String.fromCharCode(65 + idx);
-                        setVariationsState({
-                          altIndex: idx,
-                          altText: alt,
-                          altLetter: letter === "✓" ? "★" : letter,
-                        });
-                      }}
-                      title="Generate variations from this alternative"
-                      className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-dim hover:bg-surface-subtle hover:text-accent"
-                      aria-label="Generate variations from this alternative"
-                    >
-                      <Sparkles size={11} />
-                    </button>
-                  );
-                })()}
+                  })()}
               </button>
             );
           })
@@ -4529,22 +4343,20 @@ function ResultRowItemImpl({
         )}
         {isAppliedClean && visible.length > 0 && (
           <p className="px-1 text-[10.5px] text-ink-dim">
-            Applied — pick a different alternative above to queue a revision,
-            then Apply to overwrite the live comment.
+            Applied — pick a different alternative above to queue a revision, then Apply to
+            overwrite the live comment.
           </p>
         )}
         {variationsBusy && (
           <p className="px-1 text-[10.5px] text-accent inline-flex items-center gap-1">
             <Loader2 size={10} className="animate-spin" aria-hidden />
-            Generating variations… results will appear here and in /history
-            when done.
+            Generating variations… results will appear here and in /history when done.
           </p>
         )}
       </div>
     </li>
   );
 }
-
 
 // Public name kept the same so import sites and inspector traces are
 // unaffected by the memo wrapping. Default shallow prop equality
@@ -4639,10 +4451,7 @@ function rowMatchesQuery(row: ResultRow, query: string): boolean {
   return haystack.includes(q);
 }
 
-const SORT_COMPARATORS: Record<
-  SortKey,
-  (a: ResultRow, b: ResultRow) => number
-> = {
+const SORT_COMPARATORS: Record<SortKey, (a: ResultRow, b: ResultRow) => number> = {
   natural: () => 0,
   "conf-asc": (a, b) => confidenceWeight(a) - confidenceWeight(b),
   "conf-desc": (a, b) => confidenceWeight(b) - confidenceWeight(a),
@@ -4659,10 +4468,8 @@ const SORT_COMPARATORS: Record<
     return bv - av;
   },
   "name-asc": (a, b) => {
-    if (a.schema_name !== b.schema_name)
-      return a.schema_name.localeCompare(b.schema_name);
-    if (a.table_name !== b.table_name)
-      return a.table_name.localeCompare(b.table_name);
+    if (a.schema_name !== b.schema_name) return a.schema_name.localeCompare(b.schema_name);
+    if (a.table_name !== b.table_name) return a.table_name.localeCompare(b.table_name);
     // Table-level rows (column null) sort BEFORE column rows.
     if (a.column_name == null && b.column_name != null) return -1;
     if (a.column_name != null && b.column_name == null) return 1;
@@ -4671,10 +4478,7 @@ const SORT_COMPARATORS: Record<
   status: () => 0, // Replaced inline in ResultsTab (needs pendingByResultId).
 };
 
-function groupRowsBy(
-  rows: ResultRow[],
-  by: GroupKey,
-): { key: string; rows: ResultRow[] }[] {
+function groupRowsBy(rows: ResultRow[], by: GroupKey): { key: string; rows: ResultRow[] }[] {
   if (by === "none") {
     return [{ key: "", rows }];
   }

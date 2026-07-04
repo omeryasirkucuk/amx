@@ -664,6 +664,72 @@ class SQLAlchemyHistoryStore:
                 .values(db_applied_status="failed", rejection_reason=new_reason or "")
             )
 
+    # ── Deletes ───────────────────────────────────────────────────────────
+
+    def delete_run(self, run_id: str) -> dict[str, int]:
+        """Hard-delete one run and its ``run_results`` children.
+
+        Mirrors the local store's contract. The shared warehouse has no
+        ``apply_events`` table (that audit trail is local-only), so only
+        the run + results are removed here.
+        """
+        with self.engine.begin() as conn:
+            results = (
+                conn.execute(
+                    delete(self._t_results).where(self._t_results.c.run_id == run_id)
+                ).rowcount
+                or 0
+            )
+            runs = (
+                conn.execute(delete(self._t_runs).where(self._t_runs.c.id == run_id)).rowcount or 0
+            )
+        return {"runs": int(runs), "results": int(results)}
+
+    def delete_runs(self, run_ids: list[str]) -> dict[str, int]:
+        ids = [r for r in run_ids if r is not None]
+        if not ids:
+            return {"runs": 0, "results": 0}
+        with self.engine.begin() as conn:
+            results = (
+                conn.execute(
+                    delete(self._t_results).where(self._t_results.c.run_id.in_(ids))
+                ).rowcount
+                or 0
+            )
+            runs = (
+                conn.execute(delete(self._t_runs).where(self._t_runs.c.id.in_(ids))).rowcount or 0
+            )
+        return {"runs": int(runs), "results": int(results)}
+
+    def reset_review_state_for_table(self, schema: str, table: str) -> int:
+        """Reset review decisions for one ``(schema, table)`` back to
+        unreviewed across every run. See the local store for the column
+        semantics."""
+        with self.engine.begin() as conn:
+            res = conn.execute(
+                update(self._t_results)
+                .where(
+                    and_(
+                        self._t_results.c.schema_name == schema,
+                        self._t_results.c.table_name == table,
+                    )
+                )
+                .values(
+                    evaluated_at=None,
+                    applied_at=None,
+                    chosen_description=None,
+                    evaluation=None,
+                    db_applied_status="",
+                    rejection_reason="",
+                )
+            )
+        return int(res.rowcount or 0)
+
+    def delete_apply_events_for_table(self, schema: str, table: str) -> int:
+        """No-op in shared mode: ``apply_events`` is a local-only audit
+        table, so there is nothing to clear here. Returns 0."""
+        return 0
+
     # ── Reads ─────────────────────────────────────────────────────────────
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:

@@ -12,6 +12,7 @@ from amx import __version__
 from amx.cli_support import run_interactive_session
 from amx.cli_support.commands.admin import register_admin_commands
 from amx.cli_support.commands.analyze_flow import (
+    register_analyze_review_clear_command,
     register_analyze_review_command,
     register_analyze_run_command,
 )
@@ -507,6 +508,7 @@ register_analyze_run_command(
     log_event=_log_app_event,
 )
 register_analyze_review_command(analyze, log_event=_log_app_event)
+register_analyze_review_clear_command(analyze, log_event=_log_app_event)
 register_rerun_command(main, pass_config=pass_config, log_event=_log_app_event)
 register_variations_command(main, pass_config=pass_config, log_event=_log_app_event)
 # /admin is a real role-gated shared-workspace feature (members, roles,
