@@ -103,7 +103,10 @@ def _review_sort_keys() -> tuple[str, ...]:
     return SORT_KEYS
 
 
-FinalizeScope = Callable[[AMXConfig, object, str | None, list[str]], dict[str, list[str]] | None]
+# ``finalize_scope`` accepts an optional ``headless`` keyword (see
+# ``_finalize_scope``), so the alias uses ``...`` rather than a fixed
+# positional signature.
+FinalizeScope = Callable[..., dict[str, list[str]] | None]
 ResolveCodebaseForRun = Callable[
     [AMXConfig, object, dict[str, list[str]], str | None, bool], object | None
 ]
@@ -580,7 +583,9 @@ def _maybe_run_equivalence_dedup(
     return outcome
 
 
-def _resolve_completion_mode(cfg: AMXConfig, llm: object, mode: str | None) -> bool:
+def _resolve_completion_mode(
+    cfg: AMXConfig, llm: object, mode: str | None, *, headless: bool = False
+) -> bool:
     from rich.panel import Panel
 
     from amx.llm.batch import supported_providers as batch_supported_providers
@@ -592,20 +597,27 @@ def _resolve_completion_mode(cfg: AMXConfig, llm: object, mode: str | None) -> b
     if mode is None:
         cfg_mode = (cfg.llm.completion_mode or "chat_completions").lower()
         default_mode_label = "batch" if cfg_mode == "batch" else "chat"
-        batch_note = (
-            " (50 % cheaper, async)"
-            if batch_capable
-            else f" (requires {', '.join(batch_providers_list)})"
-        )
-        mode = prompt_choice(
-            "Select completion mode",
-            ["chat", "batch"],
-            default=default_mode_label,
-            descriptions={
-                "chat": "Chat Completions — real-time, live spinners, full price",
-                "batch": f"Batch API{batch_note} — submit all at once, results in minutes–hours",
-            },
-        )
+        if headless:
+            # No --mode and no TTY: take the config's completion_mode
+            # (default chat) instead of prompting.
+            mode = default_mode_label
+        else:
+            batch_note = (
+                " (50 % cheaper, async)"
+                if batch_capable
+                else f" (requires {', '.join(batch_providers_list)})"
+            )
+            mode = prompt_choice(
+                "Select completion mode",
+                ["chat", "batch"],
+                default=default_mode_label,
+                descriptions={
+                    "chat": "Chat Completions — real-time, live spinners, full price",
+                    "batch": (
+                        f"Batch API{batch_note} — submit all at once, results in minutes–hours"
+                    ),
+                },
+            )
 
     use_batch = mode == "batch"
     if use_batch and not batch_capable:
@@ -848,6 +860,10 @@ def execute_analyze_run(
     summary_sort: str | None = None,
     summary_group: str = "none",
     columns_overrides: dict[tuple[str, str], set[str]] | None = None,
+    headless: bool = False,
+    dedup_opt: bool | None = None,
+    missing_only_opt: bool | None = None,
+    review_strategy_opt: str | None = None,
 ) -> None:
     from amx.cli_support.commands._analyze import (
         handle_keyboard_interrupt,
@@ -950,9 +966,12 @@ def execute_analyze_run(
         if not apply:
             warn("Approved metadata stays in review. Use /apply or /run-apply to persist.")
 
-        db, llm = _maybe_modify_profiles_before_run(cfg, db, llm)
+        # Headless runs take profiles from the active config / CLI
+        # overrides (--db-profile / --doc / --code) — never prompt.
+        if not headless:
+            db, llm = _maybe_modify_profiles_before_run(cfg, db, llm)
         _require_llm_connection(llm, profile_label=cfg.active_llm_profile)
-        use_batch = _resolve_completion_mode(cfg, llm, mode)
+        use_batch = _resolve_completion_mode(cfg, llm, mode, headless=headless)
 
         # Unified hierarchy picker. Catalog picker for 3-level backends
         # (Databricks Unity Catalog), database picker for every 2-level
@@ -960,12 +979,16 @@ def execute_analyze_run(
         # ClickHouse). Fires BEFORE scope finalization so list_schemas /
         # list_tables downstream target the right database/catalog
         # instead of falling back to the system DB.
-        try:
-            from amx.cli_support.catalog_picker import ensure_hierarchy_resolved
+        # Headless runs can't answer a catalog/database picker, so rely on
+        # the active profile's already-pinned catalog/database (unpinned
+        # profiles surface the usual empty-listing warning downstream).
+        if not headless:
+            try:
+                from amx.cli_support.catalog_picker import ensure_hierarchy_resolved
 
-            ensure_hierarchy_resolved(db)
-        except Exception:
-            pass
+                ensure_hierarchy_resolved(db)
+            except Exception:
+                pass
 
         # ── Equivalence-class dedup choice (FIRST run-mode question) ─────────
         # Mirrors /metadata edit's binary mode-selector pattern: ask the
@@ -976,25 +999,33 @@ def execute_analyze_run(
         # mode-decision. Profile/LLM test/completion mode above are
         # infrastructure questions, not run-mode questions, so they
         # stay where they are.
-        use_dedup_choice = ask_choice(
-            "Equivalence-class deduplication?",
-            ["dedup", "per-column"],
-            default="dedup",
-            descriptions={
-                "dedup": (
-                    "Group identical columns by (name + dtype family) across "
-                    "tables; one LLM call per group, applied to every member. "
-                    "Saves tokens on repeated columns (mandt, customer_id, "
-                    "created_at, …). Recommended for wide schemas."
-                ),
-                "per-column": (
-                    "Send each column to the LLM individually. Fine-grained, "
-                    "but slow + expensive on SAP-style schemas where the same "
-                    "column appears in dozens of tables."
-                ),
-            },
-        )
-        use_dedup = use_dedup_choice == "dedup"
+        if dedup_opt is not None:
+            # Explicit --dedup / --no-dedup flag wins in any mode.
+            use_dedup = dedup_opt
+        elif headless:
+            # No flag, no TTY: use the recommended default (dedup on)
+            # instead of prompting.
+            use_dedup = True
+        else:
+            use_dedup_choice = ask_choice(
+                "Equivalence-class deduplication?",
+                ["dedup", "per-column"],
+                default="dedup",
+                descriptions={
+                    "dedup": (
+                        "Group identical columns by (name + dtype family) across "
+                        "tables; one LLM call per group, applied to every member. "
+                        "Saves tokens on repeated columns (mandt, customer_id, "
+                        "created_at, …). Recommended for wide schemas."
+                    ),
+                    "per-column": (
+                        "Send each column to the LLM individually. Fine-grained, "
+                        "but slow + expensive on SAP-style schemas where the same "
+                        "column appears in dozens of tables."
+                    ),
+                },
+            )
+            use_dedup = use_dedup_choice == "dedup"
 
         tables_arg = list(tables_pos) + list(table)
         with command_display(
@@ -1006,7 +1037,7 @@ def execute_analyze_run(
             provider=cfg.llm.provider,
             model=cfg.llm.model,
         ):
-            scope = finalize_scope(cfg, db, schema, tables_arg)
+            scope = finalize_scope(cfg, db, schema, tables_arg, headless=headless)
             if scope is None:
                 return
 
@@ -1052,22 +1083,29 @@ def execute_analyze_run(
             # re-run the LLM on every column — they just want to fill the
             # gaps. Default to "missing-only"; let them opt in to a full
             # re-run when they explicitly want to overwrite.
-            coverage_choice = ask_choice(
-                "Run for which assets / columns?",
-                ["missing-only", "all"],
-                default="missing-only",
-                descriptions={
-                    "missing-only": (
-                        "Skip tables and columns that already have a comment. "
-                        "Fastest; safest default."
-                    ),
-                    "all": (
-                        "Re-run on every selected asset and column. Existing "
-                        "comments will be replaced after review."
-                    ),
-                },
-            )
-            missing_only = coverage_choice != "all"
+            if missing_only_opt is not None:
+                # Explicit --missing-only / --all flag wins in any mode.
+                missing_only = missing_only_opt
+            elif headless:
+                # No flag, no TTY: default to the safe "missing-only".
+                missing_only = True
+            else:
+                coverage_choice = ask_choice(
+                    "Run for which assets / columns?",
+                    ["missing-only", "all"],
+                    default="missing-only",
+                    descriptions={
+                        "missing-only": (
+                            "Skip tables and columns that already have a comment. "
+                            "Fastest; safest default."
+                        ),
+                        "all": (
+                            "Re-run on every selected asset and column. Existing "
+                            "comments will be replaced after review."
+                        ),
+                    },
+                )
+                missing_only = coverage_choice != "all"
             if missing_only:
                 info("Filter: only assets / columns without an existing comment will be analyzed.")
             else:
@@ -1086,7 +1124,17 @@ def execute_analyze_run(
             # click through a per-column review for one table." Batch
             # mode still skips because batch reviews everything at the
             # end regardless of strategy.
-            if not use_batch:
+            if review_strategy_opt is not None:
+                # Explicit --review-strategy flag wins in any mode.
+                review_strategy = review_strategy_opt
+            elif headless:
+                # No flag, no TTY: default to "deferred" — generate and
+                # save the top suggestions as pending, no interactive
+                # review. The headless summary path (see
+                # render_summary_and_apply) skips batch_review and never
+                # writes to the DB unless --apply was passed.
+                review_strategy = "deferred"
+            elif not use_batch:
                 review_strategy = ask_choice(
                     "Review strategy",
                     ["individual", "deferred", "auto-apply"],
@@ -1121,7 +1169,9 @@ def execute_analyze_run(
             # when shared mode is off (hs is a plain SQLiteHistoryStore
             # without ``shared``) or when the warning has already been
             # acknowledged for this REPL session via the env var.
-            if hs is not None and hasattr(hs, "shared"):
+            # Headless runs can't answer the "proceed anyway?" overlap
+            # prompt, so they proceed (the overlap is informational only).
+            if hs is not None and hasattr(hs, "shared") and not headless:
                 if not _confirm_proceed_when_others_analyzed_scope(
                     hs.shared, cfg.active_db_profile, scope
                 ):
@@ -1303,6 +1353,8 @@ def execute_analyze_run(
             total_assets=total_assets,
             total_schemas=total_schemas,
             history_store_fn=history_store,
+            headless=headless,
+            apply=apply,
         )
         all_results = loop_result.all_results
         processed_assets = loop_result.processed_assets
@@ -1323,6 +1375,7 @@ def execute_analyze_run(
             summary_filter=summary_filter,
             summary_sort=summary_sort,
             summary_group=summary_group,
+            headless=headless,
         )
 
         final_status = "success"
@@ -1516,6 +1569,54 @@ def register_analyze_run_command(
         default="none",
         help="Render the post-run summary as one table per schema / table.",
     )
+    # ── Headless / non-interactive knobs ──────────────────────────────
+    # A piped / CI / scripted run has no TTY, so every run-mode selector
+    # must come from a flag (or a safe default) instead of a prompt.
+    # ``--headless`` is auto-detected from stdin when left unset; the
+    # remaining three flags let a fully-scripted invocation pin the
+    # answers that are otherwise asked interactively.
+    @click.option(
+        "--headless/--interactive",
+        "headless_opt",
+        default=None,
+        help=(
+            "Run without any interactive prompts (generate, save pending, "
+            "finish). Auto-detected from a non-TTY stdin when unset; pass "
+            "--interactive to force the prompt-driven flow."
+        ),
+    )
+    @click.option(
+        "--dedup/--no-dedup",
+        "dedup_opt",
+        default=None,
+        help=(
+            "Equivalence-class deduplication: group identical columns and "
+            "send one LLM call per group. Defaults to on. In headless mode "
+            "this flag (or the default) replaces the interactive prompt."
+        ),
+    )
+    @click.option(
+        "--missing-only/--all",
+        "missing_only_opt",
+        default=None,
+        help=(
+            "Analyze only assets/columns without an existing comment "
+            "(--missing-only, the default) or re-run on everything (--all). "
+            "In headless mode this flag replaces the interactive prompt."
+        ),
+    )
+    @click.option(
+        "--review-strategy",
+        "review_strategy_opt",
+        type=click.Choice(["individual", "deferred", "auto-apply"], case_sensitive=False),
+        default=None,
+        help=(
+            "How to review generated suggestions. In headless mode the "
+            "default is 'deferred' (save as pending, no interactive review); "
+            "'auto-apply' writes the top suggestion (only touches the DB "
+            "with --apply)."
+        ),
+    )
     @click.pass_obj
     def analyze_run(
         cfg: AMXConfig,
@@ -1533,9 +1634,19 @@ def register_analyze_run_command(
         summary_filter: str | None,
         summary_sort: str | None,
         summary_group: str,
+        headless_opt: bool | None,
+        dedup_opt: bool | None,
+        missing_only_opt: bool | None,
+        review_strategy_opt: str | None,
     ) -> None:
         """Run all agents to infer metadata for selected assets (tables, views, etc.)."""
         from amx.db.connector import DatabaseConnector
+
+        # Resolve the effective headless signal once: an explicit
+        # --headless/--interactive wins; otherwise a non-TTY stdin means
+        # headless (mirrors the large-run gate's ``sys.stdin.isatty()``
+        # check further down the flow).
+        headless = (not sys.stdin.isatty()) if headless_opt is None else headless_opt
 
         # Parse --columns into a {(schema, table): {cols}} map up front
         # so a malformed entry surfaces before any DB / LLM work.
@@ -1670,6 +1781,10 @@ def register_analyze_run_command(
                     summary_sort=summary_sort,
                     summary_group=summary_group,
                     columns_overrides=columns_overrides,
+                    headless=headless,
+                    dedup_opt=dedup_opt,
+                    missing_only_opt=missing_only_opt,
+                    review_strategy_opt=review_strategy_opt,
                 )
         except KeyboardInterrupt:
             warn("User interrupted process.")

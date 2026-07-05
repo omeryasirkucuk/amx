@@ -223,6 +223,7 @@ class Orchestrator:
         interactive_review: bool = True,
         auto_apply: bool = False,
         *,
+        apply: bool = True,
         cancel_token: threading.Event | None = None,
     ) -> list[ReviewResult]:
         """Run the per-table flow.
@@ -250,6 +251,7 @@ class Orchestrator:
             asset_kind=asset_kind,
             auto_apply=auto_apply,
             interactive_review=interactive_review,
+            apply=apply,
             cancel_token=cancel_token,
         ).run()
 

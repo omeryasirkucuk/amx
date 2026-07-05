@@ -72,6 +72,7 @@ class TableProcessor:
         asset_kind: AssetKind | None = None,
         auto_apply: bool = False,
         interactive_review: bool = True,
+        apply: bool = True,
         cancel_token: threading.Event | None = None,
     ) -> None:
         self.orch = orch
@@ -80,6 +81,13 @@ class TableProcessor:
         self.asset_kind = asset_kind
         self.auto_apply = auto_apply
         self.interactive_review = interactive_review
+        # When False, ``_auto_apply_branch`` still records the top
+        # suggestion as "accepted" in the catalog / history audit trail
+        # but does NOT write COMMENTs to the live database. This is how a
+        # ``/run`` (without ``--apply``) honours ``--no-apply`` even under
+        # ``review_strategy=auto-apply``. Defaults True so every existing
+        # caller keeps writing.
+        self.apply = apply
         self.cancel_token = cancel_token
         # Populated by ``_run_agents_and_persist`` once the agent fan-out
         # returns. Maps sub-agent label → "ok" / "failed" / "cancelled" /
@@ -593,6 +601,19 @@ class TableProcessor:
             )
 
         self.orch.results.extend(results)
+
+        # Honour ``--no-apply``: when the run isn't allowed to touch the
+        # live DB, mark the top suggestions accepted in the catalog /
+        # history (done above) but skip the write. ``applied=True`` on the
+        # ReviewResults still lets the summary + pending queue capture
+        # them; the schema/database meta write is separately gated on
+        # ``apply`` in ``_run_apply_branch``.
+        if not self.apply:
+            info(
+                f"auto-apply (no-apply): {self.schema}.{self.table} top suggestions "
+                "marked accepted; nothing written to the live DB."
+            )
+            return results
 
         # Persist this table's accepted descriptions to the live DB
         # NOW — not at the end of the run. Without this, a Ctrl+C

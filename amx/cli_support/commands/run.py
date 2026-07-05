@@ -70,6 +70,8 @@ def _finalize_scope(
     db: object,
     schema: str | None,
     table_args: list[str],
+    *,
+    headless: bool = False,
 ) -> dict[str, list[str]] | None:
     """Resolve interactive or CLI scope and validate asset names against the database."""
     return _svc_finalize_scope(
@@ -81,6 +83,7 @@ def _finalize_scope(
         ask_multi_choice=ask_multi_choice,
         error=error,
         warn=warn,
+        headless=headless,
     )
 
 
