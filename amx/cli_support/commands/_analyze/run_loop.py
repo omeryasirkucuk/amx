@@ -90,12 +90,19 @@ def run_per_schema_loop(
     total_assets: int,
     total_schemas: int,
     history_store_fn: Any,
+    headless: bool = False,
+    apply: bool = True,
 ) -> PerSchemaLoopResult:
     """Run the per-schema orchestration loop.
 
     Returns a :class:`PerSchemaLoopResult` with the accumulated
     results lists; the caller is responsible for the post-loop summary
     rendering and the apply step.
+
+    ``headless`` forces every per-table dispatch through the deferred
+    (no-prompt) branch regardless of ``review_strategy`` so a non-TTY
+    run never blocks on interactive review. ``apply`` gates the
+    auto-apply live-DB write (honours ``--no-apply``).
     """
     from amx.agents.orchestrator import Orchestrator
     from amx.llm.provider import LLMProvider
@@ -178,6 +185,8 @@ def run_per_schema_loop(
                     history_store_fn=history_store_fn,
                     result=result,
                     display=display,
+                    headless=headless,
+                    apply=apply,
                 )
 
                 if len(assets) > 1 or total_schemas > 1:
@@ -212,6 +221,8 @@ def _process_assets_chat_mode(
     history_store_fn: Any,
     result: PerSchemaLoopResult,
     display: Any,
+    headless: bool = False,
+    apply: bool = True,
 ) -> None:
     """Walk ``assets`` in chat mode (one ``process_table`` call each).
 
@@ -227,8 +238,11 @@ def _process_assets_chat_mode(
                 schema_name,
                 asset_name,
                 asset_kind=asset_kinds.get(asset_name),
-                interactive_review=(review_strategy == "individual"),
+                # Headless never prompts per-table: force the deferred
+                # (no-prompt) branch even if the strategy is "individual".
+                interactive_review=(not headless and review_strategy == "individual"),
                 auto_apply=(review_strategy == "auto-apply"),
+                apply=apply,
             )
             result.all_results.extend(results)
             result.processed_assets.append(f"{schema_name}.{asset_name}")

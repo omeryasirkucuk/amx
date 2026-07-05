@@ -153,16 +153,45 @@ def resolve_run_scope(
     ask_choice: AskChoiceFn,
     ask_multi_choice: AskMultiChoiceFn,
     warn: ConsoleFn,
+    headless: bool = False,
 ) -> dict[str, list[str]]:
-    """Three-level scope resolution: database -> schema -> asset."""
+    """Three-level scope resolution: database -> schema -> asset.
+
+    ``headless=True`` (piped stdin / CI / scripted run) disables every
+    interactive picker: a ``--schema`` with no ``--table`` expands to all
+    business assets in that schema, and a run with neither raises so the
+    caller can surface a clear "scope required" error instead of blocking
+    on a prompt.
+    """
     if schema is not None or table_args:
         if not schema:
+            if headless:
+                raise ValueError(
+                    "Headless run needs a schema. Pass --schema (with the "
+                    "assets) — the interactive schema picker is disabled "
+                    "without a TTY."
+                )
             schemas = _list_schemas(db, label="Listing schemas for scope resolution")
             schema = ask_choice("Select schema to analyze", schemas)
         assets = list(table_args)
         if not assets:
-            assets = pick_assets(asset_display_list(db, schema), ask_multi_choice=ask_multi_choice)
+            if headless:
+                # No --table given: analyze every business asset in the
+                # schema rather than prompting. asset_display_list already
+                # drops system/telemetry objects.
+                assets = [line.split("  [")[0].strip() for line in asset_display_list(db, schema)]
+            else:
+                assets = pick_assets(
+                    asset_display_list(db, schema), ask_multi_choice=ask_multi_choice
+                )
         return {schema: assets}
+
+    if headless:
+        raise ValueError(
+            "Headless run needs an explicit scope. Pass --schema (and "
+            "optionally --table) — the interactive scope picker is disabled "
+            "without a TTY."
+        )
 
     scope_level = ask_choice(
         "Select analysis scope",
@@ -284,17 +313,25 @@ def finalize_scope(
     ask_multi_choice: AskMultiChoiceFn,
     error: ConsoleFn,
     warn: ConsoleFn,
+    headless: bool = False,
 ) -> dict[str, list[str]] | None:
     """Resolve interactive or CLI scope and validate asset names against the database."""
-    scope = resolve_run_scope(
-        cfg,
-        db,
-        schema,
-        table_args,
-        ask_choice=ask_choice,
-        ask_multi_choice=ask_multi_choice,
-        warn=warn,
-    )
+    try:
+        scope = resolve_run_scope(
+            cfg,
+            db,
+            schema,
+            table_args,
+            ask_choice=ask_choice,
+            ask_multi_choice=ask_multi_choice,
+            warn=warn,
+            headless=headless,
+        )
+    except ValueError as exc:
+        # Headless scope resolution surfaces a "scope required" error
+        # instead of prompting; render it and abort the run cleanly.
+        error(str(exc))
+        return None
     if not scope:
         error(
             "No assets selected. Use numbers from the list, exact names, "

@@ -71,6 +71,7 @@ def render_summary_and_apply(
     summary_filter: str | None = None,
     summary_sort: str | None = None,
     summary_group: str = "none",
+    headless: bool = False,
 ) -> tuple[list[Any], list[Any]]:
     """Render the post-loop summary and execute the apply branch.
 
@@ -93,7 +94,18 @@ def render_summary_and_apply(
        * other strategies: prompt the user once before writing.
     """
     # ── (1) Deferred batch review ──
-    if review_strategy != "auto-apply":
+    if headless:
+        # Non-interactive run: there's no TTY to drive batch_review (the
+        # prompt that otherwise aborts a headless run). Accept the top
+        # suggestion for every generated result so it's captured as
+        # pending below, mirroring the Studio worker
+        # (runs.py flips applied=True before save_pending). Nothing is
+        # written to the DB here — the apply branch stays gated on
+        # ``apply`` (see below).
+        for r in all_results:
+            if r.final_description and not r.applied:
+                r.applied = True
+    elif review_strategy != "auto-apply":
         all_results = orch.batch_review(all_results)
 
     # ── (2) Drop RAG tracker steps if RAG was disabled ──
@@ -139,6 +151,7 @@ def render_summary_and_apply(
         apply=apply,
         run_id=run_id,
         history_store_fn=history_store_fn,
+        headless=headless,
     )
 
     return approved, skipped
@@ -325,8 +338,14 @@ def _run_apply_branch(
     apply: bool,
     run_id: int | None,
     history_store_fn: Any,
+    headless: bool = False,
 ) -> None:
-    """Execute the apply branch — either auto-apply meta or prompt-and-apply."""
+    """Execute the apply branch — either auto-apply meta or prompt-and-apply.
+
+    ``headless`` runs never prompt: when ``apply`` is set they write
+    directly; when ``apply`` is False (``--no-apply``, the default) the
+    branch is a no-op and nothing touches the DB.
+    """
     hs = history_store_fn()
 
     if review_strategy == "auto-apply":
@@ -349,7 +368,13 @@ def _run_apply_branch(
                     log.debug("Could not bump applied counter: %s", exc)
         return
 
-    if apply and approved and confirm("Apply these metadata comments to the database?"):
+    # Headless runs can't answer the apply confirmation; when --apply was
+    # passed we honour it directly, otherwise (--no-apply) we skip.
+    if (
+        apply
+        and approved
+        and (headless or confirm("Apply these metadata comments to the database?"))
+    ):
         from amx.pending_review import clear_pending
 
         applied_n = orch.apply_results(approved)
