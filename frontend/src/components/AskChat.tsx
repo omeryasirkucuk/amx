@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CircleStop, Send, Settings as SettingsIcon, Sparkles, Wrench } from "lucide-react";
+import { ChevronDown, CircleStop, Send, Settings as SettingsIcon, Sparkles, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -106,6 +106,12 @@ export interface SubmittedTurn {
     question: string;
     blockedTool: string;
   };
+  /** The model's reasoning preview, accumulated from ``thinking.delta``
+   *  events while the job streamed. Stamped on the finished assistant turn
+   *  so the collapsed THINKING block stays re-expandable after the answer
+   *  lands. Ephemeral: not persisted server-side, so reloaded-from-history
+   *  sessions omit it (same as tool calls / citations). */
+  thinking?: string;
   /** Multi-profile observability stamped on assistant turns. */
   scopeProfiles?: string[];
   focusProfile?: string | null;
@@ -650,6 +656,7 @@ export default function AskChat({
             role: "assistant",
             content: finalAnswer,
             toolCalls,
+            thinking: thinking || undefined,
             scopeProfiles: finalMeta.scopeProfiles,
             focusProfile: finalMeta.focusProfile ?? null,
             totalLatencyMs: finalMeta.totalLatencyMs,
@@ -709,7 +716,7 @@ export default function AskChat({
     setJobStartedAt(null);
     setCancelling(false);
     clearAskActiveJob(sessionKey);
-  }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta, finalCitations, sessionKey, clearAskActiveJob, cancelling, wasCancelled]);
+  }, [closed, finalAnswer, jobFailure, toolCalls, thinking, finalMeta, finalCitations, sessionKey, clearAskActiveJob, cancelling, wasCancelled]);
 
   async function submitText(rawText: string) {
     const text = (rawText || "").trim();
@@ -941,6 +948,11 @@ export default function AskChat({
               ) : (
                 turn.content
               )}
+              {turn.role === "assistant" && turn.thinking && (
+                <div className="mt-2">
+                  <ThinkingBlock text={turn.thinking} />
+                </div>
+              )}
               {turn.toolCalls && turn.toolCalls.length > 0 && (
                 <ToolCallList calls={turn.toolCalls} />
               )}
@@ -1005,7 +1017,7 @@ export default function AskChat({
               />
             )}
             {activity.length > 0 && <ActivityFeed rows={activity} />}
-            {thinking && !cancelling ? <ThinkingBlock text={thinking} /> : null}
+            {thinking && !cancelling ? <ThinkingBlock text={thinking} defaultOpen /> : null}
             {streamingAnswer && <MarkdownBody text={streamingAnswer} />}
             {toolCalls.length > 0 && <ToolCallList calls={toolCalls} live />}
             {finalCitations.length > 0 && (
@@ -1321,29 +1333,49 @@ function MarkdownBody({ text }: { text: string }) {
   );
 }
 
-function ThinkingBlock({ text }: { text: string }) {
+function ThinkingBlock({ text, defaultOpen = false }: { text: string; defaultOpen?: boolean }) {
   // Cap the visible reasoning panel so a model that thinks for
   // thousands of tokens doesn't push the input field below the fold.
   // The block scrolls internally and auto-pins to the bottom so the
   // freshest reasoning is always on screen — same UX as a tail -f.
+  //
+  // Collapsible: expanded while the job streams (``defaultOpen``) so the
+  // reasoning is visible live, then rendered collapsed on the persisted
+  // turn — the user re-opens it on demand. The toggle works either way.
+  const [open, setOpen] = useState(defaultOpen);
   const ref = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
+    if (!open) return;
     const node = ref.current;
     if (!node) return;
     node.scrollTop = node.scrollHeight;
-  }, [text]);
+  }, [text, open]);
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-ink-dim">
-        Thinking
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="inline-flex items-center gap-1 text-left uppercase tracking-wider transition-colors hover:text-ink-muted"
+        >
+          <ChevronDown
+            size={12}
+            className={cn("transition-transform", !open && "-rotate-90")}
+            aria-hidden="true"
+          />
+          Thinking
+        </button>
         <InfoHint text="The model's reasoning preview — not the final answer, just its thought steps." />
       </div>
-      <div
-        ref={ref}
-        className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-sm text-ink-muted"
-      >
-        {text}
-      </div>
+      {open && (
+        <div
+          ref={ref}
+          className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-sm text-ink-muted"
+        >
+          {text}
+        </div>
+      )}
     </div>
   );
 }
