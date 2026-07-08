@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity as ActivityIcon,
+  ChevronDown,
   Loader2,
   PauseCircle,
   Pin,
@@ -881,29 +882,50 @@ function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
  *  missing or empty so non-RAG / legacy rows render no empty stub.
  */
 function CitationsDisclosure({ citations }: { citations?: Citation[] }) {
+  // Collapsed by default: a run has many rows, each with several sources,
+  // so an always-open list buries the suggestion the user came to read.
+  // The header carries the count so the section stays scannable while closed.
+  const [open, setOpen] = useState(false);
   if (!citations || citations.length === 0) return null;
   return (
-    <div className="mt-2 space-y-1 rounded-md border border-border bg-surface-subtle/20 px-2.5 py-1.5 text-xs text-ink-muted">
-      <div className="text-[10px] uppercase tracking-wider text-ink-dim">Sources</div>
-      {citations.map((c, i) => {
-        // PR γ: ``line_range`` (code citations) wins over ``chunk_idx``
-        // (doc citations) so the row reads ``src/foo.py:120-145`` for
-        // code-RAG provenance and ``spec.pdf:5`` for docs-RAG.
-        const location = formatCitationLocation(c);
-        return (
-          <div key={`${c.source}-${c.chunk_idx}-${i}`}>
-            <div className="font-mono">
-              <span className="text-ink">{location}</span>
-              <span className="ml-2 text-ink-dim">score {c.score.toFixed(2)}</span>
-            </div>
-            {c.snippet && (
-              <div className="ml-3 mt-0.5 italic text-ink-dim line-clamp-2">
-                &ldquo;{c.snippet}&hellip;&rdquo;
+    <div className="mt-2 rounded-md border border-border bg-surface-subtle/20 px-2.5 py-1.5 text-xs text-ink-muted">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1 text-left text-[10px] uppercase tracking-wider text-ink-dim transition-colors hover:text-ink-muted"
+      >
+        <ChevronDown
+          size={11}
+          className={cn("transition-transform", !open && "-rotate-90")}
+          aria-hidden="true"
+        />
+        Sources
+        <span className="text-ink-dim/70">· {citations.length}</span>
+      </button>
+      {open && (
+        <div className="mt-1 space-y-1">
+          {citations.map((c, i) => {
+            // PR γ: ``line_range`` (code citations) wins over ``chunk_idx``
+            // (doc citations) so the row reads ``src/foo.py:120-145`` for
+            // code-RAG provenance and ``spec.pdf:5`` for docs-RAG.
+            const location = formatCitationLocation(c);
+            return (
+              <div key={`${c.source}-${c.chunk_idx}-${i}`}>
+                <div className="font-mono">
+                  <span className="text-ink">{location}</span>
+                  <span className="ml-2 text-ink-dim">score {c.score.toFixed(2)}</span>
+                </div>
+                {c.snippet && (
+                  <div className="ml-3 mt-0.5 italic text-ink-dim line-clamp-2">
+                    &ldquo;{c.snippet}&hellip;&rdquo;
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        );
-      })}
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
