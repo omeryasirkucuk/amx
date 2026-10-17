@@ -58,9 +58,7 @@ def variant_map(column_names: list[str], reserved: set[str]) -> dict[str, str]:
         for v in name_variants(str(col)):
             owners.setdefault(v, set()).add(canonical)
     return {
-        v: next(iter(cols))
-        for v, cols in owners.items()
-        if len(cols) == 1 and v not in reserved
+        v: next(iter(cols)) for v, cols in owners.items() if len(cols) == 1 and v not in reserved
     }
 
 

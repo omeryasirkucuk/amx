@@ -33,7 +33,15 @@ _COLDEF_RX = re.compile(
     rf"^\s*[\"`\[]?\w+[\"`\]]?\s+({_SQL_TYPES})\b(\s*\(\s*(\d+|max)(\s*,\s*\d+)?\s*\))?[^;=]*,?\s*$",
     re.IGNORECASE,
 )
-_MIGRATION_DIRS = {"migrations", "migration", "migrate", "versions", "flyway", "liquibase", "changelog"}
+_MIGRATION_DIRS = {
+    "migrations",
+    "migration",
+    "migrate",
+    "versions",
+    "flyway",
+    "liquibase",
+    "changelog",
+}
 
 
 def is_definition(ref: CodeReference) -> bool:
