@@ -394,7 +394,9 @@ def resolve_codebase_for_run(
         code_paths = [cfg.code_profiles[cp_name]]
         profile_name = cp_name
     else:
-        code_paths = cfg.effective_code_paths()
+        # ``run_code_profiles`` (``/analyze run --code a --code b``) unions
+        # several profiles; without it this is the single active profile.
+        code_paths = cfg.effective_run_code_paths()
         profile_name = (cfg.active_code_profile or "default").strip() or "default"
 
     if not code_paths:

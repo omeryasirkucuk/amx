@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from amx.codebase.identifier_forms import variant_map, variant_pattern
-from amx.codebase.ref_ranking import rank_report_references
+from amx.codebase.ref_ranking import interleave_roots, rank_report_references
 from amx.utils.logging import get_logger
 
 log = get_logger("codebase.analyzer")
@@ -142,12 +142,14 @@ def merge_codebase_reports(
         total_files=left.total_files + right.total_files,
         scanned_files=left.scanned_files + right.scanned_files,
     )
-    for k, v in left.references.items():
-        out.references[k] = list(v)
+    # Alternate between the two roots so the first references per asset
+    # (the ones callers keep) are not all taken by the first root.
+    for k in dict.fromkeys([*left.references, *right.references]):
+        out.references[k] = interleave_roots(
+            left.references.get(k, []), right.references.get(k, [])
+        )
     for k, v in left.external_mentions.items():
         out.external_mentions[k] = list(v)
-    for k, v in right.references.items():
-        out.references.setdefault(k, []).extend(v)
     for k, v in right.external_mentions.items():
         out.external_mentions.setdefault(k, []).extend(v)
     return out
