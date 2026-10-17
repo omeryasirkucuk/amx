@@ -88,3 +88,17 @@ def rank_report_references(references: dict[str, list[CodeReference]]) -> None:
     """Rank every asset's reference list in place."""
     for asset, refs in references.items():
         references[asset] = rank_references(refs)
+
+
+def interleave_roots(*ranked: list[CodeReference]) -> list[CodeReference]:
+    """Merge per-root ranked lists: usage first, alternating between roots."""
+
+    def alternate(lists: list[list[CodeReference]]) -> list[CodeReference]:
+        out: list[CodeReference] = []
+        for i in range(max((len(x) for x in lists), default=0)):
+            out.extend(x[i] for x in lists if i < len(x))
+        return out
+
+    usage = [[r for r in refs if not is_definition(r)] for refs in ranked]
+    definitions = [[r for r in refs if is_definition(r)] for refs in ranked]
+    return alternate(usage) + alternate(definitions)
