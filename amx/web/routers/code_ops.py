@@ -29,7 +29,7 @@ log = get_logger("web.code_ops")
 
 
 class _CodeScanRequest(BaseModel):
-    """Body for ``POST /api/code/scan``.
+    """Body for ``POST /api/code/index``.
 
     Path resolution precedence: ``path`` > ``profile`` > active code
     profile. Same fallback chain the CLI's ``/code-scan`` uses.

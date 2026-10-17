@@ -398,8 +398,8 @@ def test_cli_open_wizard_offers_artifact_picker_when_no_arg(cli_env, tmp_path, c
 
     out = capsys.readouterr().out
     assert "Opening" in out
-    # Path may wrap across lines in the captured Rich output — match by file name.
-    assert out_path.name in out
+    # Rich wraps long paths mid-name, so match with line breaks removed.
+    assert out_path.name in out.replace("\n", "")
 
 
 def test_cli_delete_wizard_lists_artifacts_when_no_arg(cli_env, tmp_path):

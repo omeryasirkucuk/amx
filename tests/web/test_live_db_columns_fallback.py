@@ -388,7 +388,7 @@ def test_snapshot_endpoint_falls_back_when_live_returns_zero_columns(
         ),
     )
     response = client.get(
-        f"/api/live/schemas/sales/tables/orders/snapshot{_q('database=appdb')}",
+        f"/api/live/schemas/sales/tables/orders/snapshot{_q('database=appdb&force_live=true')}",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -431,7 +431,7 @@ def test_snapshot_surfaces_cached_table_comment_on_fallback(
         ),
     )
     response = client.get(
-        f"/api/live/schemas/sales/tables/orders/snapshot{_q('database=appdb')}",
+        f"/api/live/schemas/sales/tables/orders/snapshot{_q('database=appdb&force_live=true')}",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -469,7 +469,7 @@ def test_snapshot_endpoint_salvages_on_connector_exception(
         ),
     )
     response = client.get(
-        f"/api/live/schemas/sales/tables/orders/snapshot{_q('database=appdb')}",
+        f"/api/live/schemas/sales/tables/orders/snapshot{_q('database=appdb&force_live=true')}",
         headers=auth_headers,
     )
     assert response.status_code == 200

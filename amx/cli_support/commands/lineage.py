@@ -230,17 +230,11 @@ def register_lineage_commands(
     @lineage.command("fetch")
     @click.argument("anchor", required=False)
     @click.option("--profile", "profile_flag", default=None, help="Override active DB profile.")
-    @click.option(
-        "--with-columns",
-        is_flag=True,
-        help="Also fetch column-level lineage (one API call per anchor column).",
-    )
     @pass_config
     def lineage_fetch(
         cfg: AMXConfig,
         anchor: str | None,
         profile_flag: str | None,
-        with_columns: bool,
     ) -> None:
         """Fetch lineage for a table from the database's own lineage system.
 
@@ -292,7 +286,6 @@ def register_lineage_commands(
                 profile_name=profile_name,
                 backend=backend,
                 fqn=fqn,
-                with_columns=with_columns,
             )
         except NativeLineageError as exc:
             error(str(exc))

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -39,11 +39,13 @@ def test_remote_job_with_tasks_and_runs():
         sql_warehouse_id=None,
         pipeline_id=None,
     )
+    # Relative to now so the run stays inside success_rate's 30-day window.
+    started = datetime.now() - timedelta(days=1)
     run = RemoteJobRun(
         run_id=99,
         state_result="SUCCESS",
-        start_time=datetime(2026, 5, 1),
-        end_time=datetime(2026, 5, 1, 0, 5),
+        start_time=started,
+        end_time=started + timedelta(minutes=5),
         setup_duration_ms=1200,
         execution_duration_ms=12000,
     )

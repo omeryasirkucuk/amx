@@ -60,7 +60,10 @@ def test_litellm_loggers_silenced() -> None:
     handler attached, no propagation to the root logger, level set
     above WARNING.
     """
-    llm_provider._litellm()
+    # Re-run the bootstrap: with a cached module ``_litellm()`` returns
+    # early, and another test may have attached handlers since.
+    with patch.object(litellm_shims, "_litellm_module", None):
+        llm_provider._litellm()
     for name in ("LiteLLM", "litellm"):
         ext = logging.getLogger(name)
         # Level above WARNING — filter drops the cost-map warning.

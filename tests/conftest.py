@@ -60,3 +60,17 @@ def _isolate_secret_store() -> None:
     set_default_store(InMemorySecretStore())
     yield
     set_default_store(None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_history_store_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore the history-store singleton after every test.
+
+    Tests that call ``init_history_store`` point the module-level
+    singleton at their own ``tmp_path``. Without a reset, a later test in
+    the same worker inherits a store whose directory may already be gone
+    ("unable to open database file") or whose rows it did not write.
+    """
+    from amx.storage import sqlite_store
+
+    monkeypatch.setattr(sqlite_store, "_store", sqlite_store._store)

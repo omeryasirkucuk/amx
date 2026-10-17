@@ -17,7 +17,18 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from amx.search.agent_tools import ToolBox
+from amx.search.tools import registry
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ToolBox.invoke dispatches through the tool registry, so the fake
+    handlers below must be registered for the duration of each test."""
+    for name in ("echo", "fail_echo", "non_json", "two_args"):
+        monkeypatch.setitem(registry.TOOLS, name, registry.ToolBinding(f"_tool_{name}"))
 
 
 def _make_toolbox_with_counters() -> tuple[ToolBox, dict[str, int]]:

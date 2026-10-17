@@ -1386,6 +1386,7 @@ class ProfilingGuardrailTests(unittest.TestCase):
                 return []
 
         db = object.__new__(DatabaseConnector)
+        db.profile_name = ""
         db.cfg = DBConfig(backend="postgresql", profiling_mode="metadata")
         db._engine = FakeEngine()
         db._adapter = FakeAdapter()
@@ -1474,6 +1475,7 @@ class ProfilingGuardrailTests(unittest.TestCase):
                 return []
 
         db = object.__new__(DatabaseConnector)
+        db.profile_name = ""
         db.cfg = DBConfig(backend="postgresql", profiling_mode="sampled", profiling_sample_size=2)
         db._engine = FakeEngine()
         db._adapter = FakeAdapter()
@@ -1545,6 +1547,7 @@ class ProfilingGuardrailTests(unittest.TestCase):
                 return []
 
         db = object.__new__(DatabaseConnector)
+        db.profile_name = ""
         db.cfg = DBConfig(
             backend="bigquery",
             profiling_mode="full",
