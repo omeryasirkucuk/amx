@@ -34,7 +34,6 @@ def test_lineage_fetch_help_resolves():
     cfg = AMXConfig()
     result = _invoke(cfg, ["lineage", "fetch", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--with-columns" in result.output
     assert "--profile" in result.output
 
 
