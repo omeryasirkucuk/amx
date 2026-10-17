@@ -115,12 +115,14 @@ Example notebook snippet:
 
 ```python
 import json, pandas as pd
+
 payload = json.load(open("compare.json"))
-runs    = pd.DataFrame(payload["run_summary"])
+runs = pd.DataFrame(payload["run_summary"])
 per_col = pd.DataFrame(payload["per_column"])
-agg     = pd.DataFrame(payload["aggregate_metrics"])
+agg = pd.DataFrame(payload["aggregate_metrics"])
 
 # Avg logprob by LLM profile
-agg.merge(runs, on="run_id").query("metric == 'avg_logprob_score'") \
-   .groupby("llm_profile")["value"].mean().plot.bar()
+agg.merge(runs, on="run_id").query("metric == 'avg_logprob_score'").groupby("llm_profile")[
+    "value"
+].mean().plot.bar()
 ```
