@@ -10,6 +10,8 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from amx.codebase.identifier_forms import variant_map, variant_pattern
+from amx.codebase.ref_ranking import rank_report_references
 from amx.utils.logging import get_logger
 
 log = get_logger("codebase.analyzer")
@@ -486,6 +488,14 @@ def analyze_codebase(
                 break
         assets_list = ordered[:MAX_REGEX_ASSETS]
         assets: set[str] = set(assets_list)
+        # Code spellings of column names (custNm, CustNm, getCustNm, cust-nm)
+        # that the exact-name pattern cannot see; matches are filed under the
+        # catalog column they belong to.
+        col_variants = variant_map(
+            [a for a in assets_list if a not in {t.lower() for t in table_names}],
+            reserved=assets,
+        )
+        variant_rx = variant_pattern(list(col_variants))
         if assets_list:
             pattern: re.Pattern[str] | None = re.compile(
                 r"\b("
@@ -532,7 +542,7 @@ def analyze_codebase(
 
         for fpath in code_files:
             try:
-                lines = fpath.read_text(errors="replace").splitlines()
+                lines = fpath.read_text(encoding="utf-8", errors="replace").splitlines()
             except Exception:
                 if _cb:
                     with suppress(Exception):
@@ -557,6 +567,21 @@ def analyze_codebase(
                             context=ctx,
                         )
                         report.references.setdefault(asset, []).append(ref)
+
+                if variant_rx is not None:
+                    for match in variant_rx.finditer(line):
+                        asset = col_variants[match.group(1).lower()]
+                        start = max(0, i - context_lines)
+                        end = min(len(lines), i + context_lines + 1)
+                        report.references.setdefault(asset, []).append(
+                            CodeReference(
+                                file=rel,
+                                line_no=i + 1,
+                                line_text=line.strip(),
+                                matched_asset=asset,
+                                context="\n".join(lines[start:end]),
+                            )
+                        )
 
                 _scan_spark_sql_literals_in_line(
                     line,
@@ -596,6 +621,8 @@ def analyze_codebase(
             if _cb:
                 with suppress(Exception):
                     _cb("__advance__", fpath.name)
+
+        rank_report_references(report.references)
 
         ext_n = sum(len(v) for v in report.external_mentions.values())
         log.info(
