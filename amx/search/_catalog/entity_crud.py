@@ -1224,7 +1224,7 @@ class EntityCrudMixin:
         """
         if not getattr(self, "_index_degraded", False):
             log.warning(
-                "Semantic indexing skipped during catalog write — the embedding "
+                "Semantic indexing skipped during catalog write - the embedding "
                 "identity no longer matches the vector collection (%s). Structured "
                 "metadata (columns, row counts, types) is still written; run "
                 "/search rebuild to restore semantic search.",
