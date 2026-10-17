@@ -74,7 +74,7 @@ def test_cancel_endpoint_sets_flag_and_worker_exits(client, auth_headers, cfg, m
 
     monkeypatch.setattr("amx.codebase.analyzer.analyze_codebase", fake_analyze)
 
-    resp = client.post("/api/code/scan", headers=auth_headers, json={})
+    resp = client.post("/api/code/index", headers=auth_headers, json={})
     assert resp.status_code == 200
     job_id = resp.json()["job_id"]
 

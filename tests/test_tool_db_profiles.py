@@ -117,9 +117,11 @@ def test_no_secret_leaks_anywhere(cfg_with_secrets) -> None:
             assert forbidden not in conn, f"secret key exposed: {forbidden}"
 
 
-def test_data_summary_null_without_history_store(cfg_with_secrets) -> None:
+def test_data_summary_null_without_history_store(cfg_with_secrets, monkeypatch) -> None:
     """With no history-store singleton in the test process, the
     history-backed counts degrade to ``null`` (not an error, not 0)."""
+    # Another test in the same worker may have created the singleton.
+    monkeypatch.setattr("amx.storage.sqlite_store.history_store", lambda: None)
     result = _invoke(cfg_with_secrets, ["pg"])
     data = result["profiles"][0]["available_data"]
     # Catalog-backed signal still resolves (MagicMock state).
