@@ -62,6 +62,7 @@ class _UpperFoldAdapter:
 
 def _connector_with(adapter) -> DatabaseConnector:
     db = object.__new__(DatabaseConnector)
+    db.profile_name = ""
     db.cfg = DBConfig(backend="postgresql")
     db._engine = SimpleNamespace()
     db._adapter = adapter

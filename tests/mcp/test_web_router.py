@@ -19,6 +19,9 @@ _AUTH = {"Authorization": f"Bearer {_TOKEN}"}
 def client(monkeypatch, tmp_path):
     # Isolate IDE config writes and skip the SDK install on connect.
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    # Linux/Windows resolve IDE config dirs from these before Path.home().
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
     import amx.utils.optional_deps as optional_deps
 
     monkeypatch.setattr(optional_deps, "ensure", lambda *a, **k: None)
