@@ -533,16 +533,26 @@ def index_codebase_tree(
                 # bounds from the chunk's offset inside the file.
                 "start_line": int(start_line),
                 "end_line": int(end_line),
+                # Lets a re-index skip chunks whose text is unchanged, so
+                # an unchanged tree is not re-embedded (and re-billed).
+                "content_sha": hashlib.sha256(chunk.encode()).hexdigest()[:24],
             }
             new_ids.append(doc_id)
             new_payload.append((doc_id, chunk, meta))
 
         try:
-            existing = coll.get(where={"rel_path": rel}, include=[])
+            existing = coll.get(where={"rel_path": rel}, include=["metadatas"])
             existing_ids = set(existing.get("ids") or [])
+            existing_sha = {
+                i: (m or {}).get("content_sha")
+                for i, m in zip(
+                    existing.get("ids") or [], existing.get("metadatas") or [], strict=False
+                )
+            }
         except Exception as exc:
             log.warning("Could not enumerate existing code chunks for %s: %s", rel, exc)
             existing_ids = set()
+            existing_sha = {}
         orphans = sorted(existing_ids - set(new_ids))
         if orphans:
             try:
@@ -556,10 +566,13 @@ def index_codebase_tree(
                 log.warning("Could not delete orphan code chunks for %s: %s", rel, exc)
 
         if new_payload:
-            ids = [p[0] for p in new_payload]
-            docs = [p[1] for p in new_payload]
-            metas = [p[2] for p in new_payload]
-            coll.upsert(ids=ids, documents=docs, metadatas=metas)
+            changed = [p for p in new_payload if existing_sha.get(p[0]) != p[2]["content_sha"]]
+            if changed:
+                coll.upsert(
+                    ids=[p[0] for p in changed],
+                    documents=[p[1] for p in changed],
+                    metadatas=[p[2] for p in changed],
+                )
             total += len(new_payload)
             indexed_rels.append(rel)
 
