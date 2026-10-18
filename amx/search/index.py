@@ -226,6 +226,10 @@ class SearchIndex:
                 docs.append(doc)
                 metas.append(
                     {
+                        # Lets a re-write skip entities whose text is
+                        # unchanged instead of re-embedding (and re-billing)
+                        # every one of them on each catalog write.
+                        "doc_sha": hashlib.sha256(doc.encode()).hexdigest()[:24],
                         "entity_id": int(entity_id),
                         "db_profile": str(entity.get("db_profile") or ""),
                         "schema_name": str(entity.get("schema_name") or ""),
@@ -236,7 +240,10 @@ class SearchIndex:
                     }
                 )
             if ids:
-                self._collection_for(profile).upsert(ids=ids, documents=docs, metadatas=metas)
+                coll = self._collection_for(profile)
+                changed = _changed_rows(coll, ids, docs, metas)
+                if changed[0]:
+                    coll.upsert(ids=changed[0], documents=changed[1], metadatas=changed[2])
                 total += len(ids)
         return total
 
@@ -359,3 +366,21 @@ class SearchIndex:
             key=lambda h: h.get("distance") if h.get("distance") is not None else float("inf")
         )
         return all_hits[:n_per]
+
+
+def _changed_rows(
+    coll: Any, ids: list[str], docs: list[str], metas: list[dict[str, Any]]
+) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+    """Keep only rows that are new or whose ``doc_sha`` differs from the stored one."""
+    try:
+        existing = coll.get(ids=ids, include=["metadatas"])
+        stored = {
+            i: (m or {}).get("doc_sha")
+            for i, m in zip(
+                existing.get("ids") or [], existing.get("metadatas") or [], strict=False
+            )
+        }
+    except Exception:  # noqa: BLE001 - fall back to a full upsert
+        stored = {}
+    keep = [k for k, m in enumerate(metas) if stored.get(ids[k]) != m["doc_sha"]]
+    return [ids[k] for k in keep], [docs[k] for k in keep], [metas[k] for k in keep]
