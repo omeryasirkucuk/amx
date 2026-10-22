@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
-from amx.config import AMXConfig
+from amx.config import AMXConfig, chroma_persist_dir
 from amx.docs.uploads import (
     MAX_BATCH_BYTES,
     UploadError,
@@ -265,7 +265,6 @@ def _open_docs_store() -> tuple[Any, bool]:
     rebuild; otherwise it ingests incrementally into the existing
     collection.
     """
-    from pathlib import Path
 
     from amx.docs.rag import EmbeddingProviderMismatch, RAGStore
 
@@ -274,7 +273,7 @@ def _open_docs_store() -> tuple[Any, bool]:
     except EmbeddingProviderMismatch:
         import chromadb
 
-        client = chromadb.PersistentClient(path=str(Path.home() / ".amx" / "chroma_db"))
+        client = chromadb.PersistentClient(path=chroma_persist_dir())
         try:
             client.delete_collection(name="amx_docs")
         except Exception as exc:  # noqa: BLE001 - already absent is fine

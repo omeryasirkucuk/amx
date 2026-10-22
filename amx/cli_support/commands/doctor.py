@@ -27,7 +27,7 @@ from typing import Any
 import click
 
 from amx import __version__
-from amx.config import CONFIG_SCHEMA_VERSION, AMXConfig
+from amx.config import CONFIG_SCHEMA_VERSION, AMXConfig, chroma_persist_dir
 from amx.utils.console import console
 
 LogEvent = Callable[..., None]
@@ -412,7 +412,7 @@ def _check_rag_store(cfg: AMXConfig) -> CheckResult:
             name="RAG store",
             ok=False,
             detail=f"{exc.__class__.__name__}: {exc}",
-            hint="Check ~/.amx/chroma_db permissions and the embedding provider settings.",
+            hint="Check the chroma_db folder permissions (under ~/.amx, or AMX_CONFIG_DIR when set) and the embedding provider settings.",
         )
     try:
         store.collection.get(limit=1)
@@ -421,7 +421,7 @@ def _check_rag_store(cfg: AMXConfig) -> CheckResult:
             name="RAG store",
             ok=False,
             detail=f"collection.get failed — {exc.__class__.__name__}: {exc}",
-            hint="The persist directory may be unreadable. Re-run with elevated permissions or delete ~/.amx/chroma_db and re-ingest.",
+            hint="The persist directory may be unreadable. Re-run with elevated permissions or delete the chroma_db folder (under ~/.amx, or AMX_CONFIG_DIR when set) and re-ingest.",
         )
     chunk_count = 0
     try:
@@ -473,7 +473,7 @@ def _check_code_rag(cfg: AMXConfig) -> CheckResult:
             hint=f"pip install 'amx-cli[docs]' ({exc.__class__.__name__})",
         )
 
-    persist = str(Path.home() / ".amx" / "chroma_db")
+    persist = chroma_persist_dir()
     try:
         client = chromadb.PersistentClient(path=persist)
     except Exception as exc:
@@ -481,7 +481,7 @@ def _check_code_rag(cfg: AMXConfig) -> CheckResult:
             name="Code RAG store",
             ok=False,
             detail=f"{exc.__class__.__name__}: {exc}",
-            hint="Check ~/.amx/chroma_db permissions.",
+            hint="Check the chroma_db folder permissions (under ~/.amx, or AMX_CONFIG_DIR when set).",
         )
 
     try:
@@ -494,7 +494,7 @@ def _check_code_rag(cfg: AMXConfig) -> CheckResult:
             name="Code RAG store",
             ok=False,
             detail=f"get_or_create_collection failed — {exc.__class__.__name__}: {exc}",
-            hint="The persist directory may be unreadable. Delete ~/.amx/chroma_db and re-run /code scan.",
+            hint="The persist directory may be unreadable. Delete the chroma_db folder (under ~/.amx, or AMX_CONFIG_DIR when set) and re-run /code scan.",
         )
 
     # Embedding mismatch detection. Re-uses the same metadata contract

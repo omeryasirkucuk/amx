@@ -449,7 +449,9 @@ def index_codebase_tree(
     cfg: Any | None = None,
 ) -> int:
     """Chunk Python (AST) and other code files; upsert into ``amx_code`` collection."""
-    persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
+    from amx.config import chroma_persist_dir
+
+    persist = persist_dir or chroma_persist_dir()
     Path(persist).mkdir(parents=True, exist_ok=True)
     client = _get_chroma().PersistentClient(path=persist)
 
@@ -677,7 +679,9 @@ def query_code_snippets(
     endpoint — can branch on the timeout case and surface a user-facing
     diagnostic instead of returning an ambiguous empty hit list.
     """
-    persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
+    from amx.config import chroma_persist_dir
+
+    persist = persist_dir or chroma_persist_dir()
     client = _get_chroma().PersistentClient(path=persist)
     try:
         # Honour cfg.embedding_code here too so a query running with a
@@ -778,7 +782,9 @@ def code_collection_count(
     historical full-scan path keeps the function shape backwards-
     compatible if every server-side route errors.
     """
-    persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
+    from amx.config import chroma_persist_dir
+
+    persist = persist_dir or chroma_persist_dir()
     try:
         client = _get_chroma().PersistentClient(path=persist)
         coll = client.get_collection(COLLECTION)
@@ -832,7 +838,9 @@ def code_collection_metadata(persist_dir: str | None = None) -> dict[str, Any]:
     ``GET /api/profiles/code/{name}/health`` so the SPA can render the
     embedding the user's chunks are indexed with.
     """
-    persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
+    from amx.config import chroma_persist_dir
+
+    persist = persist_dir or chroma_persist_dir()
     try:
         client = _get_chroma().PersistentClient(path=persist)
         coll = client.get_collection(COLLECTION)
@@ -849,7 +857,9 @@ def delete_code_collection(
 
     Returns ``True`` if a collection was deleted, ``False`` if it didn't exist.
     """
-    persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
+    from amx.config import chroma_persist_dir
+
+    persist = persist_dir or chroma_persist_dir()
     try:
         client = _get_chroma().PersistentClient(path=persist)
         if not source_filters:

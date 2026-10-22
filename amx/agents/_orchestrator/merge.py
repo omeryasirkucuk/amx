@@ -149,8 +149,10 @@ def _strip_code_fences(text: str) -> str:
 def merge_suggestions(
     orch: Orchestrator, suggestions: list[MetadataSuggestion], ctx: AgentContext
 ) -> list[MetadataSuggestion]:
+    from amx.agents._orchestrator.column_guard import keep_known_columns
+
     by_column: dict[str | None, list[MetadataSuggestion]] = defaultdict(list)
-    for s in suggestions:
+    for s in keep_known_columns(suggestions, ctx):
         by_column[s.column].append(s)
 
     merged: list[MetadataSuggestion] = []

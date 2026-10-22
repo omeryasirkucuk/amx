@@ -79,6 +79,16 @@ def _resolve_config_dir() -> str:
     return str(Path.home() / ".amx")
 
 
+def chroma_persist_dir() -> str:
+    """Return the Chroma vector store directory under the resolved config dir.
+
+    Every vector index (docs, code, assets, search catalog) shares this
+    directory; it follows ``AMX_CONFIG_DIR`` like history.db and config.yml,
+    so isolated instances never share one index.
+    """
+    return str(Path(_resolve_config_dir()) / "chroma_db")
+
+
 #: How many rotated config.yml backups to keep next to the live file.
 #: Stored as ``config.yml.bak.1`` (newest) through ``config.yml.bak.N``
 #: (oldest). Five generations matches the convention of editors with
