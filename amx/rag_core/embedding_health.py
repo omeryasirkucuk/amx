@@ -22,7 +22,6 @@ backends inside the functions. The web router wraps
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -50,7 +49,9 @@ class EmbeddingBackendUnavailable(Exception):
 
 
 def _chroma_persist_path() -> str:
-    return str(Path.home() / ".amx" / "chroma_db")
+    from amx.config import chroma_persist_dir
+
+    return chroma_persist_dir()
 
 
 def collection_status(side: str, cfg: Any) -> dict[str, Any]:

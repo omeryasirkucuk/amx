@@ -108,7 +108,9 @@ class AssetRAGStore:
         _ensure("docs-extended")
         import chromadb
 
-        self.persist_dir = persist_dir or str(Path.home() / ".amx" / "chroma_db")
+        from amx.config import chroma_persist_dir
+
+        self.persist_dir = persist_dir or chroma_persist_dir()
         Path(self.persist_dir).mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=self.persist_dir)
 

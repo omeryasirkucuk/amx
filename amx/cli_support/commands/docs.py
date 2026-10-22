@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 
-from amx.config import AMXConfig
+from amx.config import AMXConfig, chroma_persist_dir
 from amx.utils.console import (
     confirm,
     console,
@@ -202,7 +202,6 @@ def register_docs_commands(
         with the active provider/model. Run it after changing the docs
         embedding in ``/embeddings``.
         """
-        from pathlib import Path
 
         from amx.docs.rag import EmbeddingProviderMismatch, RAGStore
         from amx.docs.scanner import cleanup_scan_artifacts, scan_all_sources, total_size_mb
@@ -241,7 +240,7 @@ def register_docs_commands(
                     mismatch = True
                     import chromadb
 
-                    client = chromadb.PersistentClient(path=str(Path.home() / ".amx" / "chroma_db"))
+                    client = chromadb.PersistentClient(path=chroma_persist_dir())
                     try:
                         client.delete_collection(name="amx_docs")
                     except Exception:  # noqa: BLE001 - already absent is fine
