@@ -181,7 +181,6 @@ def _build_loader_map() -> dict[str, Any]:
     _ensure("docs-extended")
     from langchain_community.document_loaders import (
         CSVLoader,
-        Docx2txtLoader,
         PyPDFLoader,
         TextLoader,
         UnstructuredExcelLoader,
@@ -189,13 +188,18 @@ def _build_loader_map() -> dict[str, Any]:
         UnstructuredPowerPointLoader,
     )
 
+    from amx.docs.loaders.docx_loader import load_docx
     from amx.docs.loaders.eml_loader import load_eml
     from amx.docs.loaders.xlsx_loader import load_xlsx
 
     return {
         ".pdf": PyPDFLoader,
-        ".docx": Docx2txtLoader,
-        ".doc": Docx2txtLoader,
+        # Pure-Python .docx loader on python-docx (a declared dependency);
+        # langchain's Docx2txtLoader needs docx2txt, which AMX does not
+        # install. Legacy binary .doc is not a zip package, so python-docx
+        # rejects it with a clear error that the ingest log reports.
+        ".docx": _make_string_fn_loader(load_docx),
+        ".doc": _make_string_fn_loader(load_docx),
         ".txt": TextLoader,
         # PR-D: Markdown loads as plain text (not via
         # ``UnstructuredMarkdownLoader``) because the Markdown-aware
